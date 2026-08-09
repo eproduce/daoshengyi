@@ -4,17 +4,20 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const ICONS_DIR = path.join(ROOT, "src-tauri", "icons");
 
-// 极简「一」字图标 — 深色背景 + 白色横线
+// 道生一：点上横下，意境图标
 async function generateIcon(size, filename) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 64 64">
     <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#1a1a2e"/>
-        <stop offset="100%" stop-color="#16213e"/>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0f0f1a"/>
+        <stop offset="100%" stop-color="#1a1a30"/>
       </linearGradient>
     </defs>
     <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-    <rect x="16" y="27" width="32" height="10" rx="5" fill="#e8e8f0" opacity="0.95"/>
+    <!-- 点 — 道 -->
+    <circle cx="32" cy="18" r="3.5" fill="#f0f0ff" opacity="0.9"/>
+    <!-- 一 — 生一 -->
+    <rect x="16" y="34" width="32" height="5" rx="2.5" fill="#f0f0ff" opacity="0.85"/>
   </svg>`;
 
   await sharp(Buffer.from(svg)).resize(size, size).png().toFile(path.join(ICONS_DIR, filename));

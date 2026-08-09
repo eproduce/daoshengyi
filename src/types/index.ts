@@ -93,7 +93,24 @@ export interface Skill {
   description: string;
   prompt: string;
   enabled: boolean;
+  category: string;
+  source: "user" | "catalog" | "import";
+  importUrl?: string;
+  version?: string;
+  author?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+/// 技能目录项（内置可选安装）
+export interface SkillCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  category: string;
+  author: string;
+  version: string;
+  tags: string[];
 }
 
