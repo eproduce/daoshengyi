@@ -24,6 +24,9 @@ function scrollToBottom() {
 
 watch(() => chatStore.activeConversation?.messages.length, () => scrollToBottom());
 watch(() => chatStore.activeConversation?.messages.at(-1)?.content, () => scrollToBottom());
+// 流式输出时跟随滚动
+watch(() => chatStore.streamingContent, () => scrollToBottom());
+watch(() => chatStore.streamingReasoning, () => scrollToBottom());
 
 function handleSend(text: string, images: ImageAttachment[]) {
   chatStore.sendMessage(text, images.length > 0 ? images : undefined);

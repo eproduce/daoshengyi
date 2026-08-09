@@ -41,6 +41,7 @@ function startNew() {
     reasoningEffort: "high",
     systemPrompt: "",
     enableWebSearch: false,
+    maxContextMessages: 50,
   };
   isNew.value = true;
 }
@@ -132,8 +133,8 @@ function handleDelete() {
             <input v-model.number="editingProfile.maxTokens" type="number" min="1" max="128000" />
           </div>
           <div class="form-group">
-            <label>Temperature</label>
-            <input v-model.number="editingProfile.temperature" type="number" min="0" max="2" step="0.1" />
+            <label>上下文消息数</label>
+            <input v-model.number="editingProfile.maxContextMessages" type="number" min="4" max="200" />
           </div>
         </div>
 

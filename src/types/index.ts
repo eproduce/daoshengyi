@@ -71,6 +71,7 @@ export interface ApiConfig {
   reasoningEffort: "low" | "high" | "max";
   systemPrompt: string;
   enableWebSearch: boolean;
+  maxContextMessages: number;
 }
 
 /// 保存的 API 配置组（快速切换）

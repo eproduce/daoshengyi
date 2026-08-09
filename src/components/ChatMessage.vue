@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from "vue";
+import { ref, watch, nextTick, onMounted, onUpdated } from "vue";
 import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
 import hljs from "@/utils/hljs";
@@ -31,8 +31,15 @@ function highlight() {
 async function copyAll() { await chatStore.copyToClipboard(props.message.content); copied.value = true; setTimeout(() => copied.value = false, 2000); }
 
 // 流式结束后高亮 + 首次挂载高亮
-watch(() => props.message.streaming, (s) => { if (!s) nextTick(highlight); });
-onMounted(() => { if (props.message.content) nextTick(highlight); });
+let highlighted = false;
+onMounted(() => { if (props.message.content && !props.message.streaming) highlighted = false; });
+onUpdated(() => {
+  if (props.message.content && !props.message.streaming && !highlighted) {
+    highlighted = true;
+    nextTick(highlight);
+  }
+});
+watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 </script>
 
 <template>

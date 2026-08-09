@@ -8,13 +8,13 @@ const DEFAULT_PROFILES: ApiProfile[] = [
   {
     id: "default", name: "OpenAI", baseUrl: "https://api.openai.com/v1",
     apiKey: "", model: "gpt-4o", maxTokens: 4096, temperature: 0.7,
-    thinkingEnabled: false, reasoningEffort: "high", systemPrompt: "", enableWebSearch: false,
+    thinkingEnabled: false, reasoningEffort: "high", systemPrompt: "", enableWebSearch: false, maxContextMessages: 50,
   },
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
     apiKey: "", model: "deepseek-v4-pro", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
-    systemPrompt: "你是一个有帮助的AI助手。", enableWebSearch: false,
+    systemPrompt: "你是一个有帮助的AI助手。", enableWebSearch: false, maxContextMessages: 50,
   },
 ];
 
@@ -55,6 +55,7 @@ export const useChatStore = defineStore("chat", () => {
       reasoningEffort: p.reasoningEffort ?? "high",
       systemPrompt: p.systemPrompt ?? "",
       enableWebSearch: p.enableWebSearch ?? false,
+      maxContextMessages: p.maxContextMessages ?? 50,
     };
   });
 
@@ -218,8 +219,11 @@ export const useChatStore = defineStore("chat", () => {
         throw new Error("请先在设置中配置 API 地址和 Key");
       }
 
-      // 构建消息（含系统提示词）
-      const apiMessages: { role: string; content: unknown }[] = [];
+      // 构建消息（含系统提示词 + 上下文限制）
+      const maxCtx = config.maxContextMessages || 50;
+      const recentMessages = conv.messages
+        .filter((m) => m.role !== "system" && !m.streaming)
+        .slice(-maxCtx);
       let systemPrompt = config.systemPrompt || "";
 
       // 联网搜索
@@ -232,12 +236,11 @@ export const useChatStore = defineStore("chat", () => {
         } catch { /* 搜索失败不影响对话 */ }
       }
 
+      const apiMessages: { role: string; content: unknown }[] = [];
       if (systemPrompt) {
         apiMessages.push({ role: "system", content: systemPrompt });
       }
-      conv.messages
-        .filter((m) => m.role !== "system" && !m.streaming)
-        .forEach((m) => {
+      recentMessages.forEach((m) => {
           if (m.images && m.images.length > 0) {
             apiMessages.push({
               role: m.role,
