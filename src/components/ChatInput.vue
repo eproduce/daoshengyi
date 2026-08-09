@@ -161,53 +161,53 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
 </template>
 
 <style scoped>
-.chat-input { padding: 14px 24px 18px; background: var(--bg-primary); }
+.chat-input { padding: 12px 20px 14px; background: var(--bg-primary); }
 
-.ci-imgs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.ci-img { position: relative; width: 72px; height: 72px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); box-shadow: var(--shadow-sm); }
+.ci-imgs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ci-img { position: relative; width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border-color); }
 .ci-img img { width: 100%; height: 100%; object-fit: cover; }
-.ci-img-x { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
+.ci-img-x { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border: none; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; font-size: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
 .ci-img:hover .ci-img-x { opacity: 1; }
 
-.ci-wrap { display: flex; gap: 10px; align-items: flex-end; background: var(--bg-secondary); border: 2px solid transparent; border-radius: var(--radius-lg); padding: 8px 14px; transition: all .25s; box-shadow: var(--shadow-sm); }
-.ci-wrap:focus-within { border-color: var(--accent-color); box-shadow: 0 0 0 4px rgba(99,102,241,.1); }
+.ci-wrap { display: flex; gap: 8px; align-items: flex-end; background: var(--bg-secondary); border: 1.5px solid transparent; border-radius: var(--radius-md); padding: 6px 10px; transition: border-color .2s, box-shadow .2s; }
+.ci-wrap:focus-within { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(99,102,241,.08); }
 
-.ci-add { flex-shrink: 0; width: 34px; height: 34px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 17px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }
-.ci-add:hover:not(:disabled) { background: var(--bg-hover); color: var(--accent-color); }
+.ci-add { flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }
+.ci-add:hover:not(:disabled) { color: var(--accent-color); }
 .ci-add:disabled { opacity: .3; cursor: not-allowed; }
 
-.ci-text { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text-primary); font-size: 14px; line-height: 1.55; font-family: inherit; max-height: 180px; }
+.ci-text { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text-primary); font-size: 13px; line-height: 1.5; font-family: inherit; max-height: 160px; min-height: 24px; }
 .ci-text::placeholder { color: var(--text-muted); }
 
-.ci-send { flex-shrink: 0; padding: 8px 20px; border: none; border-radius: var(--radius-md); background: var(--accent-color); color: #fff; font-size: 13px; font-weight: 650; cursor: pointer; transition: all .2s; letter-spacing: .02em; }
-.ci-send:disabled { opacity: .4; cursor: not-allowed; }
-.ci-send:not(:disabled):hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,.3); }
+.ci-send { flex-shrink: 0; padding: 5px 14px; border: none; border-radius: 6px; background: var(--accent-color); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s; }
+.ci-send:disabled { opacity: .35; cursor: not-allowed; }
+.ci-send:not(:disabled):hover { background: var(--accent-hover); }
 
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid transparent; border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid transparent; border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.ci-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
+.ci-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 8px; }
 
 .ci-model { position: relative; }
-.ci-model-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 7px; background: var(--bg-secondary); border: 1px solid var(--border-color); cursor: pointer; font-size: 12px; transition: all .15s; }
+.ci-model-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; background: var(--bg-secondary); border: 1px solid var(--border-color); cursor: pointer; font-size: 11px; transition: all .15s; }
 .ci-model-btn:hover { border-color: var(--accent-color); }
-.ci-model-provider { font-weight: 650; color: var(--text-primary); }
-.ci-model-name { color: var(--text-muted); font-size: 11px; font-family: "SF Mono","Fira Code",monospace; }
-.ci-model-arrow { color: var(--text-muted); font-size: 9px; }
+.ci-model-provider { font-weight: 600; color: var(--text-primary); }
+.ci-model-name { color: var(--text-muted); font-size: 10px; font-family: "SF Mono","Fira Code",monospace; }
+.ci-model-arrow { color: var(--text-muted); font-size: 8px; }
 
-.ci-model-drop { position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 240px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 50; animation: popUp .18s ease; overflow: hidden; }
-.ci-model-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; font-size: 13px; transition: background .1s; }
+.ci-model-drop { position: absolute; bottom: calc(100% + 4px); left: 0; min-width: 220px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 50; animation: popUp .15s ease; overflow: hidden; }
+.ci-model-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-size: 12px; transition: background .1s; }
 .ci-model-item:hover { background: var(--bg-hover); }
 .ci-model-item--on { background: var(--bg-active); }
 .ci-model-item-name { font-weight: 600; color: var(--text-primary); }
-.ci-model-item-model { color: var(--text-muted); font-size: 11px; font-family: "SF Mono","Fira Code",monospace; }
-.ci-model-item-check { color: var(--accent-color); font-weight: 700; margin-left: auto; }
-.ci-model-foot { padding: 8px 14px; border-top: 1px solid var(--border-color); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: background .1s; }
+.ci-model-item-model { color: var(--text-muted); font-size: 10px; font-family: "SF Mono","Fira Code",monospace; }
+.ci-model-item-check { color: var(--accent-color); font-weight: 700; margin-left: auto; font-size: 11px; }
+.ci-model-foot { padding: 6px 12px; border-top: 1px solid var(--border-color); font-size: 11px; color: var(--text-muted); cursor: pointer; transition: background .1s; }
 .ci-model-foot:hover { background: var(--bg-hover); }
 
-.ci-think { padding: 5px 14px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 12px; font-weight: 550; cursor: pointer; transition: all .15s; }
+.ci-think { padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; font-weight: 550; cursor: pointer; transition: all .15s; }
 .ci-think:hover { border-color: var(--accent-color); }
 .ci-think--on { background: var(--accent-bg); border-color: var(--accent-color); color: var(--accent-color); }
 
-@keyframes popUp { from { opacity: 0; transform: translateY(4px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes popUp { from { opacity: 0; transform: translateY(3px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
 </style>

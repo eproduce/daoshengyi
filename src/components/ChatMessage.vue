@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue";
+import { ref, watch, nextTick, onMounted } from "vue";
 import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
 import hljs from "@/utils/hljs";
@@ -30,8 +30,9 @@ function highlight() {
 
 async function copyAll() { await chatStore.copyToClipboard(props.message.content); copied.value = true; setTimeout(() => copied.value = false, 2000); }
 
-// 流式结束后高亮
+// 流式结束后高亮 + 首次挂载高亮
 watch(() => props.message.streaming, (s) => { if (!s) nextTick(highlight); });
+onMounted(() => { if (props.message.content) nextTick(highlight); });
 </script>
 
 <template>
@@ -97,43 +98,42 @@ watch(() => props.message.streaming, (s) => { if (!s) nextTick(highlight); });
 </template>
 
 <style scoped>
-.message { display: flex; gap: 14px; padding: 20px 24px; animation: fadeSlideIn .3s; }
+.message { display: flex; gap: 12px; padding: 14px 20px; }
 .message--user { background: var(--bg-user-bubble); }
 .message--assistant { background: var(--bg-assistant-bubble); }
-.message__avatar { flex-shrink: 0; width: 38px; height: 38px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; font-size: 18px; color: #fff; background: var(--avatar-ai); box-shadow: var(--shadow-sm); }
-.message--user .message__avatar { background: var(--avatar-user); }
+.message__avatar { flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 18px; opacity: .85; }
 .message__body { flex: 1; min-width: 0; }
-.message__role { font-weight: 650; font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
-.message__images { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
-.message__image-item { width: 140px; height: 140px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); cursor: pointer; transition: all .2s; box-shadow: var(--shadow-sm); }
-.message__image-item:hover { transform: scale(1.04); }
+.message__role { font-weight: 650; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.message__images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.message__image-item { width: 120px; height: 120px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); cursor: pointer; transition: transform .15s; }
+.message__image-item:hover { transform: scale(1.03); }
 .message__image-item img { width: 100%; height: 100%; object-fit: cover; }
-.message__content { font-size: 14px; line-height: 1.7; color: var(--text-primary); word-break: break-word; }
-.message__cursor { display: inline-block; width: 8px; height: 18px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 3px; border-radius: 2px; }
-.message__time { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+.message__content { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }
+.message__cursor { display: inline-block; width: 7px; height: 16px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; border-radius: 2px; }
+.message__time { font-size: 10px; color: var(--text-muted); margin-top: 8px; }
 .msg-meta { color: var(--text-muted); }
-.msg-actions { display: flex; gap: 6px; margin-top: 8px; }
-.msg-act-btn { padding: 4px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; font-weight: 500; cursor: pointer; }
-.msg-act-btn:hover { border-color: var(--accent-color); color: var(--accent-color); }
-.message__thinking { display: flex; align-items: center; gap: 5px; padding: 6px 0; }
-.thinking-dot { font-size: 8px; color: var(--text-muted); animation: dotPulse 1.4s infinite; }
+.msg-actions { display: flex; gap: 6px; margin-top: 6px; }
+.msg-act-btn { padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: all .15s; }
+.msg-act-btn:hover { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-bg); }
+.message__thinking { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
+.thinking-dot { font-size: 7px; color: var(--text-muted); animation: dotPulse 1.4s infinite; }
 .thinking-dot:nth-child(1) { animation-delay: 0s; } .thinking-dot:nth-child(2) { animation-delay: .2s; } .thinking-dot:nth-child(3) { animation-delay: .4s; }
-.thinking-text { font-size: 13px; color: var(--text-muted); margin-left: 4px; }
-@keyframes dotPulse { 0%,80%,100% { opacity: .2; transform: scale(.8); } 40% { opacity: 1; transform: scale(1.3); color: var(--accent-color); } }
-.msg-reason { margin-bottom: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; }
-.reason-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--bg-secondary); cursor: pointer; }
+.thinking-text { font-size: 12px; color: var(--text-muted); margin-left: 2px; }
+@keyframes dotPulse { 0%,80%,100% { opacity: .2; transform: scale(.8); } 40% { opacity: 1; transform: scale(1.2); color: var(--accent-color); } }
+.msg-reason { margin-bottom: 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); overflow: hidden; }
+.reason-head { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--bg-secondary); cursor: pointer; font-size: 12px; }
 .reason-head:hover { background: var(--bg-hover); }
-.reason-arrow { font-size: 10px; color: var(--text-muted); }
-.reason-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.reason-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--accent-bg); color: var(--accent-color); font-weight: 600; animation: pulse 2s infinite; }
-.reason-body { padding: 10px 14px; font-size: 13px; color: var(--text-muted); line-height: 1.6; border-top: 1px solid var(--border-color); max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+.reason-arrow { font-size: 9px; color: var(--text-muted); }
+.reason-label { font-weight: 600; color: var(--text-secondary); }
+.reason-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent-bg); color: var(--accent-color); font-weight: 600; animation: pulse 2s infinite; }
+.reason-body { padding: 8px 12px; font-size: 12px; color: var(--text-muted); line-height: 1.55; border-top: 1px solid var(--border-color); max-height: 240px; overflow-y: auto; white-space: pre-wrap; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
 .image-preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 200; cursor: pointer; animation: fadeIn .2s; }
 .image-preview__img { max-width: 90vw; max-height: 90vh; border-radius: var(--radius-lg); cursor: default; }
-.image-preview__close { position: fixed; top: 20px; right: 20px; width: 40px; height: 40px; border: none; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-:deep(.code-copy-btn) { position: absolute; top: 8px; right: 8px; padding: 3px 10px; border: 1px solid rgba(255,255,255,.2); border-radius: 5px; background: rgba(255,255,255,.08); color: rgba(255,255,255,.6); font-size: 11px; cursor: pointer; transition: all .15s; z-index: 1; }
-:deep(.code-copy-btn:hover) { background: rgba(255,255,255,.15); color: #fff; }
-@keyframes fadeSlideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.image-preview__close { position: fixed; top: 16px; right: 16px; width: 36px; height: 36px; border: none; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+:deep(.code-copy-btn) { position: absolute; top: 6px; right: 6px; padding: 2px 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 4px; background: rgba(255,255,255,.06); color: rgba(255,255,255,.5); font-size: 10px; cursor: pointer; transition: all .15s; z-index: 1; }
+:deep(.code-copy-btn:hover) { background: rgba(255,255,255,.12); color: #fff; }
+@keyframes fadeSlideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes blink { 50% { opacity: 0; } }
 </style>
