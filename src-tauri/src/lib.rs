@@ -1,8 +1,10 @@
 mod api;
 mod middleware;
+mod db;
 
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 use futures::StreamExt;
+use db::Database;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -15,9 +17,7 @@ async fn send_message(
     config: api::ApiConfig,
     mut messages: Vec<api::ChatMessage>,
 ) -> Result<(), String> {
-    // 前置中间件：注入道生一身份
     middleware::preprocess_messages(&mut messages);
-
     let mut stream = api::stream_chat(config, messages).await?;
 
     while let Some(chunk) = stream.next().await {
@@ -25,7 +25,6 @@ async fn send_message(
             Ok(text) => {
                 for line in text.lines() {
                     if let Some(mut delta) = api::parse_sse_line(line) {
-                        // 后置中间件：清洗模型身份
                         middleware::sanitize_delta(&mut delta);
                         let _ = app.emit("sse-delta", &delta);
                     }
@@ -37,9 +36,44 @@ async fn send_message(
             }
         }
     }
-
     let _ = app.emit("sse-done", ());
     Ok(())
+}
+
+// --- 对话持久化命令 ---
+
+#[tauri::command]
+fn load_conversations(db: State<Database>) -> Result<Vec<db::ConvRow>, String> {
+    db.list_conversations()
+}
+
+#[tauri::command]
+fn get_messages(db: State<Database>, conversation_id: String) -> Result<Vec<db::MsgRow>, String> {
+    db.get_messages(&conversation_id)
+}
+
+#[tauri::command]
+fn save_conversation(
+    db: State<Database>,
+    conv: db::ConvRow,
+    messages: Vec<db::MsgRow>,
+) -> Result<(), String> {
+    db.save_conversation(&conv, &messages)
+}
+
+#[tauri::command]
+fn delete_conversation_cmd(db: State<Database>, id: String) -> Result<(), String> {
+    db.delete_conversation(&id)
+}
+
+#[tauri::command]
+fn search_conversations_cmd(db: State<Database>, query: String) -> Result<Vec<db::SearchResult>, String> {
+    db.search(&query)
+}
+
+#[tauri::command]
+fn export_conversation_cmd(db: State<Database>, id: String, format: String) -> Result<String, String> {
+    db.export_conversation(&id, &format)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,6 +82,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            let app_dir = app.path().app_data_dir().expect("无法获取数据目录");
+            let database = Database::new(app_dir).expect("数据库初始化失败");
+            app.manage(database);
+
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").unwrap();
@@ -55,7 +93,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, send_message])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            send_message,
+            load_conversations,
+            get_messages,
+            save_conversation,
+            delete_conversation_cmd,
+            search_conversations_cmd,
+            export_conversation_cmd,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

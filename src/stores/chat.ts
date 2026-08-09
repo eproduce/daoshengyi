@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
-import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment } from "@/types";
+import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { searchDDG, formatSearchResults } from "@/api/search";
 import { invoke } from "@tauri-apps/api/core";
@@ -33,6 +33,60 @@ const DEFAULT_PROFILES: ApiProfile[] = [
 ];
 
 export const useChatStore = defineStore("chat", () => {
+  // --- Rust SQLite 持久化 ---
+  async function initFromDb() {
+    // 等 Tauri API 就绪
+    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) {
+      setTimeout(initFromDb, 100);
+      return;
+    }
+    try {
+      const convs = await invoke<{id:string;title:string;model:string;created_at:number;updated_at:number}[]>("load_conversations");
+      for (const c of convs) {
+        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;timestamp:number;tokens?:number;duration?:number}[]>("get_messages", { conversationId: c.id });
+        conversations.value.push({
+          id: c.id, title: c.title, model: c.model,
+          createdAt: c.created_at, updatedAt: c.updated_at,
+          messages: msgs.map(m => ({
+            id: m.id, role: m.role as MessageRole, content: m.content,
+            reasoning_content: m.reasoning_content,
+            images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
+            timestamp: m.timestamp, tokens: m.tokens, duration: m.duration,
+          })),
+        });
+      }
+      const activeId = localStorage.getItem("daoshengyi_activeConv");
+      if (activeId && conversations.value.some(c => c.id === activeId)) {
+        activeConversationId.value = activeId;
+      }
+    } catch (e) {
+      console.warn("[道生一] 数据库加载失败，使用空数据:", e);
+    }
+  }
+
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleSave() {
+    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try {
+        const conv = activeConversation.value;
+        if (!conv) return;
+        await invoke("save_conversation", {
+          conv: { id: conv.id, title: conv.title, model: conv.model, created_at: conv.createdAt, updated_at: conv.updatedAt },
+          messages: conv.messages.map(m => ({
+            id: m.id, conversation_id: conv.id, role: m.role, content: m.content,
+            reasoning_content: m.reasoning_content || null,
+            images: m.images ? JSON.stringify(m.images) : null,
+            timestamp: m.timestamp, tokens: m.tokens || null, duration: m.duration || null,
+          })),
+        });
+      } catch (e) { console.warn("[道生一] 保存失败:", e); }
+    }, 500);
+  }
+
+  initFromDb();
+
   // --- 状态 ---
   const conversations = ref<Conversation[]>([]);
   const activeConversationId = ref<string | null>(null);
@@ -50,6 +104,12 @@ export const useChatStore = defineStore("chat", () => {
   const sortedConversations = computed(() =>
     [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt)
   );
+
+  // 对话变更时自动保存 + 标记活跃对话
+  watch(conversations, scheduleSave, { deep: true });
+  watch(activeConversationId, (id) => {
+    if (id) localStorage.setItem("daoshengyi_activeConv", id);
+  });
 
   const activeProfile = computed(() =>
     profiles.value.find((p) => p.id === activeProfileId.value) ?? profiles.value[0]
@@ -146,6 +206,7 @@ export const useChatStore = defineStore("chat", () => {
     const idx = conversations.value.findIndex((c) => c.id === id);
     if (idx === -1) return;
     conversations.value.splice(idx, 1);
+    invoke("delete_conversation_cmd", { id }).catch(() => {});
     if (activeConversationId.value === id) {
       activeConversationId.value = conversations.value[0]?.id ?? null;
     }
@@ -339,28 +400,29 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  // --- 数据持久化 ---
-  function saveToLocalStorage() {
-    localStorage.setItem("daoshengyi_conversations", JSON.stringify(conversations.value));
-    localStorage.setItem("daoshengyi_activeId", activeConversationId.value || "");
-  }
-
-  function loadFromLocalStorage() {
+  // --- 对话搜索 (Rust SQLite) ---
+  async function searchConversations(query: string) {
+    if (!query.trim()) return [];
     try {
-      const saved = localStorage.getItem("daoshengyi_conversations");
-      if (saved) conversations.value = JSON.parse(saved);
-      const activeId = localStorage.getItem("daoshengyi_activeId");
-      if (activeId && conversations.value.some((c) => c.id === activeId)) {
-        activeConversationId.value = activeId;
-      }
-      const activeProf = localStorage.getItem("daoshengyi_activeProfile");
-      if (activeProf && profiles.value.some((p) => p.id === activeProf)) {
-        activeProfileId.value = activeProf;
-      }
-    } catch { /* ignore */ }
+      return await invoke<{conversation_id:string;conversation_title:string;message_id:string;role:string;snippet:string;timestamp:number}[]>(
+        "search_conversations_cmd", { query }
+      );
+    } catch { return []; }
   }
 
-  loadFromLocalStorage();
+  // --- 对话导出 (Rust) ---
+  async function downloadExport(id: string, format: "md" | "json") {
+    try {
+      const content = await invoke<string>("export_conversation_cmd", { id, format });
+      const conv = conversations.value.find(c => c.id === id);
+      const blob = new Blob([content], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${conv?.title || "对话"}.${format}`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { console.warn("[道生一] 导出失败:", e); }
+  }
 
   return {
     conversations,
@@ -386,6 +448,7 @@ export const useChatStore = defineStore("chat", () => {
     clearCurrentConversation,
     retryLast,
     copyToClipboard,
-    saveToLocalStorage,
+    downloadExport,
+    searchConversations,
   };
 });

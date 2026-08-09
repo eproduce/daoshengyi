@@ -12,7 +12,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.1.0",
     "@tauri-apps/plugin-shell": "^2.1.0",
-    "@tauri-apps/plugin-store": "^2.1.0",
+    "@tauri-apps/plugin-store": "^2.4.4",
     "highlight.js": "^11.10.0",
     "marked": "^14.0.0",
     "pinia": "^2.2.0",
