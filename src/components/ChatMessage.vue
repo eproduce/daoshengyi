@@ -8,7 +8,6 @@ import { useChatStore } from "@/stores/chat";
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
 
-const contentRef = ref<HTMLDivElement>();
 const previewImage = ref<ImageAttachment | null>(null);
 const showReasoning = ref(true);
 const copied = ref(false);
@@ -17,9 +16,11 @@ const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
 function md(s: string) { return s ? marked.parse(s) as string : ""; }
 
 function highlight() {
-  if (!contentRef.value) return;
-  contentRef.value.querySelectorAll("pre code:not(.hljs)").forEach(b => hljs.highlightElement(b as HTMLElement));
-  contentRef.value.querySelectorAll("pre").forEach(pre => {
+  // 直接从 DOM 找代码块，不依赖 ref 时序
+  const el = document.querySelector(`[data-msg-id="${props.message.id}"]`);
+  if (!el) return;
+  el.querySelectorAll("pre code:not(.hljs)").forEach(b => hljs.highlightElement(b as HTMLElement));
+  el.querySelectorAll("pre").forEach(pre => {
     if (pre.querySelector(".code-copy-btn")) return;
     const btn = document.createElement("button");
     btn.className = "code-copy-btn"; btn.textContent = "复制";
@@ -65,7 +66,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
     </div>
   </div>
 
-  <div v-else class="message" :class="`message--${message.role}`">
+  <div v-else class="message" :class="`message--${message.role}`" :data-msg-id="message.id">
     <div class="message__avatar"><span v-if="message.role === 'user'">👤</span><span v-else>🤖</span></div>
     <div class="message__body">
       <div class="message__role">{{ message.role === "user" ? "你" : "道生一" }}</div>
@@ -83,7 +84,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
       </div>
 
-      <div v-if="message.content" ref="contentRef" class="message__content markdown-body" v-html="md(message.content)"></div>
+      <div v-if="message.content" class="message__content markdown-body" v-html="md(message.content)"></div>
 
       <div class="message__time">
         {{ new Date(message.timestamp).toLocaleTimeString("zh-CN") }}
