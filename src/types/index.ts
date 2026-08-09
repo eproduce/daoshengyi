@@ -86,3 +86,14 @@ export interface StreamDelta {
   role?: string;
 }
 
+/// 技能
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+

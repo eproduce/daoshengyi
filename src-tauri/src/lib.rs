@@ -1,8 +1,39 @@
-use tauri::Manager;
+mod api;
+
+use tauri::{Emitter, Manager};
+use futures::StreamExt;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("你好, {}! 欢迎使用道生一。", name)
+}
+
+#[tauri::command]
+async fn send_message(
+    app: tauri::AppHandle,
+    config: api::ApiConfig,
+    messages: Vec<api::ChatMessage>,
+) -> Result<(), String> {
+    let mut stream = api::stream_chat(config, messages).await?;
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(text) => {
+                for line in text.lines() {
+                    if let Some(delta) = api::parse_sse_line(line) {
+                        let _ = app.emit("sse-delta", &delta);
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = app.emit("sse-error", &e);
+                return Err(e);
+            }
+        }
+    }
+
+    let _ = app.emit("sse-done", ());
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,7 +49,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, send_message])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

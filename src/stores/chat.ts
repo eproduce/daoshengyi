@@ -3,6 +3,9 @@ import { ref, computed, watch } from "vue";
 import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { searchDDG, formatSearchResults } from "@/api/search";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useSkillStore } from "./skill";
 
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
@@ -27,8 +30,6 @@ export const useChatStore = defineStore("chat", () => {
   const isStreaming = ref(false);
   const streamingContent = ref("");
   const streamingReasoning = ref("");
-  const abortController = ref<AbortController | null>(null);
-  const activeReader = ref<ReadableStreamDefaultReader<Uint8Array> | null>(null);
 
   // --- 计算属性 ---
   const activeConversation = computed(() =>
@@ -206,147 +207,73 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming.value = true;
     streamingContent.value = "";
     streamingReasoning.value = "";
-    const controller = new AbortController();
-    abortController.value = controller;
     const startTime = Date.now();
+    let unlistenFns: UnlistenFn[] = [];
+    let timedOut = false;
 
-    const timeoutId = setTimeout(() => controller.abort(), 120000);
+    const timeoutId = setTimeout(() => { timedOut = true; stopStreaming(); }, 120000);
 
     try {
       const config = currentConfig.value;
-
-      if (!config.baseUrl || !config.apiKey) {
-        throw new Error("请先在设置中配置 API 地址和 Key");
-      }
-
-      // 构建消息（含系统提示词 + 上下文限制）
-      const maxCtx = config.maxContextMessages || 50;
-      const recentMessages = conv.messages
-        .filter((m) => m.role !== "system" && !m.streaming)
-        .slice(-maxCtx);
-      let systemPrompt = config.systemPrompt || "";
+      if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
       // 联网搜索
+      let sp = config.systemPrompt || "";
       if (config.enableWebSearch && text.trim()) {
         try {
-          const results = await searchDDG(text.trim());
-          if (results.length > 0) {
-            systemPrompt += formatSearchResults(text.trim(), results);
-          }
-        } catch { /* 搜索失败不影响对话 */ }
+          const r = await searchDDG(text.trim());
+          if (r.length > 0) sp += formatSearchResults(text.trim(), r);
+        } catch { /* ignore */ }
       }
 
-      const apiMessages: { role: string; content: unknown }[] = [];
-      if (systemPrompt) {
-        apiMessages.push({ role: "system", content: systemPrompt });
-      }
-      recentMessages.forEach((m) => {
-          if (m.images && m.images.length > 0) {
-            apiMessages.push({
-              role: m.role,
-              content: [
-                { type: "text" as const, text: m.content },
-                ...m.images.map((img) => ({
-                  type: "image_url" as const,
-                  image_url: { url: img.base64, detail: "auto" as const },
-                })),
-              ],
-            });
-          } else {
-            apiMessages.push({ role: m.role, content: m.content });
-          }
-        });
-
-      const requestBody: Record<string, unknown> = {
-        model: config.model || "gpt-4o",
-        messages: apiMessages,
-        stream: true,
-        max_tokens: config.maxTokens,
-        temperature: config.temperature,
-      };
-
-      // 思考模式：DeepSeek 需显式关闭
-      if (config.thinkingEnabled) {
-        requestBody.thinking = { type: "enabled" };
-        requestBody.reasoning_effort = config.reasoningEffort;
-      } else if (config.baseUrl.includes("deepseek")) {
-        requestBody.thinking = { type: "disabled" };
+      // 注入已启用的技能
+      const skillStore = useSkillStore();
+      const skillPrompts = skillStore.enabledPrompts();
+      if (skillPrompts) {
+        sp = sp ? `${sp}\n\n---\n\n${skillPrompts}` : skillPrompts;
       }
 
-      const baseUrl = config.baseUrl.replace(/\/+$/, "");
-      const url = `${baseUrl}/chat/completions`;
-
-      console.log("[道生一] 发送请求:", url, "模型:", requestBody.model);
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
+      // 构建 Rust 格式消息
+      const maxCtx = config.maxContextMessages || 50;
+      const rustMsgs: { role: string; content: unknown }[] = [];
+      if (sp) rustMsgs.push({ role: "system", content: sp });
+      conv.messages.filter(m => m.role !== "system" && !m.streaming).slice(-maxCtx).forEach(m => {
+        if (m.images?.length) {
+          rustMsgs.push({ role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map(img => ({ type: "image_url", image_url: { url: img.base64, detail: "auto" } }))] });
+        } else {
+          rustMsgs.push({ role: m.role, content: m.content });
+        }
       });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`[${response.status}] ${errText.slice(0, 200)}`);
-      }
+      const rustCfg = {
+        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "gpt-4o",
+        max_tokens: config.maxTokens, temperature: config.temperature,
+        thinking_enabled: config.thinkingEnabled, reasoning_effort: config.reasoningEffort,
+        system_prompt: sp, enable_web_search: config.enableWebSearch,
+      };
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("浏览器不支持流式响应");
-      activeReader.value = reader;
+      // 监听 Rust SSE 事件
+      const doneP = new Promise<void>((resolve, reject) => {
+        listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
+          const d = e.payload;
+          if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
+          if (d.content) streamingContent.value += d.content;
+          if (d.tokens) assistantMsg.tokens = d.tokens;
+        }).then(f => unlistenFns.push(f));
+        listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));
+        listen("sse-done", () => resolve()).then(f => unlistenFns.push(f));
+      });
 
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let chunkCount = 0;
+      await invoke("send_message", { config: rustCfg, messages: rustMsgs });
+      await doneP;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        chunkCount++;
-        const size = value?.length || 0;
-        console.log(`[道生一] 流块 #${chunkCount}: ${size} bytes, done=${done}`);
-
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        const dataLines = lines.filter(l => l.trim().startsWith("data:"));
-        if (dataLines.length > 0) console.log(`[道生一] SSE 行数: ${dataLines.length}, 内容长度: ${assistantMsg.content.length}`);
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data:")) continue;
-          const data = trimmed.replace(/^data:\s*/, "");
-          if (data === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta;
-            if (delta?.reasoning_content) {
-              streamingReasoning.value += delta.reasoning_content;
-            }
-            if (delta?.content) {
-              streamingContent.value += delta.content;
-            }
-            if (parsed.usage) {
-              assistantMsg.tokens = parsed.usage.total_tokens || parsed.usage.completion_tokens;
-            }
-          } catch { /* skip */ }
-        }
-      }
     } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        if (!streamingContent.value) streamingContent.value = "[已取消]";
-      } else if (err instanceof TypeError && err.message.includes("fetch")) {
-        streamingContent.value = "[网络错误] 无法连接到 API 服务器";
-      } else {
-        streamingContent.value = `[错误] ${err instanceof Error ? err.message : "未知错误"}`;
+      if (!timedOut && err instanceof Error) {
+        streamingContent.value = streamingContent.value || `[错误] ${err.message}`;
       }
     } finally {
       clearTimeout(timeoutId);
-      activeReader.value = null;
+      unlistenFns.forEach(f => f());
       assistantMsg.content = streamingContent.value;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
@@ -354,14 +281,13 @@ export const useChatStore = defineStore("chat", () => {
       streamingContent.value = "";
       streamingReasoning.value = "";
       isStreaming.value = false;
-      abortController.value = null;
       conv.updatedAt = Date.now();
     }
   }
 
   function stopStreaming() {
-    abortController.value?.abort();
-    activeReader.value?.cancel().catch(() => {});
+    // Rust 后端会自然结束，前端标记超时即可
+    isStreaming.value = false;
   }
 
   function clearCurrentConversation() {

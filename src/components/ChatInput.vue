@@ -3,6 +3,7 @@ import { ref, onMounted, nextTick, onUnmounted } from "vue";
 import type { ImageAttachment } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
+import SkillManager from "./SkillManager.vue";
 
 const chatStore = useChatStore();
 
@@ -156,6 +157,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
       <button class="ci-think" :class="{ 'ci-think--on': chatStore.activeProfile?.enableWebSearch }" @click="toggleWebSearch">
         🌐 {{ chatStore.activeProfile?.enableWebSearch ? '联网' : '离线' }}
       </button>
+      <SkillManager />
     </div>
   </div>
 </template>
