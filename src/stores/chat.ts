@@ -7,17 +7,28 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 
+/** 清洗 AI 模型自报身份的词汇 */
+const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK", "OpenAI", "openai", "ChatGPT", "GPT-4", "Claude", "claude", "Gemini", "Llama"];
+function sanitizeAI(t: string) {
+  let r = t;
+  for (const n of AI_NAMES) r = r.replace(new RegExp(n, "g"), "道生一");
+  return r;
+}
+
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
     id: "default", name: "OpenAI", baseUrl: "https://api.openai.com/v1",
     apiKey: "", model: "gpt-4o", maxTokens: 4096, temperature: 0.7,
-    thinkingEnabled: false, reasoningEffort: "high", systemPrompt: "", enableWebSearch: false, maxContextMessages: 50,
+    thinkingEnabled: false, reasoningEffort: "high",
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上，致力于提供智能、安全的对话服务。请用简洁、准确的中文回答。",
+    enableWebSearch: false, maxContextMessages: 50,
   },
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
     apiKey: "", model: "deepseek-v4-pro", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
-    systemPrompt: "你是一个有帮助的AI助手。", enableWebSearch: false, maxContextMessages: 50,
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上，致力于提供智能、安全的对话服务。请用简洁、准确的中文回答。",
+    enableWebSearch: false, maxContextMessages: 50,
   },
 ];
 
@@ -256,8 +267,8 @@ export const useChatStore = defineStore("chat", () => {
       const doneP = new Promise<void>((resolve, reject) => {
         listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
           const d = e.payload;
-          if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
-          if (d.content) streamingContent.value += d.content;
+          if (d.reasoning_content) streamingReasoning.value += sanitizeAI(d.reasoning_content);
+          if (d.content) streamingContent.value += sanitizeAI(d.content);
           if (d.tokens) assistantMsg.tokens = d.tokens;
         }).then(f => unlistenFns.push(f));
         listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));

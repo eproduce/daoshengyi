@@ -1,4 +1,5 @@
 mod api;
+mod middleware;
 
 use tauri::{Emitter, Manager};
 use futures::StreamExt;
@@ -12,15 +13,20 @@ fn greet(name: &str) -> String {
 async fn send_message(
     app: tauri::AppHandle,
     config: api::ApiConfig,
-    messages: Vec<api::ChatMessage>,
+    mut messages: Vec<api::ChatMessage>,
 ) -> Result<(), String> {
+    // 前置中间件：注入道生一身份
+    middleware::preprocess_messages(&mut messages);
+
     let mut stream = api::stream_chat(config, messages).await?;
 
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => {
                 for line in text.lines() {
-                    if let Some(delta) = api::parse_sse_line(line) {
+                    if let Some(mut delta) = api::parse_sse_line(line) {
+                        // 后置中间件：清洗模型身份
+                        middleware::sanitize_delta(&mut delta);
                         let _ = app.emit("sse-delta", &delta);
                     }
                 }
