@@ -168,11 +168,19 @@ fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
     let u = if url.starts_with("http") { url.clone() } else { format!("https://{}", url) };
-    WebviewWindowBuilder::new(&app, "browser", WebviewUrl::External(u.parse().map_err(|e| format!("{}", e))?))
+    let win = WebviewWindowBuilder::new(&app, "browser", WebviewUrl::External(u.parse().map_err(|e| format!("{}", e))?))
         .title("道生一 · 浏览器")
         .inner_size(1024.0, 700.0)
         .build()
         .map_err(|e| format!("{}", e))?;
+
+    // 关闭浏览器窗口时不退出应用，只隐藏
+    let win_clone = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            let _ = win_clone.hide();
+        }
+    });
     Ok(())
 }
 

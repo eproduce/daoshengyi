@@ -84,15 +84,13 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="app-layout">
     <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar || showBrowser }">
-      <ChatHistory />
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar && !showBrowser, 'sidebar--browser': showBrowser }">
+      <ChatHistory v-if="!showBrowser" />
+      <BrowserPanel v-else @send-page="handleSendPage" />
     </aside>
 
     <!-- 主内容区 -->
     <div class="main-area">
-      <!-- 浏览器面板 -->
-      <BrowserPanel v-if="showBrowser" @send-page="handleSendPage" />
-      <template v-else>
       <!-- 顶部栏 -->
       <header class="topbar">
         <div class="topbar__left">
@@ -147,7 +145,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <div v-if="chatStore.isStreaming" class="stop-bar">
         <button class="stop-btn" @click="handleStop">⏹ 停止生成</button>
       </div>
-      </template>
     </div>
 
     <!-- 设置弹窗 -->
@@ -173,6 +170,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   overflow: hidden;
 }
 .sidebar--collapsed { width: 0; opacity: 0; }
+.sidebar--browser { width: 420px; }
 
 .main-area {
   flex: 1; display: flex; flex-direction: column; min-width: 0;
