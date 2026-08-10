@@ -35,10 +35,20 @@ function handleSend(text: string, images: ImageAttachment[]) {
 }
 
 function handleSendPage(url: string, title: string, text: string) {
-  const msg = `📄 **${title || url}**\n${url}\n\n---\n${text}`;
+  const content = text || "(页面内容为空)";
+  const msg = `请分析以下网页内容：\n\n📄 **${title || url}**\n🔗 ${url}\n\n---\n${content}`;
   chatStore.sendMessage(msg);
   showBrowser.value = false;
+  showSidebar.value = true;
 }
+
+// 监听浏览器面板的自定义事件
+onMounted(() => {
+  window.addEventListener("daoshengyi:sendPage", ((e: CustomEvent) => {
+    const { url, title, text } = e.detail;
+    handleSendPage(url, title, text);
+  }) as EventListener);
+});
 
 function handleStop() { chatStore.stopStreaming(); }
 

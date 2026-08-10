@@ -6,6 +6,7 @@ const emit = defineEmits<{ sendPage: [url: string, title: string, text: string] 
 
 const url = ref("");
 const loading = ref(false);
+const extracting = ref(false);
 const result = ref<{ title: string; text: string; url: string } | null>(null);
 const error = ref("");
 const history = ref<string[]>([]);
@@ -31,23 +32,32 @@ async function doOpen() {
 }
 
 async function doExtract() {
-  loading.value = true;
+  extracting.value = true;
   error.value = "";
+  result.value = null;
   try {
-    // 先从浏览器窗口获取当前 URL
     const info = await invoke<{ title: string; text: string; url: string }>("extract_browser_content");
-    // 再通过 reqwest 抓取内容
     const data = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url: info.url });
-    result.value = data;
+    result.value = {
+      title: data.title || info.title,
+      url: info.url,
+      text: data.text || "(页面内容为空，可能是需要登录或动态加载的页面)",
+    };
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
   }
-  loading.value = false;
+  extracting.value = false;
 }
 
 function sendToChat() {
   if (!result.value) return;
-  emit("sendPage", result.value.url, result.value.title, result.value.text);
+  const { url, title, text } = result.value;
+  const msg = `📄 **${title || url}**\n${url}\n\n---\n${text}`;
+  emit("sendPage", url, title, text);
+  // Also put in chat input area by emitting to parent
+  window.dispatchEvent(new CustomEvent("daoshengyi:sendPage", {
+    detail: { msg, url, title, text }
+  }));
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -61,59 +71,175 @@ function onKeydown(e: KeyboardEvent) {
       <input
         v-model="url"
         class="bp-url"
-        placeholder="输入网址，Enter 打开…"
+        placeholder="输入网址…"
         @keydown="onKeydown"
       />
       <button class="bp-btn" :disabled="loading" @click="doOpen">
-        {{ loading && !browserOpen ? "打开中…" : "打开" }}
+        {{ loading ? "…" : "打开" }}
       </button>
     </div>
 
     <div v-if="browserOpen" class="bp-controls">
-      <button class="bp-act" @click="doExtract" :disabled="loading">📋 提取内容</button>
-      <span class="bp-hint">浏览器窗口已打开，浏览后点击提取内容</span>
+      <button class="bp-act" @click="doExtract" :disabled="extracting">
+        {{ extracting ? "提取中…" : "📋 提取内容" }}
+      </button>
+      <span class="bp-hint">在浏览器窗口浏览后点击提取</span>
+    </div>
+
+    <div v-if="!browserOpen && !result" class="bp-empty">
+      输入网址打开独立浏览器窗口，浏览后提取内容发送给 Agent 分析
     </div>
 
     <div v-if="error" class="bp-error">{{ error }}</div>
 
     <div v-if="result" class="bp-result">
       <div class="bp-title">{{ result.title || result.url }}</div>
+      <div class="bp-url-display">{{ result.url }}</div>
       <div class="bp-text">{{ result.text }}</div>
-      <div class="bp-acts">
-        <button class="bp-btn bp-btn-send" @click="sendToChat">📤 发送到对话</button>
-        <span class="bp-info">{{ result.text.length }} 字</span>
-      </div>
+      <button class="bp-send" @click="sendToChat">📤 发送到对话</button>
+      <span class="bp-info">{{ result.text.length }} 字</span>
     </div>
 
     <div v-if="history.length" class="bp-history">
-      <div class="bp-history-title">最近</div>
+      <div class="bp-history-title">历史</div>
       <div v-for="h in history" :key="h" class="bp-history-item" @click="url = h; doOpen()">
-        {{ h }}
+        {{ h.replace("https://", "").replace("http://", "").slice(0, 50) }}
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.browser-panel { height: 100%; display: flex; flex-direction: column; padding: 12px; gap: 10px; overflow-y: auto; }
-.bp-bar { display: flex; gap: 6px; }
-.bp-url { flex: 1; padding: 8px 12px; border: 1px solid #333; border-radius: 8px; background: #0d0d1a; color: #ddd; font-size: 13px; font-family: inherit; }
+.browser-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: #ccc;
+}
+.bp-bar {
+  display: flex;
+  gap: 6px;
+}
+.bp-url {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #0d0d1a;
+  color: #ddd;
+  font-size: 13px;
+  font-family: inherit;
+}
 .bp-url:focus { outline: none; border-color: var(--accent-color); }
-.bp-btn { padding: 8px 16px; border: none; border-radius: 8px; background: #4a9eff; color: #fff; font-size: 13px; cursor: pointer; white-space: nowrap; }
-.bp-btn:disabled { opacity: .4; }
-.bp-btn-send { background: #22c55e; margin-top: 8px; }
-.bp-controls { display: flex; align-items: center; gap: 10px; }
-.bp-act { padding: 6px 12px; border: 1px solid #444; border-radius: 6px; background: #1a1a2e; color: #ccc; font-size: 12px; cursor: pointer; }
-.bp-act:hover { border-color: #888; }
+.bp-btn {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #4a9eff;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 48px;
+}
+.bp-btn:disabled { opacity: .4; cursor: not-allowed; }
+.bp-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.bp-act {
+  padding: 6px 12px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a2e;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bp-act:hover:not(:disabled) { border-color: #888; }
+.bp-act:disabled { opacity: .4; }
 .bp-hint { font-size: 11px; color: #666; }
-.bp-error { padding: 12px; background: #3a0d0d; border-radius: 8px; color: #f87171; font-size: 13px; }
-.bp-result { flex: 1; overflow-y: auto; }
-.bp-title { font-size: 15px; font-weight: 700; color: #eee; margin-bottom: 8px; word-break: break-all; }
-.bp-text { font-size: 13px; color: #bbb; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
-.bp-acts { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
-.bp-info { font-size: 11px; color: #666; }
-.bp-history { margin-top: 4px; }
-.bp-history-title { font-size: 12px; color: #666; margin-bottom: 6px; }
-.bp-history-item { font-size: 12px; color: #888; padding: 4px 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-empty {
+  text-align: center;
+  color: #555;
+  padding: 32px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.bp-error {
+  padding: 10px;
+  background: #3a0d0d;
+  border-radius: 8px;
+  color: #f87171;
+  font-size: 12px;
+  word-break: break-all;
+}
+.bp-result {
+  border: 1px solid #252540;
+  border-radius: 10px;
+  padding: 12px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+.bp-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #eee;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.bp-url-display {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+.bp-text {
+  font-size: 12px;
+  color: #aaa;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.bp-send {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: #22c55e;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.bp-send:hover { background: #16a34a; }
+.bp-info {
+  display: block;
+  text-align: center;
+  font-size: 11px;
+  color: #555;
+  margin-top: 4px;
+}
+.bp-history { margin-top: auto; padding-top: 6px; border-top: 1px solid #1a1a2e; }
+.bp-history-title { font-size: 11px; color: #555; margin-bottom: 4px; }
+.bp-history-item {
+  font-size: 11px;
+  color: #777;
+  padding: 2px 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .bp-history-item:hover { color: #aaa; }
 </style>
