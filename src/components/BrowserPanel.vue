@@ -15,19 +15,23 @@ const browserOpen = ref(false);
 let unlisten: UnlistenFn | null = null;
 
 onMounted(async () => {
-  unlisten = await listen<{ title: string; text: string; url: string }>("browser-content", (e) => {
-    result.value = {
-      title: e.payload.title,
-      url: e.payload.url,
-      text: e.payload.text || "(页面内容为空)",
-    };
-    extracting.value = false;
-  });
+  if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+  try {
+    unlisten = await listen<{ title: string; text: string; url: string }>("browser-content", (e) => {
+      result.value = {
+        title: e.payload.title,
+        url: e.payload.url,
+        text: e.payload.text || "(页面内容为空)",
+      };
+      extracting.value = false;
+    });
+  } catch { /* Tauri 不可用 */ }
 });
 
 onUnmounted(() => { unlisten?.(); });
 
 async function doOpen() {
+  if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
   let u = url.value.trim();
   if (!u) return;
   if (!u.startsWith("http")) u = "https://" + u;
