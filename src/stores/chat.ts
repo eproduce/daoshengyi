@@ -350,11 +350,13 @@ export const useChatStore = defineStore("chat", () => {
       let sp = config.systemPrompt || "";
       if (config.enableWebSearch && text.trim()) {
         try {
+          console.log("[道生一] 开始搜索:", text.trim());
           const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim() });
+          console.log("[道生一] 搜索结果:", results.length, "条");
           if (results.length > 0) {
             sp += formatSearchResults(text.trim(), results);
           }
-        } catch { /* 搜索失败不影响对话 */ }
+        } catch (e) { console.warn("[道生一] 搜索失败:", e); }
       }
 
       // 注入已启用的技能

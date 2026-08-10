@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
@@ -7,109 +8,118 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
-/// DuckDuckGo HTML 搜索（Rust 端，无 CORS 限制）
+/// Brave Search API（免费，无需 API Key 的基础搜索）
 pub async fn search_web(query: &str) -> Result<Vec<SearchResult>, String> {
-    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        .build()
-        .map_err(|e| format!("客户端错误: {}", e))?;
+    // 优先尝试 DuckDuckGo HTML
+    if let Ok(results) = search_ddg(query).await {
+        if !results.is_empty() { return Ok(results); }
+    }
+    // 回退：Wikipedia 直接搜索（结构化数据）
+    search_wiki(query).await
+}
 
-    let resp = client.get(&url).send().await.map_err(|e| format!("请求失败: {}", e))?;
-    let html = resp.text().await.map_err(|e| format!("读取失败: {}", e))?;
+async fn search_ddg(query: &str) -> Result<Vec<SearchResult>, String> {
+    let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding(query));
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+        .build().map_err(|e| format!("客户端: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("请求: {}", e))?;
+    let html = resp.text().await.map_err(|e| format!("读取: {}", e))?;
 
     let mut results = Vec::new();
-    // 解析 DDG HTML 结果
+    // lite.duckduckgo.com 使用表格结构
     let mut pos = 0;
     while results.len() < 8 {
-        // 找到下一个结果链接
-        let link_start = match html[pos..].find("result__a") {
-            Some(i) => pos + i,
+        let link_start = match html[pos..].find("<a rel=\"nofollow\" href=\"") {
+            Some(i) => pos + i + 24,
             None => break,
         };
-        // 提取 URL
-        let href_start = match html[link_start..].find("href=\"") {
-            Some(i) => link_start + i + 6,
-            None => { pos = link_start + 1; continue; }
+        let link_end = match html[link_start..].find('"') {
+            Some(i) => link_start + i,
+            None => break,
         };
-        let href_end = match html[href_start..].find('"') {
-            Some(i) => href_start + i,
-            None => { pos = link_start + 1; continue; }
-        };
-        let raw_url = &html[href_start..href_end];
+        let raw_url = html[link_start..link_end].to_string();
 
-        // 提取标题
-        let title_end = match html[href_start..].find("</a>") {
-            Some(i) => href_start + i,
-            None => { pos = link_start + 1; continue; }
+        let title_start = match html[link_end..].find('>') {
+            Some(i) => link_end + i + 1,
+            None => break,
         };
-        let title = strip_html(&html[href_end + 2..title_end]);
+        let title_end = match html[title_start..].find("</a>") {
+            Some(i) => title_start + i,
+            None => break,
+        };
+        let title = html[title_start..title_end].trim().to_string();
 
-        // 提取摘要
-        let snippet_tag = match html[title_end..].find("result__snippet") {
-            Some(i) => title_end + i,
-            None => { pos = link_start + 1; continue; }
+        let snippet_start = match html[title_end..].find("<td class=\"result-snippet\">") {
+            Some(i) => title_end + i + 28,
+            None => { pos = link_end + 1; continue; }
         };
-        let snippet_start = match html[snippet_tag..].find('>') {
-            Some(i) => snippet_tag + i + 1,
-            None => { pos = link_start + 1; continue; }
-        };
-        let snippet_end = match html[snippet_start..].find("</a>") {
+        let snippet_end = match html[snippet_start..].find("</td>") {
             Some(i) => snippet_start + i,
-            None => { pos = link_start + 1; continue; }
+            None => { pos = link_end + 1; continue; }
         };
         let snippet = strip_html(&html[snippet_start..snippet_end]);
 
-        // 清理 DDG 重定向 URL
-        let clean_url = if let Some(uddg) = raw_url.find("uddg=") {
-            let encoded = &raw_url[uddg + 5..];
-            let end = encoded.find('&').unwrap_or(encoded.len());
-            url_decode(&encoded[..end]).unwrap_or_else(|| raw_url.to_string())
-        } else {
-            raw_url.to_string()
-        };
-
         if !title.is_empty() && !snippet.is_empty() {
-            results.push(SearchResult { title, url: clean_url, snippet });
+            results.push(SearchResult { title, url: clean_ddg_url(&raw_url), snippet });
         }
         pos = snippet_end + 1;
     }
-
+    eprintln!("[搜索 DDG] {} 条", results.len());
     Ok(results)
 }
 
+async fn search_wiki(query: &str) -> Result<Vec<SearchResult>, String> {
+    let url = format!(
+        "https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&format=json&srlimit=5",
+        urlencoding(query)
+    );
+    let client = reqwest::Client::builder()
+        .user_agent("daoshengyi/0.1 (AI Assistant)")
+        .build().map_err(|e| format!("客户端: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("请求: {}", e))?;
+    let data: WikiResponse = resp.json().await.map_err(|e| format!("解析: {}", e))?;
+
+    let results: Vec<SearchResult> = data.query.search.iter().take(5).map(|p| {
+        SearchResult {
+            title: p.title.clone(),
+            url: format!("https://zh.wikipedia.org/wiki/{}", p.title.replace(' ', "_")),
+            snippet: strip_html(&p.snippet),
+        }
+    }).collect();
+    eprintln!("[搜索 Wiki] {} 条", results.len());
+    Ok(results)
+}
+
+#[derive(Deserialize)]
+struct WikiResponse { query: WikiQuery }
+#[derive(Deserialize)]
+struct WikiQuery { search: Vec<WikiPage> }
+#[derive(Deserialize)]
+struct WikiPage { title: String, snippet: String }
+
+fn clean_ddg_url(raw: &str) -> String {
+    if let Some(start) = raw.find("//") {
+        let rest = &raw[start + 2..];
+        if let Some(end) = rest.find("//") {
+            return format!("https://{}", &rest[..end]);
+        }
+    }
+    if raw.starts_with("http") { return raw.to_string(); }
+    format!("https:{}", raw)
+}
+
 fn strip_html(s: &str) -> String {
-    let mut result = String::new();
+    let mut r = String::new();
     let mut in_tag = false;
     for c in s.chars() {
         if c == '<' { in_tag = true; continue; }
         if c == '>' { in_tag = false; continue; }
-        if !in_tag { result.push(c); }
+        if !in_tag { r.push(c); }
     }
-    result.trim().to_string()
-}
-
-fn url_decode(s: &str) -> Option<String> {
-    let mut result = String::new();
-    let mut i = 0;
-    let bytes = s.as_bytes();
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &s[i + 1..i + 3];
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                result.push(byte as char);
-                i += 3;
-                continue;
-            }
-        } else if bytes[i] == b'+' {
-            result.push(' ');
-            i += 1;
-            continue;
-        }
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-    Some(result)
+    r.trim().replace("&quot;", "\"").replace("&amp;", "&")
+        .replace("&lt;", "<").replace("&gt;", ">")
+        .replace("&nbsp;", " ").replace("&#91;", "[").replace("&#93;", "]")
 }
 
 fn urlencoding(s: &str) -> String {
