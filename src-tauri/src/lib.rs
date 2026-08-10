@@ -143,6 +143,7 @@ struct PageContent {
 
 #[tauri::command]
 async fn fetch_page(url: String) -> Result<PageContent, String> {
+    eprintln!("[fetch_page] 请求: {}", url);
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .timeout(std::time::Duration::from_secs(15))
@@ -151,11 +152,36 @@ async fn fetch_page(url: String) -> Result<PageContent, String> {
     let resp = client.get(&url).send().await.map_err(|e| format!("err:{}", e))?;
     let final_url = resp.url().to_string();
     let html = resp.text().await.map_err(|e| format!("err:{}", e))?;
+    eprintln!("[fetch_page] HTML: {} bytes", html.len());
 
     let title = extract_title(&html);
     let text = html_to_text(&html);
+    eprintln!("[fetch_page] 标题: {}, 文本: {} chars", title, text.len());
 
     Ok(PageContent { title, text, url: final_url })
+}
+
+// --- 内嵌浏览器 ---
+
+#[tauri::command]
+fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri::WebviewUrl;
+    use tauri::WebviewWindowBuilder;
+    let u = if url.starts_with("http") { url.clone() } else { format!("https://{}", url) };
+    WebviewWindowBuilder::new(&app, "browser", WebviewUrl::External(u.parse().map_err(|e| format!("{}", e))?))
+        .title("道生一 · 浏览器")
+        .inner_size(1024.0, 700.0)
+        .build()
+        .map_err(|e| format!("{}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn extract_browser_content(app: tauri::AppHandle) -> Result<PageContent, String> {
+    let window = app.get_webview_window("browser").ok_or("浏览器窗口未打开")?;
+    let url = window.url().map_err(|e| format!("{}", e))?.to_string();
+    let title = window.title().map_err(|e| format!("{}", e))?;
+    Ok(PageContent { title, text: String::new(), url })
 }
 
 fn extract_title(html: &str) -> String {
@@ -264,6 +290,8 @@ pub fn run() {
             search_by_embedding,
             web_search,
             fetch_page,
+            open_browser,
+            extract_browser_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
