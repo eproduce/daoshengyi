@@ -243,6 +243,47 @@ export const useChatStore = defineStore("chat", () => {
     return msg;
   }
 
+  // --- 图片预处理：用视觉模型描述图片 ---
+  async function describeImages(images: ImageAttachment[]): Promise<string> {
+    // 找一个有视觉能力的 API（非 DeepSeek，已配 Key）
+    const visionProfile = profiles.value.find(
+      p => p.apiKey && !p.baseUrl.includes("deepseek")
+    );
+    if (!visionProfile) return "";
+
+    const baseUrl = visionProfile.baseUrl.replace(/\/+$/, "");
+    const parts: string[] = [];
+
+    for (const img of images) {
+      try {
+        const resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${visionProfile.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: visionProfile.model || "gpt-4o",
+            messages: [{
+              role: "user",
+              content: [
+                { type: "text", text: "请详细描述这张图片的内容。如果图片中有文字，请逐字转录。用中文回答，简洁准确。" },
+                { type: "image_url", image_url: { url: img.base64, detail: "auto" } },
+              ],
+            }],
+            max_tokens: 500,
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const desc = data.choices?.[0]?.message?.content || "";
+          if (desc) parts.push(`[图片: ${img.fileName || "附件"}] ${desc}`);
+        }
+      } catch { /* 单张失败不影响其他 */ }
+    }
+    return parts.join("\n\n");
+  }
+
   // --- 流式发送 ---
   async function sendMessage(text: string, images?: ImageAttachment[]) {
     let convId = activeConversationId.value;
@@ -261,16 +302,30 @@ export const useChatStore = defineStore("chat", () => {
     };
     const conv = conversations.value.find((c) => c.id === convId)!;
 
-    // DeepSeek 不支持图片，自动剥离
+    // 图片预处理：非视觉模型 → 调用视觉 API 描述图片
     const isDS = currentConfig.value.baseUrl.includes("deepseek");
     if (isDS && images && images.length > 0) {
-      images = undefined;
-      const lastUserMsg = conv.messages.filter((m) => m.role === "user").at(-1);
-      if (lastUserMsg) {
-        lastUserMsg.images = undefined;
-        if (!lastUserMsg.content) lastUserMsg.content = "[图片]";
+      assistantMsg.content = "🔍 正在分析图片...\n\n";
+      const desc = await describeImages(images);
+      if (desc) {
+        // 将图片描述注入用户消息
+        const lastUserMsg = conv.messages.filter((m) => m.role === "user").at(-1);
+        if (lastUserMsg) {
+          lastUserMsg.content = `${text}\n\n${desc}`;
+          lastUserMsg.images = undefined;
+        }
+        images = undefined;
+        assistantMsg.content = "";
+      } else {
+        // 没有可用视觉 API，回退到文本模式
+        images = undefined;
+        const lastUserMsg = conv.messages.filter((m) => m.role === "user").at(-1);
+        if (lastUserMsg) {
+          lastUserMsg.images = undefined;
+          if (!lastUserMsg.content) lastUserMsg.content = "[图片]";
+        }
+        assistantMsg.content = "⚠️ 未配置视觉 API，无法识别图片。请在设置中添加 OpenAI 配置。\n\n";
       }
-      assistantMsg.content = "⚠️ DeepSeek 不支持图片识别，已自动转为文本模式。\n\n";
     }
 
     conv.messages.push(assistantMsg);
