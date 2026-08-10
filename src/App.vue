@@ -84,13 +84,15 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="app-layout">
     <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar && !showBrowser }">
-      <ChatHistory v-if="!showBrowser" />
-      <BrowserPanel v-else @send-page="handleSendPage" />
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar || showBrowser }">
+      <ChatHistory />
     </aside>
 
     <!-- 主内容区 -->
     <div class="main-area">
+      <!-- 浏览器面板 -->
+      <BrowserPanel v-if="showBrowser" @send-page="handleSendPage" />
+      <template v-else>
       <!-- 顶部栏 -->
       <header class="topbar">
         <div class="topbar__left">
@@ -100,7 +102,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
-          <button class="topbar__btn" title="浏览器" :class="{ active: showBrowser }" @click="showBrowser = !showBrowser; showSidebar = false">🌐</button>
+          <button class="topbar__btn" title="浏览器" :class="{ active: showBrowser }" @click="showBrowser = !showBrowser">🌐</button>
           <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">📥</button>
           <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()">🗑</button>
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
@@ -145,6 +147,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <div v-if="chatStore.isStreaming" class="stop-bar">
         <button class="stop-btn" @click="handleStop">⏹ 停止生成</button>
       </div>
+      </template>
     </div>
 
     <!-- 设置弹窗 -->
