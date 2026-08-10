@@ -130,8 +130,8 @@ fn search_by_embedding(db: State<Database>, embedding: Vec<f32>, limit: i64) -> 
 }
 
 #[tauri::command]
-async fn web_search(query: String) -> Result<Vec<search::SearchResult>, String> {
-    search::search_web(&query).await
+async fn web_search(query: String, brave_key: String) -> Result<Vec<search::SearchResult>, String> {
+    search::search_web(&query, &brave_key).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

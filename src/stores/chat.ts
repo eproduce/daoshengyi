@@ -351,7 +351,7 @@ export const useChatStore = defineStore("chat", () => {
       if (config.enableWebSearch && text.trim()) {
         try {
           console.log("[道生一] 开始搜索:", text.trim());
-          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim() });
+          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim(), braveKey: "" });
           console.log("[道生一] 搜索结果:", results.length, "条");
           if (results.length > 0) {
             sp += formatSearchResults(text.trim(), results);
