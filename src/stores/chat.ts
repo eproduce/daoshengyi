@@ -21,14 +21,14 @@ const DEFAULT_PROFILES: ApiProfile[] = [
     id: "default", name: "OpenAI", baseUrl: "https://api.openai.com/v1",
     apiKey: "", model: "gpt-4o", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: false, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。当用户开启联网搜索功能后，你可以获取实时信息。请用简洁、准确的中文回答。",
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
   },
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
     apiKey: "", model: "deepseek-v4-pro", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。当用户开启联网搜索功能后，你可以获取实时信息。请用简洁、准确的中文回答。",
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
   },
 ];
