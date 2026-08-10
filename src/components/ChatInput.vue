@@ -222,13 +222,15 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 
         <!-- 思考模式 -->
         <div class="ci-tool-group">
-          <button class="ci-pill" :class="{ active: chatStore.activeProfile?.thinkingEnabled }" @click="toggleThinking">
+          <button v-if="!chatStore.activeProfile?.thinkingEnabled" class="ci-pill" @click="toggleThinking">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            <span>{{ chatStore.activeProfile?.thinkingEnabled ? '思考' : '快速' }}</span>
+            <span>快速</span>
           </button>
-          <button v-if="chatStore.activeProfile?.thinkingEnabled" class="ci-pill ci-pill-sm" @click.stop="showReasoningDropdown = !showReasoningDropdown">
-            {{ effortLabels[chatStore.activeProfile?.reasoningEffort || 'high'] }}
-            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+          <button v-else class="ci-pill active ci-pill-think" @click.stop="showReasoningDropdown = !showReasoningDropdown">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span>思考 · {{ effortLabels[chatStore.activeProfile?.reasoningEffort || 'high'] }}</span>
+            <svg class="ci-chev" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+            <button class="ci-pill-close" @click.stop="toggleThinking" title="关闭思考模式">✕</button>
           </button>
           <div v-if="showReasoningDropdown" ref="reasoningRef" class="ci-drop ci-drop-sm" @click.stop>
             <div v-for="lv in (['low','high','max'] as const)" :key="lv" class="ci-drop-item"
@@ -236,6 +238,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
               @click="setReasoningEffort(lv)">
               {{ effortLabels[lv] }} {{ lv === 'low' ? '· 快速' : lv === 'high' ? '· 深度' : '· 极致' }}
             </div>
+            <div class="ci-drop-foot" @click.stop="toggleThinking">关闭思考模式</div>
           </div>
         </div>
 
@@ -315,7 +318,11 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 .ci-pill:hover { border-color: #555; color: var(--text-primary); }
 .ci-pill.active { background: rgba(99,102,241,.12); border-color: var(--accent-color); color: var(--accent-color); }
-.ci-pill-sm { padding: 4px 6px; font-size: 10px; border-radius: 0 6px 6px 0; margin-left: -1px; border-left-color: transparent; }
+.ci-pill-think { cursor: default; padding-right: 4px; gap: 6px; }
+.ci-pill-think .ci-chev { margin-left: 2px; opacity: .6; }
+.ci-pill-think:hover .ci-chev { opacity: 1; }
+.ci-pill-close { background: none; border: none; color: inherit; opacity: .4; cursor: pointer; padding: 0 2px; font-size: 10px; line-height: 1; margin-left: 2px; border-radius: 3px; }
+.ci-pill-close:hover { opacity: .8; background: rgba(255,255,255,.1); }
 .ci-pill-sub { color: var(--text-muted); font-size: 10px; font-family: "SF Mono","Fira Code",monospace; opacity: .8; }
 
 /* 下拉 */
