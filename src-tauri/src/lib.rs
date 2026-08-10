@@ -171,43 +171,59 @@ fn extract_title(html: &str) -> String {
 }
 
 fn html_to_text(html: &str) -> String {
-    // 去除 script/style
-    let mut cleaned = String::new();
-    let mut skip = 0;
-    let mut s = html;
-    while !s.is_empty() {
-        if skip > 0 { s = &s[1..]; skip -= 1; continue; }
-        if let Some(i) = s.find("<script") {
-            if s[..i].find("</script>").is_none() {
-                if let Some(j) = s[i..].find("</script>") { skip = i + j + 8; }
-            }
-        }
-        if let Some(i) = s.find("<style") {
-            if s[..i].find("</style>").is_none() {
-                if let Some(j) = s[i..].find("</style>") { let k = i + j + 7; if k > skip { skip = k; } }
-            }
-        }
-        if skip > 0 { s = &s[1..]; skip -= 1; continue; }
-        if s.starts_with('<') {
-            if let Some(i) = s.find('>') { s = &s[i+1..]; continue; }
-        }
-        cleaned.push(s.chars().next().unwrap());
-        s = &s[1..];
+    // 1. 去除 script/style 标签及其内容
+    let mut s = html.to_string();
+    s = remove_tags(&s, "script");
+    s = remove_tags(&s, "style");
+    s = remove_tags(&s, "noscript");
+
+    // 2. 去除所有 HTML 标签
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        if c == '<' { in_tag = true; continue; }
+        if c == '>' { in_tag = false; continue; }
+        if !in_tag { result.push(c); }
     }
 
-    // 去除多余空白
-    let mut result = String::new();
-    let mut last_was_space = false;
-    for c in cleaned.chars() {
+    // 3. 解码实体
+    result = result
+        .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
+        .replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
+        .replace("&apos;", "'");
+
+    // 4. 压缩空白
+    let mut out = String::new();
+    let mut space = false;
+    for c in result.chars() {
         if c.is_whitespace() {
-            if !last_was_space { result.push(' '); }
-            last_was_space = true;
+            if !space { out.push(' '); space = true; }
         } else {
-            result.push(c);
-            last_was_space = false;
+            out.push(c); space = false;
         }
     }
-    result.trim().chars().take(8000).collect()
+    out.trim().chars().take(8000).collect()
+}
+
+fn remove_tags(html: &str, tag: &str) -> String {
+    let mut result = String::new();
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
+    let mut pos = 0;
+    let lower = html.to_lowercase();
+    loop {
+        match lower[pos..].find(&open) {
+            Some(i) => {
+                result.push_str(&html[pos..pos + i]);
+                match lower[pos + i..].find(&close) {
+                    Some(j) => pos = pos + i + j + close.len(),
+                    None => { result.push_str(&html[pos..]); break; }
+                }
+            }
+            None => { result.push_str(&html[pos..]); break; }
+        }
+    }
+    result
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
