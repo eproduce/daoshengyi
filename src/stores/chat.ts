@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
-import { searchDDG, formatSearchResults } from "@/api/search";
+import { formatSearchResults } from "@/api/search";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
@@ -21,14 +21,14 @@ const DEFAULT_PROFILES: ApiProfile[] = [
     id: "default", name: "OpenAI", baseUrl: "https://api.openai.com/v1",
     apiKey: "", model: "gpt-4o", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: false, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上，致力于提供智能、安全的对话服务。请用简洁、准确的中文回答。",
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。当用户开启联网搜索功能后，你可以获取实时信息。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
   },
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
     apiKey: "", model: "deepseek-v4-pro", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上，致力于提供智能、安全的对话服务。请用简洁、准确的中文回答。",
+    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。当用户开启联网搜索功能后，你可以获取实时信息。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
   },
 ];
@@ -346,13 +346,15 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
-      // 联网搜索
+      // 联网搜索 (Rust, 无 CORS 限制)
       let sp = config.systemPrompt || "";
       if (config.enableWebSearch && text.trim()) {
         try {
-          const r = await searchDDG(text.trim());
-          if (r.length > 0) sp += formatSearchResults(text.trim(), r);
-        } catch { /* ignore */ }
+          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim() });
+          if (results.length > 0) {
+            sp += formatSearchResults(text.trim(), results);
+          }
+        } catch { /* 搜索失败不影响对话 */ }
       }
 
       // 注入已启用的技能

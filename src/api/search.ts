@@ -34,7 +34,7 @@ export async function searchDDG(query: string): Promise<SearchResult[]> {
 /**
  * 将搜索结果格式化为注入上下文的文本
  */
-export function formatSearchResults(query: string, results: SearchResult[]): string {
+export function formatSearchResults(query: string, results: { title: string; url: string; snippet: string }[]): string {
   if (results.length === 0) return "";
   let ctx = `\n\n[联网搜索结果] 用户查询: "${query}"\n`;
   results.forEach((r, i) => {

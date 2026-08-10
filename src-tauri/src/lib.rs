@@ -1,6 +1,7 @@
 mod api;
 mod middleware;
 mod db;
+mod search;
 
 use tauri::{Emitter, Manager, State};
 use futures::StreamExt;
@@ -128,6 +129,11 @@ fn search_by_embedding(db: State<Database>, embedding: Vec<f32>, limit: i64) -> 
     db.search_by_embedding(&embedding, limit)
 }
 
+#[tauri::command]
+async fn web_search(query: String) -> Result<Vec<search::SearchResult>, String> {
+    search::search_web(&query).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -164,6 +170,7 @@ pub fn run() {
             prune_facts,
             set_fact_embedding,
             search_by_embedding,
+            web_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
