@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const emit = defineEmits<{ sendPage: [url: string, title: string, text: string] }>();
 
@@ -11,6 +12,20 @@ const result = ref<{ title: string; text: string; url: string } | null>(null);
 const error = ref("");
 const history = ref<string[]>([]);
 const browserOpen = ref(false);
+let unlisten: UnlistenFn | null = null;
+
+onMounted(async () => {
+  unlisten = await listen<{ title: string; text: string; url: string }>("browser-content", (e) => {
+    result.value = {
+      title: e.payload.title,
+      url: e.payload.url,
+      text: e.payload.text || "(页面内容为空)",
+    };
+    extracting.value = false;
+  });
+});
+
+onUnmounted(() => { unlisten?.(); });
 
 async function doOpen() {
   let u = url.value.trim();
@@ -36,17 +51,12 @@ async function doExtract() {
   error.value = "";
   result.value = null;
   try {
-    const info = await invoke<{ title: string; text: string; url: string }>("extract_browser_content");
-    const data = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url: info.url });
-    result.value = {
-      title: data.title || info.title,
-      url: info.url,
-      text: data.text || "(页面内容为空，可能是需要登录或动态加载的页面)",
-    };
+    await invoke("extract_browser_content");
+    // 结果通过 browser-content 事件异步返回
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
+    extracting.value = false;
   }
-  extracting.value = false;
 }
 
 function sendToChat() {

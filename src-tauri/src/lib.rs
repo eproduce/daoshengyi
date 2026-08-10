@@ -134,7 +134,7 @@ async fn web_search(query: String, brave_key: String) -> Result<Vec<search::Sear
     search::search_web(&query, &brave_key).await
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct PageContent {
     title: String,
     text: String,
@@ -177,11 +177,21 @@ fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn extract_browser_content(app: tauri::AppHandle) -> Result<PageContent, String> {
-    let window = app.get_webview_window("browser").ok_or("浏览器窗口未打开")?;
-    let url = window.url().map_err(|e| format!("{}", e))?.to_string();
-    let title = window.title().map_err(|e| format!("{}", e))?;
-    Ok(PageContent { title, text: String::new(), url })
+fn extract_browser_content(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("主窗口不存在")?;
+    let browser = app.get_webview_window("browser").ok_or("浏览器窗口未打开")?;
+    let label = window.label().to_string();
+
+    // 在浏览器窗口中执行 JS，提取内容并通过 invoke 回传
+    let _ = browser.eval(&format!(
+        "(function(){{var t=document.title||'';var c=document.body?document.body.innerText||'':'';window.__TAURI_INTERNALS__.invoke('return_browser_content',{{title:t,text:c.slice(0,8000),url:window.location.href,target:'{label}'}})}})()"
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+fn return_browser_content(app: tauri::AppHandle, title: String, text: String, url: String, target: String) {
+    let _ = app.emit_to(&target, "browser-content", PageContent { title, text, url });
 }
 
 fn extract_title(html: &str) -> String {
@@ -292,6 +302,7 @@ pub fn run() {
             fetch_page,
             open_browser,
             extract_browser_content,
+            return_browser_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
