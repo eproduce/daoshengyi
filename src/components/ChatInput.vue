@@ -230,7 +230,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             <span>思考 · {{ effortLabels[chatStore.activeProfile?.reasoningEffort || 'high'] }}</span>
             <svg class="ci-chev" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
-            <button class="ci-pill-close" @click.stop="toggleThinking" title="关闭思考模式">✕</button>
+            <span class="ci-pill-close" @click.stop="toggleThinking" title="关闭思考模式">✕</span>
           </button>
           <div v-if="showReasoningDropdown" ref="reasoningRef" class="ci-drop ci-drop-sm" @click.stop>
             <div v-for="lv in (['low','high','max'] as const)" :key="lv" class="ci-drop-item"
@@ -245,7 +245,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         <!-- 联网搜索 -->
         <button class="ci-pill" :class="{ active: chatStore.activeProfile?.enableWebSearch }" @click="toggleWebSearch">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <span>联网</span>
+          <span>{{ chatStore.activeProfile?.enableWebSearch ? '联网' : '离线' }}</span>
         </button>
 
         <!-- 文件上传 -->
