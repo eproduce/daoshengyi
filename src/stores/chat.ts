@@ -346,17 +346,15 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
-      // 联网搜索 (Rust, 无 CORS 限制)
+      // 联网搜索
       let sp = config.systemPrompt || "";
       if (config.enableWebSearch && text.trim()) {
         try {
-          console.log("[道生一] 开始搜索:", text.trim());
           const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim(), braveKey: "" });
-          console.log("[道生一] 搜索结果:", results.length, "条");
           if (results.length > 0) {
             sp += formatSearchResults(text.trim(), results);
           }
-        } catch (e) { console.warn("[道生一] 搜索失败:", e); }
+        } catch { /* 搜索暂不可用 */ }
       }
 
       // 注入已启用的技能
