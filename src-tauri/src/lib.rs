@@ -76,6 +76,48 @@ fn export_conversation_cmd(db: State<Database>, id: String, format: String) -> R
     db.export_conversation(&id, &format)
 }
 
+// --- 记忆命令 ---
+
+#[tauri::command]
+fn save_summary(db: State<Database>, id: String, conv_id: String, summary: String, range_start: i64, range_end: i64) -> Result<(), String> {
+    db.save_summary(&id, &conv_id, &summary, range_start, range_end)
+}
+
+#[tauri::command]
+fn get_summaries(db: State<Database>, conv_id: String) -> Result<Vec<db::SummaryRow>, String> {
+    db.get_summaries(&conv_id)
+}
+
+#[tauri::command]
+fn save_fact(db: State<Database>, fact: db::FactRow) -> Result<(), String> {
+    db.save_fact(&fact)
+}
+
+#[tauri::command]
+fn search_facts(db: State<Database>, query: String, limit: i64) -> Result<Vec<db::FactRow>, String> {
+    db.search_facts(&query, limit)
+}
+
+#[tauri::command]
+fn get_preferences(db: State<Database>) -> Result<Vec<db::FactRow>, String> {
+    db.get_facts_by_type("preference", 20)
+}
+
+#[tauri::command]
+fn touch_fact(db: State<Database>, id: String) -> Result<(), String> {
+    db.touch_fact(&id)
+}
+
+#[tauri::command]
+fn delete_fact_cmd(db: State<Database>, id: String) -> Result<(), String> {
+    db.delete_fact(&id)
+}
+
+#[tauri::command]
+fn prune_facts(db: State<Database>) -> Result<(), String> {
+    db.prune_facts(3, 60)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -102,6 +144,14 @@ pub fn run() {
             delete_conversation_cmd,
             search_conversations_cmd,
             export_conversation_cmd,
+            save_summary,
+            get_summaries,
+            save_fact,
+            search_facts,
+            get_preferences,
+            touch_fact,
+            delete_fact_cmd,
+            prune_facts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

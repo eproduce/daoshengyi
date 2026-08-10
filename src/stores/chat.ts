@@ -6,6 +6,7 @@ import { searchDDG, formatSearchResults } from "@/api/search";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
+import { useMemorySystem } from "./memory";
 
 /** 清洗 AI 模型自报身份的词汇 */
 const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK", "OpenAI", "openai", "ChatGPT", "GPT-4", "Claude", "claude", "Gemini", "Llama"];
@@ -339,6 +340,7 @@ export const useChatStore = defineStore("chat", () => {
     let timedOut = false;
 
     const timeoutId = setTimeout(() => { timedOut = true; stopStreaming(); }, 120000);
+    const memory = useMemorySystem();
 
     try {
       const config = currentConfig.value;
@@ -358,6 +360,18 @@ export const useChatStore = defineStore("chat", () => {
       const skillPrompts = skillStore.enabledPrompts();
       if (skillPrompts) {
         sp = sp ? `${sp}\n\n---\n\n${skillPrompts}` : skillPrompts;
+      }
+
+      // 注入相关记忆
+      const memText = await memory.retrieveMemories(text);
+      if (memText) {
+        sp = sp ? `${sp}\n\n${memText}` : memText;
+      }
+
+      // 自动摘要旧消息
+      const summaries = await memory.maybeSummarize(convId, conv.messages, config);
+      for (const s of summaries) {
+        sp = sp ? `${sp}\n\n对话摘要: ${s}` : `对话摘要: ${s}`;
       }
 
       // 构建 Rust 格式消息
@@ -409,6 +423,12 @@ export const useChatStore = defineStore("chat", () => {
       streamingReasoning.value = "";
       isStreaming.value = false;
       conv.updatedAt = Date.now();
+      scheduleSave();
+
+      // 后台提取关键事实
+      if (currentConfig.value.apiKey) {
+        memory.extractFacts(convId, conv.messages, currentConfig.value).catch(() => {});
+      }
     }
   }
 

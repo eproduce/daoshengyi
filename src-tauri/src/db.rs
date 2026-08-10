@@ -27,6 +27,30 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_msgs_conv ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_msgs_role ON messages(role);
+
+CREATE TABLE IF NOT EXISTS memory_summaries (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    msg_range_start INTEGER NOT NULL,
+    msg_range_end INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    fact TEXT NOT NULL,
+    fact_type TEXT NOT NULL DEFAULT 'info',
+    importance INTEGER DEFAULT 5,
+    access_count INTEGER DEFAULT 0,
+    last_accessed INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_facts_type ON memory_facts(fact_type);
+CREATE INDEX IF NOT EXISTS idx_summaries_conv ON memory_summaries(conversation_id);
 ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -219,4 +243,111 @@ impl Database {
         }
         Ok(md)
     }
+
+    // --- 记忆系统 ---
+
+    pub fn save_summary(&self, id: &str, conv_id: &str, summary: &str, range_start: i64, range_end: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_summaries (id, conversation_id, summary, msg_range_start, msg_range_end, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![id, conv_id, summary, range_start, range_end, chrono::Utc::now().timestamp_millis()],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_summaries(&self, conv_id: &str) -> Result<Vec<SummaryRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, summary, msg_range_start, msg_range_end, created_at FROM memory_summaries WHERE conversation_id=?1 ORDER BY msg_range_start ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![conv_id], |row| {
+            Ok(SummaryRow { id: row.get(0)?, conversation_id: row.get(1)?, summary: row.get(2)?, msg_range_start: row.get(3)?, msg_range_end: row.get(4)?, created_at: row.get(5)? })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
+    pub fn save_fact(&self, fact: &FactRow) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_facts (id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![fact.id, fact.conversation_id, fact.fact, fact.fact_type, fact.importance, fact.access_count, fact.last_accessed, fact.created_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_facts_by_type(&self, fact_type: &str, limit: i64) -> Result<Vec<FactRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts WHERE fact_type=?1 ORDER BY importance DESC, access_count DESC LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![fact_type, limit], |row| {
+            Ok(FactRow { id: row.get(0)?, conversation_id: row.get(1)?, fact: row.get(2)?, fact_type: row.get(3)?, importance: row.get(4)?, access_count: row.get(5)?, last_accessed: row.get(6)?, created_at: row.get(7)? })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
+    pub fn search_facts(&self, query: &str, limit: i64) -> Result<Vec<FactRow>, String> {
+        let q = format!("%{}%", query);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts WHERE fact LIKE ?1 ORDER BY importance DESC LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![q, limit], |row| {
+            Ok(FactRow { id: row.get(0)?, conversation_id: row.get(1)?, fact: row.get(2)?, fact_type: row.get(3)?, importance: row.get(4)?, access_count: row.get(5)?, last_accessed: row.get(6)?, created_at: row.get(7)? })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
+    pub fn touch_fact(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE memory_facts SET access_count = access_count + 1, last_accessed = ?1 WHERE id = ?2",
+            params![chrono::Utc::now().timestamp_millis(), id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_fact(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM memory_facts WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn prune_facts(&self, min_access: i64, days_old: i64) -> Result<(), String> {
+        let cutoff = chrono::Utc::now().timestamp_millis() - days_old * 86400000;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM memory_facts WHERE access_count < ?1 AND last_accessed < ?2 AND fact_type != 'preference'",
+            params![min_access, cutoff],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SummaryRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub summary: String,
+    pub msg_range_start: i64,
+    pub msg_range_end: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FactRow {
+    pub id: String,
+    pub conversation_id: Option<String>,
+    pub fact: String,
+    pub fact_type: String,
+    pub importance: i64,
+    pub access_count: i64,
+    pub last_accessed: Option<i64>,
+    pub created_at: i64,
 }
