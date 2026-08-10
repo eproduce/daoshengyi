@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     importance INTEGER DEFAULT 5,
     access_count INTEGER DEFAULT 0,
     last_accessed INTEGER,
+    embedding BLOB,
     created_at INTEGER NOT NULL
 );
 
@@ -99,6 +100,8 @@ impl Database {
             .map_err(|e| format!("初始化失败: {}", e))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| format!("建表失败: {}", e))?;
+        // 旧库迁移：加 embedding 列
+        let _ = conn.execute("ALTER TABLE memory_facts ADD COLUMN embedding BLOB", []);
         Ok(Database { conn: Mutex::new(conn) })
     }
 
@@ -328,6 +331,54 @@ impl Database {
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    // --- 向量检索 ---
+
+    pub fn set_fact_embedding(&self, id: &str, embedding: &[f32]) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "UPDATE memory_facts SET embedding = ?1 WHERE id = ?2",
+            params![bytes, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn search_by_embedding(&self, query_vec: &[f32], limit: i64) -> Result<Vec<(FactRow, f32)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, embedding, created_at FROM memory_facts WHERE embedding IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+
+        let mut scored: Vec<(FactRow, f32)> = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            let emb_bytes: Vec<u8> = row.get(7)?;
+            let emb: Vec<f32> = emb_bytes.chunks(4).map(|c| f32::from_le_bytes([c[0],c[1],c[2],c[3]])).collect();
+            let score = cosine_similarity(query_vec, &emb);
+            Ok((FactRow {
+                id: row.get(0)?, conversation_id: row.get(1)?, fact: row.get(2)?,
+                fact_type: row.get(3)?, importance: row.get(4)?, access_count: row.get(5)?,
+                last_accessed: row.get(6)?, created_at: row.get(8)?,
+            }, score))
+        }).map_err(|e| e.to_string())?;
+
+        for r in rows {
+            let (fact, score) = r.map_err(|e| e.to_string())?;
+            scored.push((fact, score));
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit as usize);
+        Ok(scored)
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 { return 0.0; }
+    dot / (na * nb)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

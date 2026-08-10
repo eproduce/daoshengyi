@@ -118,6 +118,16 @@ fn prune_facts(db: State<Database>) -> Result<(), String> {
     db.prune_facts(3, 60)
 }
 
+#[tauri::command]
+fn set_fact_embedding(db: State<Database>, id: String, embedding: Vec<f32>) -> Result<(), String> {
+    db.set_fact_embedding(&id, &embedding)
+}
+
+#[tauri::command]
+fn search_by_embedding(db: State<Database>, embedding: Vec<f32>, limit: i64) -> Result<Vec<(db::FactRow, f32)>, String> {
+    db.search_by_embedding(&embedding, limit)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -152,6 +162,8 @@ pub fn run() {
             touch_fact,
             delete_fact_cmd,
             prune_facts,
+            set_fact_embedding,
+            search_by_embedding,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

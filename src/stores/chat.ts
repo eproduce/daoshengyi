@@ -362,8 +362,8 @@ export const useChatStore = defineStore("chat", () => {
         sp = sp ? `${sp}\n\n---\n\n${skillPrompts}` : skillPrompts;
       }
 
-      // 注入相关记忆
-      const memText = await memory.retrieveMemories(text);
+      // 注入相关记忆（语义 + 关键词混合检索）
+      const memText = await memory.retrieveMemories(text, config);
       if (memText) {
         sp = sp ? `${sp}\n\n${memText}` : memText;
       }

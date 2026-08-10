@@ -16,6 +16,20 @@ interface SummaryRow {
 }
 
 export function useMemorySystem() {
+  // --- Embedding 生成 (OpenAI 兼容 API) ---
+  async function generateEmbedding(text: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<number[] | null> {
+    try {
+      const baseUrl = config.baseUrl.replace(/\/+$/, "");
+      const resp = await fetch(`${baseUrl}/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: text.slice(0, 8000) }),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data.data?.[0]?.embedding || null;
+    } catch { return null; }
+  }
   // --- 摘要压缩 ---
   async function maybeSummarize(convId: string, messages: ChatMessage[], config: { baseUrl: string; apiKey: string; model: string }): Promise<string[]> {
     if (messages.length < SUMMARIZE_THRESHOLD) return [];
@@ -71,45 +85,57 @@ ${convText}
       for (const item of items) {
         if (!item.fact || item.fact.length < 3) continue;
         const f: FactRow = {
-          id: uuidv4(),
-          conversation_id: convId,
-          fact: item.fact,
+          id: uuidv4(), conversation_id: convId, fact: item.fact,
           fact_type: item.type || "info",
           importance: item.type === "preference" ? 8 : 5,
-          access_count: 0,
-          last_accessed: undefined,
-          created_at: Date.now(),
+          access_count: 0, last_accessed: undefined, created_at: Date.now(),
         };
         await invoke("save_fact", { fact: f }).catch(() => {});
+
+        // 生成 embedding 并存储（后台，不阻塞）
+        generateEmbedding(item.fact, config).then(emb => {
+          if (emb) invoke("set_fact_embedding", { id: f.id, embedding: emb }).catch(() => {});
+        });
+
         facts.push(f);
       }
       return facts;
     } catch { return []; }
   }
 
-  // --- 检索相关记忆 ---
-  async function retrieveMemories(query: string): Promise<string> {
+  // --- 检索相关记忆（语义 + 关键词混合）---
+  async function retrieveMemories(query: string, config?: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
     try {
-      // 用户偏好总是注入
       const prefs = await invoke<FactRow[]>("get_preferences");
-      // 按查询关键词检索
-      const facts = await invoke<FactRow[]>("search_facts", { query, limit: 5n });
+      let facts: FactRow[] = [];
+
+      // 尝试语义检索
+      if (config?.apiKey) {
+        const emb = await generateEmbedding(query, config);
+        if (emb) {
+          const scored = await invoke<[FactRow, number][]>("search_by_embedding", { embedding: emb, limit: 5n });
+          facts = scored.map(([f]) => f);
+        }
+      }
+
+      // 回退：关键词检索
+      if (facts.length === 0) {
+        facts = await invoke<FactRow[]>("search_facts", { query, limit: 5n });
+      }
 
       const all = [...prefs, ...facts];
       const seen = new Set<string>();
       const unique = all.filter(f => {
         if (seen.has(f.fact)) return false;
         seen.add(f.fact);
-        // 更新访问计数
         invoke("touch_fact", { id: f.id }).catch(() => {});
         return true;
       });
 
       if (unique.length === 0) return "";
-      return "## 记忆\n" + unique.map(f => `- ${f.fact} (${f.fact_type === "preference" ? "偏好" : f.fact_type === "todo" ? "待办" : "信息"})`).join("\n");
-    } catch {
-      return "";
-    }
+      const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
+      return "## 记忆\n" + unique.map(f => `- ${f.fact} (${labels[f.fact_type] || f.fact_type})`).join("\n");
+    } catch { return ""; }
   }
 
   return { maybeSummarize, extractFacts, retrieveMemories };
