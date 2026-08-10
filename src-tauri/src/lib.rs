@@ -134,6 +134,82 @@ async fn web_search(query: String, brave_key: String) -> Result<Vec<search::Sear
     search::search_web(&query, &brave_key).await
 }
 
+#[derive(serde::Serialize)]
+struct PageContent {
+    title: String,
+    text: String,
+    url: String,
+}
+
+#[tauri::command]
+async fn fetch_page(url: String) -> Result<PageContent, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| format!("err:{}", e))?;
+
+    let resp = client.get(&url).send().await.map_err(|e| format!("err:{}", e))?;
+    let final_url = resp.url().to_string();
+    let html = resp.text().await.map_err(|e| format!("err:{}", e))?;
+
+    let title = extract_title(&html);
+    let text = html_to_text(&html);
+
+    Ok(PageContent { title, text, url: final_url })
+}
+
+fn extract_title(html: &str) -> String {
+    let start = html.find("<title").unwrap_or(0);
+    let end = html[start..].find("</title>").map(|i| start + i).unwrap_or(0);
+    if start < end {
+        let t = &html[start..end];
+        let t = &t[t.find('>').map(|i| i + 1).unwrap_or(0)..];
+        t.trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn html_to_text(html: &str) -> String {
+    // 去除 script/style
+    let mut cleaned = String::new();
+    let mut skip = 0;
+    let mut s = html;
+    while !s.is_empty() {
+        if skip > 0 { s = &s[1..]; skip -= 1; continue; }
+        if let Some(i) = s.find("<script") {
+            if s[..i].find("</script>").is_none() {
+                if let Some(j) = s[i..].find("</script>") { skip = i + j + 8; }
+            }
+        }
+        if let Some(i) = s.find("<style") {
+            if s[..i].find("</style>").is_none() {
+                if let Some(j) = s[i..].find("</style>") { let k = i + j + 7; if k > skip { skip = k; } }
+            }
+        }
+        if skip > 0 { s = &s[1..]; skip -= 1; continue; }
+        if s.starts_with('<') {
+            if let Some(i) = s.find('>') { s = &s[i+1..]; continue; }
+        }
+        cleaned.push(s.chars().next().unwrap());
+        s = &s[1..];
+    }
+
+    // 去除多余空白
+    let mut result = String::new();
+    let mut last_was_space = false;
+    for c in cleaned.chars() {
+        if c.is_whitespace() {
+            if !last_was_space { result.push(' '); }
+            last_was_space = true;
+        } else {
+            result.push(c);
+            last_was_space = false;
+        }
+    }
+    result.trim().chars().take(8000).collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -171,6 +247,7 @@ pub fn run() {
             set_fact_embedding,
             search_by_embedding,
             web_search,
+            fetch_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

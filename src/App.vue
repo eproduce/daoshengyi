@@ -4,6 +4,7 @@ import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import BrowserPanel from "./components/BrowserPanel.vue";
 import { useChatStore } from "./stores/chat";
 import { useTheme } from "./composables/useTheme";
 import type { ImageAttachment } from "@/types";
@@ -13,6 +14,7 @@ const { theme, toggleTheme } = useTheme();
 
 const showSettings = ref(false);
 const showSidebar = ref(true);
+const showBrowser = ref(false);
 const messagesContainer = ref<HTMLDivElement>();
 
 function scrollToBottom() {
@@ -30,6 +32,12 @@ watch(() => chatStore.streamingReasoning, () => scrollToBottom());
 
 function handleSend(text: string, images: ImageAttachment[]) {
   chatStore.sendMessage(text, images.length > 0 ? images : undefined);
+}
+
+function handleSendPage(url: string, title: string, text: string) {
+  const msg = `📄 **${title || url}**\n${url}\n\n---\n${text}`;
+  chatStore.sendMessage(msg);
+  showBrowser.value = false;
 }
 
 function handleStop() { chatStore.stopStreaming(); }
@@ -66,8 +74,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="app-layout">
     <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar }">
-      <ChatHistory />
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar && !showBrowser }">
+      <ChatHistory v-if="!showBrowser" />
+      <BrowserPanel v-else @send-page="handleSendPage" />
     </aside>
 
     <!-- 主内容区 -->
@@ -81,6 +90,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
+          <button class="topbar__btn" title="浏览器" :class="{ active: showBrowser }" @click="showBrowser = !showBrowser; showSidebar = false">🌐</button>
           <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">📥</button>
           <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()">🗑</button>
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
