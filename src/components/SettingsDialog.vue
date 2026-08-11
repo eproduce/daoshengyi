@@ -3,12 +3,14 @@ import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
+import McpSettings from "./McpSettings.vue";
 
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
+const activeTab = ref<"api" | "mcp">("api");
 
 const editingId = ref<string>(chatStore.activeProfileId);
 const editingProfile = ref<ApiProfile>({
@@ -68,11 +70,16 @@ function handleDelete() {
   <div class="settings-overlay" @click.self="emit('close')">
     <div class="settings-dialog">
       <div class="settings-dialog__header">
-        <h2>API 配置管理</h2>
+        <div class="settings-tabs">
+          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
+          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
+        </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
 
       <div class="settings-dialog__body">
+        <!-- API 配置 -->
+        <div v-show="activeTab === 'api'">
         <!-- 配置列表 -->
         <div class="profile-tabs">
           <button
@@ -179,6 +186,10 @@ function handleDelete() {
         <button class="btn-secondary" @click="emit('close')">取消</button>
         <button class="btn-primary" @click="handleSave">保存</button>
       </div>
+      </div>
+
+      <!-- MCP 服务器管理 -->
+      <div v-show="activeTab === 'mcp'"><McpSettings /></div>
     </div>
   </div>
 </template>
@@ -202,11 +213,15 @@ function handleDelete() {
 
 .settings-dialog__header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 20px 24px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;
+  padding: 16px 24px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;
 }
-.settings-dialog__header h2 {
-  font-size: 17px; font-weight: 700; color: var(--text-primary); letter-spacing: -.01em;
+.settings-tabs { display: flex; gap: 4px; }
+.settings-tab {
+  padding: 6px 14px; border: none; border-radius: 8px;
+  background: transparent; color: #888; font-size: 13px; cursor: pointer; transition: all .15s;
 }
+.settings-tab:hover { color: #ccc; }
+.settings-tab.active { background: #252540; color: #eee; }
 
 .btn-close {
   width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
