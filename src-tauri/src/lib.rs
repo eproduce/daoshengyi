@@ -2,10 +2,12 @@ mod api;
 mod middleware;
 mod db;
 mod search;
+mod mcp;
 
 use tauri::{Emitter, Manager, State};
 use futures::StreamExt;
 use db::Database;
+use tokio::sync::Mutex;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -161,6 +163,44 @@ async fn fetch_page(url: String) -> Result<PageContent, String> {
     Ok(PageContent { title, text, url: final_url })
 }
 
+// --- MCP 管理器 ---
+
+struct McpManager {
+    clients: Mutex<std::collections::HashMap<String, mcp::McpClient>>,
+}
+
+#[tauri::command]
+async fn mcp_connect(
+    manager: State<'_, McpManager>,
+    name: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<Vec<mcp::Tool>, String> {
+    let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true };
+    let client = mcp::McpClient::connect(&config).await?;
+    let tools = client.tools.clone();
+    manager.clients.lock().await.insert(name, client);
+    Ok(tools)
+}
+
+#[tauri::command]
+async fn mcp_call_tool(
+    manager: State<'_, McpManager>,
+    server: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+) -> Result<mcp::CallToolResult, String> {
+    let mut clients = manager.clients.lock().await;
+    let client = clients.get_mut(&server).ok_or("MCP Server 未连接")?;
+    client.call_tool(&tool_name, arguments).await
+}
+
+#[tauri::command]
+async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, Vec<mcp::Tool>)>, String> {
+    let clients = manager.clients.lock().await;
+    Ok(clients.iter().map(|(name, c)| (name.clone(), c.tools.clone())).collect())
+}
+
 fn extract_title(html: &str) -> String {
     let start = html.find("<title").unwrap_or(0);
     let end = html[start..].find("</title>").map(|i| start + i).unwrap_or(0);
@@ -238,6 +278,9 @@ pub fn run() {
             let app_dir = app.path().app_data_dir().expect("无法获取数据目录");
             let database = Database::new(app_dir).expect("数据库初始化失败");
             app.manage(database);
+            app.manage(McpManager {
+                clients: Mutex::new(std::collections::HashMap::new()),
+            });
 
             #[cfg(debug_assertions)]
             {
@@ -267,6 +310,9 @@ pub fn run() {
             search_by_embedding,
             web_search,
             fetch_page,
+            mcp_connect,
+            mcp_call_tool,
+            mcp_list_tools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

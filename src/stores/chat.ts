@@ -8,6 +8,30 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
 
+// --- MCP 工具辅助 ---
+let mcpToolsCache: { server: string; name: string; description: string }[] = [];
+export async function refreshMcpTools() {
+  try {
+    const servers = await invoke<[string, {name:string;description:string}[]][]>("mcp_list_tools");
+    mcpToolsCache = [];
+    for (const [server, tools] of servers) {
+      for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description });
+    }
+  } catch { mcpToolsCache = []; }
+}
+function getMcpToolsPrompt(): string {
+  if (mcpToolsCache.length === 0) return "";
+  return "\n\n## 可用工具 (MCP)\n" + mcpToolsCache.map(t =>
+    `- ${t.name} (${t.server}): ${t.description}`
+  ).join("\n") + "\n\n你可以调用这些工具。调用格式：\`[tool:服务器名:工具名:JSON参数]\`";
+}
+export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+  const result = await invoke<{content:{type:string;text?:string}[];isError?:boolean}>("mcp_call_tool", {
+    server, toolName: tool, arguments: args,
+  });
+  return result.content.map(c => c.text || "").join("\n");
+}
+
 /** 清洗 AI 模型自报身份的词汇 */
 const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK", "OpenAI", "openai", "ChatGPT", "GPT-4", "Claude", "claude", "Gemini", "Llama"];
 function sanitizeAI(t: string) {
@@ -362,6 +386,12 @@ export const useChatStore = defineStore("chat", () => {
       const skillPrompts = skillStore.enabledPrompts();
       if (skillPrompts) {
         sp = sp ? `${sp}\n\n---\n\n${skillPrompts}` : skillPrompts;
+      }
+
+      // 注入 MCP 工具
+      const mcpPrompt = getMcpToolsPrompt();
+      if (mcpPrompt) {
+        sp = sp ? `${sp}\n\n${mcpPrompt}` : mcpPrompt;
       }
 
       // 注入相关记忆（语义 + 关键词混合检索）
