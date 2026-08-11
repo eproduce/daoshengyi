@@ -161,47 +161,6 @@ async fn fetch_page(url: String) -> Result<PageContent, String> {
     Ok(PageContent { title, text, url: final_url })
 }
 
-// --- 内嵌浏览器 ---
-
-#[tauri::command]
-fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri::WebviewUrl;
-    use tauri::WebviewWindowBuilder;
-    let u = if url.starts_with("http") { url.clone() } else { format!("https://{}", url) };
-    let win = WebviewWindowBuilder::new(&app, "browser", WebviewUrl::External(u.parse().map_err(|e| format!("{}", e))?))
-        .title("道生一 · 浏览器")
-        .inner_size(1024.0, 700.0)
-        .build()
-        .map_err(|e| format!("{}", e))?;
-
-    // 关闭浏览器窗口时不退出应用，只隐藏
-    let win_clone = win.clone();
-    win.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            let _ = win_clone.hide();
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-fn extract_browser_content(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("main").ok_or("主窗口不存在")?;
-    let browser = app.get_webview_window("browser").ok_or("浏览器窗口未打开")?;
-    let label = window.label().to_string();
-
-    // 在浏览器窗口中执行 JS，提取内容并通过 invoke 回传
-    let _ = browser.eval(&format!(
-        "(function(){{var t=document.title||'';var c=document.body?document.body.innerText||'':'';window.__TAURI_INTERNALS__.invoke('return_browser_content',{{title:t,text:c.slice(0,8000),url:window.location.href,target:'{label}'}})}})()"
-    ));
-    Ok(())
-}
-
-#[tauri::command]
-fn return_browser_content(app: tauri::AppHandle, title: String, text: String, url: String, target: String) {
-    let _ = app.emit_to(&target, "browser-content", PageContent { title, text, url });
-}
-
 fn extract_title(html: &str) -> String {
     let start = html.find("<title").unwrap_or(0);
     let end = html[start..].find("</title>").map(|i| start + i).unwrap_or(0);
@@ -308,9 +267,6 @@ pub fn run() {
             search_by_embedding,
             web_search,
             fetch_page,
-            open_browser,
-            extract_browser_content,
-            return_browser_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
