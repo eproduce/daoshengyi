@@ -53,7 +53,6 @@ function autoResize() {
   el.style.height = Math.min(el.scrollHeight, 200) + "px";
 }
 
-function selectProfile(id: string) { chatStore.switchProfile(id); showModelDropdown.value = false; }
 function toggleModelDropdown() { showModelDropdown.value = !showModelDropdown.value; }
 
 // 某个配置下可选的模型列表（拉取到的 + 当前值兜底）

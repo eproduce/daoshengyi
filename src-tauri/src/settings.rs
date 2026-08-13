@@ -193,13 +193,13 @@ mod tests {
         let mut settings = AppSettings {
             profiles: vec![ApiProfileSettings {
                 id: "p1".into(),
-                name: "OpenAI".into(),
-                base_url: "https://api.openai.com/v1".into(),
+                name: "DeepSeek".into(),
+                base_url: "https://api.deepseek.com".into(),
                 api_key: "sk-secret".into(),
-                model: "gpt-4o".into(),
+                model: "deepseek-chat".into(),
                 max_tokens: 4096,
                 temperature: 0.7,
-                thinking_enabled: false,
+                thinking_enabled: true,
                 reasoning_effort: "high".into(),
                 system_prompt: "".into(),
                 enable_web_search: false,

@@ -51,7 +51,7 @@ async function runReactLoop(
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify({
-        model: config.model || "gpt-4o",
+        model: config.model || "deepseek-chat",
         messages: convo,
         max_tokens: 1000,
         temperature: 0.3,
@@ -99,15 +99,8 @@ function sanitizeAI(t: string) {
 
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
-    id: "default", name: "OpenAI", baseUrl: "https://api.openai.com/v1",
-    apiKey: "", model: "gpt-4o", maxTokens: 4096, temperature: 0.7,
-    thinkingEnabled: false, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
-    enableWebSearch: false, maxContextMessages: 50,
-  },
-  {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
-    apiKey: "", model: "deepseek-v4-pro", maxTokens: 4096, temperature: 0.7,
+    apiKey: "", model: "deepseek-chat", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
     systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
@@ -239,6 +232,15 @@ export const useChatStore = defineStore("chat", () => {
 
   // --- 配置组持久化（Rust 端 SQLite + 加密 API Key） ---
   // 同步兜底：先读 localStorage 旧数据（作为迁移源）
+  // 移除历史代码生成的默认 OpenAI 占位配置（未填 Key）
+  function stripDefaultOpenAI(list: ApiProfile[]): ApiProfile[] {
+    const filtered = list.filter(
+      (p) => !(p.id === "default" && p.name === "OpenAI" && !p.apiKey)
+    );
+    if (filtered.length === 0) return [...DEFAULT_PROFILES];
+    return filtered;
+  }
+
   function loadProfilesLegacy(): ApiProfile[] {
     try {
       const saved = localStorage.getItem("daoshengyi_profiles");
@@ -250,7 +252,7 @@ export const useChatStore = defineStore("chat", () => {
           localStorage.removeItem("daoshengyi_activeProfile");
           return [...DEFAULT_PROFILES];
         }
-        return parsed;
+        return stripDefaultOpenAI(parsed);
       }
     } catch { /* ignore */ }
     return [...DEFAULT_PROFILES];
@@ -270,9 +272,11 @@ export const useChatStore = defineStore("chat", () => {
       const legacy = localStorage.getItem("daoshengyi_profiles");
       const settings = await initSettings();
       if (settings.profiles.length > 0) {
-        profiles.value = settings.profiles;
+        profiles.value = stripDefaultOpenAI(settings.profiles);
         if (settings.activeProfileId && profiles.value.some((p) => p.id === settings.activeProfileId)) {
           activeProfileId.value = settings.activeProfileId;
+        } else if (profiles.value.length > 0) {
+          activeProfileId.value = profiles.value[0].id;
         }
         if (legacy) {
           localStorage.removeItem("daoshengyi_profiles");
@@ -397,7 +401,7 @@ export const useChatStore = defineStore("chat", () => {
             Authorization: `Bearer ${visionProfile.apiKey}`,
           },
           body: JSON.stringify({
-            model: visionProfile.model || "gpt-4o",
+            model: visionProfile.model,
             messages: [{
               role: "user",
               content: [
@@ -458,7 +462,7 @@ export const useChatStore = defineStore("chat", () => {
           lastUserMsg.images = undefined;
           if (!lastUserMsg.content) lastUserMsg.content = "[图片]";
         }
-        assistantMsg.content = "⚠️ 未配置视觉 API，无法识别图片。请在设置中添加 OpenAI 配置。\n\n";
+        assistantMsg.content = "⚠️ 未配置视觉 API，无法识别图片。请在设置中添加支持视觉能力的 API 配置。\n\n";
       }
     }
 
@@ -535,7 +539,7 @@ export const useChatStore = defineStore("chat", () => {
       }, 0);
 
       const rustCfg = {
-        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "gpt-4o",
+        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "deepseek-chat",
         max_tokens: config.maxTokens, temperature: config.temperature,
         thinking_enabled: config.thinkingEnabled, reasoning_effort: config.reasoningEffort,
         system_prompt: sp, enable_web_search: config.enableWebSearch,

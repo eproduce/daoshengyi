@@ -77,6 +77,12 @@ function pickModel(m: string) {
   showModelDropdown.value = false;
 }
 
+function onModelBlur() {
+  setTimeout(() => {
+    showModelDropdown.value = false;
+  }, 150);
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -93,12 +99,12 @@ function startNew() {
   editingProfile.value = {
     id: uuidv4(),
     name: "新配置",
-    baseUrl: "https://api.openai.com/v1",
+    baseUrl: "https://api.deepseek.com",
     apiKey: "",
-    model: "gpt-4o",
+    model: "deepseek-chat",
     maxTokens: 4096,
     temperature: 0.7,
-    thinkingEnabled: false,
+    thinkingEnabled: true,
     reasoningEffort: "high",
     systemPrompt: "",
     enableWebSearch: false,
@@ -159,7 +165,7 @@ function handleDelete() {
           <input
             v-model="editingProfile.name"
             type="text"
-            placeholder="如: OpenAI、DeepSeek"
+            placeholder="如: DeepSeek"
           />
         </div>
 
@@ -168,9 +174,9 @@ function handleDelete() {
           <input
             v-model="editingProfile.baseUrl"
             type="text"
-            placeholder="https://api.openai.com"
+            placeholder="https://api.deepseek.com"
           />
-          <span class="form-hint">OpenAI 兼容 API 的基础地址</span>
+          <span class="form-hint">API 基础地址（OpenAI 兼容格式）</span>
         </div>
 
         <div class="form-group">
@@ -190,10 +196,10 @@ function handleDelete() {
               <input
                 v-model="editingProfile.model"
                 type="text"
-                placeholder="gpt-4o"
+                placeholder="deepseek-chat"
                 @focus="showModelDropdown = true"
                 @input="showModelDropdown = true"
-                @blur="setTimeout(() => (showModelDropdown = false), 150)"
+                @blur="onModelBlur"
               />
               <div
                 v-if="showModelDropdown && filteredModels.length > 0"
