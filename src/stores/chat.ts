@@ -8,6 +8,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
+import { parseToolCall } from "@/utils/tool-call";
 
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
@@ -32,19 +33,6 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
     server, toolName: tool, arguments: args,
   });
   return result.content.map(c => c.text || "").join("\n");
-}
-
-/** 解析 LLM 响应中的工具调用 */
-function parseToolCall(content: string): { server: string; tool: string; arguments: Record<string, unknown> } | null {
-  const match = content.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[1]);
-    if (parsed.tool && parsed.arguments) {
-      return { server: parsed.server || "default", tool: parsed.tool, arguments: parsed.arguments };
-    }
-  } catch { /* ignore */ }
-  return null;
 }
 
 /** ReAct 循环：非流式调用 LLM，执行工具，直到得到最终答案 */
