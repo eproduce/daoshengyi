@@ -79,6 +79,8 @@ export interface ApiConfig {
 export interface ApiProfile extends ApiConfig {
   id: string;
   name: string;
+  /// 从厂商拉取到的可用模型列表
+  availableModels?: string[];
 }
 
 /// 流式响应 delta

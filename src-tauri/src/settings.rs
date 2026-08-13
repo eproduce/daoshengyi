@@ -32,6 +32,8 @@ pub struct ApiProfileSettings {
     pub system_prompt: String,
     pub enable_web_search: bool,
     pub max_context_messages: u32,
+    #[serde(default)]
+    pub available_models: Option<Vec<String>>,
 }
 
 /// 应用全部设置的统一结构
@@ -202,6 +204,7 @@ mod tests {
                 system_prompt: "".into(),
                 enable_web_search: false,
                 max_context_messages: 50,
+                available_models: None,
             }],
             active_profile_id: "p1".into(),
             mcp_servers: serde_json::json!([]),
@@ -225,6 +228,7 @@ mod tests {
                 max_tokens: 100, temperature: 0.5, thinking_enabled: false,
                 reasoning_effort: "high".into(), system_prompt: "".into(),
                 enable_web_search: false, max_context_messages: 10,
+                available_models: None,
             }],
             active_profile_id: "p1".into(),
             mcp_servers: serde_json::json!([]),

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, onUnmounted } from "vue";
-import type { ImageAttachment } from "@/types";
+import type { ImageAttachment, ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
 import SkillManager from "./SkillManager.vue";
@@ -55,6 +55,20 @@ function autoResize() {
 
 function selectProfile(id: string) { chatStore.switchProfile(id); showModelDropdown.value = false; }
 function toggleModelDropdown() { showModelDropdown.value = !showModelDropdown.value; }
+
+// 某个配置下可选的模型列表（拉取到的 + 当前值兜底）
+function profileModels(p: ApiProfile): string[] {
+  const list = [...(p.availableModels?.length ? p.availableModels : [])];
+  if (p.model && !list.includes(p.model)) list.unshift(p.model);
+  return list;
+}
+
+// 切换到指定配置的指定模型
+function selectModel(profileId: string, model: string) {
+  if (chatStore.activeProfileId !== profileId) chatStore.switchProfile(profileId);
+  chatStore.updateProfile(profileId, { model });
+  showModelDropdown.value = false;
+}
 
 function toggleThinking() {
   const p = chatStore.activeProfile;
@@ -210,11 +224,19 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
             <span>{{ chatStore.activeProfile?.name }}</span>
             <span class="ci-pill-sub">{{ chatStore.activeProfile?.model }}</span>
           </div>
-          <div v-if="showModelDropdown" ref="modelDropdownRef" class="ci-drop">
-            <div v-for="p in chatStore.profiles" :key="p.id" class="ci-drop-item" :class="{ on: p.id === chatStore.activeProfileId }" @click="selectProfile(p.id)">
-              <span class="ci-drop-name">{{ p.name }}</span>
-              <span class="ci-drop-model">{{ p.model }}</span>
-              <span v-if="p.id === chatStore.activeProfileId" class="ci-drop-check">✓</span>
+          <div v-if="showModelDropdown" ref="modelDropdownRef" class="ci-drop ci-drop-models">
+            <div v-for="p in chatStore.profiles" :key="p.id" class="ci-drop-group">
+              <div class="ci-drop-group-title">{{ p.name }}</div>
+              <div
+                v-for="m in profileModels(p)"
+                :key="m"
+                class="ci-drop-item"
+                :class="{ on: p.id === chatStore.activeProfileId && m === p.model }"
+                @click="selectModel(p.id, m)"
+              >
+                <span class="ci-drop-name">{{ m }}</span>
+                <span v-if="p.id === chatStore.activeProfileId && m === p.model" class="ci-drop-check">✓</span>
+              </div>
             </div>
             <div class="ci-drop-foot" @click="emit('openSettings'); showModelDropdown = false">⚙️ 管理 API 配置</div>
           </div>
@@ -336,6 +358,15 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-drop-check { color: var(--accent-color); font-weight: 700; margin-left: auto; font-size: 11px; }
 .ci-drop-foot { padding: 7px 12px; border-top: 1px solid #333; font-size: 11px; color: #888; cursor: pointer; transition: background .1s; }
 .ci-drop-foot:hover { background: #252540; }
+
+/* 模型分组下拉 */
+.ci-drop-models { min-width: 240px; max-height: 360px; overflow-y: auto; }
+.ci-drop-group-title {
+  padding: 6px 12px 4px; font-size: 10px; font-weight: 700;
+  color: #666; text-transform: uppercase; letter-spacing: .05em;
+}
+.ci-drop-group:first-child .ci-drop-group-title { padding-top: 8px; }
+.ci-drop-group + .ci-drop-group { border-top: 1px solid #26263c; margin-top: 2px; padding-top: 2px; }
 
 .ci-bar-right { display: flex; align-items: center; }
 

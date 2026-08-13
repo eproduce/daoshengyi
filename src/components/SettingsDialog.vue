@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
@@ -35,6 +35,7 @@ function applyTemplate(id: string) {
 const availableModels = ref<string[]>([]);
 const loadingModels = ref(false);
 const modelError = ref("");
+const showModelDropdown = ref(false);
 
 async function fetchModels() {
   if (!editingProfile.value.baseUrl || !editingProfile.value.apiKey) {
@@ -49,8 +50,10 @@ async function fetchModels() {
       apiKey: editingProfile.value.apiKey,
     });
     availableModels.value = models;
+    editingProfile.value.availableModels = models;
     if (models.length > 0) {
       modelError.value = `获取到 ${models.length} 个模型`;
+      showModelDropdown.value = true;
     } else {
       modelError.value = "未获取到模型列表";
     }
@@ -60,6 +63,18 @@ async function fetchModels() {
   } finally {
     loadingModels.value = false;
   }
+}
+
+// 按输入过滤模型列表
+const filteredModels = computed(() => {
+  const kw = editingProfile.value.model.trim().toLowerCase();
+  if (!kw) return availableModels.value;
+  return availableModels.value.filter((m) => m.toLowerCase().includes(kw));
+});
+
+function pickModel(m: string) {
+  editingProfile.value.model = m;
+  showModelDropdown.value = false;
 }
 
 // 切换编辑目标
@@ -171,15 +186,28 @@ function handleDelete() {
         <div class="form-group">
           <label>模型</label>
           <div class="model-row">
-            <input
-              v-model="editingProfile.model"
-              type="text"
-              placeholder="gpt-4o"
-              list="model-options"
-            />
-            <datalist id="model-options">
-              <option v-for="m in availableModels" :key="m" :value="m" />
-            </datalist>
+            <div class="model-select">
+              <input
+                v-model="editingProfile.model"
+                type="text"
+                placeholder="gpt-4o"
+                @focus="showModelDropdown = true"
+                @input="showModelDropdown = true"
+                @blur="setTimeout(() => (showModelDropdown = false), 150)"
+              />
+              <div
+                v-if="showModelDropdown && filteredModels.length > 0"
+                class="model-select__dropdown"
+              >
+                <div
+                  v-for="m in filteredModels"
+                  :key="m"
+                  class="model-select__option"
+                  :class="{ on: m === editingProfile.model }"
+                  @mousedown.prevent="pickModel(m)"
+                >{{ m }}</div>
+              </div>
+            </div>
             <button
               type="button"
               class="btn-secondary btn-fetch"
@@ -371,7 +399,20 @@ function handleDelete() {
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
 .model-row { display: flex; align-items: center; gap: 8px; }
-.model-row input { flex: 1; min-width: 0; }
+.model-select { position: relative; flex: 1; min-width: 0; }
+.model-select input { width: 100%; box-sizing: border-box; }
+.model-select__dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 240px; overflow-y: auto; z-index: 60;
+  background: var(--bg-elevated); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-xl);
+}
+.model-select__option {
+  padding: 8px 14px; font-size: 13px; cursor: pointer;
+  color: var(--text-primary); transition: background .12s;
+}
+.model-select__option:hover { background: var(--bg-hover); }
+.model-select__option.on { color: var(--accent-color); font-weight: 600; }
 .btn-fetch {
   padding: 10px 14px; font-size: 12px; white-space: nowrap; flex-shrink: 0;
 }
