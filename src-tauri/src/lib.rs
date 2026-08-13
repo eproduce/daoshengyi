@@ -52,6 +52,76 @@ async fn send_message(
     Ok(())
 }
 
+// --- 终端命令执行 ---
+
+#[derive(serde::Serialize)]
+struct CommandOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    timed_out: bool,
+}
+
+/// 执行终端命令（一次性返回输出，默认 60 秒超时）
+#[tauri::command]
+async fn execute_command(
+    command: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<CommandOutput, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut cmd = tokio::process::Command::new(&command);
+    cmd.args(&args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    if let Some(dir) = cwd {
+        cmd.current_dir(&dir);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动命令失败: {}", e))?;
+    let mut stdout_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
+    let mut stderr_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
+
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(60));
+
+    // 并发读取输出 + 等待进程退出（带超时）
+    let result = tokio::time::timeout(timeout, async {
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let (stdout_res, stderr_res, status_res) = tokio::join!(
+            stdout_pipe.read_to_end(&mut out_buf),
+            stderr_pipe.read_to_end(&mut err_buf),
+            child.wait(),
+        );
+        (stdout_res, stderr_res, status_res, out_buf, err_buf)
+    })
+    .await;
+
+    match result {
+        Ok((_, _, status_res, out_buf, err_buf)) => {
+            let status = status_res.map_err(|e| format!("等待命令失败: {}", e))?;
+            Ok(CommandOutput {
+                stdout: String::from_utf8_lossy(&out_buf).to_string(),
+                stderr: String::from_utf8_lossy(&err_buf).to_string(),
+                exit_code: status.code().unwrap_or(-1),
+                timed_out: false,
+            })
+        }
+        Err(_) => {
+            // 超时：child 因 kill_on_drop 被自动终止
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60)),
+                exit_code: -1,
+                timed_out: true,
+            })
+        }
+    }
+}
+
 // --- 对话持久化命令 ---
 
 #[tauri::command]
@@ -392,6 +462,7 @@ pub fn run() {
             search_by_embedding,
             web_search,
             fetch_page,
+            execute_command,
             mcp_connect,
             mcp_call_tool,
             mcp_list_tools,

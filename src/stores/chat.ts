@@ -414,8 +414,65 @@ export const useChatStore = defineStore("chat", () => {
     return parts.join("\n\n");
   }
 
+  // --- 终端命令执行（/run 指令） ---
+  // 解析命令行（支持引号）
+  function parseCommandLine(input: string): { command: string; args: string[] } {
+    const tokens = input.match(/"[^"]*"|'[^']*'|[^\s]+/g) || [];
+    const clean = tokens.map((t) => t.replace(/^["']|["']$/g, ""));
+    return { command: clean[0] || "", args: clean.slice(1) };
+  }
+
+  async function runCommand(cmdStr: string) {
+    const { command, args } = parseCommandLine(cmdStr);
+    if (!command) return;
+
+    let convId = activeConversationId.value;
+    if (!convId) convId = createConversation();
+    addUserMessage(convId, `/run ${cmdStr}`);
+
+    const conv = conversations.value.find((c) => c.id === convId)!;
+    const assistantMsg = reactive<ChatMessage>({
+      id: uuidv4(), role: "assistant", content: "", timestamp: Date.now(), streaming: true,
+    });
+    conv.messages.push(assistantMsg);
+    conv.updatedAt = Date.now();
+    isStreaming.value = true;
+    streamingContent.value = `$ ${cmdStr}\n⏳ 执行中...`;
+
+    const startTime = Date.now();
+    try {
+      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>(
+        "execute_command", { command, args, cwd: null, timeoutSecs: 30 },
+      );
+      const out = result.stdout.trimEnd();
+      const err = result.stderr.trimEnd();
+      let content = `$ ${cmdStr}\n`;
+      if (out) content += `\n${out}\n`;
+      if (err) content += `\n[stderr]\n${err}\n`;
+      content += `\n退出码: ${result.exit_code}${result.timed_out ? "（超时）" : ""}`;
+      assistantMsg.content = content;
+    } catch (e: unknown) {
+      assistantMsg.content = `$ ${cmdStr}\n\n❌ 执行失败: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      assistantMsg.streaming = false;
+      assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      assistantMsg.tokens = estimateMessageTokens(assistantMsg.content);
+      assistantMsg.cost = 0;
+      streamingContent.value = "";
+      isStreaming.value = false;
+      conv.updatedAt = Date.now();
+      scheduleSave();
+    }
+  }
+
   // --- 流式发送 ---
   async function sendMessage(text: string, images?: ImageAttachment[]) {
+    // 命令执行指令：/run <命令>
+    if (text.trim().startsWith("/run ")) {
+      await runCommand(text.trim().slice(5).trim());
+      return;
+    }
+
     let convId = activeConversationId.value;
     if (!convId) {
       convId = createConversation();
