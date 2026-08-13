@@ -24,12 +24,16 @@ async fn send_message(
     middleware::preprocess_messages(&mut messages);
     let mut stream = api::stream_chat(config, messages).await?;
 
+    // 行缓冲器：SSE 数据块可能在任意字节边界断开，
+    // 必须把不完整的行累积到缓冲区，直到遇到换行符才解析，否则会丢字。
+    let mut buf = String::new();
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => {
-                for line in text.lines() {
-                    if let Some(mut delta) = api::parse_sse_line(line) {
-                        middleware::sanitize_delta(&mut delta);
+                buf.push_str(&text);
+                while let Some(pos) = buf.find('\n') {
+                    let line: String = buf.drain(..=pos).collect();
+                    if let Some(delta) = api::parse_sse_line(line.trim()) {
                         let _ = app.emit("sse-delta", &delta);
                     }
                 }
@@ -39,6 +43,10 @@ async fn send_message(
                 return Err(e);
             }
         }
+    }
+    // 处理最后可能残留的不完整行
+    if let Some(delta) = api::parse_sse_line(buf.trim()) {
+        let _ = app.emit("sse-delta", &delta);
     }
     let _ = app.emit("sse-done", ());
     Ok(())

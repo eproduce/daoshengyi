@@ -89,14 +89,6 @@ async function runReactLoop(
   return toolResults;
 }
 
-/** 清洗 AI 模型自报身份的词汇 */
-const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK"];
-function sanitizeAI(t: string) {
-  let r = t;
-  for (const n of AI_NAMES) r = r.replace(new RegExp(n, "g"), "道生一");
-  return r;
-}
-
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
@@ -558,7 +550,7 @@ export const useChatStore = defineStore("chat", () => {
           if (finalAnswer) {
             // ReAct 循环给出了最终答案，直接展示（跳过流式）
             streamingContent.value =
-              (toolResults.length > 0 ? toolResults.join("\n") + "\n\n" : "") + sanitizeAI(finalAnswer);
+              (toolResults.length > 0 ? toolResults.join("\n") + "\n\n" : "") + finalAnswer;
             reactDone = true;
           } else if (toolResults.length > 0) {
             // 循环耗尽仍在调工具：把过程附到上下文，交给流式兜底回答
@@ -572,8 +564,8 @@ export const useChatStore = defineStore("chat", () => {
         const doneP = new Promise<void>((resolve, reject) => {
           listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
             const d = e.payload;
-            if (d.reasoning_content) streamingReasoning.value += sanitizeAI(d.reasoning_content);
-            if (d.content) streamingContent.value += sanitizeAI(d.content);
+            if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
+            if (d.content) streamingContent.value += d.content;
             if (d.tokens) assistantMsg.tokens = d.tokens;
           }).then(f => unlistenFns.push(f));
           listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));
