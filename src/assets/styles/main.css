@@ -29,6 +29,10 @@
   --avatar-user: linear-gradient(135deg, #6366f1, #8b5cf6);
   --avatar-ai: linear-gradient(135deg, #06b6d4, #3b82f6);
 
+  --logo-bg: #ffffff;
+  --logo-fg: #1a1a2e;
+  --logo-border: #e8e8ec;
+
   --danger-color: #ef4444;
   --danger-bg: rgba(239, 68, 68, 0.08);
 
@@ -70,6 +74,10 @@
   --accent-bg: rgba(129, 140, 248, 0.1);
 
   --avatar-bg: #2a2a42;
+
+  --logo-bg: #1e1e34;
+  --logo-fg: #cfcfdf;
+  --logo-border: #2a2a40;
 
   --danger-color: #f87171;
   --danger-bg: rgba(248, 113, 113, 0.1);

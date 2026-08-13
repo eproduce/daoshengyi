@@ -5,6 +5,7 @@ import { Marked } from "marked";
 import hljs from "@/utils/hljs";
 import { useChatStore } from "@/stores/chat";
 import { formatCost } from "@/utils/tokens";
+import AppLogo from "./AppLogo.vue";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -46,57 +47,57 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 
 <template>
   <div v-if="message.role === 'assistant' && message.streaming" class="message message--assistant">
-    <div class="message__avatar"><span>🤖</span></div>
+    <div class="message__avatar"><AppLogo :size="24" /></div>
     <div class="message__body">
-      <div class="message__role">道生一</div>
-      <!-- 直接绑定 store 的 streaming ref，渲染最快 -->
-      <div v-if="chatStore.streamingReasoning" class="msg-reason">
-        <div class="reason-head" @click="showReasoning = !showReasoning">
-          <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span>
-          <span class="reason-label">🧠 深度思考</span>
-          <span v-if="!chatStore.streamingContent" class="reason-badge">进行中</span>
+      <div class="message__bubble">
+        <!-- 直接绑定 store 的 streaming ref，渲染最快 -->
+        <div v-if="chatStore.streamingReasoning" class="msg-reason">
+          <div class="reason-head" @click="showReasoning = !showReasoning">
+            <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span>
+            <span class="reason-label">🧠 深度思考</span>
+            <span v-if="!chatStore.streamingContent" class="reason-badge">进行中</span>
+          </div>
+          <div v-show="showReasoning" class="reason-body">{{ chatStore.streamingReasoning }}</div>
         </div>
-        <div v-show="showReasoning" class="reason-body">{{ chatStore.streamingReasoning }}</div>
+        <div v-if="chatStore.streamingContent" class="message__content" style="white-space:pre-wrap">{{ chatStore.streamingContent }}</div>
+        <div v-else-if="!chatStore.streamingReasoning" class="message__thinking">
+          <span class="thinking-dot">●</span><span class="thinking-dot">●</span><span class="thinking-dot">●</span>
+          <span class="thinking-text">思考中...</span>
+        </div>
+        <div class="message__cursor"></div>
       </div>
-      <div v-if="chatStore.streamingContent" class="message__content" style="white-space:pre-wrap">{{ chatStore.streamingContent }}</div>
-      <div v-else-if="!chatStore.streamingReasoning" class="message__thinking">
-        <span class="thinking-dot">●</span><span class="thinking-dot">●</span><span class="thinking-dot">●</span>
-        <span class="thinking-text">思考中...</span>
-      </div>
-      <div class="message__cursor"></div>
     </div>
   </div>
 
   <div v-else class="message" :class="`message--${message.role}`" :data-msg-id="message.id">
-    <div class="message__avatar"><span v-if="message.role === 'user'">👤</span><span v-else>🤖</span></div>
+    <div class="message__avatar"><span v-if="message.role === 'user'">👤</span><AppLogo v-else :size="24" /></div>
     <div class="message__body">
-      <div class="message__role">{{ message.role === "user" ? "你" : "道生一" }}</div>
-
-      <div v-if="message.images?.length" class="message__images">
-        <div v-for="img in message.images" :key="img.id" class="message__image-item" @click="previewImage = img">
-          <img :src="img.base64" :alt="img.fileName || '图片'" />
+      <div class="message__bubble">
+        <div v-if="message.images?.length" class="message__images">
+          <div v-for="img in message.images" :key="img.id" class="message__image-item" @click="previewImage = img">
+            <img :src="img.base64" :alt="img.fileName || '图片'" />
+          </div>
         </div>
+
+        <div v-if="message.reasoning_content" class="msg-reason">
+          <div class="reason-head" @click="showReasoning = !showReasoning">
+            <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label">🧠 深度思考</span>
+          </div>
+          <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
+        </div>
+
+        <div v-if="message.content" class="message__content markdown-body" v-html="md(message.content)"></div>
       </div>
 
-      <div v-if="message.reasoning_content" class="msg-reason">
-        <div class="reason-head" @click="showReasoning = !showReasoning">
-          <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label">🧠 深度思考</span>
-        </div>
-        <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
-      </div>
-
-      <div v-if="message.content" class="message__content markdown-body" v-html="md(message.content)"></div>
-
-      <div class="message__time">
-        {{ new Date(message.timestamp).toLocaleTimeString("zh-CN") }}
+      <div class="message__meta">
+        <span class="message__time">{{ new Date(message.timestamp).toLocaleTimeString("zh-CN") }}</span>
         <span v-if="message.role === 'assistant' && message.duration" class="msg-meta">· {{ message.duration }}s</span>
         <span v-if="message.role === 'assistant' && message.tokens" class="msg-meta">· {{ message.tokens }} tokens</span>
         <span v-if="message.role === 'assistant' && message.cost" class="msg-meta">· {{ formatCost(message.cost) }}</span>
-      </div>
-
-      <div v-if="message.role === 'assistant' && message.content" class="msg-actions">
-        <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
-        <button class="msg-act-btn" @click="chatStore.retryLast()">🔄 重试</button>
+        <div v-if="message.role === 'assistant' && message.content" class="msg-actions">
+          <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
+          <button class="msg-act-btn" @click="chatStore.retryLast()">🔄 重试</button>
+        </div>
       </div>
     </div>
   </div>
@@ -108,21 +109,41 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 </template>
 
 <style scoped>
-.message { display: flex; gap: 12px; padding: 14px 20px; }
-.message--user { background: var(--bg-user-bubble); }
-.message--assistant { background: var(--bg-assistant-bubble); }
-.message__avatar { flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 18px; opacity: .85; }
-.message__body { flex: 1; min-width: 0; }
-.message__role { font-weight: 650; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.message { display: flex; gap: 10px; padding: 10px 20px; align-items: flex-start; }
+.message--user { flex-direction: row-reverse; }
+.message__avatar { flex-shrink: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 18px; opacity: .9; }
+.message__body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.message--user .message__body { align-items: flex-end; }
+.message--assistant .message__body { align-items: flex-start; }
+.message__bubble {
+  max-width: 78%; min-width: 0;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  position: relative;
+}
+.message--assistant .message__bubble { border-bottom-left-radius: 4px; }
+.message--user .message__bubble {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  border-bottom-right-radius: 4px;
+}
+.message--user .message__bubble .message__content { color: #fff; }
+.message--user :deep(.markdown-body) { color: #fff; }
+.message--user :deep(.markdown-body a) { color: #fff; text-decoration: underline; }
+.message--user :deep(.markdown-body code) { background: rgba(255,255,255,.2); color: #fff; }
 .message__images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .message__image-item { width: 120px; height: 120px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); cursor: pointer; transition: transform .15s; }
 .message__image-item:hover { transform: scale(1.03); }
 .message__image-item img { width: 100%; height: 100%; object-fit: cover; }
 .message__content { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }
 .message__cursor { display: inline-block; width: 7px; height: 16px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; border-radius: 2px; }
-.message__time { font-size: 10px; color: var(--text-muted); margin-top: 8px; }
+.message__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; padding: 0 4px; }
+.message--user .message__meta { justify-content: flex-end; }
+.message__time { font-size: 10px; color: var(--text-muted); }
 .msg-meta { color: var(--text-muted); }
-.msg-actions { display: flex; gap: 6px; margin-top: 6px; }
+.msg-actions { display: flex; gap: 6px; }
 .msg-act-btn { padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: all .15s; }
 .msg-act-btn:hover { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-bg); }
 .message__thinking { display: flex; align-items: center; gap: 4px; padding: 4px 0; }

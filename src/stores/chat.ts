@@ -560,17 +560,24 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       if (!reactDone) {
-        // 监听 Rust SSE 事件
+        // 先注册监听并 await 确保注册完成，再调用 invoke，避免事件竞态丢失
+        let resolveDone!: () => void;
+        let rejectDone!: (e: Error) => void;
         const doneP = new Promise<void>((resolve, reject) => {
-          listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
+          resolveDone = resolve;
+          rejectDone = reject;
+        });
+
+        unlistenFns.push(
+          await listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
             const d = e.payload;
             if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
             if (d.content) streamingContent.value += d.content;
             if (d.tokens) assistantMsg.tokens = d.tokens;
-          }).then(f => unlistenFns.push(f));
-          listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));
-          listen("sse-done", () => resolve()).then(f => unlistenFns.push(f));
-        });
+          }),
+          await listen<string>("sse-error", e => rejectDone(new Error(e.payload))),
+          await listen("sse-done", () => resolveDone()),
+        );
 
         await invoke("send_message", { config: rustCfg, messages: rustMsgs });
         await doneP;

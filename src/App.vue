@@ -4,6 +4,7 @@ import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
@@ -108,7 +109,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           v-if="!chatStore.activeConversation || chatStore.activeConversation.messages.length === 0"
           class="empty-state"
         >
-          <div class="empty-state__icon">🤖</div>
+          <div class="empty-state__icon"><AppLogo :size="56" /></div>
           <h2>道生一</h2>
           <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
         </div>

@@ -18,6 +18,8 @@ interface SummaryRow {
 export function useMemorySystem() {
   // --- Embedding 生成 (兼容 API) ---
   async function generateEmbedding(text: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<number[] | null> {
+    // DeepSeek 不提供 embeddings 端点，跳过语义检索（回退关键词检索）
+    if (config.baseUrl.includes("deepseek")) return null;
     try {
       const baseUrl = config.baseUrl.replace(/\/+$/, "");
       const resp = await fetch(`${baseUrl}/embeddings`, {
