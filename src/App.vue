@@ -6,6 +6,7 @@ import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import { useChatStore } from "./stores/chat";
 import { useTheme } from "./composables/useTheme";
+import { formatCost } from "@/utils/tokens";
 import type { ImageAttachment } from "@/types";
 
 const chatStore = useChatStore();
@@ -81,6 +82,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
+          <div
+            v-if="chatStore.conversationStats.tokens > 0"
+            class="topbar__stats"
+            :title="`当前对话 Token 消耗与估算费用`"
+          >
+            <span class="stat">{{ chatStore.conversationStats.tokens.toLocaleString() }} tok</span>
+            <span class="stat">{{ formatCost(chatStore.conversationStats.cost) }}</span>
+          </div>
           <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">📥</button>
           <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()">🗑</button>
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
@@ -174,6 +183,17 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   background-clip: text;
 }
 .topbar__right { display: flex; align-items: center; gap: 6px; }
+
+.topbar__stats {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px; margin-right: 4px;
+  border: 1px solid var(--border-color); border-radius: 16px;
+  background: var(--bg-secondary);
+}
+.topbar__stats .stat {
+  font-size: 11px; font-weight: 600; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 
 .topbar__btn {
   width: 34px; height: 34px; border: none; border-radius: var(--radius-sm);

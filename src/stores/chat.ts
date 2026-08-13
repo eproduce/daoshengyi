@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
+import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
@@ -135,7 +136,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const convs = await invoke<{id:string;title:string;model:string;created_at:number;updated_at:number}[]>("load_conversations");
       for (const c of convs) {
-        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;timestamp:number;tokens?:number;duration?:number}[]>("get_messages", { conversationId: c.id });
+        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: c.id });
         conversations.value.push({
           id: c.id, title: c.title, model: c.model,
           createdAt: c.created_at, updatedAt: c.updated_at,
@@ -143,7 +144,7 @@ export const useChatStore = defineStore("chat", () => {
             id: m.id, role: m.role as MessageRole, content: m.content,
             reasoning_content: m.reasoning_content,
             images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
-            timestamp: m.timestamp, tokens: m.tokens, duration: m.duration,
+            timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
           })),
         });
       }
@@ -170,7 +171,7 @@ export const useChatStore = defineStore("chat", () => {
             id: m.id, conversation_id: conv.id, role: m.role, content: m.content,
             reasoning_content: m.reasoning_content || null,
             images: m.images ? JSON.stringify(m.images) : null,
-            timestamp: m.timestamp, tokens: m.tokens || null, duration: m.duration || null,
+            timestamp: m.timestamp, tokens: m.tokens || null, duration: m.duration || null, cost: m.cost || null,
           })),
         });
       } catch (e) { console.warn("[道生一] 保存失败:", e); }
@@ -196,6 +197,21 @@ export const useChatStore = defineStore("chat", () => {
   const sortedConversations = computed(() =>
     [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt)
   );
+
+  // 当前对话统计（总 token、总费用）
+  const conversationStats = computed(() => {
+    const conv = activeConversation.value;
+    if (!conv) return { tokens: 0, cost: 0 };
+    let tokens = 0;
+    let cost = 0;
+    for (const m of conv.messages) {
+      if (m.role === "assistant") {
+        if (m.tokens) tokens += m.tokens;
+        if (m.cost) cost += m.cost;
+      }
+    }
+    return { tokens, cost };
+  });
 
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
@@ -429,6 +445,7 @@ export const useChatStore = defineStore("chat", () => {
     const startTime = Date.now();
     let unlistenFns: UnlistenFn[] = [];
     let timedOut = false;
+    let inputTokens = 0;
 
     const timeoutId = setTimeout(() => { timedOut = true; stopStreaming(); }, 120000);
     const memory = useMemorySystem();
@@ -484,6 +501,12 @@ export const useChatStore = defineStore("chat", () => {
           rustMsgs.push({ role: m.role, content: m.content });
         }
       });
+
+      // 估算输入 token（用于费用计算）
+      inputTokens = rustMsgs.reduce((sum, m) => {
+        const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+        return sum + estimateMessageTokens(text);
+      }, 0);
 
       const rustCfg = {
         base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "gpt-4o",
@@ -541,6 +564,14 @@ export const useChatStore = defineStore("chat", () => {
       assistantMsg.content = streamingContent.value;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算
+      if (!assistantMsg.tokens) {
+        assistantMsg.tokens = estimateMessageTokens(streamingContent.value, streamingReasoning.value);
+      }
+      // 费用估算
+      try {
+        assistantMsg.cost = estimateCost(currentConfig.value.model, inputTokens, assistantMsg.tokens || 0);
+      } catch { /* 费用计算失败不影响主流程 */ }
       assistantMsg.streaming = false;
       streamingContent.value = "";
       streamingReasoning.value = "";
@@ -627,6 +658,7 @@ export const useChatStore = defineStore("chat", () => {
     activeConversationId,
     activeConversation,
     sortedConversations,
+    conversationStats,
     profiles,
     activeProfileId,
     activeProfile,

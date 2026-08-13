@@ -38,6 +38,7 @@ export interface ChatMessage {
   streaming?: boolean;
   duration?: number;
   tokens?: number;
+  cost?: number;
 }
 
 /// 对话会话

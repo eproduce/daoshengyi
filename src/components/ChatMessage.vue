@@ -4,6 +4,7 @@ import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
 import hljs from "@/utils/hljs";
 import { useChatStore } from "@/stores/chat";
+import { formatCost } from "@/utils/tokens";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -90,6 +91,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         {{ new Date(message.timestamp).toLocaleTimeString("zh-CN") }}
         <span v-if="message.role === 'assistant' && message.duration" class="msg-meta">· {{ message.duration }}s</span>
         <span v-if="message.role === 'assistant' && message.tokens" class="msg-meta">· {{ message.tokens }} tokens</span>
+        <span v-if="message.role === 'assistant' && message.cost" class="msg-meta">· {{ formatCost(message.cost) }}</span>
       </div>
 
       <div v-if="message.role === 'assistant' && message.content" class="msg-actions">

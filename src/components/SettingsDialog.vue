@@ -4,6 +4,7 @@ import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import McpSettings from "./McpSettings.vue";
+import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
 const emit = defineEmits<{
   close: [];
@@ -19,6 +20,16 @@ const editingProfile = ref<ApiProfile>({
 
 const isNew = ref(false);
 
+// 提示词模板
+const selectedTemplateId = ref("");
+function applyTemplate(id: string) {
+  const t = PROMPT_TEMPLATES.find((p) => p.id === id);
+  if (t) {
+    editingProfile.value.systemPrompt = t.prompt;
+    selectedTemplateId.value = id;
+  }
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -26,6 +37,7 @@ function selectProfile(id: string) {
     editingId.value = id;
     editingProfile.value = { ...p };
     isNew.value = false;
+    selectedTemplateId.value = "";
   }
 }
 
@@ -172,6 +184,26 @@ function handleDelete() {
           ></textarea>
           <span class="form-hint">定义 AI 的角色和行为方式</span>
         </div>
+
+        <!-- 提示词模板 -->
+        <div class="form-group">
+          <label>📚 提示词模板</label>
+          <select
+            class="form-select"
+            :value="selectedTemplateId"
+            @change="applyTemplate(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="" disabled>选择角色模板一键应用...</option>
+            <option
+              v-for="t in PROMPT_TEMPLATES"
+              :key="t.id"
+              :value="t.id"
+            >
+              {{ t.icon }} {{ t.name }} — {{ t.description }}
+            </option>
+          </select>
+          <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
+        </div>
       </div>
 
       <div class="settings-dialog__footer">
@@ -272,6 +304,16 @@ function handleDelete() {
   outline: none; resize: vertical; transition: all .2s;
 }
 .form-textarea:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+}
+.form-select {
+  padding: 10px 14px; border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md); background: var(--bg-secondary);
+  color: var(--text-primary); font-size: 13px; font-family: inherit;
+  outline: none; cursor: pointer; transition: all .2s;
+}
+.form-select:focus {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(99,102,241,.1);
 }
