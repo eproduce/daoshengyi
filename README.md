@@ -85,11 +85,11 @@ daoshengyi/
 
 首次使用请在设置中配置：
 
-- **API 地址** — OpenAI 兼容 API 基础地址（如 `https://api.openai.com`）
+- **API 地址** — API 基础地址（如 `https://api.deepseek.com`）
 - **API Key** — 您的 API 密钥
-- **模型** — 模型名称（如 `gpt-4o`、`deepseek-chat`）
+- **模型** — 模型名称（如 `deepseek-v4-flash`）
 
-配置自动保存在浏览器 localStorage 中。
+配置自动保存在本地（API Key 经 AES-256-GCM 加密）。
 
 ## License
 

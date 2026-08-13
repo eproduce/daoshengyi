@@ -101,7 +101,7 @@ function startNew() {
     name: "新配置",
     baseUrl: "https://api.deepseek.com",
     apiKey: "",
-    model: "deepseek-chat",
+    model: "deepseek-v4-flash",
     maxTokens: 4096,
     temperature: 0.7,
     thinkingEnabled: true,
@@ -196,7 +196,7 @@ function handleDelete() {
               <input
                 v-model="editingProfile.model"
                 type="text"
-                placeholder="deepseek-chat"
+                placeholder="deepseek-v4-flash"
                 @focus="showModelDropdown = true"
                 @input="showModelDropdown = true"
                 @blur="onModelBlur"

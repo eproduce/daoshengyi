@@ -196,7 +196,7 @@ mod tests {
                 name: "DeepSeek".into(),
                 base_url: "https://api.deepseek.com".into(),
                 api_key: "sk-secret".into(),
-                model: "deepseek-chat".into(),
+                model: "deepseek-v4-flash".into(),
                 max_tokens: 4096,
                 temperature: 0.7,
                 thinking_enabled: true,

@@ -51,7 +51,7 @@ async function runReactLoop(
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify({
-        model: config.model || "deepseek-chat",
+        model: config.model || "deepseek-v4-flash",
         messages: convo,
         max_tokens: 1000,
         temperature: 0.3,
@@ -100,7 +100,7 @@ function sanitizeAI(t: string) {
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
-    apiKey: "", model: "deepseek-chat", maxTokens: 4096, temperature: 0.7,
+    apiKey: "", model: "deepseek-v4-flash", maxTokens: 4096, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
     systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
@@ -539,7 +539,7 @@ export const useChatStore = defineStore("chat", () => {
       }, 0);
 
       const rustCfg = {
-        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "deepseek-chat",
+        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "deepseek-v4-flash",
         max_tokens: config.maxTokens, temperature: config.temperature,
         thinking_enabled: config.thinkingEnabled, reasoning_effort: config.reasoningEffort,
         system_prompt: sp, enable_web_search: config.enableWebSearch,

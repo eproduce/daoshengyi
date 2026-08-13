@@ -149,7 +149,7 @@ async function callLLM(config: { baseUrl: string; apiKey: string; model: string 
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify({
-        model: config.model || "deepseek-chat",
+        model: config.model || "deepseek-v4-flash",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 400,
         temperature: 0.3,
