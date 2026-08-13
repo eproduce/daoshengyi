@@ -9,27 +9,94 @@ import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
 
 // --- MCP 工具辅助 ---
-let mcpToolsCache: { server: string; name: string; description: string }[] = [];
+let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
 export async function refreshMcpTools() {
   try {
-    const servers = await invoke<[string, {name:string;description:string}[]][]>("mcp_list_tools");
+    const servers = await invoke<[string, {name:string;description:string;inputSchema?:Record<string,unknown>}[]][]>("mcp_list_tools");
     mcpToolsCache = [];
     for (const [server, tools] of servers) {
-      for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description });
+      for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description, inputSchema: t.inputSchema });
     }
   } catch { mcpToolsCache = []; }
 }
 function getMcpToolsPrompt(): string {
   if (mcpToolsCache.length === 0) return "";
   return "\n\n## 可用工具 (MCP)\n" + mcpToolsCache.map(t =>
-    `- ${t.name} (${t.server}): ${t.description}`
-  ).join("\n") + "\n\n你可以调用这些工具。调用格式：\`[tool:服务器名:工具名:JSON参数]\`";
+    `- **${t.name}** (${t.server}): ${t.description}`
+  ).join("\n") +
+  `\n\n当需要使用工具时，只回复以下格式（不要加其他文字）：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>`;
 }
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
   const result = await invoke<{content:{type:string;text?:string}[];isError?:boolean}>("mcp_call_tool", {
     server, toolName: tool, arguments: args,
   });
   return result.content.map(c => c.text || "").join("\n");
+}
+
+/** 解析 LLM 响应中的工具调用 */
+function parseToolCall(content: string): { server: string; tool: string; arguments: Record<string, unknown> } | null {
+  const match = content.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (parsed.tool && parsed.arguments) {
+      return { server: parsed.server || "default", tool: parsed.tool, arguments: parsed.arguments };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** ReAct 循环：非流式调用 LLM，执行工具，直到得到最终答案 */
+async function runReactLoop(
+  config: ApiConfig,
+  messages: { role: string; content: string }[],
+  maxIterations = 5
+): Promise<string[]> {
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  const toolResults: string[] = [];
+  const convo = [...messages];
+
+  for (let i = 0; i < maxIterations; i++) {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({
+        model: config.model || "gpt-4o",
+        messages: convo,
+        max_tokens: 1000,
+        temperature: 0.3,
+      }),
+    });
+
+    if (!resp.ok) break;
+    const data = await resp.json();
+    const content: string = data.choices?.[0]?.message?.content || "";
+
+    const toolCall = parseToolCall(content);
+    if (!toolCall) {
+      // 没有工具调用，是最终答案
+      return [content, ...toolResults];
+    }
+
+    // 执行工具
+    toolResults.push(`> 🔧 调用工具 \`${toolCall.tool}\`\n> \`\`\`json\n> ${JSON.stringify(toolCall.arguments).slice(0, 300)}\n> \`\`\``);
+    try {
+      const result = await callMcpTool(toolCall.server, toolCall.tool, toolCall.arguments);
+      const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
+      toolResults.push(`<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`);
+      convo.push({ role: "assistant", content });
+      convo.push({
+        role: "user",
+        content: `<tool_result>\n${result}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
+      });
+    } catch (e: unknown) {
+      const err = e instanceof Error ? e.message : String(e);
+      toolResults.push(`> ❌ 工具调用失败: \`${err}\``);
+      convo.push({ role: "assistant", content });
+      convo.push({ role: "user", content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。` });
+    }
+  }
+  return toolResults;
 }
 
 /** 清洗 AI 模型自报身份的词汇 */
@@ -425,20 +492,44 @@ export const useChatStore = defineStore("chat", () => {
         system_prompt: sp, enable_web_search: config.enableWebSearch,
       };
 
-      // 监听 Rust SSE 事件
-      const doneP = new Promise<void>((resolve, reject) => {
-        listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
-          const d = e.payload;
-          if (d.reasoning_content) streamingReasoning.value += sanitizeAI(d.reasoning_content);
-          if (d.content) streamingContent.value += sanitizeAI(d.content);
-          if (d.tokens) assistantMsg.tokens = d.tokens;
-        }).then(f => unlistenFns.push(f));
-        listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));
-        listen("sse-done", () => resolve()).then(f => unlistenFns.push(f));
-      });
+      // ReAct 自动工具调用：有 MCP 工具时先跑决策循环
+      let reactDone = false;
+      if (mcpToolsCache.length > 0) {
+        const flatMsgs = rustMsgs.map(m => ({
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+        }));
+        try {
+          streamingContent.value = "🔍 正在分析并调用工具...";
+          const [finalAnswer, ...toolResults] = await runReactLoop(config, flatMsgs);
+          if (finalAnswer) {
+            // ReAct 循环给出了最终答案，直接展示（跳过流式）
+            streamingContent.value =
+              (toolResults.length > 0 ? toolResults.join("\n") + "\n\n" : "") + sanitizeAI(finalAnswer);
+            reactDone = true;
+          } else if (toolResults.length > 0) {
+            // 循环耗尽仍在调工具：把过程附到上下文，交给流式兜底回答
+            rustMsgs.push({ role: "user", content: toolResults.join("\n") + "\n请直接给出最终答案。" });
+          }
+        } catch { /* ReAct 失败，回退到流式 */ }
+      }
 
-      await invoke("send_message", { config: rustCfg, messages: rustMsgs });
-      await doneP;
+      if (!reactDone) {
+        // 监听 Rust SSE 事件
+        const doneP = new Promise<void>((resolve, reject) => {
+          listen<{ reasoning_content?: string; content?: string; tokens?: number }>("sse-delta", e => {
+            const d = e.payload;
+            if (d.reasoning_content) streamingReasoning.value += sanitizeAI(d.reasoning_content);
+            if (d.content) streamingContent.value += sanitizeAI(d.content);
+            if (d.tokens) assistantMsg.tokens = d.tokens;
+          }).then(f => unlistenFns.push(f));
+          listen<string>("sse-error", e => reject(new Error(e.payload))).then(f => unlistenFns.push(f));
+          listen("sse-done", () => resolve()).then(f => unlistenFns.push(f));
+        });
+
+        await invoke("send_message", { config: rustCfg, messages: rustMsgs });
+        await doneP;
+      }
 
     } catch (err: unknown) {
       if (!timedOut && err instanceof Error) {
