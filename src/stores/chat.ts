@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, reactive } from "vue";
 import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
@@ -423,13 +423,14 @@ export const useChatStore = defineStore("chat", () => {
 
     addUserMessage(convId, text, images);
 
-    const assistantMsg: ChatMessage = {
+    // 用 reactive 创建，保证 push 后对 tokens/cost 等的赋值能触发响应式更新
+    const assistantMsg = reactive<ChatMessage>({
       id: uuidv4(),
       role: "assistant",
       content: "",
       timestamp: Date.now(),
       streaming: true,
-    };
+    });
     const conv = conversations.value.find((c) => c.id === convId)!;
 
     // 图片预处理：非视觉模型 → 调用视觉 API 描述图片
