@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
+import { invoke } from "@tauri-apps/api/core";
 import McpSettings from "./McpSettings.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
@@ -27,6 +28,37 @@ function applyTemplate(id: string) {
   if (t) {
     editingProfile.value.systemPrompt = t.prompt;
     selectedTemplateId.value = id;
+  }
+}
+
+// 动态获取厂商模型列表
+const availableModels = ref<string[]>([]);
+const loadingModels = ref(false);
+const modelError = ref("");
+
+async function fetchModels() {
+  if (!editingProfile.value.baseUrl || !editingProfile.value.apiKey) {
+    modelError.value = "请先填写 API 地址和 API Key";
+    return;
+  }
+  loadingModels.value = true;
+  modelError.value = "";
+  try {
+    const models = await invoke<string[]>("list_models", {
+      baseUrl: editingProfile.value.baseUrl,
+      apiKey: editingProfile.value.apiKey,
+    });
+    availableModels.value = models;
+    if (models.length > 0) {
+      modelError.value = `获取到 ${models.length} 个模型`;
+    } else {
+      modelError.value = "未获取到模型列表";
+    }
+  } catch (e: unknown) {
+    availableModels.value = [];
+    modelError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    loadingModels.value = false;
   }
 }
 
@@ -138,12 +170,31 @@ function handleDelete() {
 
         <div class="form-group">
           <label>模型</label>
-          <input
-            v-model="editingProfile.model"
-            type="text"
-            placeholder="gpt-4o"
-          />
-          <span class="form-hint">例如: gpt-4o, deepseek-chat, claude-3-opus 等</span>
+          <div class="model-row">
+            <input
+              v-model="editingProfile.model"
+              type="text"
+              placeholder="gpt-4o"
+              list="model-options"
+            />
+            <datalist id="model-options">
+              <option v-for="m in availableModels" :key="m" :value="m" />
+            </datalist>
+            <button
+              type="button"
+              class="btn-secondary btn-fetch"
+              :disabled="loadingModels"
+              @click="fetchModels"
+            >
+              {{ loadingModels ? "获取中…" : "获取模型" }}
+            </button>
+          </div>
+          <span
+            v-if="modelError"
+            class="form-hint"
+            :class="{ 'form-hint--error': availableModels.length === 0 && !loadingModels }"
+          >{{ modelError }}</span>
+          <span v-else class="form-hint">可手动输入，或点击「获取模型」从厂商拉取可用模型列表</span>
         </div>
 
         <div class="form-row">
@@ -318,6 +369,13 @@ function handleDelete() {
   box-shadow: 0 0 0 3px rgba(99,102,241,.1);
 }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+.model-row { display: flex; align-items: center; gap: 8px; }
+.model-row input { flex: 1; min-width: 0; }
+.btn-fetch {
+  padding: 10px 14px; font-size: 12px; white-space: nowrap; flex-shrink: 0;
+}
+.form-hint--error { color: #f87171; }
 
 .toggle-row {
   display: flex; align-items: center; justify-content: space-between;

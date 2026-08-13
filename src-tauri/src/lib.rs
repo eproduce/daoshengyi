@@ -138,6 +138,43 @@ fn load_app_settings(
     Ok(settings)
 }
 
+/// 获取厂商所有可用模型（OpenAI 兼容 /models 端点）
+#[tauri::command]
+async fn list_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{}/models", base);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("构建请求失败: {}", e))?;
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .map_err(|e| format!("请求模型列表失败: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {}: {}", status.as_u16(), body));
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("解析响应失败: {}", e))?;
+    let mut models: Vec<String> = Vec::new();
+    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
 #[tauri::command]
 fn touch_fact(db: State<Database>, id: String) -> Result<(), String> {
     db.touch_fact(&id)
@@ -339,6 +376,7 @@ pub fn run() {
             get_preferences,
             save_app_settings,
             load_app_settings,
+            list_models,
             touch_fact,
             delete_fact_cmd,
             prune_facts,
