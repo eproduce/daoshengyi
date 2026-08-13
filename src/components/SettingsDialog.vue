@@ -176,7 +176,7 @@ function handleDelete() {
             type="text"
             placeholder="https://api.deepseek.com"
           />
-          <span class="form-hint">API 基础地址（OpenAI 兼容格式）</span>
+          <span class="form-hint">API 基础地址</span>
         </div>
 
         <div class="form-group">

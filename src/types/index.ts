@@ -51,7 +51,7 @@ export interface Conversation {
   model: string;
 }
 
-/// API 请求体（OpenAI 兼容格式）
+/// API 请求体（兼容格式）
 export interface ChatCompletionRequest {
   model: string;
   messages: {

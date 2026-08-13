@@ -27,19 +27,18 @@ assert(estimateTokens("你好 hello 世界") === 6, "中英混合 ≈ 6", `got $
 assert(estimateTokens("a") === 1, "单字符最少 1", `got ${estimateTokens("a")}`);
 
 console.log("\n== getPricing ==");
-assert(getPricing("gpt-4o").input === 2.5 && getPricing("gpt-4o").output === 10, "gpt-4o 价格");
 assert(getPricing("deepseek-chat").input === 0.27, "deepseek-chat 价格", `got ${getPricing("deepseek-chat").input}`);
-assert(getPricing("deepseek-v4-pro").label === "DeepSeek V4", "deepseek-v4 匹配", `got ${getPricing("deepseek-v4-pro").label}`);
-assert(getPricing("gpt-4o-mini").input === 0.15, "gpt-4o-mini 价格");
-assert(getPricing("claude-3-5-sonnet").output === 15, "claude 价格");
-assert(getPricing("unknown-model").input === 0.27, "未知模型回退默认价");
+assert(getPricing("deepseek-v4-flash").label === "DeepSeek V4", "deepseek-v4-flash 匹配 V4", `got ${getPricing("deepseek-v4-flash").label}`);
+assert(getPricing("deepseek-v4-pro").label === "DeepSeek V4", "deepseek-v4-pro 匹配 V4", `got ${getPricing("deepseek-v4-pro").label}`);
+assert(getPricing("deepseek-reasoner").output === 2.19, "deepseek-reasoner 价格", `got ${getPricing("deepseek-reasoner").output}`);
+assert(getPricing("unknown-model").input === 0.28, "未知模型回退 DeepSeek V4 默认价", `got ${getPricing("unknown-model").input}`);
 
 console.log("\n== estimateCost ==");
-// gpt-4o: 1M input=2.5, 1M output=10 → 1000 input + 1000 output
-const c1 = estimateCost("gpt-4o", 1000, 1000);
-assert(Math.abs(c1 - 0.0125) < 1e-9, "gpt-4o 1000/1000 ≈ $0.0125", `got ${c1}`);
+// deepseek-v4: 1M input=0.28, 1M output=0.42
+const c1 = estimateCost("deepseek-v4-flash", 1_000_000, 1_000_000);
+assert(Math.abs(c1 - 0.70) < 1e-6, "deepseek-v4 1M/1M ≈ $0.70", `got ${c1}`);
 const c2 = estimateCost("deepseek-chat", 1_000_000, 1_000_000);
-assert(Math.abs(c2 - 1.37) < 1e-6, "deepseek 1M/1M ≈ $1.37", `got ${c2}`);
+assert(Math.abs(c2 - 1.37) < 1e-6, "deepseek-chat 1M/1M ≈ $1.37", `got ${c2}`);
 
 console.log("\n== formatCost ==");
 assert(formatCost(0) === "$0.0000", "0 费用");

@@ -90,7 +90,7 @@ async function runReactLoop(
 }
 
 /** 清洗 AI 模型自报身份的词汇 */
-const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK", "OpenAI", "openai", "ChatGPT", "GPT-4", "Claude", "claude", "Gemini", "Llama"];
+const AI_NAMES = ["DeepSeek", "deepseek", "DEEPSEEK"];
 function sanitizeAI(t: string) {
   let r = t;
   for (const n of AI_NAMES) r = r.replace(new RegExp(n, "g"), "道生一");

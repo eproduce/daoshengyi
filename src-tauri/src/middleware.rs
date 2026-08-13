@@ -7,14 +7,6 @@ const APP_IDENTITY: &str = "道生一（Dao Sheng Yi）—— 一个基于开源
 /// 已知的 AI 模型名称，需要替换为 APP_NAME
 const AI_NAMES: &[&str] = &[
     "DeepSeek", "deepseek", "DEEPSEEK",
-    "OpenAI", "openai", "OpenAI",
-    "ChatGPT", "GPT-4", "GPT-4o", "GPT-3.5",
-    "Claude", "claude",
-    "Gemini", "gemini",
-    "Llama", "LLaMA",
-    "Qwen", "qwen",
-    "Mistral", "mistral",
-    "Anthropic", "anthropic",
 ];
 
 /// 前置处理：注入应用身份到消息列表

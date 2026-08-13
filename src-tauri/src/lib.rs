@@ -138,7 +138,7 @@ fn load_app_settings(
     Ok(settings)
 }
 
-/// 获取厂商所有可用模型（OpenAI 兼容 /models 端点）
+/// 获取厂商所有可用模型（兼容 /models 端点）
 #[tauri::command]
 async fn list_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
     let base = base_url.trim_end_matches('/');

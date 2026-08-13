@@ -16,7 +16,7 @@ interface SummaryRow {
 }
 
 export function useMemorySystem() {
-  // --- Embedding 生成 (OpenAI 兼容 API) ---
+  // --- Embedding 生成 (兼容 API) ---
   async function generateEmbedding(text: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<number[] | null> {
     try {
       const baseUrl = config.baseUrl.replace(/\/+$/, "");
