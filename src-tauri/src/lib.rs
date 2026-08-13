@@ -3,6 +3,7 @@ mod middleware;
 mod db;
 mod search;
 mod mcp;
+mod settings;
 
 use tauri::{Emitter, Manager, State};
 use futures::StreamExt;
@@ -104,6 +105,37 @@ fn search_facts(db: State<Database>, query: String, limit: i64) -> Result<Vec<db
 #[tauri::command]
 fn get_preferences(db: State<Database>) -> Result<Vec<db::FactRow>, String> {
     db.get_facts_by_type("preference", 20)
+}
+
+// --- 应用设置存取（配置 + 加密 API Key） ---
+
+const SETTINGS_KEY: &str = "app_settings";
+
+#[tauri::command]
+fn save_app_settings(
+    db: State<Database>,
+    cipher: State<settings::SecretCipher>,
+    mut settings: settings::AppSettings,
+) -> Result<(), String> {
+    cipher.encrypt_settings(&mut settings)?;
+    let json = serde_json::to_string(&settings).map_err(|e| format!("序列化设置失败: {}", e))?;
+    db.set_setting(SETTINGS_KEY, &json)
+}
+
+#[tauri::command]
+fn load_app_settings(
+    db: State<Database>,
+    cipher: State<settings::SecretCipher>,
+) -> Result<settings::AppSettings, String> {
+    let json = match db.get_setting(SETTINGS_KEY)? {
+        Some(v) => v,
+        None => return Ok(settings::AppSettings::default()),
+    };
+    let mut settings: settings::AppSettings =
+        serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
+    // 解密 apiKey；解密失败（旧数据为明文）时保留原文
+    cipher.decrypt_settings(&mut settings)?;
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -276,8 +308,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let app_dir = app.path().app_data_dir().expect("无法获取数据目录");
-            let database = Database::new(app_dir).expect("数据库初始化失败");
+            let database = Database::new(app_dir.clone()).expect("数据库初始化失败");
+            let cipher = settings::SecretCipher::new(&app_dir).expect("加密密钥初始化失败");
             app.manage(database);
+            app.manage(cipher);
             app.manage(McpManager {
                 clients: Mutex::new(std::collections::HashMap::new()),
             });
@@ -303,6 +337,8 @@ pub fn run() {
             save_fact,
             search_facts,
             get_preferences,
+            save_app_settings,
+            load_app_settings,
             touch_fact,
             delete_fact_cmd,
             prune_facts,

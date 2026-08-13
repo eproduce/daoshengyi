@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS memory_facts (
 
 CREATE INDEX IF NOT EXISTS idx_facts_type ON memory_facts(fact_type);
 CREATE INDEX IF NOT EXISTS idx_summaries_conv ON memory_summaries(conversation_id);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -373,6 +378,33 @@ impl Database {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit as usize);
         Ok(scored)
+    }
+
+    // --- 应用设置存取 ---
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM app_settings WHERE key=?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![key], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 

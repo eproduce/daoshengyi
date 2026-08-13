@@ -9,6 +9,7 @@ import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 import { parseToolCall } from "@/utils/tool-call";
+import { initSettings, updateSettings, getSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
@@ -136,7 +137,13 @@ export const useChatStore = defineStore("chat", () => {
           })),
         });
       }
-      const activeId = localStorage.getItem("daoshengyi_activeConv");
+      // 优先从 Rust 设置读活跃对话，回退 localStorage 旧数据
+      let activeId: string | null = null;
+      try {
+        const settings = await initSettings();
+        activeId = settings.activeConversationId;
+      } catch { /* ignore */ }
+      if (!activeId) activeId = localStorage.getItem("daoshengyi_activeConv");
       if (activeId && conversations.value.some(c => c.id === activeId)) {
         activeConversationId.value = activeId;
       }
@@ -171,11 +178,14 @@ export const useChatStore = defineStore("chat", () => {
   // --- 状态 ---
   const conversations = ref<Conversation[]>([]);
   const activeConversationId = ref<string | null>(null);
-  const profiles = ref<ApiProfile[]>(loadProfiles());
+  const profiles = ref<ApiProfile[]>(loadProfilesLegacy());
   const activeProfileId = ref<string>(profiles.value[0]?.id ?? "default");
   const isStreaming = ref(false);
   const streamingContent = ref("");
   const streamingReasoning = ref("");
+
+  // 异步加载 Rust 端配置（优先于 localStorage 旧数据）
+  initSettingsFromRust();
 
   // --- 计算属性 ---
   const activeConversation = computed(() =>
@@ -204,7 +214,7 @@ export const useChatStore = defineStore("chat", () => {
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
   watch(activeConversationId, (id) => {
-    if (id) localStorage.setItem("daoshengyi_activeConv", id);
+    if (id) updateSettings({ activeConversationId: id });
   });
 
   const activeProfile = computed(() =>
@@ -227,15 +237,15 @@ export const useChatStore = defineStore("chat", () => {
     };
   });
 
-  // --- 配置组持久化 ---
-  function loadProfiles(): ApiProfile[] {
+  // --- 配置组持久化（Rust 端 SQLite + 加密 API Key） ---
+  // 同步兜底：先读 localStorage 旧数据（作为迁移源）
+  function loadProfilesLegacy(): ApiProfile[] {
     try {
       const saved = localStorage.getItem("daoshengyi_profiles");
       if (saved) {
         const parsed = JSON.parse(saved) as ApiProfile[];
         // 迁移：旧数据没有 thinkingEnabled 字段，重置为默认
         if (parsed.length > 0 && parsed[0].thinkingEnabled === undefined) {
-          console.log("[道生一] 检测到旧配置格式，已重置为默认");
           localStorage.removeItem("daoshengyi_profiles");
           localStorage.removeItem("daoshengyi_activeProfile");
           return [...DEFAULT_PROFILES];
@@ -247,14 +257,42 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function saveProfiles() {
-    localStorage.setItem("daoshengyi_profiles", JSON.stringify(profiles.value));
-    localStorage.setItem("daoshengyi_activeProfile", activeProfileId.value);
+    updateSettings({
+      profiles: profiles.value,
+      activeProfileId: activeProfileId.value,
+    });
+  }
+
+  // 从 Rust 加载配置；无 Rust 数据但有 localStorage 旧数据时执行迁移
+  async function initSettingsFromRust() {
+    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    try {
+      const legacy = localStorage.getItem("daoshengyi_profiles");
+      const settings = await initSettings();
+      if (settings.profiles.length > 0) {
+        profiles.value = settings.profiles;
+        if (settings.activeProfileId && profiles.value.some((p) => p.id === settings.activeProfileId)) {
+          activeProfileId.value = settings.activeProfileId;
+        }
+        if (legacy) {
+          localStorage.removeItem("daoshengyi_profiles");
+          localStorage.removeItem("daoshengyi_activeProfile");
+        }
+      } else if (legacy) {
+        // Rust 无数据，迁移 localStorage 旧数据
+        saveProfiles();
+        localStorage.removeItem("daoshengyi_profiles");
+        localStorage.removeItem("daoshengyi_activeProfile");
+      }
+    } catch (e) {
+      console.warn("[道生一] 从 Rust 加载配置失败，回退 localStorage:", e);
+    }
   }
 
   // 自动保存
   watch(profiles, saveProfiles, { deep: true });
   watch(activeProfileId, (id) => {
-    localStorage.setItem("daoshengyi_activeProfile", id);
+    updateSettings({ activeProfileId: id });
   });
 
   function switchProfile(id: string) {

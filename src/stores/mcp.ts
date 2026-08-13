@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
+import { initSettings, updateSettings, type McpServerPersist } from "@/api/appSettings";
 
 interface McpServerConfig {
   id: string;
@@ -15,18 +16,49 @@ interface McpServerConfig {
 
 const STORAGE_KEY = "daoshengyi_mcp_servers";
 
-function load(): McpServerConfig[] {
+// 同步兜底：先读 localStorage 旧数据（作为迁移源）
+function loadLegacy(): McpServerConfig[] {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
     return s ? JSON.parse(s) : [];
   } catch { return []; }
 }
 
-export const useMcpStore = defineStore("mcp", () => {
-  const servers = ref<McpServerConfig[]>(load());
+// 持久化形态 → 运行时形态（补运行时状态）
+function toConfig(p: McpServerPersist): McpServerConfig {
+  return { ...p, connected: false, toolCount: 0 };
+}
 
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(servers.value)); }
+export const useMcpStore = defineStore("mcp", () => {
+  const servers = ref<McpServerConfig[]>(loadLegacy());
+
+  function save() {
+    updateSettings({
+      mcpServers: servers.value.map((s) => ({
+        id: s.id, name: s.name, command: s.command, args: s.args, enabled: s.enabled,
+      })),
+    });
+  }
   watch(servers, save, { deep: true });
+
+  // 异步从 Rust 加载；无 Rust 数据但有 localStorage 旧数据时执行迁移
+  async function initFromRust() {
+    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    try {
+      const legacy = localStorage.getItem(STORAGE_KEY);
+      const settings = await initSettings();
+      if (settings.mcpServers.length > 0) {
+        servers.value = settings.mcpServers.map(toConfig);
+        if (legacy) localStorage.removeItem(STORAGE_KEY);
+      } else if (legacy) {
+        save();
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    } catch (e) {
+      console.warn("[道生一] 从 Rust 加载 MCP 配置失败，回退 localStorage:", e);
+    }
+  }
+  initFromRust();
 
   function add(config: Omit<McpServerConfig, "id" | "connected" | "toolCount">) {
     servers.value.push({ ...config, id: uuidv4(), connected: false, toolCount: 0 });

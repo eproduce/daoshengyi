@@ -110,7 +110,7 @@ function cancel() {
       <div class="mcp-preset" @click="form = { name: 'Filesystem', command: 'npx', args: '-y @modelcontextprotocol/server-filesystem /tmp', enabled: true }; editing = ''">
         📁 文件系统 — 读写本地文件
       </div>
-      <div class="mcp-preset" @click="form = { name: 'Fetch', command: 'npx', args: '-y @anthropic/fetch-mcp', enabled: true }; editing = ''">
+      <div class="mcp-preset" @click="form = { name: 'Fetch', command: 'npx', args: '-y @modelcontextprotocol/server-fetch', enabled: true }; editing = ''">
         🌐 网络请求 — HTTP 抓取
       </div>
       <div class="mcp-preset" @click="form = { name: 'Puppeteer', command: 'npx', args: '-y @modelcontextprotocol/server-puppeteer', enabled: true }; editing = ''">
