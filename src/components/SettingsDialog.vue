@@ -4,6 +4,7 @@ import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
+import { getSettings, updateSettings } from "@/api/appSettings";
 import McpSettings from "./McpSettings.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
@@ -81,6 +82,13 @@ function onModelBlur() {
   setTimeout(() => {
     showModelDropdown.value = false;
   }, 150);
+}
+
+// Agent 工作区（借鉴 DeepSeek Harness 的 workspace 概念）
+const workspace = ref(getSettings().workspace || "");
+function saveWorkspace() {
+  const v = workspace.value.trim();
+  updateSettings({ workspace: v || null });
 }
 
 // 切换编辑目标
@@ -288,6 +296,19 @@ function handleDelete() {
             </option>
           </select>
           <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
+        </div>
+
+        <!-- Agent 工作区 -->
+        <div class="form-group">
+          <label>📂 Agent 工作区</label>
+          <input
+            v-model="workspace"
+            type="text"
+            placeholder="/path/to/project"
+            @blur="saveWorkspace"
+            @keyup.enter="saveWorkspace"
+          />
+          <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
         </div>
       </div>
 

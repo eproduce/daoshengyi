@@ -44,6 +44,9 @@ pub struct AppSettings {
     pub active_profile_id: String,
     pub mcp_servers: serde_json::Value,
     pub active_conversation_id: Option<String>,
+    /// Agent 工作区目录（借鉴 DeepSeek Harness 的 workspace 概念）
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -53,6 +56,7 @@ impl Default for AppSettings {
             active_profile_id: String::new(),
             mcp_servers: serde_json::Value::Array(Vec::new()),
             active_conversation_id: None,
+            workspace: None,
         }
     }
 }
@@ -209,6 +213,7 @@ mod tests {
             active_profile_id: "p1".into(),
             mcp_servers: serde_json::json!([]),
             active_conversation_id: None,
+            workspace: None,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -233,6 +238,7 @@ mod tests {
             active_profile_id: "p1".into(),
             mcp_servers: serde_json::json!([]),
             active_conversation_id: None,
+            workspace: None,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

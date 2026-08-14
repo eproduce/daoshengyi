@@ -467,7 +467,12 @@ export const useChatStore = defineStore("chat", () => {
     const startTime = Date.now();
     try {
       const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>(
-        "execute_command", { command, args, cwd: null, timeoutSecs: 30 },
+        "execute_command", {
+          command,
+          args,
+          cwd: getSettings().workspace || null,
+          timeoutSecs: 30,
+        },
       );
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
@@ -490,11 +495,49 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // 读取文件（/read 指令，借鉴 DeepSeek Harness 的文件能力）
+  async function runRead(filePath: string) {
+    let convId = activeConversationId.value;
+    if (!convId) convId = createConversation();
+    addUserMessage(convId, `/read ${filePath}`);
+
+    const conv = conversations.value.find((c) => c.id === convId)!;
+    const assistantMsg = reactive<ChatMessage>({
+      id: uuidv4(), role: "assistant", content: "", timestamp: Date.now(), streaming: true,
+    });
+    conv.messages.push(assistantMsg);
+    conv.updatedAt = Date.now();
+    isStreaming.value = true;
+    streamingContent.value = `📄 正在读取 ${filePath}...`;
+
+    const startTime = Date.now();
+    try {
+      const content = await invoke<string>("read_file", { path: filePath });
+      assistantMsg.content = `📄 **${filePath}**\n\n\`\`\`\n${content.slice(0, 12000)}\n\`\`\``;
+    } catch (e: unknown) {
+      assistantMsg.content = `📄 **${filePath}**\n\n❌ 读取失败: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      assistantMsg.streaming = false;
+      assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      assistantMsg.tokens = estimateMessageTokens(assistantMsg.content);
+      assistantMsg.cost = 0;
+      streamingContent.value = "";
+      isStreaming.value = false;
+      conv.updatedAt = Date.now();
+      scheduleSave();
+    }
+  }
+
   // --- 流式发送 ---
   async function sendMessage(text: string, images?: ImageAttachment[]) {
     // 命令执行指令：/run <命令>
     if (text.trim().startsWith("/run ")) {
       await runCommand(text.trim().slice(5).trim());
+      return;
+    }
+    // 文件读取指令：/read <路径>
+    if (text.trim().startsWith("/read ")) {
+      await runRead(text.trim().slice(6).trim());
       return;
     }
 

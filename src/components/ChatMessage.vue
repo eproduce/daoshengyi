@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, onUpdated } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onUpdated } from "vue";
 import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
 import hljs from "@/utils/hljs";
@@ -13,6 +13,22 @@ const props = defineProps<{ message: Msg }>();
 const previewImage = ref<ImageAttachment | null>(null);
 const showReasoning = ref(true);
 const copied = ref(false);
+
+// 终端命令结果渲染（借鉴 DeepSeek Harness 的 terminal card）
+const isTerminalContent = computed(() => {
+  const c = props.message.content;
+  return typeof c === "string" && c.startsWith("$ ") && c.includes("退出码");
+});
+const terminalCommand = computed(() => {
+  const c = props.message.content;
+  if (!c) return "";
+  return c.split("\n")[0].replace(/^\$\s*/, "");
+});
+const terminalOutput = computed(() => {
+  const c = props.message.content;
+  if (!c) return "";
+  return c.split("\n").slice(1).join("\n").trim();
+});
 
 const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
 function md(s: string) { return s ? marked.parse(s) as string : ""; }
@@ -86,7 +102,18 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
           <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
         </div>
 
-        <div v-if="message.content" class="message__content markdown-body" v-html="md(message.content)"></div>
+        <template v-if="message.content">
+          <div v-if="isTerminalContent" class="terminal-card">
+            <div class="terminal-card__bar">
+              <span class="terminal-card__dot r"></span>
+              <span class="terminal-card__dot y"></span>
+              <span class="terminal-card__dot g"></span>
+              <span class="terminal-card__cmd">$ {{ terminalCommand }}</span>
+            </div>
+            <pre class="terminal-card__body">{{ terminalOutput }}</pre>
+          </div>
+          <div v-else class="message__content markdown-body" v-html="md(message.content)"></div>
+        </template>
       </div>
 
       <div class="message__meta">
@@ -146,6 +173,29 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .msg-actions { display: flex; gap: 6px; }
 .msg-act-btn { padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: all .15s; }
 .msg-act-btn:hover { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-bg); }
+
+/* 终端命令结果卡片 */
+.terminal-card {
+  background: #0d0d1a; border: 1px solid #252540; border-radius: 10px;
+  overflow: hidden; font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+}
+.terminal-card__bar {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 10px; background: #1a1a2e; border-bottom: 1px solid #252540;
+}
+.terminal-card__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.terminal-card__dot.r { background: #ff5f57; }
+.terminal-card__dot.y { background: #febc2e; }
+.terminal-card__dot.g { background: #28c840; }
+.terminal-card__cmd {
+  font-size: 11px; color: #8a8aa0; margin-left: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.terminal-card__body {
+  margin: 0; padding: 10px 12px; font-size: 12px; line-height: 1.5;
+  color: #cdd6f4; white-space: pre-wrap; word-break: break-word;
+  max-height: 400px; overflow-y: auto;
+}
 .message__thinking { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
 .thinking-dot { font-size: 7px; color: var(--text-muted); animation: dotPulse 1.4s infinite; }
 .thinking-dot:nth-child(1) { animation-delay: 0s; } .thinking-dot:nth-child(2) { animation-delay: .2s; } .thinking-dot:nth-child(3) { animation-delay: .4s; }

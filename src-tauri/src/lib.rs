@@ -62,6 +62,12 @@ struct CommandOutput {
     timed_out: bool,
 }
 
+/// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）
+#[tauri::command]
+fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+}
+
 /// 执行终端命令（一次性返回输出，默认 60 秒超时）
 #[tauri::command]
 async fn execute_command(
@@ -522,6 +528,7 @@ pub fn run() {
             web_search,
             fetch_page,
             execute_command,
+            read_file,
             mcp_connect,
             mcp_call_tool,
             mcp_list_tools,

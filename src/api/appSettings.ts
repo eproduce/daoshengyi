@@ -20,6 +20,8 @@ export interface AppSettingsPayload {
   activeProfileId: string;
   mcpServers: McpServerPersist[];
   activeConversationId: string | null;
+  /// Agent 工作区目录
+  workspace: string | null;
 }
 
 let cache: AppSettingsPayload = {
@@ -27,6 +29,7 @@ let cache: AppSettingsPayload = {
   activeProfileId: "",
   mcpServers: [],
   activeConversationId: null,
+  workspace: null,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
