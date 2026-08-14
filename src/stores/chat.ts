@@ -422,9 +422,34 @@ export const useChatStore = defineStore("chat", () => {
     return { command: clean[0] || "", args: clean.slice(1) };
   }
 
+  // 危险命令模式（借鉴 DeepSeek Harness 的 approval 审批理念）
+  const DANGEROUS_PATTERNS: RegExp[] = [
+    /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i,   // rm -rf / rm -fr
+    /\brm\s+.*\s\/\s*$|\brm\s+-[a-z]*r[a-z]*f\s+\//i,
+    /\bsudo\b/i,
+    /\bmkfs\b/i,
+    /\bdd\s+if=/i,
+    /\bshutdown\b/i,
+    /\breboot\b/i,
+    /\b:\(\)\s*\{/i,                                  // fork bomb
+    /\bgit\s+reset\s+--hard\b/i,
+    /\bgit\s+push\b[^\n]*--force\b/i,
+    /\bchmod\s+-R\s+777\b/i,
+  ];
+
+  function isDangerous(cmdStr: string): boolean {
+    return DANGEROUS_PATTERNS.some((p) => p.test(cmdStr));
+  }
+
   async function runCommand(cmdStr: string) {
     const { command, args } = parseCommandLine(cmdStr);
     if (!command) return;
+
+    // 危险命令需用户确认
+    if (isDangerous(cmdStr)) {
+      const ok = window.confirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
+      if (!ok) return;
+    }
 
     let convId = activeConversationId.value;
     if (!convId) convId = createConversation();

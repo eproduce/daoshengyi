@@ -65,12 +65,16 @@ struct CommandOutput {
 /// 执行终端命令（一次性返回输出，默认 60 秒超时）
 #[tauri::command]
 async fn execute_command(
+    db: State<'_, Database>,
     command: String,
     args: Vec<String>,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
 ) -> Result<CommandOutput, String> {
     use tokio::io::AsyncReadExt;
+
+    let start = std::time::Instant::now();
+    let audit_args = format!("{} {}", command, args.join(" "));
 
     let mut cmd = tokio::process::Command::new(&command);
     cmd.args(&args);
@@ -100,21 +104,35 @@ async fn execute_command(
     })
     .await;
 
+    let duration = start.elapsed().as_millis() as i64;
+
     match result {
         Ok((_, _, status_res, out_buf, err_buf)) => {
             let status = status_res.map_err(|e| format!("等待命令失败: {}", e))?;
+            let stdout = String::from_utf8_lossy(&out_buf).to_string();
+            let stderr = String::from_utf8_lossy(&err_buf).to_string();
+            let exit_code = status.code().unwrap_or(-1);
+            let _ = db.log_tool_call(
+                "command",
+                &audit_args,
+                &format!("exit={} out={} err={}", exit_code, stdout, stderr),
+                exit_code != 0,
+                duration,
+            );
             Ok(CommandOutput {
-                stdout: String::from_utf8_lossy(&out_buf).to_string(),
-                stderr: String::from_utf8_lossy(&err_buf).to_string(),
-                exit_code: status.code().unwrap_or(-1),
+                stdout,
+                stderr,
+                exit_code,
                 timed_out: false,
             })
         }
         Err(_) => {
             // 超时：child 因 kill_on_drop 被自动终止
+            let msg = format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60));
+            let _ = db.log_tool_call("command", &audit_args, &msg, true, duration);
             Ok(CommandOutput {
                 stdout: String::new(),
-                stderr: format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60)),
+                stderr: msg,
                 exit_code: -1,
                 timed_out: true,
             })
@@ -333,19 +351,60 @@ async fn mcp_connect(
 #[tauri::command]
 async fn mcp_call_tool(
     manager: State<'_, McpManager>,
+    db: State<'_, Database>,
     server: String,
     tool_name: String,
     arguments: serde_json::Value,
 ) -> Result<mcp::CallToolResult, String> {
-    let mut clients = manager.clients.lock().await;
-    let client = clients.get_mut(&server).ok_or("MCP Server 未连接")?;
-    client.call_tool(&tool_name, arguments).await
+    let start = std::time::Instant::now();
+    let args_str = arguments.to_string();
+    let audit_name = format!("{}:{}", server, tool_name);
+
+    // 守卫：工具调用超时（借鉴 DeepSeek Harness 的 guard 理念）
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        async {
+            let mut clients = manager.clients.lock().await;
+            let client = clients.get_mut(&server).ok_or("MCP Server 未连接")?;
+            client.call_tool(&tool_name, arguments).await
+        },
+    )
+    .await;
+
+    let duration = start.elapsed().as_millis() as i64;
+    match result {
+        Ok(Ok(res)) => {
+            let result_text = res
+                .content
+                .iter()
+                .map(|c| c.text.clone().unwrap_or_default())
+                .collect::<String>();
+            let is_err = res.is_error.unwrap_or(false);
+            let _ = db.log_tool_call(&audit_name, &args_str, &result_text, is_err, duration);
+            Ok(res)
+        }
+        Ok(Err(e)) => {
+            let _ = db.log_tool_call(&audit_name, &args_str, &e, true, duration);
+            Err(e)
+        }
+        Err(_) => {
+            let msg = "工具调用超时（30 秒）".to_string();
+            let _ = db.log_tool_call(&audit_name, &args_str, &msg, true, duration);
+            Err(msg)
+        }
+    }
 }
 
 #[tauri::command]
 async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, Vec<mcp::Tool>)>, String> {
     let clients = manager.clients.lock().await;
     Ok(clients.iter().map(|(name, c)| (name.clone(), c.tools.clone())).collect())
+}
+
+/// 查询工具调用审计日志（最近 N 条）
+#[tauri::command]
+fn list_tool_audit(db: State<Database>, limit: i64) -> Result<Vec<db::ToolAuditRow>, String> {
+    db.list_tool_audit(limit)
 }
 
 fn extract_title(html: &str) -> String {
@@ -466,6 +525,7 @@ pub fn run() {
             mcp_connect,
             mcp_call_tool,
             mcp_list_tools,
+            list_tool_audit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tool_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name TEXT NOT NULL,
+    arguments TEXT,
+    result TEXT,
+    is_error INTEGER DEFAULT 0,
+    duration_ms INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON tool_audit(created_at);
 ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -406,6 +418,58 @@ impl Database {
         .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    // --- 工具审计日志 ---
+
+    pub fn log_tool_call(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        result: &str,
+        is_error: bool,
+        duration_ms: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // 结果截断，避免超大记录
+        let result_clipped: String = result.chars().take(2000).collect();
+        let args_clipped: String = arguments.chars().take(1000).collect();
+        conn.execute(
+            "INSERT INTO tool_audit (tool_name, arguments, result, is_error, duration_ms, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                tool_name,
+                args_clipped,
+                result_clipped,
+                if is_error { 1 } else { 0 },
+                duration_ms,
+                chrono::Utc::now().timestamp_millis()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_tool_audit(&self, limit: i64) -> Result<Vec<ToolAuditRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, tool_name, arguments, result, is_error, duration_ms, created_at FROM tool_audit ORDER BY id DESC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(ToolAuditRow {
+                    id: row.get(0)?,
+                    tool_name: row.get(1)?,
+                    arguments: row.get(2)?,
+                    result: row.get(3)?,
+                    is_error: row.get::<_, i64>(4)? != 0,
+                    duration_ms: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -436,5 +500,17 @@ pub struct FactRow {
     pub importance: i64,
     pub access_count: i64,
     pub last_accessed: Option<i64>,
+    pub created_at: i64,
+}
+
+/// 工具调用审计记录
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolAuditRow {
+    pub id: i64,
+    pub tool_name: String,
+    pub arguments: String,
+    pub result: String,
+    pub is_error: bool,
+    pub duration_ms: i64,
     pub created_at: i64,
 }
