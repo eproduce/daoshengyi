@@ -261,10 +261,10 @@ category: 开发
 
 /* overlay & panel */
 .sk-overlay { position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:center;justify-content:center; }
-.sk-panel { background:#1a1a2e;border:1px solid #2a2a3e;border-radius:14px;width:600px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden; }
+.sk-panel { background:#1a1a2e;border:1px solid #2a2a3e;border-radius:14px;width:600px;height:min(85vh,640px);display:flex;flex-direction:column;overflow:hidden; }
 
 /* header */
-.sk-head { display:flex;align-items:center;padding:16px 20px 0;gap:12px; }
+.sk-head { display:flex;align-items:center;padding:16px 20px 0;gap:12px;flex-shrink:0; }
 .sk-head h3 { margin:0;font-size:16px;white-space:nowrap; }
 .sk-tabs { display:flex;gap:4px;flex:1; }
 .sk-tab { padding:6px 14px;border:none;border-radius:8px 8px 0 0;background:transparent;color:#888;cursor:pointer;font-size:13px;transition:all .15s; }
@@ -273,7 +273,7 @@ category: 开发
 .sk-close { background:none;border:none;color:#999;cursor:pointer;font-size:18px;padding:0 0 0 8px; }
 
 /* body */
-.sk-body { padding:16px 20px;overflow-y:auto;max-height:65vh; }
+.sk-body { padding:16px 20px;overflow-y:auto;flex:1;min-height:0; }
 
 /* items */
 .sk-item { display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid #252540;border-radius:8px;margin-bottom:6px;transition:opacity .2s; }

@@ -312,23 +312,23 @@ function handleDelete() {
         </div>
       </div>
 
-      <div class="settings-dialog__footer">
-        <button
-          v-if="!isNew && chatStore.profiles.length > 1"
-          class="btn-danger"
-          @click="handleDelete"
-        >
-          删除此配置
-        </button>
-        <div class="settings-dialog__footer-spacer"></div>
-        <button class="btn-secondary" @click="emit('close')">取消</button>
-        <button class="btn-primary" @click="handleSave">保存</button>
-      </div>
-      </div>
-
       <!-- MCP 服务器管理 -->
       <div v-show="activeTab === 'mcp'"><McpSettings /></div>
     </div>
+
+    <div class="settings-dialog__footer">
+      <button
+        v-if="!isNew && chatStore.profiles.length > 1"
+        class="btn-danger"
+        @click="handleDelete"
+      >
+        删除此配置
+      </button>
+      <div class="settings-dialog__footer-spacer"></div>
+      <button class="btn-secondary" @click="emit('close')">取消</button>
+      <button class="btn-primary" @click="handleSave">保存</button>
+    </div>
+  </div>
   </div>
 </template>
 
@@ -341,7 +341,7 @@ function handleDelete() {
 }
 
 .settings-dialog {
-  width: 520px; max-height: 85vh;
+  width: 520px; height: min(85vh, 720px);
   background: var(--bg-elevated); border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl); overflow: hidden;
   animation: scaleIn .25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -371,7 +371,7 @@ function handleDelete() {
 
 .settings-dialog__body {
   padding: 24px; display: flex; flex-direction: column; gap: 18px;
-  overflow-y: auto; flex: 1;
+  overflow-y: auto; flex: 1; min-height: 0;
 }
 
 .profile-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
