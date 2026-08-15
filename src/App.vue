@@ -9,7 +9,7 @@ import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
-import type { ImageAttachment, FileAttachment } from "@/types";
+import type { HardwareInfo, ImageAttachment, FileAttachment } from "@/types";
 
 const chatStore = useChatStore();
 const { theme, toggleTheme } = useTheme();
@@ -18,18 +18,33 @@ const showSettings = ref(false);
 const settingsInitialTab = ref<"api" | "mcp" | "ollama">("api");
 const showSidebar = ref(true);
 
-// 首次启动自动检测 Ollama 本地视觉模型
-const ollamaBanner = ref(false);
+// 首次启动自动检测 Ollama 本地视觉模型（结合硬件评估智能引导）
+const ollamaBanner = ref(false);       // 硬件允许 → 一键部署横幅
+const ollamaNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
+const hardwareMessage = ref("");
 function openSettings(tab: "api" | "mcp" | "ollama" = "api") {
   settingsInitialTab.value = tab;
   showSettings.value = true;
 }
 async function checkOllamaOnStart() {
   try {
+    // 先评估硬件，再决定推荐本地部署还是线上 API
+    const hw = await invoke<HardwareInfo>("check_hardware");
+    hardwareMessage.value = hw.message;
     const s = await invoke<{ installed: boolean; running: boolean; models: string[] }>("ollama_status");
     const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
-    ollamaBanner.value = !(s.installed && s.running && hasLlava);
-  } catch { ollamaBanner.value = false; }
+    ollamaBanner.value = false;
+    ollamaNotRecBanner.value = false;
+    if (s.installed && s.running && hasLlava) return; // 已就绪，无需引导
+    if (hw.verdict === "not_recommended") {
+      ollamaNotRecBanner.value = true; // 硬件不足 → 建议线上 API
+    } else {
+      ollamaBanner.value = true; // recommended / warning 都允许本地部署
+    }
+  } catch {
+    ollamaBanner.value = false;
+    ollamaNotRecBanner.value = false;
+  }
 }
 const messagesContainer = ref<HTMLDivElement>();
 
@@ -123,11 +138,18 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         </div>
       </header>
 
-      <!-- Ollama 本地视觉模型引导横幅 -->
+      <!-- Ollama 本地视觉模型引导横幅（硬件允许时） -->
       <div v-if="ollamaBanner" class="ollama-banner">
-        <span>💡 检测到本地视觉模型（Ollama + llava-phi3）未就绪，可免费在本机识别图片。</span>
+        <span>💡 检测到本地视觉模型（Ollama + llava-phi3）未就绪，你的硬件足以支持，可免费在本机识别图片。</span>
         <button class="ollama-banner__btn" @click="openSettings('ollama')">一键部署</button>
         <button class="ollama-banner__close" title="关闭" @click="ollamaBanner = false">✕</button>
+      </div>
+
+      <!-- 硬件不足时：建议配置线上视觉模型 API -->
+      <div v-if="ollamaNotRecBanner" class="ollama-banner ollama-banner--warn">
+        <span>⚠️ {{ hardwareMessage || '你的硬件可能不适合本地部署视觉模型，建议配置线上视觉模型 API。' }}</span>
+        <button class="ollama-banner__btn" @click="openSettings('api')">配置线上 API</button>
+        <button class="ollama-banner__close" title="关闭" @click="ollamaNotRecBanner = false">✕</button>
       </div>
 
       <!-- 消息区域 -->
@@ -286,6 +308,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   font-size: 12px; cursor: pointer; white-space: nowrap;
 }
 .ollama-banner__btn:hover { background: var(--accent-hover); }
+.ollama-banner--warn {
+  background: linear-gradient(135deg, rgba(245,158,11,.16), rgba(239,68,68,.1));
+}
+.ollama-banner--warn .ollama-banner__btn { background: #f59e0b; }
+.ollama-banner--warn .ollama-banner__btn:hover { background: #d97706; }
 .ollama-banner__close {
   background: none; border: none; color: var(--text-secondary);
   cursor: pointer; font-size: 12px; padding: 4px;

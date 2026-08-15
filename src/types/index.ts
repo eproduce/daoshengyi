@@ -98,6 +98,19 @@ export interface StreamDelta {
   role?: string;
 }
 
+/// 硬件综合性能评估（判断是否适合本地部署视觉模型）
+export interface HardwareInfo {
+  cpu_cores: number;
+  cpu_brand: string;
+  memory_gb: number;
+  gpu_name: string;
+  gpu_memory_mb: number;
+  has_metal: boolean;
+  score: number;
+  verdict: "recommended" | "warning" | "not_recommended";
+  message: string;
+}
+
 /// 技能
 export interface Skill {
   id: string;

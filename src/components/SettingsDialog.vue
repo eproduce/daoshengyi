@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/chat";
-import type { ApiProfile } from "@/types";
+import type { ApiProfile, HardwareInfo } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -24,6 +24,11 @@ const ollamaBusy = ref(false);
 const ollamaProgress = ref("");
 const ollamaPercent = ref<number | null>(null);
 let ollamaUnlisten: (() => void) | null = null;
+
+const hw = ref<HardwareInfo | null>(null);
+function verdictText(v: string) {
+  return v === "recommended" ? "✅ 推荐本地部署" : v === "warning" ? "⚠️ 可部署，但占用资源较高" : "❌ 不推荐本地部署";
+}
 
 const hasLlava = computed(() => ollama.value?.models.some((m) => m.includes("llava-phi3")) ?? false);
 
@@ -49,6 +54,7 @@ async function deployOllama() {
 
 onMounted(() => {
   refreshOllama();
+  invoke<HardwareInfo>("check_hardware").then((h) => { hw.value = h; }).catch(() => {});
   listen<{ text?: string; percent?: number } | string>("ollama-progress", (e) => {
     const p = e.payload;
     if (typeof p === "string") {
@@ -367,7 +373,15 @@ function handleDelete() {
       <!-- Ollama 本地视觉模型管理 -->
       <div v-show="activeTab === 'ollama'" class="ollama-panel">
         <h3>🤖 本地视觉模型（Ollama）</h3>
-        <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。</p>
+        <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
+        <div v-if="hw" class="hw-card">
+          <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ hw.score }} 分</span></div>
+          <div class="hw-card__row">CPU：{{ hw.cpu_cores }} 核{{ hw.cpu_brand ? ' · ' + hw.cpu_brand : '' }}</div>
+          <div class="hw-card__row">内存：{{ hw.memory_gb }} GB</div>
+          <div class="hw-card__row">显卡：{{ hw.gpu_name || '核显' }}{{ hw.gpu_memory_mb ? ' · ' + hw.gpu_memory_mb + ' MB' : '' }}{{ hw.has_metal ? ' · Metal' : '' }}</div>
+          <div class="hw-card__verdict" :class="'hw-card__verdict--' + hw.verdict">{{ verdictText(hw.verdict) }}</div>
+          <p class="hw-card__msg">{{ hw.message }}</p>
+        </div>
         <div v-if="!ollama" class="ollama-loading">正在检测 Ollama 环境...</div>
         <template v-else>
           <div class="ollama-status">
@@ -387,10 +401,20 @@ function handleDelete() {
               已部署模型：{{ ollama.models.join(', ') }}
             </div>
           </div>
-          <button class="btn-primary" :disabled="ollamaBusy" @click="deployOllama">
+          <button
+            v-if="hw?.verdict === 'not_recommended'"
+            class="btn-primary"
+            @click="activeTab = 'api'"
+          >配置线上视觉模型 API</button>
+          <button
+            v-else
+            class="btn-primary"
+            :disabled="ollamaBusy"
+            @click="deployOllama"
+          >
             {{ ollamaBusy ? '部署中...' : (ollama.installed && hasLlava ? '重新检测' : '一键部署') }}
           </button>
-          <p class="ollama-hint">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长，请耐心等待。</p>
+          <p class="ollama-hint" v-if="hw?.verdict !== 'not_recommended'">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长，请耐心等待。</p>
         </template>
         <div v-if="ollamaPercent !== null && ollamaPercent < 100" class="ollama-bar">
           <div class="ollama-bar__fill" :style="{ width: ollamaPercent + '%' }"></div>
@@ -599,4 +623,19 @@ function handleDelete() {
 .ollama-bar__label { position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; font-size: 12px; font-weight: 600; color: var(--text-primary);
   text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+
+/* 硬件评估卡片 */
+.hw-card { display: flex; flex-direction: column; gap: 6px; padding: 12px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: 8px; font-size: 13px; }
+.hw-card__title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.hw-score { font-size: 11px; font-weight: 500; color: var(--text-secondary);
+  background: var(--bg-hover); padding: 1px 8px; border-radius: 10px; }
+.hw-card__row { color: var(--text-secondary); }
+.hw-card__verdict { font-weight: 600; margin-top: 4px; }
+.hw-card__verdict--recommended { color: #22c55e; }
+.hw-card__verdict--warning { color: #f59e0b; }
+.hw-card__verdict--not_recommended { color: #ef4444; }
+.hw-card__msg { margin: 0; color: var(--text-secondary); line-height: 1.6;
+  border-top: 1px dashed var(--border-color); padding-top: 8px; }
 </style>

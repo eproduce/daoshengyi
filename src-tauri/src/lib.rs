@@ -216,6 +216,130 @@ async fn ollama_status() -> Result<OllamaStatus, String> {
     Ok(OllamaStatus { installed, running, models })
 }
 
+#[derive(serde::Serialize)]
+struct HardwareInfo {
+    cpu_cores: u32,
+    cpu_brand: String,
+    memory_gb: u32,
+    gpu_name: String,
+    gpu_memory_mb: u32,
+    has_metal: bool,
+    /// 综合评分 0-100（CPU 核数 + 内存 + 显卡）
+    score: u32,
+    /// recommended / warning / not_recommended
+    verdict: String,
+    /// 给用户的中文建议
+    message: String,
+}
+
+async fn sh_output(cmd: &str, args: &[&str]) -> String {
+    tokio::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 检测硬件综合性能（CPU / 内存 / 显卡），判断是否适合本地部署视觉模型
+#[tauri::command]
+async fn check_hardware() -> HardwareInfo {
+    let cpu_cores = sh_output("sysctl", &["-n", "hw.ncpu"]).await.parse::<u32>().unwrap_or(4);
+    let cpu_brand = sh_output("sysctl", &["-n", "machdep.cpu.brand_string"]).await;
+    let mem_bytes = sh_output("sysctl", &["-n", "hw.memsize"]).await.parse::<u64>().unwrap_or(0);
+    let memory_gb = (mem_bytes / 1024 / 1024 / 1024) as u32;
+
+    // GPU 信息（system_profiler 解析）
+    let gpu_report = sh_output("system_profiler", &["SPDisplaysDataType"]).await;
+    let mut gpu_name = String::new();
+    let mut gpu_memory_mb: u32 = 0;
+    let mut has_metal = false;
+    for line in gpu_report.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("Chipset Model:") {
+            gpu_name = v.trim().to_string();
+        } else if t.starts_with("VRAM") && t.contains(':') {
+            // 兼容 "VRAM (Total): 8 GB" 与 "VRAM (Dynamic, Max): 1536 MB" 等格式
+            let s = t.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+            if let Some(num) = s.strip_suffix("GB") {
+                if let Ok(n) = num.trim().parse::<u32>() {
+                    gpu_memory_mb = n * 1024;
+                }
+            } else if let Some(num) = s.strip_suffix("MB") {
+                if let Ok(n) = num.trim().parse::<u32>() {
+                    gpu_memory_mb = n;
+                }
+            }
+        } else if t.starts_with("Metal") {
+            has_metal = true;
+        }
+    }
+
+    // 综合评分：CPU 30 分 + 内存 40 分 + 显卡 25 分 = 95 上限
+    let cpu_score = match cpu_cores {
+        c if c >= 8 => 30,
+        c if c >= 6 => 22,
+        c if c >= 4 => 14,
+        _ => 6,
+    };
+    let mem_score = match memory_gb {
+        m if m >= 16 => 40,
+        m if m >= 12 => 32,
+        m if m >= 8 => 22,
+        m if m >= 6 => 12,
+        _ => 5,
+    };
+    let gpu_score = if gpu_memory_mb >= 4096 {
+        25
+    } else if has_metal || gpu_memory_mb >= 1024 {
+        18
+    } else {
+        10
+    };
+    let score = cpu_score + mem_score + gpu_score;
+
+    let (verdict, message) = if memory_gb < 8 || (memory_gb < 12 && cpu_cores < 4) {
+        (
+            "not_recommended".to_string(),
+            format!(
+                "你的硬件（{}核 CPU / {}GB 内存）运行本地视觉模型会比较吃力，可能拖慢其他应用、影响系统流畅度。建议改为配置线上视觉模型 API（支持图片的模型）。",
+                cpu_cores, memory_gb
+            ),
+        )
+    } else if score >= 70 {
+        (
+            "recommended".to_string(),
+            format!(
+                "你的硬件（{}核 CPU / {}GB 内存 / {}{}）足以流畅运行本地视觉模型 llava-phi3，推荐本地部署：免费、隐私安全、不依赖网络。",
+                cpu_cores,
+                memory_gb,
+                if gpu_name.is_empty() { "核显".to_string() } else { gpu_name.clone() },
+                if gpu_memory_mb > 0 { format!(" / {}MB 显存", gpu_memory_mb) } else { String::new() }
+            ),
+        )
+    } else {
+        (
+            "warning".to_string(),
+            format!(
+                "你的硬件（{}核 CPU / {}GB 内存）可以运行本地视觉模型，但会占用较多内存，运行大型应用时可能变慢；也可选择配置线上视觉模型 API。",
+                cpu_cores, memory_gb
+            ),
+        )
+    };
+
+    HardwareInfo {
+        cpu_cores,
+        cpu_brand,
+        memory_gb,
+        gpu_name,
+        gpu_memory_mb,
+        has_metal,
+        score,
+        verdict,
+        message,
+    }
+}
+
 /// 一键部署本地视觉模型：安装 Ollama → 启动服务 → 拉取 llava-phi3
 /// 进度通过 "ollama-progress" 事件推送
 #[tauri::command]
@@ -852,6 +976,7 @@ pub fn run() {
             read_attachment,
             ollama_status,
             ollama_setup,
+            check_hardware,
             mcp_connect,
             mcp_disconnect,
             mcp_call_tool,
