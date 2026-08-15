@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 // --- JSON-RPC 2.0 基础类型 ---
 
@@ -142,6 +141,10 @@ impl McpClient {
         // "Attempted to use detached Frame"，改用有头模式可正常工作。
         // 该环境变量对其他 MCP 服务器（filesystem/fetch/git 等）无影响。
         cmd.env("HEADLESS", "false");
+        // 让子进程（node）与它的后代（如 puppeteer 启动的 Chrome）处于同一进程组，
+        // 断开时 killpg 可一并终止浏览器进程，避免浏览器窗口残留。
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = cmd
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -249,5 +252,56 @@ impl McpClient {
             .send_request("tools/call", Some(serde_json::to_value(&params).map_err(|e| e.to_string())?))
             .await?;
         serde_json::from_value(resp.ok_or("无响应")?).map_err(|e| format!("解析工具调用结果: {}", e))
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        // 断开连接时终止 MCP 服务器进程及其启动的浏览器，形成使用闭环。
+        // 注意：puppeteer 的 Chrome 会自建进程组/会话，且 npx→node 可能 exec 导致
+        // 进程树链断裂，递归 kill 可能漏杀部分 Chrome 进程，故再按
+        // user-data-dir 特征匹配兜底清理所有 puppeteer 浏览器进程。
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.process.id() {
+                if pid > 1 {
+                    kill_process_tree(pid);
+                }
+            }
+            // 兜底：终止 puppeteer 启动的 Chrome for Testing（带 puppeteer 临时 profile 目录）
+            let _ = std::process::Command::new("pkill")
+                .args(["-9", "-f", "puppeteer_dev_chrome_profile"])
+                .status();
+        }
+    }
+}
+
+/// 递归终止指定进程及其所有后代进程（通过 ps 解析进程树）。
+/// 用于断开 MCP 连接时确保 puppeteer 的 Chrome 浏览器进程一并退出。
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // 先收集直接子进程（在 kill 父进程前，避免子进程被 reparent 后难以定位）
+    let children: Vec<u32> = std::process::Command::new("ps")
+        .args(["-axo", "pid,ppid"])
+        .output()
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.split_whitespace();
+                    let p = parts.next()?.parse::<u32>().ok()?;
+                    let pp = parts.next()?.parse::<u32>().ok()?;
+                    if pp == pid { Some(p) } else { None }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // 先终止所有后代，再终止自身
+    for c in children {
+        kill_process_tree(c);
+    }
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
     }
 }

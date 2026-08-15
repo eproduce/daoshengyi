@@ -57,13 +57,35 @@ pub async fn stream_chat(
     }
 
     use futures::StreamExt;
-    let stream = response
-        .bytes_stream()
-        .map(|chunk| {
-            chunk
-                .map(|b| String::from_utf8_lossy(b.as_ref()).to_string())
-                .map_err(|e| format!("流错误: {}", e))
-        });
+    // 累积缓冲：SSE chunk 可能在 UTF-8 多字节字符（如中文 3 字节）中间断开，
+    // 直接用 from_utf8_lossy 会用 U+FFFD（�）替换未完成字节导致乱码。
+    // 这里保留尾部未完成字节，等下一 chunk 补全后再解码。
+    let mut pending: Vec<u8> = Vec::new();
+    let stream = response.bytes_stream().map(move |chunk| {
+        let mut out = String::new();
+        match chunk {
+            Ok(bytes) => {
+                pending.extend_from_slice(&bytes);
+                match std::str::from_utf8(&pending) {
+                    Ok(s) => {
+                        out.push_str(s);
+                        pending.clear();
+                    }
+                    Err(e) => {
+                        let valid = e.valid_up_to();
+                        if valid > 0 {
+                            // 输出已完整的 UTF-8 部分，保留尾部未完成字节
+                            out.push_str(std::str::from_utf8(&pending[..valid]).unwrap());
+                            pending.drain(..valid);
+                        }
+                        // valid == 0 时整个尾部都是不完整字符，全部保留等待下一 chunk
+                    }
+                }
+            }
+            Err(e) => return Err(format!("流错误: {}", e)),
+        }
+        Ok::<String, String>(out)
+    });
 
     Ok(stream)
 }

@@ -630,7 +630,9 @@ export const useChatStore = defineStore("chat", () => {
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
       // 确保 MCP 工具提示最新：配置了已启用服务器但缓存为空时刷新；
-      // 若刷新后仍为空（如任务闭环后已断开），自动重连已启用服务器。
+      // 若刷新后仍为空（如上次任务闭环已断开），自动重连已启用服务器。
+      // 此重连仅在用户发消息时触发（用户驱动），与任务结束的闭环断开
+      // 形成"用完关浏览器、下次自动重连"的逐次闭环，不会无限循环。
       const mcpSettings = getSettings().mcpServers ?? [];
       if (mcpSettings.some((s) => s.enabled) && mcpToolsCache.length === 0) {
         try {
