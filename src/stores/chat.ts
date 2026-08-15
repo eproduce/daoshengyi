@@ -592,7 +592,8 @@ export const useChatStore = defineStore("chat", () => {
     const conv = conversations.value.find((c) => c.id === convId)!;
 
     // 图片预处理：非视觉模型 → 调用视觉 API 描述图片
-    const isDS = currentConfig.value.baseUrl.includes("deepseek");
+    // 注意：配置可能尚未加载（baseUrl 为空），需防御，避免抛错导致空回复
+    const isDS = (currentConfig.value.baseUrl || "").includes("deepseek");
     if (isDS && images && images.length > 0) {
       assistantMsg.content = "🔍 正在分析图片...\n\n";
       const desc = await describeImages(images);
@@ -630,21 +631,12 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
-      // 确保 MCP 工具提示最新：配置了已启用服务器但缓存为空时刷新；
-      // 若刷新后仍为空（如上次任务闭环已断开），自动重连已启用服务器。
-      // 此重连仅在用户发消息时触发（用户驱动），与任务结束的闭环断开
-      // 形成"用完关浏览器、下次自动重连"的逐次闭环，不会无限循环。
+      // 仅刷新 MCP 工具缓存，不在发送路径上自动重连——
+      // 若某服务器连接失败（如网络请求插件包 404），connectEnabled 会阻塞
+      // 导致消息发送卡住、出现空回复。连接由应用启动自动连接控制。
       const mcpSettings = getSettings().mcpServers ?? [];
       if (mcpSettings.some((s) => s.enabled) && mcpToolsCache.length === 0) {
-        try {
-          await refreshMcpTools();
-          if (mcpToolsCache.length === 0) {
-            const { useMcpStore } = await import("./mcp");
-            const mcpStore = useMcpStore();
-            await mcpStore.connectEnabled();
-            await refreshMcpTools();
-          }
-        } catch { /* 忽略 */ }
+        try { await refreshMcpTools(); } catch { /* 忽略 */ }
       }
 
       // 联网搜索
@@ -789,6 +781,10 @@ export const useChatStore = defineStore("chat", () => {
         assistantMsg.cost = estimateCost(currentConfig.value.model, inputTokens, assistantMsg.tokens || 0);
       } catch { /* 费用计算失败不影响主流程 */ }
       assistantMsg.streaming = false;
+      // 空回复诊断：完全未收到内容（也非错误信息）时给出可操作的提示，避免静默空泡泡
+      if (!assistantMsg.content && !assistantMsg.reasoning_content) {
+        assistantMsg.content = "⚠️ 未收到模型回复。可能原因：\n- 当前模型/API 不支持该请求（模型名无效、图片输入等）\n- API 地址或 Key 配置有误\n- 网络或服务端异常\n\n请检查「设置 → API 配置」或重试。";
+      }
       streamingContent.value = "";
       streamingReasoning.value = "";
       isStreaming.value = false;

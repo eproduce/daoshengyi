@@ -22,11 +22,20 @@ async fn send_message(
     mut messages: Vec<api::ChatMessage>,
 ) -> Result<(), String> {
     middleware::preprocess_messages(&mut messages);
-    let mut stream = api::stream_chat(config, messages).await?;
+    let has_image = messages.iter().any(|m| m.content.is_array());
+    eprintln!("[send_message] model={} 消息数={} 含图片={}", config.model, messages.len(), has_image);
+    let mut stream = match api::stream_chat(config, messages).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[send_message] stream_chat 失败: {}", e);
+            return Err(e);
+        }
+    };
 
     // 行缓冲器：SSE 数据块可能在任意字节边界断开，
     // 必须把不完整的行累积到缓冲区，直到遇到换行符才解析，否则会丢字。
     let mut buf = String::new();
+    let mut delta_count = 0usize;
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => {
@@ -34,11 +43,18 @@ async fn send_message(
                 while let Some(pos) = buf.find('\n') {
                     let line: String = buf.drain(..=pos).collect();
                     if let Some(delta) = api::parse_sse_line(line.trim()) {
+                        delta_count += 1;
+                        let rl = delta.reasoning_content.as_ref().map(|s| s.len()).unwrap_or(0);
+                        let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
+                        if rl > 0 || cl > 0 {
+                            eprintln!("[sse] reasoning_len={} content_len={}", rl, cl);
+                        }
                         let _ = app.emit("sse-delta", &delta);
                     }
                 }
             }
             Err(e) => {
+                eprintln!("[sse] 流错误: {}", e);
                 let _ = app.emit("sse-error", &e);
                 return Err(e);
             }
@@ -46,8 +62,10 @@ async fn send_message(
     }
     // 处理最后可能残留的不完整行
     if let Some(delta) = api::parse_sse_line(buf.trim()) {
+        delta_count += 1;
         let _ = app.emit("sse-delta", &delta);
     }
+    eprintln!("[sse] 完成, 共 {} 个 delta", delta_count);
     let _ = app.emit("sse-done", ());
     Ok(())
 }
