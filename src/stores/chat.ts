@@ -8,7 +8,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
@@ -76,7 +76,8 @@ async function runReactLoop(
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       // 30 秒超时，避免模型无响应导致 ReAct 循环无限卡住
-      signal: AbortSignal.timeout(30000),
+      // 思考模型生成慢，超时放宽到 120 秒，避免因超时回退到流式而无法执行工具
+      signal: AbortSignal.timeout(120000),
       body: JSON.stringify({
         model: config.model || "deepseek-v4-flash",
         messages: convo,
@@ -780,7 +781,8 @@ export const useChatStore = defineStore("chat", () => {
     } finally {
       clearTimeout(timeoutId);
       unlistenFns.forEach(f => f());
-      assistantMsg.content = streamingContent.value;
+      // 流式兜底：即使走了流式路径，也剥离模型口头输出的工具调用 JSON，避免展示莫名其妙的内容
+      assistantMsg.content = stripToolJson(streamingContent.value);
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算

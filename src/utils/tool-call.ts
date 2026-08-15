@@ -40,3 +40,23 @@ export function parseToolCall(content: string): ToolCall | null {
   }
   return extractToolCalls(content)[0] ?? null;
 }
+
+/// 从文本中剥离工具调用 JSON（<tool_call> 块或含 tool 键的裸 JSON 对象），
+/// 用于流式输出兜底清理，避免模型把工具调用原样展示给用户。
+export function stripToolJson(text: string): string {
+  let t = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+  const re = /\{(?:[^{}]|\{[^{}]*\})*\}/g;
+  let m: RegExpExecArray | null;
+  const toRemove: string[] = [];
+  while ((m = re.exec(t)) !== null) {
+    try {
+      const p = JSON.parse(m[0]);
+      if (p && typeof p === "object" && p.tool && typeof p.tool === "string") {
+        toRemove.push(m[0]);
+      }
+    } catch { /* ignore */ }
+  }
+  for (const s of toRemove) t = t.split(s).join("");
+  // 清理行尾残留的冒号/句号，以及多余空行
+  return t.replace(/[：:]\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
