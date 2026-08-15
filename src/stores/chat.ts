@@ -67,28 +67,28 @@ async function runReactLoop(
   maxIterations = 5,
   onProgress?: (text: string) => void
 ): Promise<string[]> {
-  const baseUrl = config.baseUrl.replace(/\/+$/, "");
   const toolResults: string[] = [];
   const convo = [...messages];
 
   for (let i = 0; i < maxIterations; i++) {
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-      // 30 秒超时，避免模型无响应导致 ReAct 循环无限卡住
-      // 思考模型生成慢，超时放宽到 120 秒，避免因超时回退到流式而无法执行工具
-      signal: AbortSignal.timeout(120000),
-      body: JSON.stringify({
+    // 通过 Rust 端非流式请求（chat_once）：与流式同架构走 reqwest，避免前端
+    // fetch 跨域被 CORS 拦截导致 ReAct 一直失败、回退到流式后模型只能“口头”调工具
+    const data = await invoke<{ content: string; reasoning_content?: string }>("chat_once", {
+      config: {
+        base_url: config.baseUrl,
+        api_key: config.apiKey,
         model: config.model || "deepseek-v4-flash",
-        messages: convo,
-        max_tokens: 1000,
-        temperature: 0.3,
-      }),
-    });
-
-    if (!resp.ok) break;
-    const data = await resp.json();
-    const content: string = data.choices?.[0]?.message?.content || "";
+        max_tokens: config.maxTokens,
+        temperature: 0.3, // 工具决策用低温更稳定
+        thinking_enabled: config.thinkingEnabled,
+        reasoning_effort: config.reasoningEffort,
+        system_prompt: config.systemPrompt || "",
+        enable_web_search: config.enableWebSearch,
+      },
+      messages: convo,
+    }).catch(() => null);
+    if (!data) break;
+    const content: string = data.content || "";
 
     const toolCall = parseToolCall(content);
     if (!toolCall) {

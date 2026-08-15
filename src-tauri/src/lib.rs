@@ -30,6 +30,15 @@ fn append_log(app: &tauri::AppHandle, msg: &str) {
         .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
 }
 
+/// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
+#[tauri::command]
+async fn chat_once(
+    config: api::ApiConfig,
+    messages: Vec<api::ChatMessage>,
+) -> Result<api::ChatOnceResult, String> {
+    api::chat_once(config, messages).await
+}
+
 #[tauri::command]
 async fn send_message(
     app: tauri::AppHandle,
@@ -1012,6 +1021,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             send_message,
+            chat_once,
             load_conversations,
             get_messages,
             save_conversation,

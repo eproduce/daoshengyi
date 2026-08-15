@@ -120,3 +120,62 @@ pub struct SSEDelta {
     pub content: Option<String>,
     pub tokens: Option<u64>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatOnceResult {
+    pub content: String,
+    pub reasoning_content: String,
+}
+
+/// 非流式单轮聊天请求，返回完整回复（供 ReAct 工具循环使用）。
+/// 通过 Rust 端 reqwest 发送，避免前端 fetch 跨域被 CORS 拦截导致工具循环失败。
+pub async fn chat_once(
+    config: ApiConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<ChatOnceResult, String> {
+    let base_url = config.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "stream": false,
+        "max_tokens": config.max_tokens,
+        "temperature": config.temperature,
+    });
+    if config.thinking_enabled {
+        body["thinking"] = serde_json::json!({"type": "enabled"});
+        body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("客户端构建失败: {}", e))?;
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("[{}] {}", status, text.chars().take(300).collect::<String>()));
+    }
+
+    let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let reasoning_content = json["choices"][0]["message"]
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(ChatOnceResult { content, reasoning_content })
+}
