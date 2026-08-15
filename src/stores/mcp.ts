@@ -54,11 +54,24 @@ export const useMcpStore = defineStore("mcp", () => {
         save();
         localStorage.removeItem(STORAGE_KEY);
       }
+      // 应用启动后自动重连已启用的服务器，恢复工具可用性
+      void autoConnectEnabled();
     } catch (e) {
       console.warn("[道生一] 从 Rust 加载 MCP 配置失败，回退 localStorage:", e);
     }
   }
   initFromRust();
+
+  /** 自动重连所有已启用的 MCP 服务器（应用重启/页面刷新后恢复连接与工具缓存） */
+  async function autoConnectEnabled() {
+    for (const s of servers.value) {
+      if (s.enabled && !s.connected) {
+        try { await connect(s.id); } catch { /* 连接失败保持未连接，不阻塞 */ }
+      }
+    }
+    // 刷新 chat store 的工具缓存，使工具提示可注入
+    try { await syncToChat(); } catch { /* ignore */ }
+  }
 
   function add(config: Omit<McpServerConfig, "id" | "connected" | "toolCount">) {
     servers.value.push({ ...config, id: uuidv4(), connected: false, toolCount: 0 });

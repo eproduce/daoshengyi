@@ -602,6 +602,13 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
+      // 确保 MCP 工具提示最新：配置了已启用服务器但缓存为空时刷新
+      // （Rust 端已连接的客户端与应用进程共存亡，前端缓存会在页面刷新后丢失）
+      const mcpSettings = getSettings().mcpServers ?? [];
+      if (mcpSettings.some((s) => s.enabled) && mcpToolsCache.length === 0) {
+        try { await refreshMcpTools(); } catch { /* 忽略 */ }
+      }
+
       // 联网搜索
       let sp = config.systemPrompt || "";
       if (config.enableWebSearch && text.trim()) {
