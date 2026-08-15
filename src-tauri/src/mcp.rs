@@ -136,8 +136,13 @@ pub struct McpClient {
 impl McpClient {
     /// 启动 MCP Server 进程并完成握手
     pub async fn connect(config: &McpServerConfig) -> Result<Self, String> {
-        let mut child = tokio::process::Command::new(&config.command)
-            .args(&config.args)
+        let mut cmd = tokio::process::Command::new(&config.command);
+        cmd.args(&config.args);
+        // server-puppeteer 在 macOS 12 (Intel) 无头模式下导航会报
+        // "Attempted to use detached Frame"，改用有头模式可正常工作。
+        // 该环境变量对其他 MCP 服务器（filesystem/fetch/git 等）无影响。
+        cmd.env("HEADLESS", "false");
+        let mut child = cmd
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())

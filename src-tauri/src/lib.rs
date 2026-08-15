@@ -347,10 +347,14 @@ async fn mcp_connect(
     command: String,
     args: Vec<String>,
 ) -> Result<Vec<mcp::Tool>, String> {
+    eprintln!("[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}", name, command, args);
     let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true };
-    let client = mcp::McpClient::connect(&config).await?;
+    let client = match mcp::McpClient::connect(&config).await {
+        Ok(c) => { eprintln!("[mcp_connect] '{}' 连接成功, {} 个工具", name, c.tools.len()); c }
+        Err(e) => { eprintln!("[mcp_connect] '{}' 连接失败: {}", name, e); return Err(e); }
+    };
     let tools = client.tools.clone();
-    manager.clients.lock().await.insert(name, client);
+    manager.clients.lock().await.insert(name.clone(), client);
     Ok(tools)
 }
 
@@ -371,7 +375,13 @@ async fn mcp_call_tool(
         std::time::Duration::from_secs(30),
         async {
             let mut clients = manager.clients.lock().await;
-            let client = clients.get_mut(&server).ok_or("MCP Server 未连接")?;
+            // LLM 输出的 server 名可能与配置名不一致（省略、大小写、多余空白等），
+            // 做宽松匹配：精确 → 去空白 → 大小写不敏感 → 唯一客户端兜底
+            let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
+            if key != server {
+                eprintln!("[mcp_call_tool] server '{}' 映射为 '{}'", server, key);
+            }
+            let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
             client.call_tool(&tool_name, arguments).await
         },
     )
@@ -405,6 +415,31 @@ async fn mcp_call_tool(
 async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, Vec<mcp::Tool>)>, String> {
     let clients = manager.clients.lock().await;
     Ok(clients.iter().map(|(name, c)| (name.clone(), c.tools.clone())).collect())
+}
+
+/// 在已连接客户端中解析 server 名（宽松匹配，容忍 LLM 输出偏差）
+fn resolve_mcp_server(
+    clients: &std::collections::HashMap<String, mcp::McpClient>,
+    server: &str,
+) -> Option<String> {
+    let s = server.trim();
+    // 1. 精确匹配
+    if let Some(k) = clients.keys().find(|k| *k == s) {
+        return Some(k.clone());
+    }
+    // 2. 去空白后匹配
+    if let Some(k) = clients.keys().find(|k| k.trim() == s) {
+        return Some(k.clone());
+    }
+    // 3. 大小写不敏感匹配
+    if let Some(k) = clients.keys().find(|k| k.trim().eq_ignore_ascii_case(s)) {
+        return Some(k.clone());
+    }
+    // 4. 唯一客户端兜底
+    if clients.len() == 1 {
+        return clients.keys().next().cloned();
+    }
+    None
 }
 
 /// 查询工具调用审计日志（最近 N 条）

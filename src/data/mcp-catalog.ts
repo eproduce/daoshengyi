@@ -36,7 +36,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     id: "puppeteer",
     name: "浏览器自动化",
     icon: "🌍",
-    description: "网页交互、点击、截图（Puppeteer）",
+    description: "网页交互、点击、截图（Puppeteer，有头模式）",
     category: "网络",
     command: "npx",
     args: "-y @modelcontextprotocol/server-puppeteer",

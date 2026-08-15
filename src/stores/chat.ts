@@ -30,8 +30,11 @@ function getMcpToolsPrompt(): string {
   `\n\n当需要使用工具时，只回复以下格式（不要加其他文字）：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>`;
 }
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+  // LLM 填的 server 名可能与实际配置不一致（省略/偏差），映射到已连接服务器
+  const knownServers = new Set(mcpToolsCache.map((t) => t.server));
+  const effectiveServer = knownServers.has(server) ? server : (mcpToolsCache[0]?.server ?? server);
   const result = await invoke<{content:{type:string;text?:string}[];isError?:boolean}>("mcp_call_tool", {
-    server, toolName: tool, arguments: args,
+    server: effectiveServer, toolName: tool, arguments: args,
   });
   return result.content.map(c => c.text || "").join("\n");
 }
