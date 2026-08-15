@@ -27,7 +27,28 @@ function getMcpToolsPrompt(): string {
   return "\n\n## 可用工具 (MCP)\n" + mcpToolsCache.map(t =>
     `- **${t.name}** (${t.server}): ${t.description}`
   ).join("\n") +
-  `\n\n当需要使用工具时，只回复以下格式（不要加其他文字）：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>`;
+  `\n\n当需要使用工具时，只回复以下格式（不要加其他文字）：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>` +
+  `\n\n完成任务后，如果调用过浏览器类工具（如 puppeteer_*），请最后调用关闭工具（如 puppeteer_close）关闭浏览器以释放资源；如果没有浏览器类工具则无需关闭。`;
+}
+
+/// 任务完成后关闭浏览器，形成使用闭环。
+/// server-puppeteer 无 puppeteer_close 工具，只能通过断开 MCP 连接
+/// （kill 服务器进程，kill_on_drop）使浏览器窗口随之关闭。
+async function closeBrowserIfOpen(): Promise<void> {
+  const browserServers = new Set(
+    mcpToolsCache.filter((t) => /^puppeteer_/i.test(t.name)).map((t) => t.server)
+  );
+  for (const server of browserServers) {
+    try { await invoke("mcp_disconnect", { name: server }); } catch { /* 忽略 */ }
+  }
+  if (browserServers.size > 0) {
+    // 同步清空工具缓存，并把 mcp store 中的服务器标记为未连接
+    try { await refreshMcpTools(); } catch { /* 忽略 */ }
+    try {
+      const { useMcpStore } = await import("./mcp");
+      useMcpStore().markDisconnected([...browserServers]);
+    } catch { /* 忽略 */ }
+  }
 }
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
   // LLM 填的 server 名可能与实际配置不一致（省略/偏差），映射到已连接服务器
@@ -67,7 +88,8 @@ async function runReactLoop(
 
     const toolCall = parseToolCall(content);
     if (!toolCall) {
-      // 没有工具调用，是最终答案
+      // 没有工具调用，是最终答案 → 关闭浏览器形成闭环
+      await closeBrowserIfOpen();
       return [content, ...toolResults];
     }
 
@@ -89,6 +111,8 @@ async function runReactLoop(
       convo.push({ role: "user", content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。` });
     }
   }
+  // 达到最大迭代次数仍未得到最终答案，也关闭浏览器形成闭环
+  await closeBrowserIfOpen();
   return toolResults;
 }
 
@@ -605,11 +629,19 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
-      // 确保 MCP 工具提示最新：配置了已启用服务器但缓存为空时刷新
-      // （Rust 端已连接的客户端与应用进程共存亡，前端缓存会在页面刷新后丢失）
+      // 确保 MCP 工具提示最新：配置了已启用服务器但缓存为空时刷新；
+      // 若刷新后仍为空（如任务闭环后已断开），自动重连已启用服务器。
       const mcpSettings = getSettings().mcpServers ?? [];
       if (mcpSettings.some((s) => s.enabled) && mcpToolsCache.length === 0) {
-        try { await refreshMcpTools(); } catch { /* 忽略 */ }
+        try {
+          await refreshMcpTools();
+          if (mcpToolsCache.length === 0) {
+            const { useMcpStore } = await import("./mcp");
+            const mcpStore = useMcpStore();
+            await mcpStore.connectEnabled();
+            await refreshMcpTools();
+          }
+        } catch { /* 忽略 */ }
       }
 
       // 联网搜索

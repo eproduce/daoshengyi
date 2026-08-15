@@ -118,5 +118,31 @@ export const useMcpStore = defineStore("mcp", () => {
     } catch { /* ignore */ }
   }
 
-  return { servers, add, update, remove, connect, connectedCount, totalTools, syncToChat };
+  /// 断开指定服务器（kill 进程，浏览器类服务器随之关闭浏览器，形成使用闭环）
+  async function disconnect(id: string) {
+    const s = servers.value.find(x => x.id === id);
+    if (!s || !s.connected) return;
+    try {
+      await invoke("mcp_disconnect", { name: s.name });
+    } finally {
+      s.connected = false;
+      s.toolCount = 0;
+    }
+  }
+
+  /// 按服务器名标记为未连接（供 chat store 在任务完成后调用）
+  function markDisconnected(serverNames: string[]) {
+    for (const s of servers.value) {
+      if (serverNames.includes(s.name)) {
+        s.connected = false;
+        s.toolCount = 0;
+      }
+    }
+  }
+
+  return {
+    servers, add, update, remove, connect,
+    connectEnabled: autoConnectEnabled, disconnect, markDisconnected,
+    connectedCount, totalTools, syncToChat,
+  };
 });

@@ -417,6 +417,20 @@ async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, V
     Ok(clients.iter().map(|(name, c)| (name.clone(), c.tools.clone())).collect())
 }
 
+/// 断开 MCP 服务器连接：从管理器移除客户端，进程随 drop 被 kill（kill_on_drop），
+/// 浏览器类服务器（如 server-puppeteer）的浏览器窗口随之关闭，形成使用闭环。
+#[tauri::command]
+async fn mcp_disconnect(manager: State<'_, McpManager>, name: String) -> Result<bool, String> {
+    let mut clients = manager.clients.lock().await;
+    let removed = clients.remove(&name).is_some();
+    if removed {
+        eprintln!("[mcp_disconnect] 已断开 '{}'（服务器进程已终止）", name);
+    } else {
+        eprintln!("[mcp_disconnect] '{}' 未在连接列表中", name);
+    }
+    Ok(removed)
+}
+
 /// 在已连接客户端中解析 server 名（宽松匹配，容忍 LLM 输出偏差）
 fn resolve_mcp_server(
     clients: &std::collections::HashMap<String, mcp::McpClient>,
@@ -565,6 +579,7 @@ pub fn run() {
             execute_command,
             read_file,
             mcp_connect,
+            mcp_disconnect,
             mcp_call_tool,
             mcp_list_tools,
             list_tool_audit,
