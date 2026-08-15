@@ -82,7 +82,12 @@ export const useMcpStore = defineStore("mcp", () => {
     if (s) Object.assign(s, patch);
   }
 
-  function remove(id: string) {
+  async function remove(id: string) {
+    const s = servers.value.find(x => x.id === id);
+    // 删除已连接服务器时先断开（终止进程），避免进程残留
+    if (s && s.connected) {
+      try { await invoke("mcp_disconnect", { name: s.name }); } catch { /* ignore */ }
+    }
     servers.value = servers.value.filter(x => x.id !== id);
   }
 

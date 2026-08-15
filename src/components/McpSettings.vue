@@ -8,7 +8,8 @@ const activeTab = ref<"servers" | "market">("servers");
 const editing = ref<string | null>(null);
 const form = ref({ name: "", command: "", args: "", enabled: true });
 const error = ref("");
-const connecting = ref<string | null>(null);
+// 连接由 agent 自动控制（应用启动自动连接 + 发消息自动重连），
+// 此处不再提供手动连接/重新连接，仅展示状态。
 
 // --- 插件市场 ---
 const searchKw = ref("");
@@ -34,7 +35,9 @@ function installPlugin(item: McpCatalogItem) {
   if (isInstalled(item)) return;
   store.add({ name: item.name, command: item.command, args: item.args, enabled: true });
   activeTab.value = "servers";
-  error.value = `✅ 已添加「${item.name}」，点击连接即可使用`;
+  // agent 自动控制：添加后自动连接该服务器
+  store.connectEnabled();
+  error.value = `✅ 已添加「${item.name}」，自动连接中…`;
 }
 
 function openAdd() {
@@ -58,20 +61,10 @@ function save() {
     store.update(editing.value, form.value);
   } else {
     store.add(form.value);
+    // agent 自动控制：新增服务器后自动连接
+    store.connectEnabled();
   }
   editing.value = null;
-}
-
-async function doConnect(id: string) {
-  connecting.value = id;
-  error.value = "";
-  try {
-    await store.connect(id);
-    await store.syncToChat();
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e);
-  }
-  connecting.value = null;
 }
 
 function cancel() {
@@ -125,14 +118,7 @@ function cancel() {
           <div class="mcp-item-tools" v-if="s.connected">{{ s.toolCount }} 个工具可用</div>
         </div>
         <div class="mcp-item-acts">
-          <button
-            class="mcp-btn mcp-btn-sm"
-            :class="s.connected ? 'mcp-btn-sec' : 'mcp-btn-pri'"
-            :disabled="connecting === s.id"
-            @click="doConnect(s.id)"
-          >
-            {{ connecting === s.id ? "连接中…" : s.connected ? "重新连接" : "连接" }}
-          </button>
+          <!-- 连接由 agent 自动控制，不再提供手动连接/重新连接 -->
           <button class="mcp-btn-mini" @click="store.remove(s.id)">🗑</button>
         </div>
       </div>
