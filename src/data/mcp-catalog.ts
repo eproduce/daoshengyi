@@ -29,7 +29,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     description: "抓取网页、转 Markdown",
     category: "网络",
     command: "npx",
-    args: "-y @modelcontextprotocol/server-fetch",
+    args: "-y mcp-server-fetch",
     tags: ["HTTP", "抓取"],
   },
   {
