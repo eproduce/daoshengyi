@@ -16,8 +16,7 @@ const inputText = ref("");
 const attachedImages = ref<ImageAttachment[]>([]);
 const attachedFiles = ref<{ id: string; name: string; content: string }[]>([]);
 const textareaRef = ref<HTMLTextAreaElement>();
-const fileInputRef = ref<HTMLInputElement>();
-const docInputRef = ref<HTMLInputElement>();
+const attachInputRef = ref<HTMLInputElement>();
 const showModelDropdown = ref(false);
 const showReasoningDropdown = ref(false);
 const modelDropdownRef = ref<HTMLDivElement>();
@@ -117,11 +116,17 @@ function handlePaste(e: ClipboardEvent) {
   }
 }
 
-function handleFileSelect(e: Event) {
+// --- 附件处理（图片与文件统一入口，按类型分流） ---
+function handleAttachSelect(e: Event) {
   const input = e.target as HTMLInputElement;
   if (!input.files) return;
-  for (let i = 0; i < input.files.length; i++) processImageFile(input.files[i]);
+  for (let i = 0; i < input.files.length; i++) processFile(input.files[i]);
   input.value = "";
+}
+
+function processFile(file: File) {
+  if (file.type.startsWith("image/")) processImageFile(file);
+  else processDocFile(file);
 }
 
 function processImageFile(file: File) {
@@ -136,16 +141,8 @@ function processImageFile(file: File) {
 }
 
 function removeImage(id: string) { attachedImages.value = attachedImages.value.filter((i) => i.id !== id); }
-function triggerFileSelect() { fileInputRef.value?.click(); }
 
 // --- 文本文件处理 ---
-function handleDocSelect(e: Event) {
-  const input = e.target as HTMLInputElement;
-  if (!input.files) return;
-  for (let i = 0; i < input.files.length; i++) processDocFile(input.files[i]);
-  input.value = "";
-}
-
 function processDocFile(file: File) {
   if (file.size > 5 * 1024 * 1024) { alert("文件不能超过 5MB"); return; }
   const reader = new FileReader();
@@ -158,7 +155,7 @@ function processDocFile(file: File) {
 }
 
 function removeFile(id: string) { attachedFiles.value = attachedFiles.value.filter((f) => f.id !== id); }
-function triggerDocSelect() { docInputRef.value?.click(); }
+function triggerAttach() { attachInputRef.value?.click(); }
 
 // --- 拖拽 ---
 function onDragOver(e: DragEvent) { e.preventDefault(); }
@@ -183,19 +180,16 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 
 <template>
   <div class="chat-input" @dragover="onDragOver" @drop="onDrop">
-    <!-- 图片预览 -->
-    <div v-if="attachedImages.length" class="ci-imgs">
-      <div v-for="img in attachedImages" :key="img.id" class="ci-img">
+    <!-- 附件栏（图片与文件统一展示，参考 DeepSeek Chat 附件栏） -->
+    <div v-if="attachedImages.length || attachedFiles.length" class="ci-attach">
+      <div v-for="img in attachedImages" :key="img.id" class="ci-attach-item ci-attach-img">
         <img :src="img.base64" :alt="img.fileName || '图片'" />
-        <button class="ci-img-x" @click="removeImage(img.id)">✕</button>
+        <button class="ci-attach-x" title="移除" @click="removeImage(img.id)">✕</button>
       </div>
-    </div>
-    <!-- 文件标签 -->
-    <div v-if="attachedFiles.length" class="ci-files">
-      <div v-for="f in attachedFiles" :key="f.id" class="ci-file-tag">
+      <div v-for="f in attachedFiles" :key="f.id" class="ci-attach-item ci-attach-file">
         <span class="ci-file-icon">📄</span>
         <span class="ci-file-name">{{ f.name }}</span>
-        <button class="ci-file-x" @click="removeFile(f.id)">✕</button>
+        <button class="ci-attach-x" title="移除" @click="removeFile(f.id)">✕</button>
       </div>
     </div>
 
@@ -269,19 +263,12 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span>{{ chatStore.activeProfile?.enableWebSearch ? '联网' : '离线' }}</span>
         </button>
 
-        <!-- 文件上传 -->
-        <button class="ci-pill" @click="triggerDocSelect" title="上传文件 (.md, .txt, .json, .py ...)">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          <span>文件</span>
+        <!-- 附件上传（图片与文件统一入口） -->
+        <button class="ci-pill" @click="triggerAttach" title="上传图片或文件">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          <span>附件</span>
         </button>
-        <input ref="docInputRef" type="file" accept=".md,.txt,.json,.py,.js,.ts,.rs,.toml,.yaml,.yml,.xml,.csv,.log,.html,.css,.sh,.rb,.go,.java,.c,.cpp,.h,.hpp" multiple hidden @change="handleDocSelect" />
-
-        <!-- 图片 -->
-        <button class="ci-pill" @click="triggerFileSelect" title="上传图片">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          <span>图片</span>
-        </button>
-        <input ref="fileInputRef" type="file" accept="image/*" multiple hidden @change="handleFileSelect" />
+        <input ref="attachInputRef" type="file" accept="image/*,.md,.txt,.json,.py,.js,.ts,.rs,.toml,.yaml,.yml,.xml,.csv,.log,.html,.css,.sh,.rb,.go,.java,.c,.cpp,.h,.hpp" multiple hidden @change="handleAttachSelect" />
       </div>
 
       <div class="ci-bar-right">
@@ -294,20 +281,16 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 <style scoped>
 .chat-input { padding: 12px 20px 14px; background: var(--bg-primary); }
 
-/* 图片预览 */
-.ci-imgs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.ci-img { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color); }
-.ci-img img { width: 100%; height: 100%; object-fit: cover; }
-.ci-img-x { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
-.ci-img:hover .ci-img-x { opacity: 1; }
-
-/* 文件标签 */
-.ci-files { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.ci-file-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px 3px 6px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 11px; }
-.ci-file-icon { font-size: 12px; }
+/* 附件栏（图片缩略图 + 文件卡片，参考 DeepSeek Chat 附件栏） */
+.ci-attach { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ci-attach-item { position: relative; display: inline-flex; align-items: center; }
+.ci-attach-img { width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color); }
+.ci-attach-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ci-attach-file { gap: 5px; padding: 6px 10px 6px 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 11px; }
+.ci-file-icon { font-size: 13px; }
 .ci-file-name { color: var(--text-secondary); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ci-file-x { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 10px; padding: 0; margin-left: 2px; }
-.ci-file-x:hover { color: #f87171; }
+.ci-attach-x { position: absolute; top: 2px; right: 2px; z-index: 1; width: 18px; height: 18px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
+.ci-attach-item:hover .ci-attach-x { opacity: 1; }
 
 /* 输入行 */
 .ci-wrap { display: flex; gap: 8px; align-items: flex-end; background: var(--bg-secondary); border: 1.5px solid transparent; border-radius: 10px; padding: 6px 10px; transition: border-color .2s, box-shadow .2s; }
