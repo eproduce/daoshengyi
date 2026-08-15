@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
+import { useOllamaStore } from "./stores/ollama";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
-import type { HardwareInfo, ImageAttachment, FileAttachment } from "@/types";
+import type { ImageAttachment, FileAttachment } from "@/types";
 
 const chatStore = useChatStore();
+const ollamaStore = useOllamaStore();
 const { theme, toggleTheme } = useTheme();
 
 const showSettings = ref(false);
@@ -27,23 +28,20 @@ function openSettings(tab: "api" | "mcp" | "ollama" = "api") {
   showSettings.value = true;
 }
 async function checkOllamaOnStart() {
-  try {
-    // 先评估硬件，再决定推荐本地部署还是线上 API
-    const hw = await invoke<HardwareInfo>("check_hardware");
-    hardwareMessage.value = hw.message;
-    const s = await invoke<{ installed: boolean; running: boolean; models: string[] }>("ollama_status");
-    const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
-    ollamaBanner.value = false;
-    ollamaNotRecBanner.value = false;
-    if (s.installed && s.running && hasLlava) return; // 已就绪，无需引导
-    if (hw.verdict === "not_recommended") {
-      ollamaNotRecBanner.value = true; // 硬件不足 → 建议线上 API
-    } else {
-      ollamaBanner.value = true; // recommended / warning 都允许本地部署
-    }
-  } catch {
-    ollamaBanner.value = false;
-    ollamaNotRecBanner.value = false;
+  // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
+  await ollamaStore.init();
+  const s = ollamaStore.status;
+  const hw = ollamaStore.hw;
+  ollamaBanner.value = false;
+  ollamaNotRecBanner.value = false;
+  if (!s) return;
+  hardwareMessage.value = hw?.message ?? "";
+  const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
+  if (s.installed && s.running && hasLlava) return; // 已就绪，无需引导
+  if (hw?.verdict === "not_recommended") {
+    ollamaNotRecBanner.value = true; // 硬件不足 → 建议线上 API
+  } else {
+    ollamaBanner.value = true; // recommended / warning 都允许本地部署
   }
 }
 const messagesContainer = ref<HTMLDivElement>();

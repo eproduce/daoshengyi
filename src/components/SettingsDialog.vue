@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useChatStore } from "@/stores/chat";
-import type { ApiProfile, HardwareInfo } from "@/types";
+import { useOllamaStore } from "@/stores/ollama";
+import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getSettings, updateSettings } from "@/api/appSettings";
 import McpSettings from "./McpSettings.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
@@ -15,59 +15,19 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+const ollamaStore = useOllamaStore();
 const activeTab = ref<"api" | "mcp" | "ollama">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
-// --- Ollama 本地视觉模型管理 ---
-const ollama = ref<{ installed: boolean; running: boolean; models: string[] } | null>(null);
-const ollamaBusy = ref(false);
-const ollamaProgress = ref("");
-const ollamaPercent = ref<number | null>(null);
-let ollamaUnlisten: (() => void) | null = null;
-
-const hw = ref<HardwareInfo | null>(null);
+// --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
 function verdictText(v: string) {
   return v === "recommended" ? "✅ 推荐本地部署" : v === "warning" ? "⚠️ 可部署，但占用资源较高" : "❌ 不推荐本地部署";
 }
 
-const hasLlava = computed(() => ollama.value?.models.some((m) => m.includes("llava-phi3")) ?? false);
-
-async function refreshOllama() {
-  try {
-    ollama.value = await invoke("ollama_status");
-  } catch { ollama.value = null; }
-}
-
-async function deployOllama() {
-  if (ollamaBusy.value) return;
-  ollamaBusy.value = true;
-  ollamaProgress.value = "";
-  ollamaPercent.value = null;
-  try {
-    await invoke("ollama_setup");
-    await refreshOllama();
-  } catch (e) {
-    ollamaProgress.value = e instanceof Error ? e.message : String(e);
-  }
-  ollamaBusy.value = false;
-}
-
 onMounted(() => {
-  refreshOllama();
-  invoke<HardwareInfo>("check_hardware").then((h) => { hw.value = h; }).catch(() => {});
-  listen<{ text?: string; percent?: number } | string>("ollama-progress", (e) => {
-    const p = e.payload;
-    if (typeof p === "string") {
-      ollamaProgress.value = p;
-      return;
-    }
-    if (typeof p.text === "string") ollamaProgress.value = p.text;
-    if (typeof p.percent === "number") ollamaPercent.value = p.percent;
-  })
-    .then((un) => { ollamaUnlisten = un; })
-    .catch(() => {});
+  // 打开时刷新一次状态（若后台仍在部署，进度/百分比已保存在 store 中自动恢复）
+  ollamaStore.refreshStatus();
 });
-onUnmounted(() => { ollamaUnlisten?.(); });
 
 const editingId = ref<string>(chatStore.activeProfileId);
 const editingProfile = ref<ApiProfile>({
@@ -370,57 +330,57 @@ function handleDelete() {
       <!-- MCP 服务器管理 -->
       <div v-show="activeTab === 'mcp'"><McpSettings /></div>
 
-      <!-- Ollama 本地视觉模型管理 -->
+      <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
       <div v-show="activeTab === 'ollama'" class="ollama-panel">
         <h3>🤖 本地视觉模型（Ollama）</h3>
         <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
-        <div v-if="hw" class="hw-card">
-          <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ hw.score }} 分</span></div>
-          <div class="hw-card__row">CPU：{{ hw.cpu_cores }} 核{{ hw.cpu_brand ? ' · ' + hw.cpu_brand : '' }}</div>
-          <div class="hw-card__row">内存：{{ hw.memory_gb }} GB</div>
-          <div class="hw-card__row">显卡：{{ hw.gpu_name || '核显' }}{{ hw.gpu_memory_mb ? ' · ' + hw.gpu_memory_mb + ' MB' : '' }}{{ hw.has_metal ? ' · Metal' : '' }}</div>
-          <div class="hw-card__verdict" :class="'hw-card__verdict--' + hw.verdict">{{ verdictText(hw.verdict) }}</div>
-          <p class="hw-card__msg">{{ hw.message }}</p>
+        <div v-if="ollamaStore.hw" class="hw-card">
+          <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
+          <div class="hw-card__row">CPU：{{ ollamaStore.hw.cpu_cores }} 核{{ ollamaStore.hw.cpu_brand ? ' · ' + ollamaStore.hw.cpu_brand : '' }}</div>
+          <div class="hw-card__row">内存：{{ ollamaStore.hw.memory_gb }} GB</div>
+          <div class="hw-card__row">显卡：{{ ollamaStore.hw.gpu_name || '核显' }}{{ ollamaStore.hw.gpu_memory_mb ? ' · ' + ollamaStore.hw.gpu_memory_mb + ' MB' : '' }}{{ ollamaStore.hw.has_metal ? ' · Metal' : '' }}</div>
+          <div class="hw-card__verdict" :class="'hw-card__verdict--' + ollamaStore.hw.verdict">{{ verdictText(ollamaStore.hw.verdict) }}</div>
+          <p class="hw-card__msg">{{ ollamaStore.hw.message }}</p>
         </div>
-        <div v-if="!ollama" class="ollama-loading">正在检测 Ollama 环境...</div>
+        <div v-if="!ollamaStore.status" class="ollama-loading">正在检测 Ollama 环境...</div>
         <template v-else>
           <div class="ollama-status">
             <div class="ollama-item">
-              <span class="ollama-dot" :class="ollama.installed ? 'green' : 'red'"></span>
-              Ollama 程序：{{ ollama.installed ? '已安装' : '未安装' }}
+              <span class="ollama-dot" :class="ollamaStore.status.installed ? 'green' : 'red'"></span>
+              Ollama 程序：{{ ollamaStore.status.installed ? '已安装' : '未安装' }}
             </div>
             <div class="ollama-item">
-              <span class="ollama-dot" :class="ollama.running ? 'green' : 'red'"></span>
-              Ollama 服务：{{ ollama.running ? '运行中' : '未运行' }}
+              <span class="ollama-dot" :class="ollamaStore.status.running ? 'green' : 'red'"></span>
+              Ollama 服务：{{ ollamaStore.status.running ? '运行中' : '未运行' }}
             </div>
-            <div class="ollama-item" v-if="ollama.running">
-              <span class="ollama-dot" :class="hasLlava ? 'green' : 'red'"></span>
-              视觉模型 llava-phi3：{{ hasLlava ? '已部署' : '未部署' }}
+            <div class="ollama-item" v-if="ollamaStore.status.running">
+              <span class="ollama-dot" :class="ollamaStore.hasLlava ? 'green' : 'red'"></span>
+              视觉模型 llava-phi3：{{ ollamaStore.hasLlava ? '已部署' : '未部署' }}
             </div>
-            <div v-if="ollama.running && ollama.models.length" class="ollama-models">
-              已部署模型：{{ ollama.models.join(', ') }}
+            <div v-if="ollamaStore.status.running && ollamaStore.status.models.length" class="ollama-models">
+              已部署模型：{{ ollamaStore.status.models.join(', ') }}
             </div>
           </div>
           <button
-            v-if="hw?.verdict === 'not_recommended'"
+            v-if="ollamaStore.hw?.verdict === 'not_recommended'"
             class="btn-primary"
             @click="activeTab = 'api'"
           >配置线上视觉模型 API</button>
           <button
             v-else
             class="btn-primary"
-            :disabled="ollamaBusy"
-            @click="deployOllama"
+            :disabled="ollamaStore.busy"
+            @click="ollamaStore.deploy()"
           >
-            {{ ollamaBusy ? '部署中...' : (ollama.installed && hasLlava ? '重新检测' : '一键部署') }}
+            {{ ollamaStore.busy ? '部署中...' : (ollamaStore.status.installed && ollamaStore.hasLlava ? '重新检测' : '一键部署') }}
           </button>
-          <p class="ollama-hint" v-if="hw?.verdict !== 'not_recommended'">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长，请耐心等待。</p>
+          <p class="ollama-hint" v-if="ollamaStore.hw?.verdict !== 'not_recommended'">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长；关闭此界面会继续在后台下载，可稍后回来查看进度。</p>
         </template>
-        <div v-if="ollamaPercent !== null && ollamaPercent < 100" class="ollama-bar">
-          <div class="ollama-bar__fill" :style="{ width: ollamaPercent + '%' }"></div>
-          <span class="ollama-bar__label">{{ Math.round(ollamaPercent) }}%</span>
+        <div v-if="ollamaStore.percent !== null && ollamaStore.percent < 100" class="ollama-bar">
+          <div class="ollama-bar__fill" :style="{ width: ollamaStore.percent + '%' }"></div>
+          <span class="ollama-bar__label">{{ Math.round(ollamaStore.percent) }}%</span>
         </div>
-        <div v-if="ollamaProgress" class="ollama-progress">{{ ollamaProgress }}</div>
+        <div v-if="ollamaStore.progress" class="ollama-progress">{{ ollamaStore.progress }}</div>
       </div>
     </div>
 
