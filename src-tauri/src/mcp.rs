@@ -129,7 +129,6 @@ pub struct McpClient {
     stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
     id_counter: u64,
     pub tools: Vec<Tool>,
-    pub server_name: String,
 }
 
 impl McpClient {
@@ -163,7 +162,6 @@ impl McpClient {
             stdout,
             id_counter: 1,
             tools: Vec::new(),
-            server_name: config.name.clone(),
         };
 
         // MCP 握手

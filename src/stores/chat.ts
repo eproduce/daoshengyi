@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch, reactive } from "vue";
-import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, MessageRole } from "@/types";
+import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
 import { invoke } from "@tauri-apps/api/core";
@@ -137,7 +137,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const convs = await invoke<{id:string;title:string;model:string;created_at:number;updated_at:number}[]>("load_conversations");
       for (const c of convs) {
-        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: c.id });
+        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: c.id });
         conversations.value.push({
           id: c.id, title: c.title, model: c.model,
           createdAt: c.created_at, updatedAt: c.updated_at,
@@ -145,6 +145,7 @@ export const useChatStore = defineStore("chat", () => {
             id: m.id, role: m.role as MessageRole, content: m.content,
             reasoning_content: m.reasoning_content,
             images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
+            attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
             timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
           })),
         });
@@ -178,6 +179,7 @@ export const useChatStore = defineStore("chat", () => {
             id: m.id, conversation_id: conv.id, role: m.role, content: m.content,
             reasoning_content: m.reasoning_content || null,
             images: m.images ? JSON.stringify(m.images) : null,
+            attachments: m.attachments ? JSON.stringify(m.attachments) : null,
             timestamp: m.timestamp, tokens: m.tokens || null, duration: m.duration || null, cost: m.cost || null,
           })),
         });
@@ -379,13 +381,15 @@ export const useChatStore = defineStore("chat", () => {
   function addUserMessage(
     convId: string,
     text: string,
-    images?: ImageAttachment[]
+    images?: ImageAttachment[],
+    attachments?: FileAttachment[]
   ): ChatMessage {
     const msg: ChatMessage = {
       id: uuidv4(),
       role: "user",
       content: text,
       images: images && images.length > 0 ? images : undefined,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
       timestamp: Date.now(),
     };
     const conv = conversations.value.find((c) => c.id === convId);
@@ -393,7 +397,7 @@ export const useChatStore = defineStore("chat", () => {
       conv.messages.push(msg);
       conv.updatedAt = Date.now();
       if (conv.title === "新对话" && conv.messages.length === 1) {
-        const titleText = text || (images?.length ? "[图片]" : "");
+        const titleText = text || (images?.length ? "[图片]" : "") || (attachments?.length ? "[附件]" : "");
         conv.title = titleText.slice(0, 30) + (titleText.length > 30 ? "..." : "");
       }
     }
@@ -556,7 +560,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // --- 流式发送 ---
-  async function sendMessage(text: string, images?: ImageAttachment[]) {
+  async function sendMessage(text: string, images?: ImageAttachment[], attachments?: FileAttachment[]) {
     // 命令执行指令：/run <命令>
     if (text.trim().startsWith("/run ")) {
       await runCommand(text.trim().slice(5).trim());
@@ -573,7 +577,7 @@ export const useChatStore = defineStore("chat", () => {
       convId = createConversation();
     }
 
-    addUserMessage(convId, text, images);
+    addUserMessage(convId, text, images, attachments);
 
     // 用 reactive 创建，保证 push 后对 tokens/cost 等的赋值能触发响应式更新
     const assistantMsg = reactive<ChatMessage>({
@@ -600,14 +604,9 @@ export const useChatStore = defineStore("chat", () => {
         images = undefined;
         assistantMsg.content = "";
       } else {
-        // 没有可用视觉 API，回退到文本模式
-        images = undefined;
-        const lastUserMsg = conv.messages.filter((m) => m.role === "user").at(-1);
-        if (lastUserMsg) {
-          lastUserMsg.images = undefined;
-          if (!lastUserMsg.content) lastUserMsg.content = "[图片]";
-        }
-        assistantMsg.content = "⚠️ 未配置视觉 API，无法识别图片。请在设置中添加支持视觉能力的 API 配置。\n\n";
+        // 没有可用视觉 API 描述时，直接以多模态方式发送图片（保留 images）。
+        // 模型支持图片输入则正常识别；不支持则由 API 返回错误，不静默丢弃。
+        assistantMsg.content = "";
       }
     }
 
@@ -648,6 +647,15 @@ export const useChatStore = defineStore("chat", () => {
 
       // 联网搜索
       let sp = config.systemPrompt || "";
+
+      // 注入文件上下文（文本/PDF 提取内容作为 AI 可读的上下文）
+      if (attachments && attachments.length > 0) {
+        const fileCtx = attachments
+          .map((f) => `\n\n--- 文件: ${f.name} ---\n${f.content.slice(0, 12000)}`)
+          .join("");
+        sp = `${sp || "你是道生一，一个AI桌面助手。"}\n\n[用户提供的文件上下文]\n${fileCtx}`;
+      }
+
       if (config.enableWebSearch && text.trim()) {
         try {
           const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim(), braveKey: "" });

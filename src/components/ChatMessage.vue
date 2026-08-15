@@ -95,6 +95,14 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
           </div>
         </div>
 
+        <!-- 附件上下文卡片（文件内容不直接展示，仅显示文件名） -->
+        <div v-if="message.attachments?.length" class="message__attachments">
+          <div v-for="f in message.attachments" :key="f.id" class="attach-card" :title="`${f.name} · ${(f.content || '').length} 字符`">
+            <span class="attach-card-icon">📄</span>
+            <span class="attach-card-name">{{ f.name }}</span>
+          </div>
+        </div>
+
         <div v-if="message.reasoning_content" class="msg-reason">
           <div class="reason-head" @click="showReasoning = !showReasoning">
             <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label">🧠 深度思考</span>
@@ -164,6 +172,14 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .message__image-item { width: 120px; height: 120px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-color); cursor: pointer; transition: transform .15s; }
 .message__image-item:hover { transform: scale(1.03); }
 .message__image-item img { width: 100%; height: 100%; object-fit: cover; }
+
+/* 附件上下文卡片 */
+.message__attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.attach-card { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 11px; }
+.attach-card-icon { font-size: 13px; }
+.attach-card-name { color: var(--text-secondary); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message--user .attach-card { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.3); }
+.message--user .attach-card-name { color: #fff; }
 .message__content { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }
 .message__cursor { display: inline-block; width: 7px; height: 16px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; border-radius: 2px; }
 .message__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; padding: 0 4px; }

@@ -1,20 +1,22 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, onUnmounted } from "vue";
-import type { ImageAttachment, ApiProfile } from "@/types";
+import type { ImageAttachment, FileAttachment, ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
+import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
 
 const chatStore = useChatStore();
 
 const emit = defineEmits<{
-  send: [text: string, images: ImageAttachment[]];
+  send: [text: string, images: ImageAttachment[], files: FileAttachment[]];
   openSettings: [];
 }>();
 
 const inputText = ref("");
 const attachedImages = ref<ImageAttachment[]>([]);
-const attachedFiles = ref<{ id: string; name: string; content: string }[]>([]);
+const attachedFiles = ref<FileAttachment[]>([]);
 const textareaRef = ref<HTMLTextAreaElement>();
 const attachInputRef = ref<HTMLInputElement>();
 const showModelDropdown = ref(false);
@@ -28,13 +30,8 @@ defineProps<{ disabled: boolean; placeholder?: string }>();
 function handleSend() {
   const text = inputText.value.trim();
   if (!text && attachedImages.value.length === 0 && attachedFiles.value.length === 0) return;
-  // 将文件内容附加到消息文本
-  let finalText = text;
-  if (attachedFiles.value.length > 0) {
-    const fileTexts = attachedFiles.value.map(f => `\n\n--- 文件: ${f.name} ---\n${f.content.slice(0, 8000)}`).join("");
-    finalText = finalText + fileTexts;
-  }
-  emit("send", finalText, [...attachedImages.value]);
+  // 文件内容作为附件上下文传入（注入提示词），不直接拼进消息文本
+  emit("send", text, [...attachedImages.value], [...attachedFiles.value]);
   inputText.value = "";
   attachedImages.value = [];
   attachedFiles.value = [];
@@ -150,12 +147,57 @@ function processDocFile(file: File) {
     id: uuidv4(),
     name: file.name,
     content: reader.result as string,
+    mimeType: file.type || "text/plain",
   });
   reader.readAsText(file);
 }
 
 function removeFile(id: string) { attachedFiles.value = attachedFiles.value.filter((f) => f.id !== id); }
-function triggerAttach() { attachInputRef.value?.click(); }
+
+function isTauri(): boolean {
+  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+}
+
+/// 选择附件：桌面环境用 Tauri 原生对话框（支持 macOS 照片库、PDF 等），
+/// 浏览器预览环境回退到文件选择器。
+async function triggerAttach() {
+  if (isTauri()) {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [
+          { name: "图片", extensions: ["png","jpg","jpeg","gif","webp","bmp","svg","heic"] },
+          { name: "文档", extensions: ["pdf","md","txt","json","py","js","ts","rs","toml","yaml","yml","xml","csv","log","html","css","sh","rb","go","java","c","cpp","h","hpp"] },
+          { name: "所有文件", extensions: ["*"] },
+        ],
+      });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (const p of paths) {
+        try {
+          const res = await invoke<{ kind: string; mime: string; content: string }>("read_attachment", { path: p });
+          const name = p.split("/").pop() || p;
+          if (res.kind === "image") {
+            attachedImages.value.push({
+              id: uuidv4(), base64: `data:${res.mime};base64,${res.content}`,
+              mimeType: res.mime, fileName: name,
+            });
+          } else {
+            attachedFiles.value.push({ id: uuidv4(), name, content: res.content, mimeType: res.mime });
+          }
+        } catch (e) {
+          alert(`读取附件失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/cancelled|aborted|取消/i.test(msg)) return;
+      alert(`选择文件失败: ${msg}`);
+    }
+    return;
+  }
+  attachInputRef.value?.click();
+}
 
 // --- 拖拽 ---
 function onDragOver(e: DragEvent) { e.preventDefault(); }
@@ -296,7 +338,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-wrap { display: flex; gap: 8px; align-items: flex-end; background: var(--bg-secondary); border: 1.5px solid transparent; border-radius: 10px; padding: 6px 10px; transition: border-color .2s, box-shadow .2s; }
 .ci-wrap:focus-within { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(99,102,241,.08); }
 
-.ci-text { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text-primary); font-size: 13px; line-height: 1.5; font-family: inherit; max-height: 160px; min-height: 24px; }
+.ci-text { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text-primary); font-size: 14px; line-height: 1.6; font-family: inherit; max-height: 160px; min-height: 44px; }
 .ci-text::placeholder { color: var(--text-muted); }
 
 .ci-send { flex-shrink: 0; width: 32px; height: 32px; border: none; border-radius: 8px; background: var(--accent-color); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }

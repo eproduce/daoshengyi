@@ -68,6 +68,40 @@ fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
+/// 附件读取结果
+#[derive(serde::Serialize)]
+struct AttachmentContent {
+    kind: String, // "image" | "text"
+    mime: String,
+    content: String,
+}
+
+/// 读取附件内容（统一入口）：图片转 base64，PDF 提取文本，其余按文本读取
+#[tauri::command]
+fn read_attachment(path: String) -> Result<AttachmentContent, String> {
+    let p = std::path::Path::new(&path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "heic", "ico"];
+    if image_exts.contains(&ext.as_str()) {
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取图片失败: {}", e))?;
+        let mime = match ext.as_str() {
+            "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif",
+            "webp" => "image/webp", "bmp" => "image/bmp", "svg" => "image/svg+xml",
+            "tiff" => "image/tiff", "heic" => "image/heic", _ => "image/*",
+        };
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Ok(AttachmentContent { kind: "image".into(), mime: mime.into(), content: b64 });
+    }
+    if ext == "pdf" {
+        let text = pdf_extract::extract_text(&path)
+            .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
+        return Ok(AttachmentContent { kind: "text".into(), mime: "application/pdf".into(), content: text });
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+    Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text })
+}
+
 /// 执行终端命令（一次性返回输出，默认 60 秒超时）
 #[tauri::command]
 async fn execute_command(
@@ -535,6 +569,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_dir = app.path().app_data_dir().expect("无法获取数据目录");
             let database = Database::new(app_dir.clone()).expect("数据库初始化失败");
@@ -578,6 +613,7 @@ pub fn run() {
             fetch_page,
             execute_command,
             read_file,
+            read_attachment,
             mcp_connect,
             mcp_disconnect,
             mcp_call_tool,

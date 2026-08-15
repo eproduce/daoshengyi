@@ -9,6 +9,14 @@ export interface ImageAttachment {
   fileName?: string;
 }
 
+/// 文件上下文附件（文本/PDF 提取内容，作为上下文注入提示词，不直接展示在消息里）
+export interface FileAttachment {
+  id: string;
+  name: string;
+  content: string;
+  mimeType?: string;
+}
+
 /// 多模态消息内容
 export type MessageContent =
   | string
@@ -34,6 +42,7 @@ export interface ChatMessage {
   content: string;
   reasoning_content?: string;
   images?: ImageAttachment[];
+  attachments?: FileAttachment[];
   timestamp: number;
   streaming?: boolean;
   duration?: number;

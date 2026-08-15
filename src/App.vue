@@ -8,7 +8,7 @@ import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
-import type { ImageAttachment } from "@/types";
+import type { ImageAttachment, FileAttachment } from "@/types";
 
 const chatStore = useChatStore();
 const { theme, toggleTheme } = useTheme();
@@ -30,8 +30,12 @@ watch(() => chatStore.activeConversation?.messages.at(-1)?.content, () => scroll
 watch(() => chatStore.streamingContent, () => scrollToBottom());
 watch(() => chatStore.streamingReasoning, () => scrollToBottom());
 
-function handleSend(text: string, images: ImageAttachment[]) {
-  chatStore.sendMessage(text, images.length > 0 ? images : undefined);
+function handleSend(text: string, images: ImageAttachment[], files: FileAttachment[]) {
+  chatStore.sendMessage(
+    text,
+    images.length > 0 ? images : undefined,
+    files.length > 0 ? files : undefined
+  );
 }
 
 function handleStop() { chatStore.stopStreaming(); }
@@ -205,7 +209,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .topbar__btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 .messages-container {
-  flex: 1; overflow-y: auto;
+  flex: 1; overflow-y: auto; overflow-x: hidden;
   background: var(--bg-primary);
   scroll-behavior: smooth;
 }

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL DEFAULT '',
     reasoning_content TEXT,
     images TEXT,
+    attachments TEXT,
     timestamp INTEGER NOT NULL,
     tokens INTEGER,
     duration REAL,
@@ -89,6 +90,7 @@ pub struct MsgRow {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub images: Option<String>,
+    pub attachments: Option<String>,
     pub timestamp: i64,
     pub tokens: Option<i64>,
     pub duration: Option<f64>,
@@ -123,6 +125,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE memory_facts ADD COLUMN embedding BLOB", []);
         // 旧库迁移：加 cost 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
+        // 旧库迁移：加 attachments 列
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []);
         Ok(Database { conn: Mutex::new(conn) })
     }
 
@@ -159,8 +163,8 @@ impl Database {
 
         for m in messages {
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.timestamp, m.tokens, m.duration, m.cost],
+                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost],
             ).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -176,15 +180,15 @@ impl Database {
     pub fn get_messages(&self, conv_id: &str) -> Result<Vec<MsgRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, conversation_id, role, content, reasoning_content, images, timestamp, tokens, duration, cost FROM messages WHERE conversation_id=?1 ORDER BY timestamp ASC")
+            .prepare("SELECT id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost FROM messages WHERE conversation_id=?1 ORDER BY timestamp ASC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![conv_id], |row| {
                 Ok(MsgRow {
                     id: row.get(0)?, conversation_id: row.get(1)?, role: row.get(2)?,
                     content: row.get(3)?, reasoning_content: row.get(4)?,
-                    images: row.get(5)?, timestamp: row.get(6)?,
-                    tokens: row.get(7)?, duration: row.get(8)?, cost: row.get(9)?,
+                    images: row.get(5)?, attachments: row.get(6)?, timestamp: row.get(7)?,
+                    tokens: row.get(8)?, duration: row.get(9)?, cost: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?;
