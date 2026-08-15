@@ -64,7 +64,8 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
 async function runReactLoop(
   config: ApiConfig,
   messages: { role: string; content: string }[],
-  maxIterations = 5
+  maxIterations = 5,
+  onProgress?: (text: string) => void
 ): Promise<string[]> {
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
   const toolResults: string[] = [];
@@ -94,6 +95,10 @@ async function runReactLoop(
       await closeBrowserIfOpen();
       return [content, ...toolResults];
     }
+
+    // 实时告诉用户正在调用哪个工具（避免出现"正在分析并调用工具..."这类莫名的占位）
+    const serverName = toolCall.server && toolCall.server !== "default" ? `（${toolCall.server}）` : "";
+    onProgress?.(`🔧 正在调用工具：${toolCall.tool}${serverName}...`);
 
     // 执行工具（展示为清晰的工具调用卡片，参数折叠，避免原始 JSON 刷屏）
     const argsStr = JSON.stringify(toolCall.arguments, null, 2);
@@ -723,8 +728,10 @@ export const useChatStore = defineStore("chat", () => {
           content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
         }));
         try {
-          streamingContent.value = "🔍 正在分析并调用工具...";
-          const [finalAnswer, ...toolResults] = await runReactLoop(config, flatMsgs);
+          // ReAct 期间实时显示"正在调用 xx 工具"，而不是模糊的"正在分析..."占位
+          const [finalAnswer, ...toolResults] = await runReactLoop(config, flatMsgs, 5, (text) => {
+            streamingContent.value = text;
+          });
           if (finalAnswer) {
             // ReAct 循环给出了最终答案，直接展示（跳过流式）
             streamingContent.value =
