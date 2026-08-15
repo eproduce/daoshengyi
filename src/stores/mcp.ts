@@ -76,6 +76,10 @@ export const useMcpStore = defineStore("mcp", () => {
   async function connect(id: string) {
     const s = servers.value.find(x => x.id === id);
     if (!s) return;
+    // MCP 依赖 Rust 后端，仅在 Tauri 桌面环境可用
+    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) {
+      throw new Error("MCP 服务器需要在桌面应用中连接（当前为浏览器预览，Tauri API 不可用）");
+    }
     try {
       const args = s.args.split(/\s+/).filter(a => a.length > 0);
       const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
