@@ -7,6 +7,7 @@ import type { HardwareInfo } from "@/types";
 export interface OllamaStatus {
   installed: boolean;
   running: boolean;
+  installing: boolean;
   models: string[];
 }
 

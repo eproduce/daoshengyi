@@ -10,9 +10,12 @@ use futures::StreamExt;
 use db::Database;
 use tokio::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 /// 由本应用启动的 Ollama 服务进程 PID（退出应用时自动停止；用户自启的服务不受影响）
 static OLLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
+/// 全局部署锁：防止并发重复执行 ollama_setup（如多次点击或页面重载后重复触发，避免多个 brew install 互相抢锁卡死）
+static OLLAMA_SETUP_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -148,11 +151,19 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
 struct OllamaStatus {
     installed: bool,
     running: bool,
+    /// 是否有安装进程正在后台进行（brew install ollama / 官方脚本）
+    installing: bool,
     models: Vec<String>,
 }
 
 fn ollama_installed() -> bool {
-    let candidates = ["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama", "/usr/bin/ollama"];
+    let candidates = [
+        "/usr/local/bin/ollama",
+        "/opt/homebrew/bin/ollama",
+        "/usr/bin/ollama",
+        "/usr/local/opt/ollama/bin/ollama",
+        "/opt/homebrew/opt/ollama/bin/ollama",
+    ];
     if candidates.iter().any(|p| std::path::Path::new(p).exists()) {
         return true;
     }
@@ -161,6 +172,22 @@ fn ollama_installed() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// 检测是否有 Ollama 安装进程正在后台进行（避免重复触发 brew install 导致互相抢锁卡死）
+fn ollama_installing() -> bool {
+    let patterns: [&[&str]; 3] = [
+        &["-f", "brew.*install ollama"],
+        &["-f", r"install\.sh.*ollama"],
+        &["-f", "ollama.*install"],
+    ];
+    patterns.iter().any(|args| {
+        std::process::Command::new("pgrep")
+            .args(*args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
 }
 
 async fn ollama_running() -> bool {
@@ -205,6 +232,7 @@ async fn ollama_models() -> Result<Vec<String>, String> {
 #[tauri::command]
 async fn ollama_status() -> Result<OllamaStatus, String> {
     let installed = ollama_installed();
+    let installing = !installed && ollama_installing();
     let mut running = false;
     let mut models = Vec::new();
     if installed {
@@ -213,7 +241,7 @@ async fn ollama_status() -> Result<OllamaStatus, String> {
             models = ollama_models().await.unwrap_or_default();
         }
     }
-    Ok(OllamaStatus { installed, running, models })
+    Ok(OllamaStatus { installed, running, installing, models })
 }
 
 #[derive(serde::Serialize)]
@@ -346,20 +374,54 @@ async fn check_hardware() -> HardwareInfo {
 async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
     use tauri::Emitter;
 
+    // 0. 全局部署锁：避免并发 brew install 互相抢锁卡死
+    let lock = OLLAMA_SETUP_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _guard = match lock.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            let _ = app.emit("ollama-progress", "已有部署任务正在进行中，请稍候...");
+            return Err("已有部署任务正在进行中，请稍候再试".into());
+        }
+    };
+
     // 1. 安装 Ollama（未安装时）
     if !ollama_installed() {
-        let _ = app.emit("ollama-progress", "未检测到 Ollama，正在通过 Homebrew 安装（约几百 MB，请耐心等待）...");
-        let out = tokio::process::Command::new("brew")
-            .args(["install", "ollama"])
-            .output()
-            .await
-            .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
-            let _ = app.emit("ollama-progress", format!("❌ 自动安装失败，请手动安装：`brew install ollama`\n{}", err));
-            return Err("Ollama 自动安装失败（需要 Homebrew）".into());
+        // 若已有安装进程在跑，等待它完成，而不是再起一个 brew install
+        if ollama_installing() {
+            let _ = app.emit("ollama-progress", "检测到 Ollama 正在安装中，等待其完成...");
+            for _ in 0..1200 {
+                if ollama_installed() {
+                    break;
+                }
+                if !ollama_installing() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
         }
-        let _ = app.emit("ollama-progress", "✅ Ollama 安装成功");
+        if ollama_installed() {
+            let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
+        } else {
+            let _ = app.emit("ollama-progress", "正在通过 Homebrew 安装（约几百 MB，10 分钟超时）...");
+            let out = tokio::time::timeout(
+                std::time::Duration::from_secs(600),
+                tokio::process::Command::new("brew")
+                    .args(["install", "ollama"])
+                    .output(),
+            )
+            .await
+            .map_err(|_| {
+                let _ = app.emit("ollama-progress", "❌ brew install 超时（10 分钟），请检查 Homebrew 网络后重试，或手动执行 `brew install ollama`");
+                "安装超时（10 分钟）".to_string()
+            })?
+            .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
+                let _ = app.emit("ollama-progress", format!("❌ 自动安装失败，请手动安装：`brew install ollama`\n{}", err));
+                return Err("Ollama 自动安装失败（需要 Homebrew）".into());
+            }
+            let _ = app.emit("ollama-progress", "✅ Ollama 安装成功");
+        }
     } else {
         let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
     }

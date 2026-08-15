@@ -160,7 +160,7 @@ function handleDelete() {
         <div class="settings-tabs">
           <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
           <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
-          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🤖 本地模型</button>
+          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">� 本地模型</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -332,7 +332,7 @@ function handleDelete() {
 
       <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
       <div v-show="activeTab === 'ollama'" class="ollama-panel">
-        <h3>🤖 本地视觉模型（Ollama）</h3>
+        <h3>� 本地视觉模型（Ollama）</h3>
         <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
         <div v-if="ollamaStore.hw" class="hw-card">
           <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
@@ -346,8 +346,8 @@ function handleDelete() {
         <template v-else>
           <div class="ollama-status">
             <div class="ollama-item">
-              <span class="ollama-dot" :class="ollamaStore.status.installed ? 'green' : 'red'"></span>
-              Ollama 程序：{{ ollamaStore.status.installed ? '已安装' : '未安装' }}
+              <span class="ollama-dot" :class="ollamaStore.status.installed ? 'green' : (ollamaStore.status.installing ? 'yellow' : 'red')"></span>
+              Ollama 程序：{{ ollamaStore.status.installed ? '已安装' : (ollamaStore.status.installing ? '正在安装中...' : '未安装') }}
             </div>
             <div class="ollama-item">
               <span class="ollama-dot" :class="ollamaStore.status.running ? 'green' : 'red'"></span>
@@ -568,7 +568,9 @@ function handleDelete() {
 .ollama-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .ollama-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .ollama-dot.green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.5); }
+.ollama-dot.yellow { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,.5); animation: ollama-blink 1s ease-in-out infinite; }
 .ollama-dot.red { background: #ef4444; }
+@keyframes ollama-blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 .ollama-models { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
 .ollama-panel .btn-primary { align-self: flex-start; margin-top: 4px; }
 .ollama-panel .btn-primary:disabled { opacity: .6; cursor: not-allowed; }

@@ -38,6 +38,7 @@ async function checkOllamaOnStart() {
   hardwareMessage.value = hw?.message ?? "";
   const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
   if (s.installed && s.running && hasLlava) return; // 已就绪，无需引导
+  if (s.installing) return; // 正在安装中，不打扰
   if (hw?.verdict === "not_recommended") {
     ollamaNotRecBanner.value = true; // 硬件不足 → 建议线上 API
   } else {

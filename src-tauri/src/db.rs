@@ -256,7 +256,7 @@ impl Database {
         );
 
         for m in &messages {
-            let role = if m.role == "user" { "🧑 用户" } else { "🤖 助手" };
+            let role = if m.role == "user" { "🧑 用户" } else { "� 助手" };
             md.push_str(&format!("### {}\n\n{}\n\n", role, m.content));
             if let Some(ref r) = m.reasoning_content {
                 md.push_str(&format!("<details><summary>思考过程</summary>\n\n{}\n\n</details>\n\n", r));
