@@ -15,6 +15,14 @@ fn greet(name: &str) -> String {
     format!("你好, {}! 欢迎使用道生一。", name)
 }
 
+/// 追加诊断日志到应用数据目录（用户看不到终端时，可从这里排查）
+fn append_log(app: &tauri::AppHandle, msg: &str) {
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    use std::io::Write;
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daoshengyi.log"))
+        .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
+}
+
 #[tauri::command]
 async fn send_message(
     app: tauri::AppHandle,
@@ -23,11 +31,15 @@ async fn send_message(
 ) -> Result<(), String> {
     middleware::preprocess_messages(&mut messages);
     let has_image = messages.iter().any(|m| m.content.is_array());
-    eprintln!("[send_message] model={} 消息数={} 含图片={}", config.model, messages.len(), has_image);
+    let log_msg = format!("[send_message] model={} 消息数={} 含图片={}", config.model, messages.len(), has_image);
+    eprintln!("{}", log_msg);
+    append_log(&app, &log_msg);
     let mut stream = match api::stream_chat(config, messages).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[send_message] stream_chat 失败: {}", e);
+            let em = format!("[send_message] stream_chat 失败: {}", e);
+            eprintln!("{}", em);
+            append_log(&app, &em);
             return Err(e);
         }
     };
@@ -47,14 +59,18 @@ async fn send_message(
                         let rl = delta.reasoning_content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
                         if rl > 0 || cl > 0 {
-                            eprintln!("[sse] reasoning_len={} content_len={}", rl, cl);
+                            let sm = format!("[sse] reasoning_len={} content_len={}", rl, cl);
+                            eprintln!("{}", sm);
+                            append_log(&app, &sm);
                         }
                         let _ = app.emit("sse-delta", &delta);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[sse] 流错误: {}", e);
+                let em = format!("[sse] 流错误: {}", e);
+                eprintln!("{}", em);
+                append_log(&app, &em);
                 let _ = app.emit("sse-error", &e);
                 return Err(e);
             }
@@ -65,7 +81,9 @@ async fn send_message(
         delta_count += 1;
         let _ = app.emit("sse-delta", &delta);
     }
-    eprintln!("[sse] 完成, 共 {} 个 delta", delta_count);
+    let done_msg = format!("[sse] 完成, 共 {} 个 delta", delta_count);
+    eprintln!("{}", done_msg);
+    append_log(&app, &done_msg);
     let _ = app.emit("sse-done", ());
     Ok(())
 }
@@ -118,6 +136,151 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
     Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text })
+}
+
+// --- Ollama 本地视觉模型管理（自动部署 llava-phi3） ---
+
+#[derive(serde::Serialize)]
+struct OllamaStatus {
+    installed: bool,
+    running: bool,
+    models: Vec<String>,
+}
+
+fn ollama_installed() -> bool {
+    let candidates = ["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama", "/usr/bin/ollama"];
+    if candidates.iter().any(|p| std::path::Path::new(p).exists()) {
+        return true;
+    }
+    std::process::Command::new("which")
+        .arg("ollama")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+async fn ollama_running() -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    client
+        .get("http://localhost:11434/api/version")
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn ollama_models() -> Result<Vec<String>, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("http://localhost:11434/api/tags")
+        .send()
+        .await
+        .map_err(|e| format!("查询模型失败: {}", e))?;
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut models = Vec::new();
+    if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
+        for m in arr {
+            if let Some(n) = m.get("name").and_then(|n| n.as_str()) {
+                models.push(n.to_string());
+            }
+        }
+    }
+    Ok(models)
+}
+
+/// 检测 Ollama 安装状态、服务状态与已部署模型
+#[tauri::command]
+async fn ollama_status() -> Result<OllamaStatus, String> {
+    let installed = ollama_installed();
+    let mut running = false;
+    let mut models = Vec::new();
+    if installed {
+        running = ollama_running().await;
+        if running {
+            models = ollama_models().await.unwrap_or_default();
+        }
+    }
+    Ok(OllamaStatus { installed, running, models })
+}
+
+/// 一键部署本地视觉模型：安装 Ollama → 启动服务 → 拉取 llava-phi3
+/// 进度通过 "ollama-progress" 事件推送
+#[tauri::command]
+async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Emitter;
+
+    // 1. 安装 Ollama（未安装时）
+    if !ollama_installed() {
+        let _ = app.emit("ollama-progress", "未检测到 Ollama，正在通过 Homebrew 安装（约几百 MB，请耐心等待）...");
+        let out = tokio::process::Command::new("brew")
+            .args(["install", "ollama"])
+            .output()
+            .await
+            .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
+            let _ = app.emit("ollama-progress", format!("❌ 自动安装失败，请手动安装：`brew install ollama`\n{}", err));
+            return Err("Ollama 自动安装失败（需要 Homebrew）".into());
+        }
+        let _ = app.emit("ollama-progress", "✅ Ollama 安装成功");
+    } else {
+        let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
+    }
+
+    // 2. 启动服务
+    if !ollama_running().await {
+        let _ = app.emit("ollama-progress", "正在启动 Ollama 服务...");
+        let _child = tokio::process::Command::new("ollama")
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动 ollama serve 失败: {}", e))?;
+        // 等待服务就绪（最多 30 秒）
+        for _ in 0..60 {
+            if ollama_running().await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if !ollama_running().await {
+            return Err("Ollama 服务启动超时".into());
+        }
+        let _ = app.emit("ollama-progress", "✅ Ollama 服务已启动");
+    } else {
+        let _ = app.emit("ollama-progress", "✅ Ollama 服务运行中");
+    }
+
+    // 3. 检查并拉取视觉模型
+    let models = ollama_models().await.unwrap_or_default();
+    if !models.iter().any(|m| m.contains("llava-phi3")) {
+        let _ = app.emit("ollama-progress", "正在下载视觉模型 llava-phi3（约 2GB，耗时较长）...");
+        let out = tokio::process::Command::new("ollama")
+            .args(["pull", "llava-phi3"])
+            .output()
+            .await
+            .map_err(|e| format!("执行 ollama pull 失败: {}", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
+            let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", err));
+            return Err(format!("模型 llava-phi3 拉取失败: {}", err));
+        }
+        let _ = app.emit("ollama-progress", "✅ llava-phi3 部署完成");
+    } else {
+        let _ = app.emit("ollama-progress", "✅ llava-phi3 已就绪");
+    }
+
+    let _ = app.emit("ollama-progress", "🎉 本地视觉模型部署完成！在设置中添加配置即可用于图片识别。");
+    Ok("ok".into())
 }
 
 /// 执行终端命令（一次性返回输出，默认 60 秒超时）
@@ -632,6 +795,8 @@ pub fn run() {
             execute_command,
             read_file,
             read_attachment,
+            ollama_status,
+            ollama_setup,
             mcp_connect,
             mcp_disconnect,
             mcp_call_tool,

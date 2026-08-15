@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
 import ChatInput from "./components/ChatInput.vue";
@@ -14,7 +15,22 @@ const chatStore = useChatStore();
 const { theme, toggleTheme } = useTheme();
 
 const showSettings = ref(false);
+const settingsInitialTab = ref<"api" | "mcp" | "ollama">("api");
 const showSidebar = ref(true);
+
+// 首次启动自动检测 Ollama 本地视觉模型
+const ollamaBanner = ref(false);
+function openSettings(tab: "api" | "mcp" | "ollama" = "api") {
+  settingsInitialTab.value = tab;
+  showSettings.value = true;
+}
+async function checkOllamaOnStart() {
+  try {
+    const s = await invoke<{ installed: boolean; running: boolean; models: string[] }>("ollama_status");
+    const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
+    ollamaBanner.value = !(s.installed && s.running && hasLlava);
+  } catch { ollamaBanner.value = false; }
+}
 const messagesContainer = ref<HTMLDivElement>();
 
 function scrollToBottom() {
@@ -65,6 +81,7 @@ onMounted(() => {
   if (chatStore.conversations.length === 0) chatStore.createConversation();
   scrollToBottom();
   document.addEventListener("keydown", onKeydown);
+  checkOllamaOnStart();
 });
 onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 </script>
@@ -100,11 +117,18 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
             {{ theme === "light" ? "🌙" : "☀️" }}
           </button>
-          <button class="topbar__btn" title="API 设置" @click="showSettings = true">
+          <button class="topbar__btn" title="API 设置" @click="openSettings('api')">
             ⚙️
           </button>
         </div>
       </header>
+
+      <!-- Ollama 本地视觉模型引导横幅 -->
+      <div v-if="ollamaBanner" class="ollama-banner">
+        <span>💡 检测到本地视觉模型（Ollama + llava-phi3）未就绪，可免费在本机识别图片。</span>
+        <button class="ollama-banner__btn" @click="openSettings('ollama')">一键部署</button>
+        <button class="ollama-banner__close" title="关闭" @click="ollamaBanner = false">✕</button>
+      </div>
 
       <!-- 消息区域 -->
       <div ref="messagesContainer" class="messages-container">
@@ -142,7 +166,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
     </div>
 
     <!-- 设置弹窗 -->
-    <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+    <SettingsDialog v-if="showSettings" :initial-tab="settingsInitialTab" @close="showSettings = false" />
   </div>
 </template>
 
@@ -244,4 +268,27 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   cursor: pointer; box-shadow: var(--shadow-md); transition: all 0.2s;
 }
 .stop-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Ollama 引导横幅 */
+.ollama-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; margin: 8px 16px 0;
+  background: linear-gradient(135deg, rgba(99,102,241,.12), rgba(34,197,94,.1));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px; color: var(--text-primary);
+  flex-shrink: 0;
+}
+.ollama-banner span { flex: 1; }
+.ollama-banner__btn {
+  padding: 4px 12px; border: none; border-radius: 6px;
+  background: var(--accent-color); color: #fff;
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.ollama-banner__btn:hover { background: var(--accent-hover); }
+.ollama-banner__close {
+  background: none; border: none; color: var(--text-secondary);
+  cursor: pointer; font-size: 12px; padding: 4px;
+}
+.ollama-banner__close:hover { color: var(--text-primary); }
 </style>

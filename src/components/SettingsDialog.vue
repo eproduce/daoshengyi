@@ -1,19 +1,57 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/chat";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getSettings, updateSettings } from "@/api/appSettings";
 import McpSettings from "./McpSettings.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
-const activeTab = ref<"api" | "mcp">("api");
+const activeTab = ref<"api" | "mcp" | "ollama">("api");
+watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
+
+// --- Ollama 本地视觉模型管理 ---
+const ollama = ref<{ installed: boolean; running: boolean; models: string[] } | null>(null);
+const ollamaBusy = ref(false);
+const ollamaProgress = ref("");
+let ollamaUnlisten: (() => void) | null = null;
+
+const hasLlava = computed(() => ollama.value?.models.some((m) => m.includes("llava-phi3")) ?? false);
+
+async function refreshOllama() {
+  try {
+    ollama.value = await invoke("ollama_status");
+  } catch { ollama.value = null; }
+}
+
+async function deployOllama() {
+  if (ollamaBusy.value) return;
+  ollamaBusy.value = true;
+  ollamaProgress.value = "";
+  try {
+    await invoke("ollama_setup");
+    await refreshOllama();
+  } catch (e) {
+    ollamaProgress.value = e instanceof Error ? e.message : String(e);
+  }
+  ollamaBusy.value = false;
+}
+
+onMounted(() => {
+  refreshOllama();
+  listen<string>("ollama-progress", (e) => { ollamaProgress.value = e.payload; })
+    .then((un) => { ollamaUnlisten = un; })
+    .catch(() => {});
+});
+onUnmounted(() => { ollamaUnlisten?.(); });
 
 const editingId = ref<string>(chatStore.activeProfileId);
 const editingProfile = ref<ApiProfile>({
@@ -146,6 +184,7 @@ function handleDelete() {
         <div class="settings-tabs">
           <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
           <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
+          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🤖 本地模型</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -314,6 +353,37 @@ function handleDelete() {
 
       <!-- MCP 服务器管理 -->
       <div v-show="activeTab === 'mcp'"><McpSettings /></div>
+
+      <!-- Ollama 本地视觉模型管理 -->
+      <div v-show="activeTab === 'ollama'" class="ollama-panel">
+        <h3>🤖 本地视觉模型（Ollama）</h3>
+        <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。</p>
+        <div v-if="!ollama" class="ollama-loading">正在检测 Ollama 环境...</div>
+        <template v-else>
+          <div class="ollama-status">
+            <div class="ollama-item">
+              <span class="ollama-dot" :class="ollama.installed ? 'green' : 'red'"></span>
+              Ollama 程序：{{ ollama.installed ? '已安装' : '未安装' }}
+            </div>
+            <div class="ollama-item">
+              <span class="ollama-dot" :class="ollama.running ? 'green' : 'red'"></span>
+              Ollama 服务：{{ ollama.running ? '运行中' : '未运行' }}
+            </div>
+            <div class="ollama-item" v-if="ollama.running">
+              <span class="ollama-dot" :class="hasLlava ? 'green' : 'red'"></span>
+              视觉模型 llava-phi3：{{ hasLlava ? '已部署' : '未部署' }}
+            </div>
+            <div v-if="ollama.running && ollama.models.length" class="ollama-models">
+              已部署模型：{{ ollama.models.join(', ') }}
+            </div>
+          </div>
+          <button class="btn-primary" :disabled="ollamaBusy" @click="deployOllama">
+            {{ ollamaBusy ? '部署中...' : (ollama.installed && hasLlava ? '重新检测' : '一键部署') }}
+          </button>
+          <p class="ollama-hint">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长，请耐心等待。</p>
+        </template>
+        <div v-if="ollamaProgress" class="ollama-progress">{{ ollamaProgress }}</div>
+      </div>
     </div>
 
     <div class="settings-dialog__footer">
@@ -489,4 +559,23 @@ function handleDelete() {
   from { opacity: 0; transform: scale(.94) translateY(8px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
+
+/* --- Ollama 本地视觉模型面板 --- */
+.ollama-panel { display: flex; flex-direction: column; gap: 12px; }
+.ollama-panel h3 { margin: 0; font-size: 16px; }
+.ollama-desc { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.ollama-loading { color: var(--text-secondary); font-size: 13px; padding: 8px 0; }
+.ollama-status { display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; }
+.ollama-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.ollama-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ollama-dot.green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.5); }
+.ollama-dot.red { background: #ef4444; }
+.ollama-models { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.ollama-panel .btn-primary { align-self: flex-start; margin-top: 4px; }
+.ollama-panel .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+.ollama-hint { margin: 0; color: var(--text-secondary); font-size: 12px; }
+.ollama-progress { white-space: pre-wrap; font-size: 13px; line-height: 1.6; padding: 10px 12px;
+  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;
+  color: var(--text-primary); max-height: 200px; overflow-y: auto; }
 </style>

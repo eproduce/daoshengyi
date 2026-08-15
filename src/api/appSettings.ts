@@ -76,6 +76,7 @@ export function updateSettings(patch: Partial<AppSettingsPayload>) {
     // 串行写，避免并发覆盖
     saveChain = saveChain
       .then(() => invoke("save_app_settings", { settings: JSON.parse(snapshot) }))
+      .then(() => undefined)
       .catch((e) => console.warn("[道生一] 保存设置失败:", e));
   }, 300);
 }
