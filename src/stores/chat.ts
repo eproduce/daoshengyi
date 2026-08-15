@@ -512,7 +512,7 @@ export const useChatStore = defineStore("chat", () => {
       assistantMsg.content = `$ ${cmdStr}\n\n❌ 执行失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       assistantMsg.streaming = false;
-      assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       assistantMsg.tokens = estimateMessageTokens(assistantMsg.content);
       assistantMsg.cost = 0;
       streamingContent.value = "";
@@ -545,7 +545,7 @@ export const useChatStore = defineStore("chat", () => {
       assistantMsg.content = `📄 **${filePath}**\n\n❌ 读取失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       assistantMsg.streaming = false;
-      assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       assistantMsg.tokens = estimateMessageTokens(assistantMsg.content);
       assistantMsg.cost = 0;
       streamingContent.value = "";
@@ -760,7 +760,7 @@ export const useChatStore = defineStore("chat", () => {
       unlistenFns.forEach(f => f());
       assistantMsg.content = streamingContent.value;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
-      assistantMsg.duration = ((Date.now() - startTime) / 1000).toFixed(1) as unknown as number;
+      assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算
       if (!assistantMsg.tokens) {
         assistantMsg.tokens = estimateMessageTokens(streamingContent.value, streamingReasoning.value);
