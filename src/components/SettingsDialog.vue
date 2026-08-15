@@ -22,6 +22,7 @@ watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediat
 const ollama = ref<{ installed: boolean; running: boolean; models: string[] } | null>(null);
 const ollamaBusy = ref(false);
 const ollamaProgress = ref("");
+const ollamaPercent = ref<number | null>(null);
 let ollamaUnlisten: (() => void) | null = null;
 
 const hasLlava = computed(() => ollama.value?.models.some((m) => m.includes("llava-phi3")) ?? false);
@@ -36,6 +37,7 @@ async function deployOllama() {
   if (ollamaBusy.value) return;
   ollamaBusy.value = true;
   ollamaProgress.value = "";
+  ollamaPercent.value = null;
   try {
     await invoke("ollama_setup");
     await refreshOllama();
@@ -47,7 +49,15 @@ async function deployOllama() {
 
 onMounted(() => {
   refreshOllama();
-  listen<string>("ollama-progress", (e) => { ollamaProgress.value = e.payload; })
+  listen<{ text?: string; percent?: number } | string>("ollama-progress", (e) => {
+    const p = e.payload;
+    if (typeof p === "string") {
+      ollamaProgress.value = p;
+      return;
+    }
+    if (typeof p.text === "string") ollamaProgress.value = p.text;
+    if (typeof p.percent === "number") ollamaPercent.value = p.percent;
+  })
     .then((un) => { ollamaUnlisten = un; })
     .catch(() => {});
 });
@@ -382,6 +392,10 @@ function handleDelete() {
           </button>
           <p class="ollama-hint">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长，请耐心等待。</p>
         </template>
+        <div v-if="ollamaPercent !== null && ollamaPercent < 100" class="ollama-bar">
+          <div class="ollama-bar__fill" :style="{ width: ollamaPercent + '%' }"></div>
+          <span class="ollama-bar__label">{{ Math.round(ollamaPercent) }}%</span>
+        </div>
         <div v-if="ollamaProgress" class="ollama-progress">{{ ollamaProgress }}</div>
       </div>
     </div>
@@ -578,4 +592,11 @@ function handleDelete() {
 .ollama-progress { white-space: pre-wrap; font-size: 13px; line-height: 1.6; padding: 10px 12px;
   background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;
   color: var(--text-primary); max-height: 200px; overflow-y: auto; }
+.ollama-bar { position: relative; height: 22px; background: var(--bg-secondary);
+  border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+.ollama-bar__fill { height: 100%; background: linear-gradient(90deg, var(--accent-color), #22c55e);
+  transition: width .3s ease; }
+.ollama-bar__label { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; font-size: 12px; font-weight: 600; color: var(--text-primary);
+  text-shadow: 0 1px 2px rgba(0,0,0,.3); }
 </style>

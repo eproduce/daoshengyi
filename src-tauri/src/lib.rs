@@ -9,6 +9,10 @@ use tauri::{Emitter, Manager, State};
 use futures::StreamExt;
 use db::Database;
 use tokio::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// 由本应用启动的 Ollama 服务进程 PID（退出应用时自动停止；用户自启的服务不受影响）
+static OLLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -236,15 +240,18 @@ async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
         let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
     }
 
-    // 2. 启动服务
+    // 2. 启动服务（记录 PID，退出应用时自动停止）
     if !ollama_running().await {
         let _ = app.emit("ollama-progress", "正在启动 Ollama 服务...");
-        let _child = tokio::process::Command::new("ollama")
+        let child = tokio::process::Command::new("ollama")
             .arg("serve")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("启动 ollama serve 失败: {}", e))?;
+        if let Some(pid) = child.id() {
+            OLLAMA_SERVER_PID.store(pid, Ordering::SeqCst);
+        }
         // 等待服务就绪（最多 30 秒）
         for _ in 0..60 {
             if ollama_running().await {
@@ -263,24 +270,72 @@ async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
     // 3. 检查并拉取视觉模型
     let models = ollama_models().await.unwrap_or_default();
     if !models.iter().any(|m| m.contains("llava-phi3")) {
-        let _ = app.emit("ollama-progress", "正在下载视觉模型 llava-phi3（约 2GB，耗时较长）...");
-        let out = tokio::process::Command::new("ollama")
-            .args(["pull", "llava-phi3"])
-            .output()
-            .await
-            .map_err(|e| format!("执行 ollama pull 失败: {}", e))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
-            let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", err));
-            return Err(format!("模型 llava-phi3 拉取失败: {}", err));
-        }
-        let _ = app.emit("ollama-progress", "✅ llava-phi3 部署完成");
+        let _ = app.emit("ollama-progress", serde_json::json!({
+            "text": "正在下载视觉模型 llava-phi3（约 2GB，可后台下载，不影响使用）...",
+            "percent": 0.0,
+        }));
+        ollama_pull_with_progress(&app, "llava-phi3").await.map_err(|e| {
+            let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", e));
+            format!("模型 llava-phi3 拉取失败: {}", e)
+        })?;
     } else {
-        let _ = app.emit("ollama-progress", "✅ llava-phi3 已就绪");
+        let _ = app.emit("ollama-progress", serde_json::json!({ "text": "✅ llava-phi3 已就绪", "percent": 100.0 }));
     }
 
     let _ = app.emit("ollama-progress", "🎉 本地视觉模型部署完成！在设置中添加配置即可用于图片识别。");
     Ok("ok".into())
+}
+
+/// 通过 Ollama HTTP API 流式拉取模型，实时推送后台下载进度
+async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "name": model, "stream": true }))
+        .send()
+        .await
+        .map_err(|e| format!("发起模型下载请求失败: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("模型下载请求失败: HTTP {}", resp.status()));
+    }
+    // 逐行解析 NDJSON 流（stream: true），解析 downloading 状态计算百分比
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("读取下载进度失败: {}", e))?;
+        buf.extend_from_slice(&chunk);
+        let mut consumed = 0;
+        while let Some(pos) = buf[consumed..].iter().position(|&b| b == b'\n') {
+            let line = &buf[consumed..consumed + pos];
+            consumed += pos + 1;
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+            let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status == "downloading" {
+                let total = val.get("total").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                let completed = val.get("completed").and_then(|c| c.as_f64()).unwrap_or(0.0);
+                let percent = if total > 0.0 { (completed / total * 100.0).min(99.0) } else { 0.0 };
+                let _ = app.emit("ollama-progress", serde_json::json!({
+                    "text": format!("正在下载 {}（{:.0}MB / {:.0}MB）...", model, completed / 1048576.0, total / 1048576.0),
+                    "percent": percent,
+                }));
+            } else if status == "success" {
+                let _ = app.emit("ollama-progress", serde_json::json!({
+                    "text": format!("✅ {} 部署完成", model),
+                    "percent": 100.0,
+                }));
+                break;
+            } else {
+                let _ = app.emit("ollama-progress", serde_json::json!({ "text": status }));
+            }
+        }
+        if consumed > 0 {
+            buf.drain(..consumed);
+        }
+    }
+    Ok(())
 }
 
 /// 执行终端命令（一次性返回输出，默认 60 秒超时）
@@ -747,7 +802,7 @@ fn remove_tags(html: &str, tag: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -803,6 +858,18 @@ pub fn run() {
             mcp_list_tools,
             list_tool_audit,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // 应用退出时，自动停止由本应用启动的 Ollama 服务，减少后台硬件消耗
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            let pid = OLLAMA_SERVER_PID.load(Ordering::SeqCst);
+            if pid != 0 {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+        }
+    });
 }
