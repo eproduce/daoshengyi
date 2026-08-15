@@ -160,7 +160,7 @@ function handleDelete() {
         <div class="settings-tabs">
           <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
           <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
-          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">� 本地模型</button>
+          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🧠 本地模型</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -332,7 +332,7 @@ function handleDelete() {
 
       <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
       <div v-show="activeTab === 'ollama'" class="ollama-panel">
-        <h3>� 本地视觉模型（Ollama）</h3>
+        <h3>🧠 本地视觉模型（Ollama）</h3>
         <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
         <div v-if="ollamaStore.hw" class="hw-card">
           <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
