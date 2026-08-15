@@ -95,8 +95,12 @@ async function runReactLoop(
       return [content, ...toolResults];
     }
 
-    // 执行工具
-    toolResults.push(`> 🔧 调用工具 \`${toolCall.tool}\`\n> \`\`\`json\n> ${JSON.stringify(toolCall.arguments).slice(0, 300)}\n> \`\`\``);
+    // 执行工具（展示为清晰的工具调用卡片，参数折叠，避免原始 JSON 刷屏）
+    const argsStr = JSON.stringify(toolCall.arguments, null, 2);
+    toolResults.push(
+      `### 🔧 调用工具：\`${toolCall.tool}\`\n\n` +
+      `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>`
+    );
     try {
       const result = await callMcpTool(toolCall.server, toolCall.tool, toolCall.arguments);
       const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
