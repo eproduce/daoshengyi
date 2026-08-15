@@ -43,7 +43,7 @@ export const useMcpStore = defineStore("mcp", () => {
 
   // 异步从 Rust 加载；无 Rust 数据但有 localStorage 旧数据时执行迁移
   async function initFromRust() {
-    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
     try {
       const legacy = localStorage.getItem(STORAGE_KEY);
       const settings = await initSettings();
@@ -77,7 +77,7 @@ export const useMcpStore = defineStore("mcp", () => {
     const s = servers.value.find(x => x.id === id);
     if (!s) return;
     // MCP 依赖 Rust 后端，仅在 Tauri 桌面环境可用
-    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) {
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       throw new Error("MCP 服务器需要在桌面应用中连接（当前为浏览器预览，Tauri API 不可用）");
     }
     try {

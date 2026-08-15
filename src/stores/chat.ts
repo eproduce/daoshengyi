@@ -103,7 +103,7 @@ export const useChatStore = defineStore("chat", () => {
   // --- Rust SQLite 持久化 ---
   async function initFromDb() {
     // 等 Tauri API 就绪
-    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) {
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       setTimeout(initFromDb, 100);
       return;
     }
@@ -139,7 +139,7 @@ export const useChatStore = defineStore("chat", () => {
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleSave() {
-    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       try {
@@ -259,7 +259,7 @@ export const useChatStore = defineStore("chat", () => {
 
   // 从 Rust 加载配置；无 Rust 数据但有 localStorage 旧数据时执行迁移
   async function initSettingsFromRust() {
-    if (!(window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
     try {
       const legacy = localStorage.getItem("daoshengyi_profiles");
       const settings = await initSettings();

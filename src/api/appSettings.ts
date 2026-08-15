@@ -35,7 +35,8 @@ let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
 
 function isTauri(): boolean {
-  return !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
+  // Tauri 2 注入的是 __TAURI_INTERNALS__；__TAURI__ 仅在 withGlobalTauri 时存在
+  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 }
 
 /// 加载设置（仅首次真正 invoke，后续返回缓存）

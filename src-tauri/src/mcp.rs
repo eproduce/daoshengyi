@@ -219,11 +219,14 @@ impl McpClient {
     }
 
     /// 发送通知（无响应）
+    /// 注意：params 为 None 时必须序列化为空对象 {} 而非 null，
+    /// 否则部分 MCP 服务器（如 server-puppeteer）会因收到 params:null 而卡住，
+    /// 导致后续 tools/list 请求无响应、连接失败（客户端 drop 后 kill 服务器进程）。
     async fn send_notification(&mut self, method: &str, params: Option<Value>) -> Result<(), String> {
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
-            "params": params,
+            "params": params.unwrap_or_else(|| serde_json::json!({})),
         });
         let mut json = serde_json::to_string(&notif).map_err(|e| e.to_string())?;
         json.push('\n');
