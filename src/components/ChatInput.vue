@@ -178,6 +178,12 @@ async function triggerAttach() {
           const res = await invoke<{ kind: string; mime: string; content: string }>("read_attachment", { path: p });
           const name = p.split("/").pop() || p;
           if (res.kind === "image") {
+            // 图片大小检查（base64 长度 ≈ 原字节 * 4/3）
+            const approxBytes = Math.floor(res.content.length * 3 / 4);
+            if (approxBytes > 20 * 1024 * 1024) {
+              alert(`图片「${name}」超过 20MB，无法上传`);
+              continue;
+            }
             attachedImages.value.push({
               id: uuidv4(), base64: `data:${res.mime};base64,${res.content}`,
               mimeType: res.mime, fileName: name,

@@ -74,6 +74,8 @@ async function runReactLoop(
     const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+      // 30 秒超时，避免模型无响应导致 ReAct 循环无限卡住
+      signal: AbortSignal.timeout(30000),
       body: JSON.stringify({
         model: config.model || "deepseek-v4-flash",
         messages: convo,
@@ -715,9 +717,11 @@ export const useChatStore = defineStore("chat", () => {
         system_prompt: sp, enable_web_search: config.enableWebSearch,
       };
 
-      // ReAct 自动工具调用：有 MCP 工具时先跑决策循环
+      // ReAct 自动工具调用：有 MCP 工具时先跑决策循环。
+      // 注意：含图片时不走 ReAct——flatMsgs 会把图片 base64 JSON 序列化进纯文本，
+      // 请求体巨大且模型无法理解，容易卡在"分析中"。图片走下方多模态流式发送。
       let reactDone = false;
-      if (mcpToolsCache.length > 0) {
+      if (mcpToolsCache.length > 0 && !(images && images.length > 0)) {
         const flatMsgs = rustMsgs.map(m => ({
           role: m.role,
           content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
@@ -763,7 +767,12 @@ export const useChatStore = defineStore("chat", () => {
 
     } catch (err: unknown) {
       if (!timedOut && err instanceof Error) {
-        streamingContent.value = streamingContent.value || `[错误] ${err.message}`;
+        let msg = err.message;
+        // 图片发送失败时给出明确引导（多为模型不支持图片输入）
+        if (images && images.length > 0 && /400|unsupported|not.?support|image|content_type/i.test(msg)) {
+          msg += "\n\n💡 当前模型可能不支持图片输入。请在「设置 → API 配置」中添加支持视觉能力的模型（如 OpenAI、Gemini、Qwen-VL 等），或切换到支持图片的模型。";
+        }
+        streamingContent.value = streamingContent.value || `[错误] ${msg}`;
       }
     } finally {
       clearTimeout(timeoutId);
