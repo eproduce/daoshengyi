@@ -641,11 +641,11 @@ export const useChatStore = defineStore("chat", () => {
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
 
-      // 仅刷新 MCP 工具缓存，不在发送路径上自动重连——
-      // 若某服务器连接失败（如网络请求插件包 404），connectEnabled 会阻塞
-      // 导致消息发送卡住、出现空回复。连接由应用启动自动连接控制。
+      // 每次发送前都刷新 MCP 工具缓存（不只缓存为空时）——
+      // 避免启动早期只拿到部分服务器的工具（如缺文件系统），导致模型误以为没有该工具。
+      // 不在此路径自动重连：若某服务器连接失败会阻塞发送，连接由应用启动自动控制。
       const mcpSettings = getSettings().mcpServers ?? [];
-      if (mcpSettings.some((s) => s.enabled) && mcpToolsCache.length === 0) {
+      if (mcpSettings.some((s) => s.enabled)) {
         try { await refreshMcpTools(); } catch { /* 忽略 */ }
       }
 
