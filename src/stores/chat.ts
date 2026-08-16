@@ -861,7 +861,15 @@ export const useChatStore = defineStore("chat", () => {
       // 流式消息渲染读的是 chatStore.streamingContent（不是 message.content），
       // 写这里界面才会在 agent 气泡立即显示"正在分析图片..."，否则会一直显示"思考中..."
       streamingContent.value = "🔍 正在用本地视觉模型分析图片（首次较慢，约 1 分钟）...\n\n";
-      const desc = await describeImages(images);
+      // 用 try-catch 包住识别调用：若本地视觉模型异常（invoke 报错、参数问题等），
+      // 走 ocrFailed 分支进入主流程的错误兜底，绝不让异常绕过 try/catch/finally
+      // 导致气泡停留为空内容（assistantMsg.content 永不赋值）。
+      let desc = "";
+      try {
+        desc = await describeImages(images);
+      } catch (e) {
+        console.warn("[道生一] 图片识别异常:", e);
+      }
       if (desc) {
         descCtx = `[用户上传了图片，经本地视觉模型识别，图片内容如下：]\n${desc}`;
         images = undefined;
