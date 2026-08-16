@@ -23,16 +23,6 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     tags: ["文件", "本地"],
   },
   {
-    id: "fetch",
-    name: "网络请求",
-    icon: "🌐",
-    description: "抓取网页、转 Markdown",
-    category: "网络",
-    command: "npx",
-    args: "-y mcp-server-fetch",
-    tags: ["HTTP", "抓取"],
-  },
-  {
     id: "puppeteer",
     name: "浏览器自动化",
     icon: "🌍",

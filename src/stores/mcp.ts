@@ -16,11 +16,34 @@ interface McpServerConfig {
 
 const STORAGE_KEY = "daoshengyi_mcp_servers";
 
+// ── 已知错误配置自动修正（迁移修复）────────────────────────────────────────
+// npm 上的 `mcp-server-fetch`（v0.0.2）是安全研究者抢注的 canary 占位包：
+// `npx -y mcp-server-fetch` 会拉取一个遥测脚本而非真正的 MCP server（启动报
+// `/Applications: is a directory` / `syntax error`）。官方 Fetch server 只有
+// Python 实现（PyPI mcp-server-fetch，需 uvx / Python 3.10+），而我们的应用
+// 已内置 fetch_page 工具（Rust fetch_page 命令，抓网页转纯文本）与 web_search，
+// 无需外部 MCP。因此把这类配置自动禁用，避免启动报错，也不引入 Python 依赖。
+function migrateConfig<T extends { command: string; args: string; enabled: boolean }>(c: T): T {
+  const cmd = (c.command ?? "").toLowerCase();
+  const args = c.args ?? "";
+  const isBrokenFetch =
+    /\bmcp-server-fetch\b/.test(args) &&
+    (cmd.includes("npx") || cmd.includes("uvx") || cmd.includes("pip") || cmd === "");
+  if (isBrokenFetch) {
+    console.warn(
+      "[道生一] 已自动禁用外部 fetch MCP「" + (c as { name?: string }).name + "」：npm 上该包名被安全研究占位无法使用，" +
+      "且应用已内置 fetch_page 工具（抓网页转文本），无需外部 MCP。"
+    );
+    return { ...c, enabled: false };
+  }
+  return c;
+}
+
 // 同步兜底：先读 localStorage 旧数据（作为迁移源）
 function loadLegacy(): McpServerConfig[] {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
-    return s ? JSON.parse(s) : [];
+    return s ? (JSON.parse(s) as McpServerConfig[]).map(migrateConfig) : [];
   } catch { return []; }
 }
 
@@ -59,7 +82,7 @@ export const useMcpStore = defineStore("mcp", () => {
       const legacy = localStorage.getItem(STORAGE_KEY);
       const settings = await initSettings();
       if (settings.mcpServers.length > 0) {
-        servers.value = settings.mcpServers.map(toConfig);
+        servers.value = settings.mcpServers.map((p) => toConfig(migrateConfig(p)));
         if (legacy) localStorage.removeItem(STORAGE_KEY);
       } else if (legacy) {
         save();
