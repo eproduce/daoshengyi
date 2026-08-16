@@ -1,40 +1,74 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
 
 const chatStore = useChatStore();
+// 是否显示归档视图（归档会话：恢复 / 导出 / 彻底删除）
+const showArchived = ref(false);
 </script>
 
 <template>
   <div class="history-panel">
     <div class="history-panel__header">
-      <h3>对话历史</h3>
-      <button class="btn-icon" title="新建对话" @click="chatStore.createConversation()">＋</button>
+      <h3>{{ showArchived ? "🗄 已归档" : "对话历史" }}</h3>
+      <div class="history-panel__acts">
+        <button v-if="!showArchived" class="btn-icon" title="查看归档" @click="showArchived = true">🗄</button>
+        <button v-else class="btn-icon" title="返回对话列表" @click="showArchived = false">←</button>
+        <button v-if="!showArchived" class="btn-icon" title="新建对话" @click="chatStore.createConversation()">＋</button>
+      </div>
     </div>
     <div class="history-panel__list">
-      <div
-        v-for="conv in chatStore.sortedConversations"
-        :key="conv.id"
-        class="history-item"
-        :class="{ 'history-item--active': conv.id === chatStore.activeConversationId }"
-        @click="chatStore.selectConversation(conv.id)"
-      >
-        <div class="history-item__content">
-          <div class="history-item__title">{{ conv.title }}</div>
-          <div class="history-item__meta">
-            {{ conv.messages.length }} 条消息 · {{ new Date(conv.updatedAt).toLocaleDateString("zh-CN") }}
+      <!-- 主列表（未归档） -->
+      <template v-if="!showArchived">
+        <div
+          v-for="conv in chatStore.visibleConversations"
+          :key="conv.id"
+          class="history-item"
+          :class="{ 'history-item--active': conv.id === chatStore.activeConversationId }"
+          @click="chatStore.selectConversation(conv.id)"
+        >
+          <div class="history-item__content">
+            <div class="history-item__title">{{ conv.title }}</div>
+            <div class="history-item__meta">
+              {{ conv.messages.length }} 条消息 · {{ new Date(conv.updatedAt).toLocaleDateString("zh-CN") }}
+            </div>
+          </div>
+          <div class="history-item__btns">
+            <button class="history-item__btn" title="导出为 Markdown" @click.stop="chatStore.downloadExport(conv.id, 'md')">⤓</button>
+            <button class="history-item__btn" title="归档（隐藏，可恢复）" @click.stop="chatStore.archiveConversation(conv.id)">🗂</button>
+            <button class="history-item__delete" title="删除对话" @click.stop="chatStore.deleteConversation(conv.id)">✕</button>
           </div>
         </div>
-        <button
-          class="history-item__delete"
-          title="删除对话"
-          @click.stop="chatStore.deleteConversation(conv.id)"
+        <div v-if="chatStore.visibleConversations.length === 0" class="history-panel__empty">
+          暂无对话，开始新对话吧
+        </div>
+      </template>
+
+      <!-- 归档列表 -->
+      <template v-else>
+        <div
+          v-for="conv in chatStore.archivedConversations"
+          :key="conv.id"
+          class="history-item"
+          :class="{ 'history-item--active': conv.id === chatStore.activeConversationId }"
+          @click="chatStore.selectConversation(conv.id)"
         >
-          ✕
-        </button>
-      </div>
-      <div v-if="chatStore.conversations.length === 0" class="history-panel__empty">
-        暂无对话，开始新对话吧
-      </div>
+          <div class="history-item__content">
+            <div class="history-item__title">{{ conv.title }}</div>
+            <div class="history-item__meta">
+              {{ conv.messages.length }} 条消息 · {{ new Date(conv.updatedAt).toLocaleDateString("zh-CN") }}
+            </div>
+          </div>
+          <div class="history-item__btns">
+            <button class="history-item__btn" title="导出为 Markdown" @click.stop="chatStore.downloadExport(conv.id, 'md')">⤓</button>
+            <button class="history-item__btn" title="恢复（移回主列表）" @click.stop="chatStore.unarchiveConversation(conv.id)">↩</button>
+            <button class="history-item__delete" title="彻底删除" @click.stop="chatStore.deleteArchived(conv.id)">✕</button>
+          </div>
+        </div>
+        <div v-if="chatStore.archivedConversations.length === 0" class="history-panel__empty">
+          暂无归档会话
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -54,6 +88,8 @@ const chatStore = useChatStore();
   font-size: 13px; font-weight: 650; color: var(--text-secondary);
   letter-spacing: 0.02em; text-transform: uppercase;
 }
+
+.history-panel__acts { display: flex; gap: 4px; }
 
 .btn-icon {
   width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
@@ -92,6 +128,16 @@ const chatStore = useChatStore();
   transition: all 0.15s; display: flex; align-items: center; justify-content: center;
 }
 .history-item:hover .history-item__delete { opacity: 1; }
+
+.history-item__btns { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.history-item__btn {
+  flex-shrink: 0; width: 26px; height: 26px; border: none;
+  border-radius: 6px; background: transparent; color: var(--text-muted);
+  font-size: 13px; cursor: pointer; opacity: 0;
+  transition: all 0.15s; display: flex; align-items: center; justify-content: center;
+}
+.history-item:hover .history-item__btn { opacity: 1; }
+.history-item__btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .history-item__delete:hover { background: var(--danger-bg); color: var(--danger-color); }
 
 .history-panel__empty {

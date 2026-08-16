@@ -353,6 +353,19 @@ export const useChatStore = defineStore("chat", () => {
   // --- 状态 ---
   const conversations = ref<Conversation[]>([]);
   const activeConversationId = ref<string | null>(null);
+
+  // 已归档会话 ID 集合（localStorage 持久化；归档仅从主列表隐藏，数据仍在 SQLite）
+  const ARCHIVE_KEY = "daoshengyi_archived_convs";
+  function loadArchivedIds(): string[] {
+    try {
+      const s = localStorage.getItem(ARCHIVE_KEY);
+      return s ? (JSON.parse(s) as string[]) : [];
+    } catch { return []; }
+  }
+  const archivedIds = ref<Set<string>>(new Set(loadArchivedIds()));
+  function persistArchived() {
+    try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...archivedIds.value])); } catch { /* ignore */ }
+  }
   const profiles = ref<ApiProfile[]>(loadProfilesLegacy());
   const activeProfileId = ref<string>(profiles.value[0]?.id ?? "default");
   const isStreaming = ref(false);
@@ -377,6 +390,14 @@ export const useChatStore = defineStore("chat", () => {
 
   const sortedConversations = computed(() =>
     [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt)
+  );
+
+  // 归档过滤：主列表只显示未归档会话；归档会话单独列出（可在归档视图恢复/删除）
+  const visibleConversations = computed(() =>
+    sortedConversations.value.filter((c) => !archivedIds.value.has(c.id))
+  );
+  const archivedConversations = computed(() =>
+    sortedConversations.value.filter((c) => archivedIds.value.has(c.id))
   );
 
   // 当前对话统计（总 token、总费用）
@@ -563,6 +584,25 @@ export const useChatStore = defineStore("chat", () => {
     if (conversations.value.some((c) => c.id === id)) {
       activeConversationId.value = id;
     }
+  }
+
+  // --- 会话归档（localStorage 记录；归档=隐藏，数据保留） ---
+  function archiveConversation(id: string) {
+    archivedIds.value.add(id);
+    persistArchived();
+    // 归档当前活跃会话时，切换到最近一个未归档会话
+    if (activeConversationId.value === id) {
+      activeConversationId.value = visibleConversations.value[0]?.id ?? null;
+    }
+  }
+  function unarchiveConversation(id: string) {
+    archivedIds.value.delete(id);
+    persistArchived();
+  }
+  /** 从归档中彻底删除（连同 SQLite 数据） */
+  function deleteArchived(id: string) {
+    unarchiveConversation(id);
+    deleteConversation(id);
   }
 
   // --- 消息管理 ---
@@ -1131,6 +1171,8 @@ export const useChatStore = defineStore("chat", () => {
     activeConversationId,
     activeConversation,
     sortedConversations,
+    visibleConversations,
+    archivedConversations,
     conversationStats,
     cacheHitRate,
     cacheHitTotal,
@@ -1150,6 +1192,9 @@ export const useChatStore = defineStore("chat", () => {
     createConversation,
     deleteConversation,
     selectConversation,
+    archiveConversation,
+    unarchiveConversation,
+    deleteArchived,
     sendMessage,
     stopStreaming,
     clearCurrentConversation,
