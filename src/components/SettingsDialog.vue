@@ -48,6 +48,12 @@ function applyTemplate(id: string) {
 
 // 动态获取厂商模型列表
 const availableModels = ref<string[]>([]);
+// 回填已持久化的模型列表：打开设置/切换配置时自动恢复（重启后无需重新获取）
+watch(
+  () => editingProfile.value.availableModels,
+  (v) => { availableModels.value = v ?? []; },
+  { immediate: true }
+);
 const loadingModels = ref(false);
 const modelError = ref("");
 const showModelDropdown = ref(false);
@@ -66,6 +72,9 @@ async function fetchModels() {
     });
     availableModels.value = models;
     editingProfile.value.availableModels = models;
+    // 立即持久化到已保存的配置：即使不点「保存」，下次打开/重启后也能直接看到模型列表
+    const saved = chatStore.profiles.find((p) => p.id === editingId.value);
+    if (saved) chatStore.updateProfile(saved.id, { availableModels: models });
     if (models.length > 0) {
       modelError.value = `获取到 ${models.length} 个模型`;
       showModelDropdown.value = true;
