@@ -169,6 +169,36 @@ fn toggle_scheduled_task(db: State<Database>, id: String, enabled: bool) -> Resu
     db.set_scheduled_task_enabled(&id, enabled)
 }
 
+// --- 长任务防休眠（macOS caffeinate） ---
+
+/// 防止系统休眠守卫：active=true 启动 caffeinate -dimsu，false 停止。
+struct SleepGuard(std::sync::Mutex<Option<std::process::Child>>);
+
+#[tauri::command]
+fn set_prevent_sleep(guard: State<SleepGuard>, active: bool) -> Result<(), String> {
+    let mut g = guard.0.lock().map_err(|e| e.to_string())?;
+    if active {
+        if g.is_none() {
+            #[cfg(target_os = "macos")]
+            {
+                let child = std::process::Command::new("caffeinate")
+                    .arg("-dimsu")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("启动 caffeinate 失败: {}", e))?;
+                *g = Some(child);
+            }
+            #[cfg(not(target_os = "macos"))]
+            { /* 非 macOS 无系统级防休眠能力，静默跳过 */ }
+        }
+    } else if let Some(mut child) = g.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
 #[tauri::command]
 async fn chat_once(
@@ -1619,6 +1649,7 @@ pub fn run() {
             app.manage(McpManager {
                 clients: Mutex::new(std::collections::HashMap::new()),
             });
+            app.manage(SleepGuard(std::sync::Mutex::new(None)));
 
             // 定时任务调度线程：每 30 秒检查一次到点任务并执行（/bin/sh -c，300 秒超时）。
             // 每次循环用独立数据库连接（SQLite WAL 支持多连接并发）。
@@ -1698,6 +1729,7 @@ pub fn run() {
             save_scheduled_task,
             delete_scheduled_task,
             toggle_scheduled_task,
+            set_prevent_sleep,
             execute_command,
             read_file,
             read_attachment,

@@ -633,6 +633,10 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // --- 图片预处理：用视觉模型描述图片（图片→文字描述→交给文本大模型） ---
+  // 长任务期间防止系统休眠（macOS caffeinate；非 macOS/失败静默忽略）
+  async function setPreventSleep(active: boolean): Promise<void> {
+    try { await invoke("set_prevent_sleep", { active }); } catch { /* ignore */ }
+  }
   async function describeImages(images: ImageAttachment[]): Promise<string> {
     const b64s = images.map((img) => img.base64);
     // 1) OCR：macOS 系统 Vision 提取文字（准确、快、离线；非 macOS 返回空）
@@ -750,6 +754,8 @@ export const useChatStore = defineStore("chat", () => {
     streamingContent.value = `$ ${cmdStr}\n⏳ 执行中...`;
 
     const startTime = Date.now();
+    // 命令执行期间防止系统休眠（长任务可能超 30 秒）
+    await setPreventSleep(true);
     try {
       const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>(
         "execute_command", {
@@ -769,6 +775,7 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e: unknown) {
       assistantMsg.content = `$ ${cmdStr}\n\n❌ 执行失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
+      await setPreventSleep(false);
       assistantMsg.streaming = false;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       assistantMsg.tokens = estimateMessageTokens(assistantMsg.content);
@@ -864,11 +871,15 @@ export const useChatStore = defineStore("chat", () => {
       // 用 try-catch 包住识别调用：若本地视觉模型异常（invoke 报错、参数问题等），
       // 走 ocrFailed 分支进入主流程的错误兜底，绝不让异常绕过 try/catch/finally
       // 导致气泡停留为空内容（assistantMsg.content 永不赋值）。
+      // 识别可能耗时（本地推理最多约 140 秒），期间防止系统休眠。
       let desc = "";
+      await setPreventSleep(true);
       try {
         desc = await describeImages(images);
       } catch (e) {
         console.warn("[道生一] 图片识别异常:", e);
+      } finally {
+        await setPreventSleep(false);
       }
       if (desc) {
         descCtx = `[用户上传了图片，经本地视觉模型识别，图片内容如下：]\n${desc}`;

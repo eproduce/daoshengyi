@@ -72,6 +72,12 @@
 - `SettingsDialog.vue`：新增「⏰ 定时任务」tab
 - 验证：`cargo check` + `vite build` + `npm test`(30) 通过
 
+### ✅ 功能：长任务防休眠（🟡）
+- Rust：`SleepGuard`（std Mutex）+ `set_prevent_sleep` 命令（macOS `caffeinate -dimsu`，非 macOS 静默跳过）
+- 前端：`chat.ts` 加 `setPreventSleep` 辅助；图片识别、`/run` 命令执行前后自动启用/关闭
+- 注意坑：lib.rs 的 `Mutex` 默认是 tokio 异步锁，SleepGuard 需显式用 `std::sync::Mutex`
+- 验证：`cargo check` + `vite build` + `npm test`(30) 通过
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）
