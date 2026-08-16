@@ -60,6 +60,12 @@
 - **修复**：图片预处理调用包 try-catch，异常时走 `ocrFailed` 分支进入错误兜底
 - 验证：`vite build` + `npm test`（30 项）通过
 
+### ✅ 功能：运行时健康/日志面板（🟡）
+- Rust：新增 `system_diagnostics` 命令（sw_vers/sysctl/vm_stat/df/uptime 组合，无新依赖）返回 OS/版本/内存/磁盘/运行时长 + `daoshengyi.log` 尾部 150 行
+- 前端：新增 `HealthPanel.vue`（系统信息卡片 + 内存/磁盘进度条 + 日志查看 + 刷新）
+- `SettingsDialog.vue`：新增「🩺 诊断」tab
+- 验证：`cargo check` + `vite build` + `npm test`(30) 通过
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）

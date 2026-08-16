@@ -8,16 +8,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { getSettings, updateSettings } from "@/api/appSettings";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
+import HealthPanel from "./HealthPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -180,6 +181,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
           <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🧠 本地模型</button>
           <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'">📊 用量统计</button>
+          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'">🩺 诊断</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -413,6 +415,9 @@ function handleDelete() {
 
       <!-- 用量统计 -->
       <div v-show="activeTab === 'stats'"><UsageStats /></div>
+
+      <!-- 运行时诊断 -->
+      <div v-show="activeTab === 'health'"><HealthPanel /></div>
     </div>
 
     <div class="settings-dialog__footer">

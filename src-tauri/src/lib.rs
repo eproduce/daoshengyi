@@ -31,6 +31,100 @@ fn append_log(app: &tauri::AppHandle, msg: &str) {
         .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
 }
 
+// --- 运行时诊断（系统健康 + 日志查看） ---
+
+fn run_sys_cmd(cmd: &str, args: &[&str]) -> String {
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+#[derive(serde::Serialize)]
+struct SystemDiagnostics {
+    os: String,
+    arch: String,
+    app_version: String,
+    mem_total_mb: u64,
+    mem_used_percent: u8,
+    disk_total_gb: u64,
+    disk_free_gb: u64,
+    uptime: String,
+    log_tail: String,
+}
+
+#[tauri::command]
+fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String> {
+    // 系统版本
+    let os_ver = run_sys_cmd("sw_vers", &["-productVersion"]);
+    let os = if os_ver.is_empty() { "macOS (未知)".to_string() } else { format!("macOS {}", os_ver) };
+
+    // 内存总量（字节）
+    let mem_total_b: u64 = run_sys_cmd("sysctl", &["-n", "hw.memsize"]).parse().unwrap_or(0);
+
+    // 内存使用（vm_stat 分页统计，近似）
+    let mut mem_used_percent: u8 = 0;
+    if mem_total_b > 0 {
+        let page_size: u64 = run_sys_cmd("sysctl", &["-n", "hw.pagesize"]).parse().unwrap_or(4096);
+        let vm = run_sys_cmd("vm_stat", &[]);
+        let mut pages_free: u64 = 0;
+        let mut pages_spec: u64 = 0;
+        for line in vm.lines() {
+            let l = line.trim();
+            if let Some(v) = l.strip_prefix("Pages free:") {
+                pages_free = v.trim().trim_end_matches('.').trim().parse().unwrap_or(0);
+            } else if let Some(v) = l.strip_prefix("Pages speculative:") {
+                pages_spec = v.trim().trim_end_matches('.').trim().parse().unwrap_or(0);
+            }
+        }
+        let free_bytes = (pages_free + pages_spec) * page_size;
+        let used = mem_total_b.saturating_sub(free_bytes);
+        mem_used_percent = ((used as f64 / mem_total_b as f64) * 100.0) as u8;
+    }
+
+    // 磁盘（当前盘，df -k 单位 KB）
+    let df = run_sys_cmd("df", &["-k", "/"]);
+    let mut disk_total_kb: u64 = 0;
+    let mut disk_free_kb: u64 = 0;
+    for (i, line) in df.lines().enumerate() {
+        if i == 0 { continue; }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 4 {
+            disk_total_kb = fields[1].parse().unwrap_or(0);
+            disk_free_kb = fields[3].parse().unwrap_or(0);
+        }
+        break;
+    }
+
+    // 运行时长（截取 load averages 之前的部分）
+    let uptime = run_sys_cmd("uptime", &[]);
+    let uptime_short = uptime.split("load averages").next().unwrap_or(&uptime).trim().to_string();
+
+    // 日志尾部（最后 150 行）
+    let mut log_tail = String::new();
+    if let Ok(dir) = app.path().app_data_dir() {
+        if let Ok(content) = std::fs::read_to_string(dir.join("daoshengyi.log")) {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(150);
+            log_tail = lines[start..].join("\n");
+        }
+    }
+    if log_tail.is_empty() { log_tail = "（暂无日志）".into(); }
+
+    Ok(SystemDiagnostics {
+        os,
+        arch: std::env::consts::ARCH.to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        mem_total_mb: mem_total_b / 1024 / 1024,
+        mem_used_percent,
+        disk_total_gb: disk_total_kb / 1024 / 1024,
+        disk_free_gb: disk_free_kb / 1024 / 1024,
+        uptime: uptime_short,
+        log_tail,
+    })
+}
+
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
 #[tauri::command]
 async fn chat_once(
@@ -1514,6 +1608,7 @@ pub fn run() {
             search_by_embedding,
             web_search,
             fetch_page,
+            system_diagnostics,
             execute_command,
             read_file,
             read_attachment,
