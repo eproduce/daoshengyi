@@ -49,14 +49,20 @@ function getMcpToolsPrompt(): string {
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。";
+  // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
+  const realtime =
+    "\n\n## 强制要求（实时/时效信息）\n" +
+    "涉及任何**实时/时效性信息**（天气、新闻、股票、汇率、比分、价格、最新政策、当前现状、日期时间等）时，" +
+    "**必须先调用 web_search 或 fetch_page 获取真实数据**，严禁凭记忆编造温度、数值、价格、事件或新闻。\n" +
+    "若工具确实拿不到数据（搜索无结果、页面无法访问），请明确告知用户「无法获取」，不要编造。";
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + pending +
+    return builtin + realtime + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin +
+  return builtin + realtime +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -174,7 +180,7 @@ function withCurrentDate(sp: string): string {
   const weekday = now.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", weekday: "long" });
   return (
     `【系统当前日期】今天是 ${y}年${m}月${d}日 ${weekday}（${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}）。\n` +
-    `关于"今天/今年"等日期问题请严格以此为准，不要使用训练数据中的日期。\n\n` +
+    `这是唯一可信的日期来源。回答任何涉及日期/时间的问题前，请先核对上面的日期；严禁使用或编造训练数据中的日期（你的训练数据已过时）。\n\n` +
     sp
   );
 }
@@ -865,8 +871,12 @@ export const useChatStore = defineStore("chat", () => {
       // 若放进 system，每次提问 system 都变，会从 system 开始打断前缀缓存；
       // 放进最新 user 消息后，system+历史前缀保持不变，可整段命中缓存。
       const volatileCtx: string[] = [];
-      // 精确时间（分钟级，放进本次上下文不伤缓存，模型仍能答"现在几点"）
-      volatileCtx.push(`【当前时间】现在 ${new Date().toLocaleString("zh-CN", {
+      // 精确时间（分钟级，放进本次上下文不伤缓存，模型仍能答"现在几点"）。
+      // 补全完整日期：系统提示的天粒度日期对"今天"有效，但用户消息里再带一份
+      // 完整日期+星期+时刻，双保险，进一步压低日期/时间幻觉。
+      const nowDt = new Date();
+      const todayStr = `${nowDt.getFullYear()}年${nowDt.getMonth()+1}月${nowDt.getDate()}日 ${nowDt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", weekday: "long" })}`;
+      volatileCtx.push(`【当前时间】现在是 ${todayStr} ${nowDt.toLocaleString("zh-CN", {
         timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
       })}（Asia/Shanghai）。`);
       // 图片描述作为上下文（不展示在对话里，但模型可见）

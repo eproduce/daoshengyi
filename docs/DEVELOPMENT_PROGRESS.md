@@ -27,9 +27,16 @@
   - 待办：`mcp-catalog.ts` + `McpSettings.vue` + 编译验证 + 推送（见计划 §2.1）
 - **验证**：puppeteer + Edge `launch` + `goto` 成功（百度天气页标题正常）
 
-### 🐛 待修复：日期幻觉 + 编造数据
-- 现象：模型日期幻觉；未调用工具时编造数据（如天气）
-- 状态：未排查（见计划 §2.2）
+### ✅ 修复：日期幻觉 + 编造数据
+- **现象**：模型日期幻觉；未调用工具时编造数据（如天气）
+- **根因**：
+  1. 工具提示为软性（"需要工具时..."），模型被问实时信息（天气/新闻等）时凭训练数据编造
+  2. `volatileCtx` 的【当前时间】只有 HH:MM 无日期；系统提示日期措辞不够强硬
+- **修复**（`src/stores/chat.ts`）：
+  - `withCurrentDate`：强调"唯一可信日期来源，回答前先核对，严禁编造训练数据日期"
+  - `volatileCtx`【当前时间】：补全完整日期（年月日 + 星期 + 时分）
+  - `getMcpToolsPrompt`：新增「强制要求（实时/时效信息）」——实时数据**必须先调** `web_search`/`fetch_page`，拿不到明确说「无法获取」，**严禁编造**
+- **验证**：`vite build` + `npm test`（30 项）通过
 
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
