@@ -125,6 +125,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           >
             <span class="stat">{{ chatStore.conversationStats.tokens.toLocaleString() }} tok</span>
             <span class="stat">{{ formatCost(chatStore.conversationStats.cost) }}</span>
+            <span
+              v-if="chatStore.cacheHitRate !== null"
+              class="stat stat--cache"
+              :title="`缓存命中 ${chatStore.cacheHitTotal.toLocaleString()} tok / 未命中 ${chatStore.cacheMissTotal.toLocaleString()} tok`"
+            >缓存 {{ chatStore.cacheHitRate.toFixed(0) }}%</span>
           </div>
           <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">📥</button>
           <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()">🗑</button>
@@ -243,6 +248,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .topbar__stats .stat {
   font-size: 11px; font-weight: 600; color: var(--text-secondary);
   font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.topbar__stats .stat--cache {
+  color: var(--accent-color); font-weight: 700;
 }
 
 .topbar__btn {

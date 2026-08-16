@@ -145,6 +145,9 @@ ${convText}
 
 // --- LLM 调用辅助 ---
 async function callLLM(config: { baseUrl: string; apiKey: string; model: string }, prompt: string): Promise<string | null> {
+  // 30 秒超时：摘要/事实提取不应阻塞主对话
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
     const resp = await fetch(`${baseUrl}/chat/completions`, {
@@ -156,11 +159,14 @@ async function callLLM(config: { baseUrl: string; apiKey: string; model: string 
         max_tokens: 400,
         temperature: 0.3,
       }),
+      signal: ctrl.signal,
     });
     if (!resp.ok) return null;
     const data = await resp.json();
     return data.choices?.[0]?.message?.content?.trim() || null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }

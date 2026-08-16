@@ -11,6 +11,7 @@ use db::Database;
 use tokio::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
+use std::path::PathBuf;
 
 /// 由本应用启动的 Ollama 服务进程 PID（退出应用时自动停止；用户自启的服务不受影响）
 static OLLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
@@ -33,10 +34,27 @@ fn append_log(app: &tauri::AppHandle, msg: &str) {
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
 #[tauri::command]
 async fn chat_once(
+    app: tauri::AppHandle,
     config: api::ApiConfig,
     messages: Vec<api::ChatMessage>,
 ) -> Result<api::ChatOnceResult, String> {
-    api::chat_once(config, messages).await
+    let log_msg = format!("[chat_once] model={} 消息数={}", config.model, messages.len());
+    eprintln!("{}", log_msg);
+    append_log(&app, &log_msg);
+    let result = api::chat_once(config, messages).await;
+    match &result {
+        Ok(r) => {
+            let m = format!("[chat_once] 完成 content={} 字符 reasoning={} 字符", r.content.len(), r.reasoning_content.len());
+            eprintln!("{}", m);
+            append_log(&app, &m);
+        }
+        Err(e) => {
+            let m = format!("[chat_once] 失败: {}", e);
+            eprintln!("{}", m);
+            append_log(&app, &m);
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -165,30 +183,68 @@ struct OllamaStatus {
     models: Vec<String>,
 }
 
-fn ollama_installed() -> bool {
-    let candidates = [
-        "/usr/local/bin/ollama",
-        "/opt/homebrew/bin/ollama",
-        "/usr/bin/ollama",
-        "/usr/local/opt/ollama/bin/ollama",
-        "/opt/homebrew/opt/ollama/bin/ollama",
-    ];
-    if candidates.iter().any(|p| std::path::Path::new(p).exists()) {
-        return true;
-    }
+/// Homebrew 是否可用（决定一键部署走 brew 还是官方 zip 直装）
+fn brew_available() -> bool {
     std::process::Command::new("which")
-        .arg("ollama")
+        .arg("brew")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-/// 检测是否有 Ollama 安装进程正在后台进行（避免重复触发 brew install 导致互相抢锁卡死）
+/// 用户主目录
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// 无 Homebrew 时直装到用户目录的 Ollama 二进制路径
+fn ollama_user_bin() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("Applications/Ollama.app/Contents/Resources/ollama")
+}
+
+/// 返回可用的 ollama 可执行文件路径（含用户目录直装版），None 表示未安装
+fn ollama_bin() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("/usr/local/bin/ollama"),
+        PathBuf::from("/opt/homebrew/bin/ollama"),
+        PathBuf::from("/usr/bin/ollama"),
+        PathBuf::from("/usr/local/opt/ollama/bin/ollama"),
+        PathBuf::from("/opt/homebrew/opt/ollama/bin/ollama"),
+        ollama_user_bin(),
+    ];
+    if let Some(p) = candidates.iter().find(|p| p.exists()) {
+        return Some(p.clone());
+    }
+    // PATH 兜底
+    std::process::Command::new("which")
+        .arg("ollama")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(s))
+            }
+        })
+}
+
+fn ollama_installed() -> bool {
+    ollama_bin().is_some()
+}
+
+/// 检测是否有 Ollama 安装进程正在后台进行（避免重复触发安装导致互相抢锁卡死）
 fn ollama_installing() -> bool {
-    let patterns: [&[&str]; 3] = [
+    let patterns: [&[&str]; 5] = [
         &["-f", "brew.*install ollama"],
         &["-f", r"install\.sh.*ollama"],
         &["-f", "ollama.*install"],
+        &["-f", "Ollama-darwin"],
+        &["-f", "ollama-setup"],
     ];
     patterns.iter().any(|args| {
         std::process::Command::new("pgrep")
@@ -380,7 +436,11 @@ async fn check_hardware() -> HardwareInfo {
 /// 一键部署本地视觉模型：安装 Ollama → 启动服务 → 拉取 llava-phi3
 /// 进度通过 "ollama-progress" 事件推送
 #[tauri::command]
-async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
+async fn ollama_setup(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    cipher: State<'_, settings::SecretCipher>,
+) -> Result<String, String> {
     use tauri::Emitter;
 
     // 0. 全局部署锁：避免并发 brew install 互相抢锁卡死
@@ -411,25 +471,45 @@ async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
         if ollama_installed() {
             let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
         } else {
-            let _ = app.emit("ollama-progress", "正在通过 Homebrew 安装（约几百 MB，10 分钟超时）...");
-            let out = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                tokio::process::Command::new("brew")
-                    .args(["install", "ollama"])
-                    .output(),
-            )
-            .await
-            .map_err(|_| {
-                let _ = app.emit("ollama-progress", "❌ brew install 超时（10 分钟），请检查 Homebrew 网络后重试，或手动执行 `brew install ollama`");
-                "安装超时（10 分钟）".to_string()
-            })?
-            .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
-            if !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
-                let _ = app.emit("ollama-progress", format!("❌ 自动安装失败，请手动安装：`brew install ollama`\n{}", err));
-                return Err("Ollama 自动安装失败（需要 Homebrew）".into());
+            // 部署策略：macOS 优先走官方 zip 直装——不依赖 Homebrew / GitHub，
+            // 避免 brew 需拉取大量依赖、且部分网络无法访问 raw.githubusercontent.com 导致反复下载失败；
+            // zip 直装失败时自动回退 Homebrew。
+            let zip_ok = if cfg!(target_os = "macos") {
+                match ollama_install_from_zip(&app).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        let _ = app.emit("ollama-progress", format!("官方直装失败，尝试 Homebrew 安装…（{}）", e));
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if !zip_ok && brew_available() {
+                let _ = app.emit("ollama-progress", "正在通过 Homebrew 安装（约几百 MB，10 分钟超时）...");
+                let out = tokio::time::timeout(
+                    std::time::Duration::from_secs(600),
+                    tokio::process::Command::new("brew")
+                        .args(["install", "ollama"])
+                        .output(),
+                )
+                .await
+                .map_err(|_| {
+                    let _ = app.emit("ollama-progress", "❌ brew install 超时（10 分钟），请检查 Homebrew 网络后重试，或手动执行 `curl -fsSL https://ollama.com/install.sh | sh`");
+                    "安装超时（10 分钟）".to_string()
+                })?
+                .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
+                if !out.status.success() {
+                    let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
+                    let _ = app.emit("ollama-progress", format!("❌ Homebrew 安装也失败，请检查网络/代理后重试，或手动安装：`curl -fsSL https://ollama.com/install.sh | sh`\n{}", err));
+                    return Err("Ollama 自动安装失败（官方直装与 Homebrew 均失败）".into());
+                }
+                let _ = app.emit("ollama-progress", "✅ Ollama 安装成功");
+            } else if !zip_ok {
+                // 非 macOS 且无 brew，或 macOS 上官方直装失败且无 brew 可回退
+                let _ = app.emit("ollama-progress", "❌ Ollama 安装失败：官方直装与 Homebrew 均不可用，请手动执行 `curl -fsSL https://ollama.com/install.sh | sh`");
+                return Err("Ollama 安装失败（官方直装与 Homebrew 均不可用）".into());
             }
-            let _ = app.emit("ollama-progress", "✅ Ollama 安装成功");
         }
     } else {
         let _ = app.emit("ollama-progress", "✅ Ollama 已安装");
@@ -438,7 +518,8 @@ async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
     // 2. 启动服务（记录 PID，退出应用时自动停止）
     if !ollama_running().await {
         let _ = app.emit("ollama-progress", "正在启动 Ollama 服务...");
-        let child = tokio::process::Command::new("ollama")
+        let bin = ollama_bin().ok_or("未找到 ollama 可执行文件")?;
+        let child = tokio::process::Command::new(&bin)
             .arg("serve")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -477,8 +558,375 @@ async fn ollama_setup(app: tauri::AppHandle) -> Result<String, String> {
         let _ = app.emit("ollama-progress", serde_json::json!({ "text": "✅ llava-phi3 已就绪", "percent": 100.0 }));
     }
 
-    let _ = app.emit("ollama-progress", "🎉 本地视觉模型部署完成！在设置中添加配置即可用于图片识别。");
+    // 4. 自动配置应用内 API：添加/更新「本地 Ollama」配置并切换为当前模型，
+    //    避免用户部署后还要手动去设置里填地址 / Key / 模型
+    ensure_ollama_profile(db.inner(), cipher.inner()).await.map_err(|e| {
+        let _ = app.emit("ollama-progress", format!("⚠️ 自动配置本地模型失败：{}", e));
+        e
+    })?;
+    let _ = app.emit("ollama-progress", "🎉 本地视觉模型部署完成！图片将自动用本地 Ollama 识别，文本对话继续使用你当前的模型（如 DeepSeek）。直接发送图片即可识别。");
+    let _ = app.emit("ollama-configured", ());
     Ok("ok".into())
+}
+
+/// 解析 macOS 系统 HTTP/HTTPS 代理（scutil --proxy），返回 curl -x 需要的地址。
+/// 用户开启 Clash/Surge 等代理软件后（系统代理模式），自动走代理下载。
+fn system_proxy() -> Option<String> {
+    let out = std::process::Command::new("scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut enabled = false;
+    let mut host: Option<String> = None;
+    let mut port: Option<String> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("HTTPSEnable") {
+            enabled = enabled || v.contains('1');
+        } else if let Some(v) = t.strip_prefix("HTTPSProxy") {
+            host = Some(v.trim().trim_start_matches(':').trim().to_string());
+        } else if let Some(v) = t.strip_prefix("HTTPSPort") {
+            port = Some(v.trim().trim_start_matches(':').trim().to_string());
+        } else if let Some(v) = t.strip_prefix("HTTPEnable") {
+            enabled = enabled || v.contains('1');
+        } else if let Some(v) = t.strip_prefix("HTTPProxy") {
+            if host.is_none() {
+                host = Some(v.trim().trim_start_matches(':').trim().to_string());
+            }
+        } else if let Some(v) = t.strip_prefix("HTTPPort") {
+            if port.is_none() {
+                port = Some(v.trim().trim_start_matches(':').trim().to_string());
+            }
+        }
+    }
+    if enabled {
+        if let (Some(h), Some(p)) = (host, port) {
+            if !h.is_empty() && !p.is_empty() {
+                return Some(format!("http://{}:{}", h, p));
+            }
+        }
+    }
+    None
+}
+
+/// 预检 URL 是否可访问（带可选代理），用于部署前快速判断下载源连通性，
+/// 避免网络不通时反复触发大文件下载
+async fn url_reachable(url: &str, proxy: Option<&str>) -> bool {
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args(["-s", "-I", "--max-time", "8", "-o", "/dev/null", "-w", "%{http_code}"]);
+    if let Some(p) = proxy {
+        cmd.args(["-x", p]);
+    }
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        cmd.arg(url).output(),
+    )
+    .await;
+    match out {
+        Ok(Ok(o)) => {
+            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            code.parse::<u16>().map(|c| (200..400).contains(&c)).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// 一键部署（macOS 首选 / 无 Homebrew 时）：从 Ollama 官方下载 macOS 包直装到用户目录。
+/// 等价于官方 install.sh 的 macOS 分支，但安装在 ~/Applications（无需 brew / sudo）。
+/// 支持：下载源预检、自动使用系统代理、断点续传（中断后重试续传而非从头下载）。
+async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+
+    // 目前仅 macOS 支持 zip 直装；其他平台提示用官方脚本
+    if !cfg!(target_os = "macos") {
+        let _ = app.emit("ollama-progress", "当前系统未安装 Homebrew，请手动执行官方脚本：`curl -fsSL https://ollama.com/install.sh | sh`");
+        return Err("当前系统未安装 Homebrew，请手动执行官方安装脚本".into());
+    }
+
+    let home = home_dir().ok_or("无法定位用户主目录")?;
+    let apps_dir = home.join("Applications");
+    let app_bundle = apps_dir.join("Ollama.app");
+    let bin = app_bundle.join("Contents/Resources/ollama");
+    let url = "https://ollama.com/download/Ollama-darwin.zip";
+    let proxy = system_proxy();
+
+    // 0. 部署前预检：下载源不可达直接明确报错，避免无效的反复下载
+    let _ = app.emit("ollama-progress", "正在检测下载源网络连通性...");
+    if !url_reachable(url, proxy.as_deref()).await {
+        let _ = app.emit(
+            "ollama-progress",
+            "❌ 无法连接下载源 ollama.com（网络被阻断或需要代理）。\n请配置代理后重试：\n  ① 打开你的代理软件（Clash/Surge 等）并开启系统代理；\n  ② 或重启应用时在启动终端设置：export https_proxy=http://127.0.0.1:端口\n  ③ 配置后再次点击「一键部署」即可自动走代理下载。\n也可在能访问外网的机器上手动执行 `curl -fsSL https://ollama.com/install.sh | sh`。",
+        );
+        return Err("无法连接 Ollama 下载源（需要网络或代理）".into());
+    }
+
+    let _ = app.emit("ollama-progress", "✅ 下载源连通，开始下载 Ollama 官方包（约几百 MB，已支持断点续传）...");
+
+    // 临时目录（固定路径 ollama-setup：配合 curl -C - 断点续传，中断后重试续传而非从头下载）
+    let tmp = std::env::temp_dir().join("ollama-setup");
+    let _ = std::fs::create_dir_all(&tmp);
+    let zip_path = tmp.join("Ollama-darwin.zip");
+
+    // 1. 下载（macOS 自带 curl；-C - 断点续传；自动走系统代理；20 分钟超时）
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args(["--fail", "--show-error", "--location", "--progress-bar", "-C", "-"])
+        .arg("-o")
+        .arg(&zip_path);
+    if let Some(p) = proxy.as_deref() {
+        cmd.args(["-x", p]);
+    }
+    cmd.arg(url);
+    let dl = tokio::time::timeout(std::time::Duration::from_secs(1200), cmd.status())
+        .await
+        .map_err(|_| {
+            let _ = app.emit("ollama-progress", "❌ 下载 Ollama 超时（20 分钟），请检查网络后重试（已支持断点续传）");
+            "下载超时".to_string()
+        })?
+        .map_err(|e| format!("无法执行 curl 下载 Ollama: {}", e))?;
+    if !dl.success() {
+        // 保留已下载部分，下次自动续传，不重复下载
+        let _ = app.emit("ollama-progress", "❌ 下载 Ollama 失败，请检查网络/代理后重试（已支持断点续传，不会重复下载已完成部分）");
+        return Err("Ollama 官方包下载失败".into());
+    }
+    let _ = app.emit("ollama-progress", "✅ 下载完成，正在解压安装到用户目录...");
+
+    // 2. 解压（macOS 原生 ditto，兼容性优于 unzip，无需额外依赖）
+    let ux = tokio::process::Command::new("ditto")
+        .args(["-x", "-k"])
+        .arg(&zip_path)
+        .arg(&tmp)
+        .status()
+        .await
+        .map_err(|e| format!("无法执行 ditto 解压: {}", e))?;
+    if !ux.success() {
+        // 解压失败多半是包损坏，清掉缓存避免反复使用坏包
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err("Ollama 解压失败".into());
+    }
+
+    // 3. 安装到 ~/Applications/Ollama.app（无需 sudo）
+    let _ = std::fs::create_dir_all(&apps_dir);
+    if app_bundle.exists() {
+        let _ = std::fs::remove_dir_all(&app_bundle);
+    }
+    std::fs::rename(tmp.join("Ollama.app"), &app_bundle)
+        .map_err(|e| format!("移动 Ollama.app 失败: {}", e))?;
+
+    if !bin.exists() {
+        return Err("Ollama.app 结构异常，未找到 ollama 可执行文件".into());
+    }
+    let _ = app.emit("ollama-progress", "✅ Ollama 安装成功（用户目录，无需 Homebrew）");
+    Ok(())
+}
+
+/// 部署成功后自动配置应用内 API：添加/更新「本地 Ollama」配置并切换为当前模型，
+/// 让用户无需手动填写 baseUrl / Key / 模型即可直接使用本地视觉模型识别图片。
+async fn ensure_ollama_profile(db: &Database, cipher: &settings::SecretCipher) -> Result<(), String> {
+    // 1. 读取现有设置（解密）
+    let mut settings: settings::AppSettings = match db.get_setting(SETTINGS_KEY)? {
+        Some(v) => serde_json::from_str(&v).map_err(|e| format!("解析设置失败: {}", e))?,
+        None => settings::AppSettings::default(),
+    };
+    cipher.decrypt_settings(&mut settings)?;
+
+    // 2. 取实际部署的视觉模型名（带 tag），找不到则用默认
+    let models = ollama_models().await.unwrap_or_default();
+    let model = models
+        .iter()
+        .find(|m| m.contains("llava-phi3"))
+        .cloned()
+        .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
+
+    // 3. 添加或更新「本地 Ollama」配置
+    let profile = settings::ApiProfileSettings {
+        id: "ollama".into(),
+        name: "本地 Ollama".into(),
+        base_url: "http://localhost:11434/v1".into(),
+        api_key: "ollama".into(), // 本地无需密钥，占位即可
+        model,
+        max_tokens: 2048,
+        temperature: 0.7,
+        thinking_enabled: false,
+        reasoning_effort: "low".into(),
+        system_prompt: "你是道生一，一个运行在用户本地设备的 AI 助手，使用本地视觉模型（Ollama），可识别用户发送的图片。请用简洁、准确的中文回答。".into(),
+        enable_web_search: false,
+        max_context_messages: 20,
+        available_models: None,
+    };
+    match settings.profiles.iter_mut().find(|p| p.id == "ollama") {
+        Some(existing) => *existing = profile,
+        None => settings.profiles.push(profile),
+    }
+    // 注意：这里不切换 activeProfileId。保持用户当前的文本主模型（如 DeepSeek），
+    // 图片识别由前端 describeImages 自动使用本「本地 Ollama」配置，文本继续走主模型。
+
+    // 4. 加密写回
+    cipher.encrypt_settings(&mut settings)?;
+    let json = serde_json::to_string(&settings).map_err(|e| format!("序列化设置失败: {}", e))?;
+    db.set_setting(SETTINGS_KEY, &json)
+}
+
+/// 用本地 Ollama 视觉模型识别图片，返回文字描述（供前端图片预处理调用）。
+/// 走 Rust 后端 reqwest，避免 webview 直接 fetch localhost 受限导致识别失败；
+/// 与 send_message 同链路（Rust → 本地 Ollama /v1/chat/completions）。
+#[tauri::command]
+async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
+    let models = ollama_models().await.unwrap_or_default();
+    let model = models
+        .iter()
+        .find(|m| m.contains("llava-phi3"))
+        .cloned()
+        .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
+
+    let url = "http://localhost:11434/v1/chat/completions";
+    let client = reqwest::Client::new();
+    let mut parts: Vec<String> = Vec::new();
+
+    for img in images {
+        // 支持 data URI 或本地文件路径（file:// 前缀）输入
+        let img = resolve_image_data_uri(&img)?;
+        let content = serde_json::json!([
+            { "type": "text", "text": "请简要描述这张图片的内容，如果图中有文字请转录。用中文，一两句话即可。" },
+            { "type": "image_url", "image_url": { "url": img, "detail": "auto" } }
+        ]);
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": content }],
+            "max_tokens": 200,
+            "stream": false,
+        });
+
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            client.post(url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| "本地 Ollama 识别图片超时（120 秒），请稍后重试".to_string())?
+        .map_err(|e| format!("请求本地 Ollama 失败: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Ollama 图片识别失败 [{}]: {}", status, text.chars().take(300).collect::<String>()));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+        let desc = json
+            .get("choices").and_then(|c| c.get(0))
+            .and_then(|c| c.get("message")).and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str()).unwrap_or("").to_string();
+        if !desc.is_empty() {
+            parts.push(desc);
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// 用 macOS 系统 Vision OCR 提取图片文字（准确、离线、快）。
+/// 非 macOS 返回空字符串，由前端回退到视觉模型语义描述。
+#[tauri::command]
+async fn ocr_extract_image_text(app: tauri::AppHandle, images: Vec<String>) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(String::new());
+    }
+    let tool = ocr_tool_path(&app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let mut parts: Vec<String> = Vec::new();
+    for (i, img) in images.iter().enumerate() {
+        let Some(bytes) = decode_data_uri(img) else { continue };
+        let path = std::env::temp_dir().join(format!("daoshengyi-ocr-{}-{}.img", std::process::id(), i));
+        if std::fs::write(&path, &bytes).is_err() {
+            continue;
+        }
+        let out = tokio::process::Command::new(&tool)
+            .arg(&path)
+            .output()
+            .await
+            .map_err(|e| format!("执行 OCR 失败: {}", e))?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let _ = std::fs::remove_file(&path);
+        if !text.is_empty() {
+            parts.push(text);
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// 解析 data URI（data:image/...;base64,xxx）返回原始字节
+fn decode_data_uri(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let b64 = data.split_once(',').map(|(_, b)| b).unwrap_or(data);
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+}
+
+/// 解析图片输入为 data URI：data URI 直接用；file:// 或本地路径则读文件转换
+fn resolve_image_data_uri(input: &str) -> Result<String, String> {
+    if input.starts_with("data:") {
+        return Ok(input.to_string());
+    }
+    let path = input.strip_prefix("file://").unwrap_or(input);
+    let bytes = std::fs::read(path).map_err(|e| format!("读取图片失败: {}", e))?;
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "image/png",
+    };
+    use base64::Engine as _;
+    Ok(format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(&bytes)))
+}
+
+/// 把 base64 图片（data URI）保存到临时文件，返回路径。供浏览器截图落盘后给视觉/OCR 分析。
+#[tauri::command]
+fn save_temp_image(data: String) -> Result<String, String> {
+    let bytes = decode_data_uri(&data).ok_or("图片数据格式无效")?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("daoshengyi-shot-{}-{}.png", std::process::id(), ts));
+    std::fs::write(&path, &bytes).map_err(|e| format!("保存图片失败: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 用本地 OCR（macOS Vision）提取本地图片文件中的文字。
+#[tauri::command]
+async fn ocr_image_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(String::new());
+    }
+    let tool = ocr_tool_path(&app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let out = tokio::process::Command::new(&tool)
+        .arg(&path)
+        .output()
+        .await
+        .map_err(|e| format!("执行 OCR 失败: {}", e))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// 定位 ocr_tool 二进制（dev: <项目根>/src-tauri/ocr_tool；打包: resource 目录）
+fn ocr_tool_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Ok(dir) = app.path().resource_dir() {
+        let p = dir.join("ocr_tool");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let cand = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|root| root.join("src-tauri/ocr_tool"));
+        if let Some(p) = cand {
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// 通过 Ollama HTTP API 流式拉取模型，实时推送后台下载进度
@@ -508,7 +956,11 @@ async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Resul
             }
             let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
             let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("");
-            if status == "downloading" {
+            // Ollama 各版本下载状态名不同：老版本 "downloading"，0.3x 为 "pulling <digest>"。
+            // 只要事件携带 total/completed 数字字段就按下载进度处理，避免进度卡在 0%。
+            let has_progress = val.get("total").and_then(|t| t.as_f64()).is_some()
+                && val.get("completed").and_then(|c| c.as_f64()).is_some();
+            if has_progress {
                 let total = val.get("total").and_then(|t| t.as_f64()).unwrap_or(0.0);
                 let completed = val.get("completed").and_then(|c| c.as_f64()).unwrap_or(0.0);
                 let percent = if total > 0.0 { (completed / total * 100.0).min(99.0) } else { 0.0 };
@@ -522,7 +974,7 @@ async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Resul
                     "percent": 100.0,
                 }));
                 break;
-            } else {
+            } else if !status.is_empty() {
                 let _ = app.emit("ollama-progress", serde_json::json!({ "text": status }));
             }
         }
@@ -807,16 +1259,29 @@ struct McpManager {
 
 #[tauri::command]
 async fn mcp_connect(
+    app: tauri::AppHandle,
     manager: State<'_, McpManager>,
     name: String,
     command: String,
     args: Vec<String>,
 ) -> Result<Vec<mcp::Tool>, String> {
-    eprintln!("[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}", name, command, args);
+    let log_msg = format!("[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}", name, command, args);
+    eprintln!("{}", log_msg);
+    append_log(&app, &log_msg);
     let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true };
     let client = match mcp::McpClient::connect(&config).await {
-        Ok(c) => { eprintln!("[mcp_connect] '{}' 连接成功, {} 个工具", name, c.tools.len()); c }
-        Err(e) => { eprintln!("[mcp_connect] '{}' 连接失败: {}", name, e); return Err(e); }
+        Ok(c) => {
+            let m = format!("[mcp_connect] '{}' 连接成功, {} 个工具", name, c.tools.len());
+            eprintln!("{}", m);
+            append_log(&app, &m);
+            c
+        }
+        Err(e) => {
+            let m = format!("[mcp_connect] '{}' 连接失败: {}", name, e);
+            eprintln!("{}", m);
+            append_log(&app, &m);
+            return Err(e);
+        }
     };
     let tools = client.tools.clone();
     manager.clients.lock().await.insert(name.clone(), client);
@@ -885,14 +1350,16 @@ async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, V
 /// 断开 MCP 服务器连接：从管理器移除客户端，进程随 drop 被 kill（kill_on_drop），
 /// 浏览器类服务器（如 server-puppeteer）的浏览器窗口随之关闭，形成使用闭环。
 #[tauri::command]
-async fn mcp_disconnect(manager: State<'_, McpManager>, name: String) -> Result<bool, String> {
+async fn mcp_disconnect(app: tauri::AppHandle, manager: State<'_, McpManager>, name: String) -> Result<bool, String> {
     let mut clients = manager.clients.lock().await;
     let removed = clients.remove(&name).is_some();
-    if removed {
-        eprintln!("[mcp_disconnect] 已断开 '{}'（服务器进程已终止）", name);
+    let m = if removed {
+        format!("[mcp_disconnect] 已断开 '{}'（服务器进程已终止）", name)
     } else {
-        eprintln!("[mcp_disconnect] '{}' 未在连接列表中", name);
-    }
+        format!("[mcp_disconnect] '{}' 未在连接列表中", name)
+    };
+    eprintln!("{}", m);
+    append_log(&app, &m);
     Ok(removed)
 }
 
@@ -1048,6 +1515,10 @@ pub fn run() {
             read_attachment,
             ollama_status,
             ollama_setup,
+            ollama_describe_image,
+            ocr_extract_image_text,
+            save_temp_image,
+            ocr_image_file,
             check_hardware,
             mcp_connect,
             mcp_disconnect,

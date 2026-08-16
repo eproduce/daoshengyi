@@ -1,8 +1,10 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
+import { listen } from "@tauri-apps/api/event";
 import App from "./App.vue";
 import { useMcpStore } from "./stores/mcp";
 import { useOllamaStore } from "./stores/ollama";
+import { useChatStore } from "./stores/chat";
 import "./assets/styles/main.css";
 
 const app = createApp(App);
@@ -14,4 +16,10 @@ app.use(pinia);
 useMcpStore();
 // 全局注册 Ollama 进度监听并做首次硬件/服务检测（不随设置界面关闭而中断）
 useOllamaStore().init();
+
+// Rust 端一键部署完成后自动刷新 API 配置（自动切换为本地 Ollama，无需手动配置）
+listen("ollama-configured", () => {
+  const chat = useChatStore();
+  chat.reloadProfilesFromRust().catch(() => {});
+});
 app.mount("#app");

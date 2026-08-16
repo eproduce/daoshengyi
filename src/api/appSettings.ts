@@ -62,6 +62,17 @@ export function getSettings(): AppSettingsPayload {
   return cache;
 }
 
+/// 强制从 Rust 重新加载设置（Rust 端一键部署自动配置 Ollama 后调用，刷新本地缓存）
+export async function reloadSettings(): Promise<AppSettingsPayload> {
+  if (!isTauri()) return cache;
+  try {
+    cache = await invoke<AppSettingsPayload>("load_app_settings");
+  } catch (e) {
+    console.warn("[道生一] 重新加载设置失败:", e);
+  }
+  return cache;
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
 

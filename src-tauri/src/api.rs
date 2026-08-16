@@ -101,16 +101,22 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
     let delta = parsed.get("choices")?.get(0)?.get("delta")?;
     let reasoning = delta.get("reasoning_content").and_then(|v| v.as_str());
     let content = delta.get("content").and_then(|v| v.as_str());
-    let usage = parsed.get("usage").and_then(|u| u.get("total_tokens").and_then(|v| v.as_u64()));
+    let usage = parsed.get("usage");
+    let total = usage.and_then(|u| u.get("total_tokens").and_then(|v| v.as_u64()));
+    // DeepSeek 等模型返回的缓存命中/未命中 token，用于统计缓存命中率
+    let cache_hit = usage.and_then(|u| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()));
+    let cache_miss = usage.and_then(|u| u.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()));
 
-    if reasoning.is_none() && content.is_none() && usage.is_none() {
+    if reasoning.is_none() && content.is_none() && total.is_none() {
         return None;
     }
 
     Some(SSEDelta {
         reasoning_content: reasoning.map(|s| s.to_string()),
         content: content.map(|s| s.to_string()),
-        tokens: usage,
+        tokens: total,
+        cache_hit,
+        cache_miss,
     })
 }
 
@@ -119,12 +125,16 @@ pub struct SSEDelta {
     pub reasoning_content: Option<String>,
     pub content: Option<String>,
     pub tokens: Option<u64>,
+    pub cache_hit: Option<u64>,
+    pub cache_miss: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatOnceResult {
     pub content: String,
     pub reasoning_content: String,
+    pub cache_hit: u64,
+    pub cache_miss: u64,
 }
 
 /// 非流式单轮聊天请求，返回完整回复（供 ReAct 工具循环使用）。
@@ -177,5 +187,12 @@ pub async fn chat_once(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    Ok(ChatOnceResult { content, reasoning_content })
+    let usage = json.get("usage");
+    let cache_hit = usage
+        .and_then(|u| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+    let cache_miss = usage
+        .and_then(|u| u.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+    Ok(ChatOnceResult { content, reasoning_content, cache_hit, cache_miss })
 }

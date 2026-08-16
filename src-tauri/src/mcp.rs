@@ -108,6 +108,9 @@ pub struct ToolContent {
     #[serde(rename = "type")]
     pub content_type: String,
     pub text: Option<String>,
+    /// 图片类内容（如 puppeteer_screenshot 截图）的 base64 数据
+    #[serde(default)]
+    pub data: Option<String>,
 }
 
 // --- MCP Server 配置 ---
