@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS tool_audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON tool_audit(created_at);
+
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    schedule_type TEXT NOT NULL DEFAULT 'interval',
+    interval_minutes INTEGER DEFAULT 60,
+    daily_time TEXT DEFAULT '',
+    enabled INTEGER DEFAULT 1,
+    next_run_at INTEGER NOT NULL,
+    last_run_at INTEGER,
+    last_result TEXT,
+    created_at INTEGER NOT NULL
+);
 ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -105,6 +119,23 @@ pub struct SearchResult {
     pub role: String,
     pub snippet: String,
     pub timestamp: i64,
+}
+
+/// 定时任务（调度器在 lib.rs 的后台线程里执行）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScheduledTaskRow {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    /// "interval"（每 N 分钟）| "daily"（每天 HH:MM）
+    pub schedule_type: String,
+    pub interval_minutes: i64,
+    pub daily_time: String,
+    pub enabled: bool,
+    pub next_run_at: i64,
+    pub last_run_at: Option<i64>,
+    pub last_result: Option<String>,
+    pub created_at: i64,
 }
 
 pub struct Database {
@@ -270,6 +301,48 @@ impl Database {
             md.push_str("---\n\n");
         }
         Ok(md)
+    }
+
+    // --- 定时任务 ---
+
+    pub fn list_scheduled_tasks(&self) -> Result<Vec<ScheduledTaskRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, created_at FROM scheduled_tasks ORDER BY created_at DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ScheduledTaskRow {
+                id: row.get(0)?, name: row.get(1)?, command: row.get(2)?,
+                schedule_type: row.get(3)?, interval_minutes: row.get(4)?,
+                daily_time: row.get(5)?, enabled: row.get::<_, i64>(6)? != 0,
+                next_run_at: row.get(7)?, last_run_at: row.get(8)?,
+                last_result: row.get(9)?, created_at: row.get(10)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+
+    pub fn save_scheduled_task(&self, t: &ScheduledTaskRow) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO scheduled_tasks (id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![t.id, t.name, t.command, t.schedule_type, t.interval_minutes, t.daily_time, t.enabled as i64, t.next_run_at, t.last_run_at, t.last_result, t.created_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_scheduled_task(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM scheduled_tasks WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_scheduled_task_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE scheduled_tasks SET enabled=?1 WHERE id=?2", params![enabled as i64, id]).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // --- 记忆系统 ---

@@ -66,6 +66,12 @@
 - `SettingsDialog.vue`：新增「🩺 诊断」tab
 - 验证：`cargo check` + `vite build` + `npm test`(30) 通过
 
+### ✅ 功能：定时任务（🟡）
+- Rust：`scheduled_tasks` 表 + `list/save/delete/toggle` 命令 + 后台调度线程（每 30 秒检查，`/bin/sh -c` 执行，300 秒超时，结果存最近 1000 字符）；支持每 N 分钟 / 每天 HH:MM
+- 前端：新增 `ScheduledTasks.vue`（任务列表 + 添加表单 + 启停/删除/上次结果）
+- `SettingsDialog.vue`：新增「⏰ 定时任务」tab
+- 验证：`cargo check` + `vite build` + `npm test`(30) 通过
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）

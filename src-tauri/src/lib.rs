@@ -125,6 +125,50 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
     })
 }
 
+// --- 定时任务 ---
+
+/// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
+fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
+    use chrono::TimeZone;
+    if t.schedule_type == "daily" {
+        let mut parts = t.daily_time.split(':');
+        let h: u32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let m: u32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let now_local = chrono::Local::now();
+        let mut next = now_local
+            .date_naive()
+            .and_hms_opt(h, m, 0)
+            .and_then(|dt| chrono::Local.from_local_datetime(&dt).single())
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(now_ms);
+        if next <= now_ms { next += 24 * 3600 * 1000; }
+        next
+    } else {
+        let mins = if t.interval_minutes > 0 { t.interval_minutes } else { 60 };
+        now_ms + mins * 60 * 1000
+    }
+}
+
+#[tauri::command]
+fn list_scheduled_tasks(db: State<Database>) -> Result<Vec<db::ScheduledTaskRow>, String> {
+    db.list_scheduled_tasks()
+}
+
+#[tauri::command]
+fn save_scheduled_task(db: State<Database>, task: db::ScheduledTaskRow) -> Result<(), String> {
+    db.save_scheduled_task(&task)
+}
+
+#[tauri::command]
+fn delete_scheduled_task(db: State<Database>, id: String) -> Result<(), String> {
+    db.delete_scheduled_task(&id)
+}
+
+#[tauri::command]
+fn toggle_scheduled_task(db: State<Database>, id: String, enabled: bool) -> Result<(), String> {
+    db.set_scheduled_task_enabled(&id, enabled)
+}
+
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
 #[tauri::command]
 async fn chat_once(
@@ -1576,6 +1620,47 @@ pub fn run() {
                 clients: Mutex::new(std::collections::HashMap::new()),
             });
 
+            // 定时任务调度线程：每 30 秒检查一次到点任务并执行（/bin/sh -c，300 秒超时）。
+            // 每次循环用独立数据库连接（SQLite WAL 支持多连接并发）。
+            {
+                let sched_dir = app_dir.clone();
+                std::thread::spawn(move || loop {
+                    if let Ok(db) = Database::new(sched_dir.clone()) {
+                        let tasks = db.list_scheduled_tasks().unwrap_or_default();
+                        let now = chrono::Utc::now().timestamp_millis();
+                        for t in tasks {
+                            if !t.enabled || t.next_run_at > now { continue; }
+                            let started = chrono::Utc::now().timestamp_millis();
+                            let output = std::process::Command::new("/bin/sh")
+                                .arg("-c").arg(&t.command)
+                                .output();
+                            let result = match output {
+                                Ok(o) => {
+                                    let mut s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                    let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                                    if !e.is_empty() {
+                                        s = format!("{}{}{}", s, if s.is_empty() { "" } else { "\n" }, e);
+                                    }
+                                    if s.is_empty() {
+                                        format!("(退出码 {})", o.status.code().unwrap_or(-1))
+                                    } else { s }
+                                }
+                                Err(e) => format!("(启动失败: {})", e),
+                            };
+                            let clipped = if result.len() > 1000 {
+                                format!("{}...(截断)", &result[..1000])
+                            } else { result };
+                            let mut updated = t.clone();
+                            updated.next_run_at = compute_next_run(&t, now);
+                            updated.last_run_at = Some(started);
+                            updated.last_result = Some(clipped);
+                            let _ = db.save_scheduled_task(&updated);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                });
+            }
+
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").unwrap();
@@ -1609,6 +1694,10 @@ pub fn run() {
             web_search,
             fetch_page,
             system_diagnostics,
+            list_scheduled_tasks,
+            save_scheduled_task,
+            delete_scheduled_task,
+            toggle_scheduled_task,
             execute_command,
             read_file,
             read_attachment,
