@@ -178,19 +178,24 @@ function handleDelete() {
   <div class="settings-overlay" @click.self="emit('close')">
     <div class="settings-dialog">
       <div class="settings-dialog__header">
-        <div class="settings-tabs">
-          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
-          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
-          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🧠 本地模型</button>
-          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'">📊 用量统计</button>
-          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'">🩺 诊断</button>
-          <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'">⏰ 定时任务</button>
-          <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'">🤖 编码 Agent</button>
-        </div>
+        <h2 class="settings-title">⚙️ 设置</h2>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
 
       <div class="settings-dialog__body">
+        <!-- 左侧菜单 -->
+        <nav class="settings-nav">
+          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'"><span class="settings-tab__icon">🔑</span>API 配置</button>
+          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon">🔌</span>MCP 服务器</button>
+          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'"><span class="settings-tab__icon">🧠</span>本地模型</button>
+          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'"><span class="settings-tab__icon">📊</span>用量统计</button>
+          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon">🩺</span>诊断</button>
+          <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon">⏰</span>定时任务</button>
+          <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'"><span class="settings-tab__icon">🤖</span>编码 Agent</button>
+        </nav>
+
+        <!-- 右侧内容 -->
+        <div class="settings-content">
         <!-- API 配置 -->
         <div v-show="activeTab === 'api'">
         <!-- 配置列表 -->
@@ -428,7 +433,8 @@ function handleDelete() {
 
       <!-- 编码 Agent -->
       <div v-show="activeTab === 'agents'"><CodingAgents /></div>
-    </div>
+        </div>
+      </div>
 
     <div class="settings-dialog__footer">
       <button
@@ -455,7 +461,7 @@ function handleDelete() {
 }
 
 .settings-dialog {
-  width: 520px; height: min(85vh, 720px);
+  width: 640px; height: min(85vh, 720px);
   background: var(--bg-elevated); border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl); overflow: hidden;
   animation: scaleIn .25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -467,13 +473,23 @@ function handleDelete() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 24px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;
 }
-.settings-tabs { display: flex; gap: 4px; }
-.settings-tab {
-  padding: 6px 14px; border: none; border-radius: 8px;
-  background: transparent; color: #888; font-size: 13px; cursor: pointer; transition: all .15s;
+.settings-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+
+/* 左侧菜单 */
+.settings-nav {
+  width: 168px; flex-shrink: 0; border-right: 1px solid var(--border-color);
+  padding: 12px 8px; display: flex; flex-direction: column; gap: 2px;
+  overflow-y: auto; background: var(--bg-secondary);
 }
-.settings-tab:hover { color: #ccc; }
-.settings-tab.active { background: #252540; color: #eee; }
+.settings-tab {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-secondary); font-size: 13px;
+  cursor: pointer; text-align: left; transition: all .15s;
+}
+.settings-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-tab.active { background: var(--accent-bg); color: var(--accent-color); font-weight: 600; }
+.settings-tab__icon { width: 20px; text-align: center; flex-shrink: 0; }
 
 .btn-close {
   width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
@@ -484,8 +500,14 @@ function handleDelete() {
 .btn-close:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 .settings-dialog__body {
-  padding: 24px; display: flex; flex-direction: column; gap: 18px;
-  overflow-y: auto; flex: 1; min-height: 0;
+  display: flex; flex-direction: row; gap: 0;
+  overflow: hidden; flex: 1; min-height: 0; padding: 0;
+}
+
+/* 右侧内容区：各 panel 在此滚动 */
+.settings-content {
+  flex: 1; min-width: 0; overflow-y: auto;
+  padding: 20px 24px; display: flex; flex-direction: column; gap: 18px;
 }
 
 .profile-tabs { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -115,6 +115,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <button class="topbar__btn" title="切换侧边栏" @click="showSidebar = !showSidebar">
             ☰
           </button>
+          <AppLogo :size="22" class="topbar__logo" />
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
@@ -158,24 +159,34 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
       <!-- 消息区域 -->
       <div ref="messagesContainer" class="messages-container">
-        <!-- 空状态 -->
-        <div
-          v-if="!chatStore.activeConversation || chatStore.activeConversation.messages.length === 0"
-          class="empty-state"
-        >
-          <div class="empty-state__icon"><AppLogo :size="56" /></div>
-          <h2>道生一</h2>
-          <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
-        </div>
+        <div class="messages-inner">
+          <!-- 空状态 -->
+          <div
+            v-if="!chatStore.activeConversation || chatStore.activeConversation.messages.length === 0"
+            class="empty-state"
+          >
+            <div class="empty-state__icon"><AppLogo :size="56" /></div>
+            <h2>道生一</h2>
+            <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
+            <div class="empty-state__tips">
+              <div class="tip-card"><span class="tip-key">⌘/Ctrl + N</span> 新建对话</div>
+              <div class="tip-card"><span class="tip-key">/run</span> 执行终端命令</div>
+              <div class="tip-card"><span class="tip-key">/read</span> 读取本地文件</div>
+              <div class="tip-card"><span class="tip-key">📋 粘贴图片</span> 本地视觉识别</div>
+              <div class="tip-card"><span class="tip-key">⏰ 定时任务</span> 后台自动执行</div>
+              <div class="tip-card"><span class="tip-key">🩺 诊断</span> 系统健康与日志</div>
+            </div>
+          </div>
 
-        <!-- 消息列表 -->
-        <template v-if="chatStore.activeConversation">
-          <ChatMessage
-            v-for="msg in chatStore.activeConversation.messages"
-            :key="msg.id"
-            :message="msg"
-          />
-        </template>
+          <!-- 消息列表 -->
+          <template v-if="chatStore.activeConversation">
+            <ChatMessage
+              v-for="msg in chatStore.activeConversation.messages"
+              :key="msg.id"
+              :message="msg"
+            />
+          </template>
+        </div>
       </div>
 
       <!-- 输入区域 -->
@@ -230,6 +241,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   -webkit-backdrop-filter: blur(12px);
 }
 .topbar__left { display: flex; align-items: center; gap: 12px; }
+.topbar__logo { display: flex; }
 .topbar__title {
   font-size: 16px; font-weight: 700; color: var(--text-primary);
   letter-spacing: -0.01em;
@@ -267,15 +279,23 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   scroll-behavior: smooth;
 }
 
+/* 消息内容居中容器：宽屏下限制阅读宽度（借鉴 Hermes 工作台的居中布局） */
+.messages-inner {
+  max-width: 920px; margin: 0 auto; min-height: 100%;
+  display: flex; flex-direction: column;
+  padding: 16px 24px 28px;
+}
+
 .empty-state {
-  display: flex; flex-direction: column; align-items: center;
-  justify-content: center; height: 100%; text-align: center; padding: 60px;
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; padding: 40px 24px;
 }
 .empty-state__icon {
   width: 80px; height: 80px; border-radius: 24px;
   background: var(--accent-light);
   display: flex; align-items: center; justify-content: center;
-  font-size: 40px; margin-bottom: 24px;
+  font-size: 40px; margin-bottom: 20px;
+  box-shadow: var(--shadow-md);
 }
 .empty-state h2 {
   font-size: 24px; font-weight: 700; color: var(--text-primary);
@@ -283,7 +303,23 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 }
 .empty-state p {
   font-size: 14px; color: var(--text-secondary);
-  max-width: 360px; line-height: 1.6;
+  max-width: 420px; line-height: 1.6; margin-bottom: 28px;
+}
+.empty-state__tips {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  max-width: 560px; width: 100%;
+}
+.tip-card {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 14px 10px; border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); background: var(--bg-elevated);
+  font-size: 12px; color: var(--text-secondary);
+  transition: border-color .2s, transform .15s;
+}
+.tip-card:hover { border-color: var(--accent-color); transform: translateY(-1px); }
+.tip-key {
+  font-size: 12px; font-weight: 600; color: var(--accent-color);
+  font-variant-numeric: tabular-nums;
 }
 
 .stop-bar {

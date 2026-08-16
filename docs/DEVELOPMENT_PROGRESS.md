@@ -90,6 +90,14 @@
 - 轻量版：单层子代理（未做 Hermes 的树状监视面板，后续可迭代）
 - 验证：`vite build` + `npm test`(30) 通过
 
+### ✅ UI 优化：参考 Hermes-CN-Desktop 布局（2026-08-17）
+- **设置对话框**：顶部 tab → **左侧菜单 + 右侧内容**布局（7 个菜单项垂直排列，弹窗加宽至 640px，左侧 `settings-nav` + 右侧 `settings-content` 独立滚动）
+- **消息区**：内容居中容器 `messages-inner`（max-width 920px），宽屏下不贴边（Hermes 工作台风格）
+- **空状态**：新增 6 个功能引导卡片（⌘N /run /read /📋粘贴图片 /⏰定时任务 /🩺诊断）
+- **气泡**：assistant 用 `--bg-assistant-bubble` 柔和背景，user 用 accent 渐变
+- **顶栏**：加品牌 AppLogo
+- 浏览器实测：主界面 + 设置左侧菜单布局均正常
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）

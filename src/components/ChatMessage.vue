@@ -154,15 +154,17 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
   max-width: 78%; min-width: 0;
   padding: 10px 14px;
   border-radius: 14px;
-  background: var(--bg-elevated);
+  background: var(--bg-assistant-bubble);
   border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-sm);
   position: relative;
 }
 .message--assistant .message__bubble { border-bottom-left-radius: 4px; }
 .message--user .message__bubble {
-  background: var(--accent-color);
-  border-color: var(--accent-color);
+  background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
+  border-color: transparent;
   border-bottom-right-radius: 4px;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.28);
 }
 .message--user .message__bubble .message__content { color: #fff; }
 .message--user :deep(.markdown-body) { color: #fff; }
