@@ -690,8 +690,8 @@ export const useChatStore = defineStore("chat", () => {
     const { command, args } = parseCommandLine(cmdStr);
     if (!command) return;
 
-    // 危险命令需用户确认
-    if (isDangerous(cmdStr)) {
+    // 危险命令需用户确认；YOLO 模式开启时自动批准执行（不再弹确认）
+    if (isDangerous(cmdStr) && !getSettings().yoloMode) {
       const ok = window.confirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
       if (!ok) return;
     }

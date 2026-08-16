@@ -47,6 +47,9 @@ pub struct AppSettings {
     /// Agent 工作区目录（借鉴 DeepSeek Harness 的 workspace 概念）
     #[serde(default)]
     pub workspace: Option<String>,
+    /// YOLO 模式：开启后危险命令不再弹确认、自动批准执行（对应 HERMES_YOLO_MODE 理念）
+    #[serde(default)]
+    pub yolo_mode: bool,
 }
 
 impl Default for AppSettings {
@@ -57,6 +60,7 @@ impl Default for AppSettings {
             mcp_servers: serde_json::Value::Array(Vec::new()),
             active_conversation_id: None,
             workspace: None,
+            yolo_mode: false,
         }
     }
 }
@@ -214,6 +218,7 @@ mod tests {
             mcp_servers: serde_json::json!([]),
             active_conversation_id: None,
             workspace: None,
+            yolo_mode: false,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -239,6 +244,7 @@ mod tests {
             mcp_servers: serde_json::json!([]),
             active_conversation_id: None,
             workspace: None,
+            yolo_mode: false,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

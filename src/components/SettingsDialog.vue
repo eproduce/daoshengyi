@@ -114,6 +114,14 @@ function saveWorkspace() {
   updateSettings({ workspace: v || null });
 }
 
+// YOLO 模式：开启后危险命令自动批准执行（不再弹确认），对应 HERMES_YOLO_MODE 理念
+const yoloMode = ref(getSettings().yoloMode);
+function onYoloChange(e: Event) {
+  const v = (e.target as HTMLInputElement).checked;
+  yoloMode.value = v;
+  updateSettings({ yoloMode: v });
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -333,6 +341,15 @@ function handleDelete() {
             @keyup.enter="saveWorkspace"
           />
           <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
+        </div>
+
+        <!-- 高危操作（YOLO 模式） -->
+        <div class="form-group">
+          <label class="yolo-label">
+            <input type="checkbox" :checked="yoloMode" @change="onYoloChange" />
+            <span>⚠️ 高危操作（YOLO 模式）</span>
+          </label>
+          <span class="form-hint">开启后，检测到危险命令（rm -rf / sudo / mkfs / dd 等）将<b>不再弹窗确认</b>、自动批准执行。请谨慎开启！</span>
         </div>
       </div>
 

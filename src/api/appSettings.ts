@@ -24,6 +24,8 @@ export interface AppSettingsPayload {
   activeConversationId: string | null;
   /// Agent 工作区目录
   workspace: string | null;
+  /// YOLO 模式：开启后危险命令自动批准执行（不再弹确认）
+  yoloMode: boolean;
 }
 
 let cache: AppSettingsPayload = {
@@ -32,6 +34,7 @@ let cache: AppSettingsPayload = {
   mcpServers: [],
   activeConversationId: null,
   workspace: null,
+  yoloMode: false,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
