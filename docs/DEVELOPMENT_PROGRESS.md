@@ -38,6 +38,17 @@
   - `getMcpToolsPrompt`：新增「强制要求（实时/时效信息）」——实时数据**必须先调** `web_search`/`fetch_page`，拿不到明确说「无法获取」，**严禁编造**
 - **验证**：`vite build` + `npm test`（30 项）通过
 
+### ✅ 功能：YOLO/自动批准高危命令开关（🟢）
+- `settings.rs`/`appSettings.ts`：`AppSettings` 加 `yolo_mode`（默认 false）
+- `chat.ts runCommand`：危险命令确认前判断 `yoloMode`，开启则自动批准不弹窗
+- `SettingsDialog.vue`：Agent 设置新增「⚠️ 高危操作(YOLO 模式)」开关
+- 验证：`cargo check` + `cargo test settings`(4) + `vite build` + `npm test`(30) 通过
+
+### ✅ 功能：用量统计图表页（🟢）
+- 新增 `UsageStats.vue`：从 SQLite 对话记录聚合——总会话/消息/Token/费用/平均耗时卡片、缓存命中率条、每日 Token 柱状图、会话 Token 分布
+- `SettingsDialog.vue`：新增「📊 用量统计」tab
+- 纯 CSS 图表（无新依赖），只改前端（HMR 热更新，不重启 dev 客户端）
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）

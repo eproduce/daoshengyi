@@ -7,16 +7,17 @@ import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings, updateSettings } from "@/api/appSettings";
 import McpSettings from "./McpSettings.vue";
+import UsageStats from "./UsageStats.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -178,6 +179,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'">API 配置</button>
           <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'">🔌 MCP 服务器</button>
           <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'">🧠 本地模型</button>
+          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'">📊 用量统计</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -408,6 +410,9 @@ function handleDelete() {
         </div>
         <div v-if="ollamaStore.progress" class="ollama-progress">{{ ollamaStore.progress }}</div>
       </div>
+
+      <!-- 用量统计 -->
+      <div v-show="activeTab === 'stats'"><UsageStats /></div>
     </div>
 
     <div class="settings-dialog__footer">
