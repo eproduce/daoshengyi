@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 // --- JSON-RPC 2.0 基础类型 ---
 
@@ -122,6 +123,9 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub enabled: bool,
+    /// 透传给 MCP server 进程的环境变量（如 PUPPETEER_EXECUTABLE_PATH 指定浏览器）
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 // --- MCP 客户端 ---
@@ -139,6 +143,10 @@ impl McpClient {
     pub async fn connect(config: &McpServerConfig) -> Result<Self, String> {
         let mut cmd = tokio::process::Command::new(&config.command);
         cmd.args(&config.args);
+        // 透传配置的 env（如 puppeteer 用本机 Edge 作为浏览器）
+        if !config.env.is_empty() {
+            cmd.envs(&config.env);
+        }
         // server-puppeteer 在 macOS 12 (Intel) 无头模式下导航会报
         // "Attempted to use detached Frame"，改用有头模式可正常工作。
         // 该环境变量对其他 MCP 服务器（filesystem/fetch/git 等）无影响。

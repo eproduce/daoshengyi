@@ -1267,11 +1267,12 @@ async fn mcp_connect(
     name: String,
     command: String,
     args: Vec<String>,
+    env: std::collections::HashMap<String, String>,
 ) -> Result<Vec<mcp::Tool>, String> {
     let log_msg = format!("[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}", name, command, args);
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
-    let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true };
+    let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true, env };
     let client = match mcp::McpClient::connect(&config).await {
         Ok(c) => {
             let m = format!("[mcp_connect] '{}' 连接成功, {} 个工具", name, c.tools.len());

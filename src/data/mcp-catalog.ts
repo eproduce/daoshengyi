@@ -7,6 +7,8 @@ export interface McpCatalogItem {
   category: string;
   command: string;
   args: string;
+  /** 透传给 MCP server 进程的环境变量（如 Puppeteer 指定本机浏览器） */
+  env?: Record<string, string>;
   tags: string[];
 }
 
@@ -26,10 +28,16 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     id: "puppeteer",
     name: "浏览器自动化",
     icon: "🌍",
-    description: "网页交互、点击、截图（Puppeteer，有头模式）",
+    description: "网页交互、点击、截图（Puppeteer，默认用本机 Edge 内核）",
     category: "网络",
     command: "npx",
     args: "-y @modelcontextprotocol/server-puppeteer",
+    env: {
+      // server-puppeteer 需要 Chrome/Chromium；puppeteer 缓存的旧版 Chrome for
+      // Testing 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），
+      // 故默认指定本机 Microsoft Edge（Chromium 内核）。可自行改路径。
+      PUPPETEER_EXECUTABLE_PATH: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    },
     tags: ["浏览器", "自动化"],
   },
   {

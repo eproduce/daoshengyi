@@ -13,6 +13,8 @@ export interface McpServerPersist {
   command: string;
   args: string;
   enabled: boolean;
+  /** 透传给 MCP server 进程的环境变量（如 PUPPETEER_EXECUTABLE_PATH 指定浏览器） */
+  env?: Record<string, string>;
 }
 
 export interface AppSettingsPayload {

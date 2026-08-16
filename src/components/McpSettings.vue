@@ -6,10 +6,23 @@ import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-cat
 const store = useMcpStore();
 const activeTab = ref<"servers" | "market">("servers");
 const editing = ref<string | null>(null);
-const form = ref({ name: "", command: "", args: "", enabled: true });
+const form = ref({ name: "", command: "", args: "", envText: "", enabled: true });
 const error = ref("");
 // 连接由 agent 自动控制（应用启动自动连接 + 发消息自动重连），
 // 此处不再提供手动连接/重新连接，仅展示状态。
+
+/// 解析环境变量文本（每行 KEY=VALUE，# 开头为注释）
+function parseEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const idx = t.indexOf("=");
+    if (idx <= 0) continue;
+    out[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
+  }
+  return out;
+}
 
 // --- 插件市场 ---
 const searchKw = ref("");
@@ -33,7 +46,7 @@ function isInstalled(item: { name: string }) {
 
 function installPlugin(item: McpCatalogItem) {
   if (isInstalled(item)) return;
-  store.add({ name: item.name, command: item.command, args: item.args, enabled: true });
+  store.add({ name: item.name, command: item.command, args: item.args, env: item.env ?? {}, enabled: true });
   activeTab.value = "servers";
   // agent 自动控制：添加后自动连接该服务器
   store.connectEnabled();
@@ -42,7 +55,7 @@ function installPlugin(item: McpCatalogItem) {
 
 function openAdd() {
   editing.value = "";
-  form.value = { name: "", command: "", args: "", enabled: true };
+  form.value = { name: "", command: "", args: "", envText: "", enabled: true };
   error.value = "";
 }
 
@@ -50,17 +63,22 @@ function openEdit(id: string) {
   const s = store.servers.find(x => x.id === id);
   if (s) {
     editing.value = id;
-    form.value = { name: s.name, command: s.command, args: s.args, enabled: s.enabled };
+    form.value = {
+      name: s.name, command: s.command, args: s.args, enabled: s.enabled,
+      envText: s.env ? Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join("\n") : "",
+    };
     error.value = "";
   }
 }
 
 function save() {
   if (!form.value.name || !form.value.command) return;
+  const env = parseEnv(form.value.envText);
+  const payload = { name: form.value.name, command: form.value.command, args: form.value.args, env, enabled: form.value.enabled };
   if (editing.value) {
-    store.update(editing.value, form.value);
+    store.update(editing.value, payload);
   } else {
-    store.add(form.value);
+    store.add(payload);
     // agent 自动控制：新增服务器后自动连接
     store.connectEnabled();
   }
@@ -101,6 +119,7 @@ function cancel() {
         <input v-model="form.name" placeholder="服务器名称" class="mcp-input" />
         <input v-model="form.command" placeholder="命令 (如 npx, python, node)" class="mcp-input" />
         <input v-model="form.args" placeholder="参数 (如 -y @modelcontextprotocol/server-filesystem /tmp)" class="mcp-input" />
+        <textarea v-model="form.envText" rows="3" class="mcp-input" placeholder="环境变量（每行 KEY=VALUE，可选；如&#10;PUPPETEER_EXECUTABLE_PATH=/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge）"></textarea>
         <div class="mcp-form-acts">
           <button class="mcp-btn mcp-btn-pri" @click="save">保存</button>
           <button class="mcp-btn mcp-btn-sec" @click="cancel">取消</button>

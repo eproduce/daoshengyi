@@ -9,6 +9,8 @@ interface McpServerConfig {
   name: string;
   command: string;
   args: string;
+  /** 透传给 MCP server 进程的环境变量（如 PUPPETEER_EXECUTABLE_PATH 指定浏览器） */
+  env: Record<string, string>;
   enabled: boolean;
   connected: boolean;
   toolCount: number;
@@ -39,17 +41,35 @@ function migrateConfig<T extends { command: string; args: string; enabled: boole
   return c;
 }
 
+// ── Puppeteer 浏览器自动化：自动指定本机可用的浏览器 ─────────────────────────
+// server-puppeteer 需要 Chrome/Chromium。puppeteer 缓存的旧版 Chrome for Testing
+// 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），因此改用本机
+// Microsoft Edge（Chromium 内核，随系统更新）。通过 PUPPETEER_EXECUTABLE_PATH
+// 指定，与手动 env 配置共存（手动配置优先）。
+export const PUPPETEER_EDGE_PATH = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
+
+function applyPuppeteerEnv<T extends { command: string; args: string; env?: Record<string, string> }>(c: T): T {
+  const cmd = (c.command ?? "").toLowerCase();
+  const args = c.args ?? "";
+  const isPuppeteer = cmd.includes("npx") && /\bserver-puppeteer\b/.test(args);
+  if (!isPuppeteer) return { ...c, env: c.env ?? {} };
+  const env = { ...(c.env ?? {}) };
+  // 用户已显式指定浏览器则尊重；否则默认用本机 Edge
+  if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = PUPPETEER_EDGE_PATH;
+  return { ...c, env };
+}
+
 // 同步兜底：先读 localStorage 旧数据（作为迁移源）
 function loadLegacy(): McpServerConfig[] {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
-    return s ? (JSON.parse(s) as McpServerConfig[]).map(migrateConfig) : [];
+    return s ? (JSON.parse(s) as McpServerConfig[]).map((c) => applyPuppeteerEnv(migrateConfig(c))) : [];
   } catch { return []; }
 }
 
 // 持久化形态 → 运行时形态（补运行时状态）
 function toConfig(p: McpServerPersist): McpServerConfig {
-  return { ...p, connected: false, toolCount: 0 };
+  return { ...p, env: p.env ?? {}, connected: false, toolCount: 0 };
 }
 
 /// 判断是否为"重"服务器（浏览器自动化）：连接即启动真实浏览器窗口。
@@ -64,7 +84,7 @@ export const useMcpStore = defineStore("mcp", () => {
   function save() {
     updateSettings({
       mcpServers: servers.value.map((s) => ({
-        id: s.id, name: s.name, command: s.command, args: s.args, enabled: s.enabled,
+        id: s.id, name: s.name, command: s.command, args: s.args, enabled: s.enabled, env: s.env,
       })),
     });
   }
@@ -82,7 +102,7 @@ export const useMcpStore = defineStore("mcp", () => {
       const legacy = localStorage.getItem(STORAGE_KEY);
       const settings = await initSettings();
       if (settings.mcpServers.length > 0) {
-        servers.value = settings.mcpServers.map((p) => toConfig(migrateConfig(p)));
+        servers.value = settings.mcpServers.map((p) => applyPuppeteerEnv(migrateConfig(p))).map(toConfig);
         if (legacy) localStorage.removeItem(STORAGE_KEY);
       } else if (legacy) {
         save();
@@ -143,7 +163,7 @@ export const useMcpStore = defineStore("mcp", () => {
     try {
       const args = s.args.split(/\s+/).filter(a => a.length > 0);
       const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
-        name: s.name, command: s.command, args,
+        name: s.name, command: s.command, args, env: s.env || {},
       });
       s.connected = true;
       s.toolCount = tools.length;
@@ -160,7 +180,7 @@ export const useMcpStore = defineStore("mcp", () => {
     if (!s) throw new Error(`未找到 MCP 服务器「${name}」`);
     const args = s.args.split(/\s+/).filter(a => a.length > 0);
     const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
-      name: s.name, command: s.command, args,
+      name: s.name, command: s.command, args, env: s.env || {},
     });
     s.connected = true;
     s.toolCount = tools.length;
