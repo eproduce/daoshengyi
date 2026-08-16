@@ -92,8 +92,11 @@ async fn send_message(
                         delta_count += 1;
                         let rl = delta.reasoning_content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
-                        if rl > 0 || cl > 0 {
-                            let sm = format!("[sse] reasoning_len={} content_len={}", rl, cl);
+                        let ch = delta.cache_hit.unwrap_or(0);
+                        let cm = delta.cache_miss.unwrap_or(0);
+                        // usage 块（choices 为空、仅有缓存/总 token）也打印，便于排查缓存命中率
+                        if rl > 0 || cl > 0 || ch > 0 || cm > 0 {
+                            let sm = format!("[sse] reasoning_len={} content_len={} cache_hit={} cache_miss={}", rl, cl, ch, cm);
                             eprintln!("{}", sm);
                             append_log(&app, &sm);
                         }

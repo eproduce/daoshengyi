@@ -98,14 +98,32 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
         return None;
     }
     let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
-    let delta = parsed.get("choices")?.get(0)?.get("delta")?;
-    let reasoning = delta.get("reasoning_content").and_then(|v| v.as_str());
-    let content = delta.get("content").and_then(|v| v.as_str());
+
+    // 关键：DeepSeek 流式在最后一个 chunk 返回 usage，且此时 choices 为空数组。
+    // 必须先把 usage 解析出来（不依赖 choices），否则用 choices 的 ? 链会提前 return，
+    // usage 丢失 → 前端缓存命中率恒为 0%（看似费 token）。
     let usage = parsed.get("usage");
     let total = usage.and_then(|u| u.get("total_tokens").and_then(|v| v.as_u64()));
-    // DeepSeek 等模型返回的缓存命中/未命中 token，用于统计缓存命中率
-    let cache_hit = usage.and_then(|u| u.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()));
-    let cache_miss = usage.and_then(|u| u.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()));
+    // 缓存命中/未命中 token：DeepSeek 用 prompt_cache_hit/miss_tokens；兼容其他厂商字段
+    let cache_hit = usage
+        .and_then(|u| {
+            u.get("prompt_cache_hit_tokens")
+                .or_else(|| u.get("cache_read_input_tokens"))
+                .or_else(|| u.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+        });
+    let cache_miss = usage
+        .and_then(|u| {
+            u.get("prompt_cache_miss_tokens")
+                .or_else(|| u.get("cache_creation_input_tokens"))
+                .or_else(|| u.get("uncached_tokens"))
+                .and_then(|v| v.as_u64())
+        });
+
+    // choices 可能为空数组（usage 块），此时 delta 为 None，但 usage 仍需上报
+    let delta = parsed.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("delta"));
+    let reasoning = delta.and_then(|d| d.get("reasoning_content").and_then(|v| v.as_str()));
+    let content = delta.and_then(|d| d.get("content").and_then(|v| v.as_str()));
 
     if reasoning.is_none() && content.is_none() && total.is_none() {
         return None;
