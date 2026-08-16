@@ -85,6 +85,11 @@
 - 说明：本机未安装 claude/codex，检测返回「未安装」；装好后即可委派
 - 验证：`cargo check` + `vite build` + `npm test`(30) 通过
 
+### ✅ 功能：子代理委派（🔵，轻量版）
+- `chat.ts`：新增内置工具 `subagent_delegate`——模型可委派子任务给独立上下文的子代理（复用 `chatOnce` + `withCurrentDate`），返回子代理结论；工具提示中加入说明
+- 轻量版：单层子代理（未做 Hermes 的树状监视面板，后续可迭代）
+- 验证：`vite build` + `npm test`(30) 通过
+
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）
 - Tauri 2 + React 桌面客户端，1.6k stars，v0.8.0-rc7；许可 **PolyForm Noncommercial**（只借鉴思路不抄代码）
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）

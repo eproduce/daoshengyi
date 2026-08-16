@@ -48,7 +48,8 @@ function getMcpToolsPrompt(): string {
     "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）；对需要登录/点击/JS 动态渲染的页面可能拿不全。参数 {\"url\": \"完整网址\"}\n" +
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
-    "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。";
+    "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
+    "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -163,6 +164,27 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("ocr_image 需要 path 参数（本地图片文件路径）");
       const ocr = await invoke<string>("ocr_image_file", { path });
       return ocr || "（未识别到文字）";
+    }
+    case "subagent_delegate": {
+      const goal = String(args.goal || "");
+      if (!goal) throw new Error("subagent_delegate 需要 goal 参数");
+      const context = String(args.context || "");
+      // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑一轮 chat_once
+      const { useChatStore } = await import("./chat");
+      const store = useChatStore();
+      const config = store.currentConfig;
+      if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
+      const sys = "你是道生一的子代理，负责独立完成一个子任务。" +
+        (context ? `\n补充上下文：${context}` : "") +
+        "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
+      const data = await chatOnce(config, [
+        { role: "system", content: withCurrentDate(sys) },
+        { role: "user", content: `子任务：${goal}` },
+      ]);
+      if (!data) throw new Error("子代理执行超时或失败");
+      const finalText = (data.content || "（子代理未返回内容）").trim();
+      // 子代理若也返回工具调用 JSON，则剥离展示
+      return `【子代理结论】\n${finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）"}`;
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);
