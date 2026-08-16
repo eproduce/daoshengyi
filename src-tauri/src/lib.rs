@@ -199,6 +199,88 @@ fn set_prevent_sleep(guard: State<SleepGuard>, active: bool) -> Result<(), Strin
     Ok(())
 }
 
+// --- 编码 Agent 委派（检测本机 Claude Code / Codex 并委托任务） ---
+
+fn which_path(cmd: &str) -> String {
+    run_sys_cmd("which", &[cmd])
+}
+
+#[derive(serde::Serialize)]
+struct CodingAgentInfo {
+    id: String,
+    label: String,
+    installed: bool,
+    version: Option<String>,
+    path: Option<String>,
+    status: String,
+}
+
+fn check_coding_agent(
+    id: &str, label: &str, cmd: &str,
+    version_args: &[&str], version_fallback: &[&str],
+) -> CodingAgentInfo {
+    let path = which_path(cmd);
+    if path.is_empty() {
+        return CodingAgentInfo {
+            id: id.into(), label: label.into(), installed: false,
+            version: None, path: None, status: "未安装".into(),
+        };
+    }
+    let mut version = run_sys_cmd(cmd, version_args);
+    if version.is_empty() && !version_fallback.is_empty() {
+        version = run_sys_cmd(cmd, version_fallback);
+    }
+    CodingAgentInfo {
+        id: id.into(), label: label.into(), installed: true,
+        version: if version.is_empty() { None } else { Some(version.lines().next().unwrap_or("").to_string()) },
+        path: Some(path),
+        status: "已安装".into(),
+    }
+}
+
+#[tauri::command]
+fn check_coding_agents() -> Vec<CodingAgentInfo> {
+    vec![
+        check_coding_agent("claude", "Claude Code", "claude", &["--version"], &["-v"]),
+        check_coding_agent("codex", "Codex", "codex", &["--version"], &["-v"]),
+    ]
+}
+
+#[tauri::command]
+async fn delegate_coding_agent(
+    agent_id: String,
+    task: String,
+    cwd: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<String, String> {
+    let (cmd, args): (&str, Vec<String>) = match agent_id.as_str() {
+        "claude" => ("claude", vec!["-p".into(), task.clone()]),
+        "codex" => ("codex", vec!["exec".into(), task.clone()]),
+        _ => return Err("未知编码 Agent：仅支持 claude / codex".into()),
+    };
+    if which_path(cmd).is_empty() {
+        return Err(format!("未检测到 `{}`，请先安装并登录后重试", cmd));
+    }
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(300));
+    let mut command = tokio::process::Command::new(cmd);
+    command.args(&args);
+    if let Some(c) = cwd { if !c.trim().is_empty() { command.current_dir(c.trim()); } }
+    let output = tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| format!("执行超时（{} 秒）", timeout.as_secs()))?
+        .map_err(|e| format!("执行失败: {}", e))?;
+    let mut out = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !err.is_empty() {
+        out = format!("{}{}{}", out, if out.is_empty() { "" } else { "\n" }, err);
+    }
+    if output.status.success() {
+        Ok(if out.is_empty() { "(完成，无输出)".to_string() } else { out })
+    } else {
+        Err(format!("退出码 {}{}{}", output.status.code().unwrap_or(-1), if out.is_empty() { "" } else { "\n" }, out))
+    }
+}
+
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
 #[tauri::command]
 async fn chat_once(
@@ -1730,6 +1812,8 @@ pub fn run() {
             delete_scheduled_task,
             toggle_scheduled_task,
             set_prevent_sleep,
+            check_coding_agents,
+            delegate_coding_agent,
             execute_command,
             read_file,
             read_attachment,

@@ -75,7 +75,14 @@
 ### ✅ 功能：长任务防休眠（🟡）
 - Rust：`SleepGuard`（std Mutex）+ `set_prevent_sleep` 命令（macOS `caffeinate -dimsu`，非 macOS 静默跳过）
 - 前端：`chat.ts` 加 `setPreventSleep` 辅助；图片识别、`/run` 命令执行前后自动启用/关闭
-- 注意坑：lib.rs 的 `Mutex` 默认是 tokio 异步锁，SleepGuard 需显式用 `std::sync::Mutex`
+- 注意坑：lib.rs 的 `Mutex` 默认是 tokio 异步锁，SleepGuard 需显式用 `std::sync::Mutex`；`tokio::process::Command` 无 `.timeout()`，需 `tokio::time::timeout` 包裹
+- 验证：`cargo check` + `vite build` + `npm test`(30) 通过
+
+### ✅ 功能：编码 Agent 委派（🔵）
+- Rust：`check_coding_agents`（which 检测 claude/codex + 版本）、`delegate_coding_agent`（`claude -p` / `codex exec`，`tokio::time::timeout` 超时，返回 stdout/stderr）
+- 前端：新增 `CodingAgents.vue`（安装状态卡片 + 委派表单 + 输出查看 + 安装命令提示）
+- `SettingsDialog.vue`：新增「🤖 编码 Agent」tab
+- 说明：本机未安装 claude/codex，检测返回「未安装」；装好后即可委派
 - 验证：`cargo check` + `vite build` + `npm test`(30) 通过
 
 ### 📌 调研：Hermes-CN-Desktop（`Eynzof/Hermes-CN-Desktop`）

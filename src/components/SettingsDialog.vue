@@ -10,16 +10,17 @@ import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
 import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
+import CodingAgents from "./CodingAgents.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -184,6 +185,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'">📊 用量统计</button>
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'">🩺 诊断</button>
           <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'">⏰ 定时任务</button>
+          <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'">🤖 编码 Agent</button>
         </div>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
@@ -423,6 +425,9 @@ function handleDelete() {
 
       <!-- 定时任务 -->
       <div v-show="activeTab === 'tasks'"><ScheduledTasks /></div>
+
+      <!-- 编码 Agent -->
+      <div v-show="activeTab === 'agents'"><CodingAgents /></div>
     </div>
 
     <div class="settings-dialog__footer">
