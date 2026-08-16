@@ -44,7 +44,7 @@ async fn chat_once(
     let result = api::chat_once(config, messages).await;
     match &result {
         Ok(r) => {
-            let m = format!("[chat_once] 完成 content={} 字符 reasoning={} 字符", r.content.len(), r.reasoning_content.len());
+            let m = format!("[chat_once] 完成 content={} 字符 reasoning={} 字符 cache_hit={} cache_miss={}", r.content.len(), r.reasoning_content.len(), r.cache_hit, r.cache_miss);
             eprintln!("{}", m);
             append_log(&app, &m);
         }
