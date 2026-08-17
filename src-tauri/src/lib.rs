@@ -259,16 +259,74 @@ fn check_coding_agents() -> Vec<CodingAgentInfo> {
     ]
 }
 
+#[derive(serde::Serialize)]
+struct CodingAgentResult {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    duration_sec: f64,
+    tokens_in: Option<u64>,
+    tokens_out: Option<u64>,
+}
+
+/// 从 CLI 输出解析 token 用量（Claude Code 输出 "Tokens Used: X input, Y output"）
+fn parse_cli_tokens(out: &str) -> (Option<u64>, Option<u64>) {
+    let last_num_before = |needle: &str| -> Option<u64> {
+        let idx = out.rfind(needle)?;
+        let before = &out[..idx];
+        before
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .last()
+            .and_then(|s| s.parse().ok())
+    };
+    (last_num_before("input"), last_num_before("output"))
+}
+
 #[tauri::command]
 async fn delegate_coding_agent(
     agent_id: String,
     task: String,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
-) -> Result<String, String> {
+    mode: Option<String>,           // print / exec / review / resume
+    max_turns: Option<u32>,         // 限制轮数（claude --max-turns）
+    resume_session: Option<String>, // resume 模式续接会话
+) -> Result<CodingAgentResult, String> {
+    let mode = mode.unwrap_or_else(|| "print".to_string());
     let (cmd, args): (&str, Vec<String>) = match agent_id.as_str() {
-        "claude" => ("claude", vec!["-p".into(), task.clone()]),
-        "codex" => ("codex", vec!["exec".into(), task.clone()]),
+        "claude" => {
+            let mut a = vec!["-p".into(), task.clone()];
+            match mode.as_str() {
+                "exec" | "review" => a.push("--dangerously-skip-permissions".into()),
+                "resume" => {
+                    if let Some(s) = &resume_session {
+                        a.push("--resume".into());
+                        a.push(s.clone());
+                    }
+                }
+                _ => {}
+            }
+            if let Some(nt) = max_turns {
+                a.push("--max-turns".into());
+                a.push(nt.to_string());
+            }
+            ("claude", a)
+        }
+        "codex" => {
+            let mut a = vec!["exec".into(), task.clone()];
+            match mode.as_str() {
+                "exec" | "review" => a.push("--full-auto".into()),
+                "resume" => {
+                    if let Some(s) = &resume_session {
+                        a.push("--resume".into());
+                        a.push(s.clone());
+                    }
+                }
+                _ => {}
+            }
+            ("codex", a)
+        }
         _ => return Err("未知编码 Agent：仅支持 claude / codex".into()),
     };
     if which_path(cmd).is_empty() {
@@ -277,21 +335,21 @@ async fn delegate_coding_agent(
     let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(300));
     let mut command = tokio::process::Command::new(cmd);
     command.args(&args);
-    if let Some(c) = cwd { if !c.trim().is_empty() { command.current_dir(c.trim()); } }
+    if let Some(c) = cwd {
+        if !c.trim().is_empty() { command.current_dir(c.trim()); }
+    }
+    let start = std::time::Instant::now();
     let output = tokio::time::timeout(timeout, command.output())
         .await
         .map_err(|_| format!("执行超时（{} 秒）", timeout.as_secs()))?
         .map_err(|e| format!("执行失败: {}", e))?;
-    let mut out = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !err.is_empty() {
-        out = format!("{}{}{}", out, if out.is_empty() { "" } else { "\n" }, err);
-    }
-    if output.status.success() {
-        Ok(if out.is_empty() { "(完成，无输出)".to_string() } else { out })
-    } else {
-        Err(format!("退出码 {}{}{}", output.status.code().unwrap_or(-1), if out.is_empty() { "" } else { "\n" }, out))
-    }
+    let duration_sec = start.elapsed().as_secs_f64();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let exit_code = output.status.code().unwrap_or(-1);
+    let combined = if stderr.is_empty() { stdout.clone() } else { format!("{}\n{}", stdout, stderr) };
+    let (tokens_in, tokens_out) = parse_cli_tokens(&combined);
+    Ok(CodingAgentResult { stdout, stderr, exit_code, duration_sec, tokens_in, tokens_out })
 }
 
 /// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
