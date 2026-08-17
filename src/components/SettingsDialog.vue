@@ -118,12 +118,18 @@ function saveWorkspace() {
   updateSettings({ workspace: v || null });
 }
 
-// YOLO 模式：开启后危险命令自动批准执行（不再弹确认），对应 HERMES_YOLO_MODE 理念
-const yoloMode = ref(getSettings().yoloMode);
-function onYoloChange(e: Event) {
-  const v = (e.target as HTMLInputElement).checked;
-  yoloMode.value = v;
-  updateSettings({ yoloMode: v });
+// 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/ yolo（全部自动批准）
+const APPROVAL_MODES = [
+  { value: "manual" as const, label: "手动确认", desc: "危险命令先弹窗询问，确认后执行" },
+  { value: "smart" as const, label: "Smart 智能审批", desc: "辅助模型判断安全则自动放行，判定有风险再询问" },
+  { value: "yolo" as const, label: "YOLO 全部放行", desc: "危险命令自动批准执行，不询问（高风险）" },
+];
+const approvalMode = ref<"manual" | "smart" | "yolo">(
+  getSettings().approvalMode || (getSettings().yoloMode ? "yolo" : "manual")
+);
+function onApprovalModeChange(mode: "manual" | "smart" | "yolo") {
+  approvalMode.value = mode;
+  updateSettings({ approvalMode: mode, yoloMode: mode === "yolo" });
 }
 
 // 切换编辑目标
@@ -356,13 +362,21 @@ function handleDelete() {
           <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
         </div>
 
-        <!-- 高危操作（YOLO 模式） -->
+        <!-- 危险命令审批模式 -->
         <div class="form-group">
-          <label class="yolo-label">
-            <input type="checkbox" :checked="yoloMode" @change="onYoloChange" />
-            <span>⚠️ 高危操作（YOLO 模式）</span>
-          </label>
-          <span class="form-hint">开启后，检测到危险命令（rm -rf / sudo / mkfs / dd 等）将<b>不再弹窗确认</b>、自动批准执行。请谨慎开启！</span>
+          <label class="form-label">⚠️ 危险命令审批模式</label>
+          <div class="approval-modes">
+            <button
+              v-for="m in APPROVAL_MODES"
+              :key="m.value"
+              :class="['approval-mode', { active: approvalMode === m.value }]"
+              @click="onApprovalModeChange(m.value)"
+            >
+              <span class="approval-mode-name">{{ m.label }}</span>
+              <span class="approval-mode-desc">{{ m.desc }}</span>
+            </button>
+          </div>
+          <span class="form-hint">检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span>
         </div>
       </div>
 
@@ -539,6 +553,17 @@ function handleDelete() {
   box-shadow: 0 0 0 3px rgba(99,102,241,.1);
 }
 .form-hint { font-size: 11px; color: var(--text-muted); }
+.approval-modes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.approval-mode {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  border: 1.5px solid var(--border-color); border-radius: var(--radius-md);
+  background: var(--bg-secondary); color: var(--text-primary); cursor: pointer;
+  text-align: left; font-family: inherit; transition: all .15s;
+}
+.approval-mode:hover { border-color: var(--accent-color); }
+.approval-mode.active { border-color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, transparent); }
+.approval-mode-name { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.approval-mode-desc { font-size: 11px; color: var(--text-muted); }
 .form-textarea {
   padding: 10px 14px; border: 1.5px solid var(--border-color);
   border-radius: var(--radius-md); background: var(--bg-secondary);

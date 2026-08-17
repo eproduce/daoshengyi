@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted } from "vue";
 import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
+import SubagentPanel from "./components/SubagentPanel.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
@@ -185,6 +186,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               :key="msg.id"
               :message="msg"
             />
+            <SubagentPanel />
           </template>
         </div>
       </div>

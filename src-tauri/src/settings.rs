@@ -50,6 +50,13 @@ pub struct AppSettings {
     /// YOLO 模式：开启后危险命令不再弹确认、自动批准执行（对应 HERMES_YOLO_MODE 理念）
     #[serde(default)]
     pub yolo_mode: bool,
+    /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
+    #[serde(default = "default_approval_mode")]
+    pub approval_mode: String,
+}
+
+fn default_approval_mode() -> String {
+    "manual".to_string()
 }
 
 impl Default for AppSettings {
@@ -61,6 +68,7 @@ impl Default for AppSettings {
             active_conversation_id: None,
             workspace: None,
             yolo_mode: false,
+            approval_mode: "manual".to_string(),
         }
     }
 }

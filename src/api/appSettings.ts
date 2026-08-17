@@ -26,6 +26,8 @@ export interface AppSettingsPayload {
   workspace: string | null;
   /// YOLO 模式：开启后危险命令自动批准执行（不再弹确认）
   yoloMode: boolean;
+  /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
+  approvalMode: "manual" | "smart" | "yolo";
 }
 
 let cache: AppSettingsPayload = {
@@ -35,6 +37,7 @@ let cache: AppSettingsPayload = {
   activeConversationId: null,
   workspace: null,
   yoloMode: false,
+  approvalMode: "manual",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

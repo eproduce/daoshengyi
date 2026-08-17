@@ -41,6 +41,17 @@ function pendingServersPrompt(): string {
   );
 }
 
+/// 子代理运行记录（供可视化面板展示）
+export interface SubagentRecord {
+  id: string;
+  goal: string;
+  status: "queued" | "running" | "completed" | "failed";
+  startedAt: number;
+  durationSec?: number;
+  resultPreview?: string;
+  error?: string;
+}
+
 function getMcpToolsPrompt(): string {
   // 内置工具：如实描述特性/优势/适用场景，由大模型根据任务自行选择，不硬编码倾向
   const builtin =
@@ -204,17 +215,27 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const store = useChatStore();
       const config = store.currentConfig;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
+      // 登记子代理记录（可视化面板实时显示）
+      const rec = store.spawnSubagent(goal);
       const sys = "你是道生一的子代理，负责独立完成一个子任务。" +
         (context ? `\n补充上下文：${context}` : "") +
         "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
-      const data = await chatOnce(config, [
-        { role: "system", content: withCurrentDate(sys) },
-        { role: "user", content: `子任务：${goal}` },
-      ]);
-      if (!data) throw new Error("子代理执行超时或失败");
-      const finalText = (data.content || "（子代理未返回内容）").trim();
+      let finalText = "";
+      try {
+        const data = await chatOnce(config, [
+          { role: "system", content: withCurrentDate(sys) },
+          { role: "user", content: `子任务：${goal}` },
+        ]);
+        if (!data) throw new Error("子代理执行超时或失败");
+        finalText = (data.content || "（子代理未返回内容）").trim();
+        store.completeSubagent(rec.id, finalText);
+      } catch (e) {
+        store.failSubagent(rec.id, e instanceof Error ? e.message : String(e));
+        throw e;
+      }
       // 子代理若也返回工具调用 JSON，则剥离展示
-      return `【子代理结论】\n${finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）"}`;
+      const visible = finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）";
+      return `【子代理结论】\n${visible}`;
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);
@@ -492,6 +513,33 @@ export const useChatStore = defineStore("chat", () => {
       maxContextMessages: p.maxContextMessages ?? 50,
     };
   });
+
+  // --- 子代理可视化（记录运行中的子代理，供面板展示） ---
+  const subagents = ref<SubagentRecord[]>([]);
+  function spawnSubagent(goal: string): SubagentRecord {
+    const rec: SubagentRecord = { id: uuidv4(), goal, status: "running", startedAt: Date.now() };
+    subagents.value.push(rec);
+    return rec;
+  }
+  function completeSubagent(id: string, resultText: string) {
+    const r = subagents.value.find((x) => x.id === id);
+    if (r) {
+      r.status = "completed";
+      r.durationSec = Number(((Date.now() - r.startedAt) / 1000).toFixed(1));
+      r.resultPreview = resultText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim().slice(0, 220);
+    }
+  }
+  function failSubagent(id: string, err: string) {
+    const r = subagents.value.find((x) => x.id === id);
+    if (r) {
+      r.status = "failed";
+      r.durationSec = Number(((Date.now() - r.startedAt) / 1000).toFixed(1));
+      r.error = err.slice(0, 220);
+    }
+  }
+  function clearFinishedSubagents() {
+    subagents.value = subagents.value.filter((x) => x.status === "running");
+  }
 
   // --- 配置组持久化（Rust 端 SQLite + 加密 API Key） ---
   // 同步兜底：先读 localStorage 旧数据（作为迁移源）
@@ -782,14 +830,48 @@ export const useChatStore = defineStore("chat", () => {
     return DANGEROUS_PATTERNS.some((p) => p.test(cmdStr));
   }
 
+  /// Smart 智能审批：用当前模型判断危险命令是否可安全自动执行。
+  /// 判断失败或无法调用时保守返回 false（走手动确认）。
+  async function judgeCommandSafety(cmdStr: string): Promise<boolean> {
+    const config = currentConfig.value;
+    if (!config || !config.baseUrl || !config.apiKey) return false;
+    const sys =
+      "你是命令安全审查器，判断一条 shell 命令是否可以安全自动执行。\n" +
+      "安全标准：不删除用户数据/系统文件（删除 /tmp 或明确临时目录且路径安全可视为安全）、不破坏系统、" +
+      "不泄露敏感信息、不下载并执行不可信脚本、不关闭/重启系统、不改权限到危险状态。\n" +
+      "只回答 JSON：{\"safe\": true 或 false, \"reason\": \"10字内中文理由\"}，不要输出其他内容。";
+    try {
+      const data = await chatOnce(config, [
+        { role: "system", content: sys },
+        { role: "user", content: `命令：${cmdStr}` },
+      ]);
+      const text = (data?.content || "").trim();
+      const m = text.match(/\{\s*"safe"\s*:\s*(true|false)/i);
+      if (m) return m[1].toLowerCase() === "true";
+    } catch { /* 判断失败走保守确认 */ }
+    return false;
+  }
+
   async function runCommand(cmdStr: string) {
     const { command, args } = parseCommandLine(cmdStr);
     if (!command) return;
 
-    // 危险命令需用户确认；YOLO 模式开启时自动批准执行（不再弹确认）
-    if (isDangerous(cmdStr) && !getSettings().yoloMode) {
-      const ok = window.confirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
-      if (!ok) return;
+    // 危险命令审批：manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
+    if (isDangerous(cmdStr)) {
+      const st = getSettings();
+      const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      if (mode === "manual") {
+        const ok = window.confirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
+        if (!ok) return;
+      } else if (mode === "smart") {
+        const safe = await judgeCommandSafety(cmdStr);
+        if (!safe) {
+          const ok = window.confirm(`⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`);
+          if (!ok) return;
+        }
+        // 判定安全 → 自动放行
+      }
+      // yolo → 自动放行
     }
 
     let convId = activeConversationId.value;
@@ -1281,6 +1363,11 @@ export const useChatStore = defineStore("chat", () => {
     deleteArchived,
     sendMessage,
     stopStreaming,
+    subagents,
+    spawnSubagent,
+    completeSubagent,
+    failSubagent,
+    clearFinishedSubagents,
     clearCurrentConversation,
     retryLast,
     copyToClipboard,
