@@ -56,14 +56,24 @@ function getMcpToolsPrompt(): string {
     "涉及任何**实时/时效性信息**（天气、新闻、股票、汇率、比分、价格、最新政策、当前现状、日期时间等）时，" +
     "**必须先调用 web_search 或 fetch_page 获取真实数据**，严禁凭记忆编造温度、数值、价格、事件或新闻。\n" +
     "若工具确实拿不到数据（搜索无结果、页面无法访问），请明确告知用户「无法获取」，不要编造。";
+  // 搜索/查证类回复格式规范：整理成人类可读，禁止原样粘贴工具输出
+  const searchFormat =
+    "\n\n## 搜索/查证类回复规范\n" +
+    "使用 web_search / fetch_page 后，**必须把结果整理成人类可读、格式美观的中文回答**，禁止原样粘贴工具返回的原始条目。\n" +
+    "回答须满足：\n" +
+    "1. **先给结论**：开头明确说明「共找到 N 条有用信息」或「未找到可靠的公开信息」，不要含糊。\n" +
+    "2. **结构化呈现**：用 markdown 编号列表逐条给出 **信息主体 + 关键摘要 + 来源链接**，每条独立成行、条理清晰。\n" +
+    "3. **查企业/实体时**：尽量给出 名称、类型/所在地、主营业务/简介、成立时间 等关键事实，并附**官方或权威来源链接**（官网、百科、工商信息等）；不同来源信息冲突时标注各来源。\n" +
+    "4. **未找到**：明确说「未找到可靠的公开信息」，说明可能原因（如反爬、无公开资料），并给出可进一步核实的途径；**严禁编造**企业名、数据或来源。\n" +
+    "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。";
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + pending +
+    return builtin + realtime + searchFormat + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin + realtime +
+  return builtin + realtime + searchFormat +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -169,8 +179,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const query = String(args.query || "");
       if (!query) throw new Error("web_search 需要 query 参数");
       const results = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", { query, braveKey: "" });
-      if (!results.length) return "（搜索无结果）";
-      return results.map((r) => `- ${r.title}: ${r.url}\n  ${r.snippet}`).join("\n");
+      if (!results.length) return "（搜索无结果，请在回复中明确告知用户未找到可靠信息，不要编造）";
+      return "以下是搜索结果，请整理成清晰的中文回答后再回复用户（先说明找到几条，再逐条列要点+来源，不要原样粘贴）：\n\n" +
+        results.map((r, i) => `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}`).join("\n\n");
     }
     case "describe_image": {
       const path = String(args.path || "");

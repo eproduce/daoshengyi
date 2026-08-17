@@ -40,6 +40,7 @@ export function formatSearchResults(query: string, results: { title: string; url
   results.forEach((r, i) => {
     ctx += `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}\n`;
   });
-  ctx += "\n请基于以上搜索结果回答用户的问题，并在回答中引用来源。\n";
+  ctx += "\n请基于以上搜索结果回答用户的问题，并引用来源。";
+  ctx += "\n回复要求：先说明「共找到 N 条有用信息」或「未找到可靠公开信息」，再用编号列表整理出关键信息+来源链接，格式清晰美观，禁止原样粘贴搜索结果。\n";
   return ctx;
 }

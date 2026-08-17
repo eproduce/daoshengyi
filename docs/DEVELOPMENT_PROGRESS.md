@@ -8,6 +8,27 @@
 
 ## 2026-08-17
 
+### ✅ 修复 + 功能：web_search 多源回退链（Bing 修复 + DuckDuckGo 源）
+- **根因**：`[Bing] 0 results` —— Bing DOM 改版后标题开标签带属性（`<h2 class=...>`），`extract_tag` 精确匹配 `<h2>` 失败
+- **修复**：`search.rs` 新增宽松 `extract_h2`（允许属性）+ `extract_h2_link`（从 h2 内取真实链接，跳过 CSS link）+ `extract_bing_caption`
+- **新增 DuckDuckGo 源**（回退链 Brave → Bing → DDG）：cookie 会话 + 多 UA 轮换 + 202 anomaly 反爬自动重试 3 次；结果链接从 `uddg` 参数双重 percent-decode
+- **实测**：Bing 10 results（华为官网/百度百科/爱企查）；DDG 在本环境被 202 反爬拦截（保留重试兜底）；`reqwest` 加 `cookies` feature
+- **验证**：Rust 7 项测试通过（settings 4 + search 3），编译通过；已推送 `ecd67f1`
+
+### 📌 调研：Hermes-CN-Desktop 对比（交互/对话/工作模式，v0.8.0-rc7）
+- 待落地改进（详见仓库记忆 `hermes-compare-and-local-gpu.md`）：
+  - 🔴 Smart 智能审批（三档：手动/smart 辅助模型判断/YOLO）
+  - 🔴 子代理可视化面板（树 + 实时事件流 + 并行分组）
+  - 🔴 CLI 委派增强（Claude Code/Codex 5 模式 + 后台 + Token/退出码）
+  - 🟡 辅助任务独立模型槽 / Persona 人格市场 / 切换优雅重启 overlay
+- 架构差异（不必照搬）：Hermes 是托管内核外壳（managed/local/remote），道生一是单体
+
+### 🚧 本地 GPU：方案 A（llama.cpp Metal）
+- Ollama 0.32.13 在此 Intel Mac 枚举 0 GPU（纯 CPU）；Homebrew llama.cpp 也 no usable GPU（x86_64 未开 Metal）
+- 已克隆源码 `~/llama.cpp-metal`，用 `cmake -DGGML_METAL=ON` 编译中
+- Ollama 的 llava-phi3 blob 可直接给 llama-server：model(sha256-377876be, 2.3G) + mmproj(sha256-004fc096, 607M)
+- 待：验证 Metal 是否枚举 AMD 5300M → 测速对比 CPU 9.9 tok/s → 道生一对接
+
 ### ✅ 修复：fetch MCP 插件不可用（`npx mcp-server-fetch` 报错）
 - **现象**：启动 MCP 报 `mcp-server-fetch: line 1: /Applications: is a directory` / `syntax error`
 - **根因**：npm 上 `mcp-server-fetch`（v0.0.2）是安全研究 **canary 占位包**，`npx` 拉取的是遥测脚本而非 MCP server
