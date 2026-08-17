@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch, reactive } from "vue";
-import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole } from "@/types";
+import type { Conversation, ChatMessage, ChatTool, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
 import { getPersona } from "@/data/personas-catalog";
@@ -296,7 +296,7 @@ async function runReactLoop(
   onProgress?: (text: string) => void,
   onReasoning?: (text: string) => void,
   onCache?: (hit: number, miss: number) => void,
-  onTool?: (tool: import("@/types").ChatTool) => void
+  onTool?: (tool: ChatTool) => void
 ): Promise<ReactLoopResult> {
   const toolResults: string[] = [];
   const convo = [...messages];
@@ -1233,7 +1233,7 @@ export const useChatStore = defineStore("chat", () => {
         }));
         try {
           // ReAct 期间实时显示"正在调用 xx 工具"，并把非流式返回的思考过程也累积展示
-          const reactTools: import("@/types").ChatTool[] = [];
+          const reactTools: ChatTool[] = [];
           const react = await runReactLoop(config, flatMsgs, 5,
             (text) => { streamingContent.value = text; },
             (r) => { streamingReasoning.value += r; },
