@@ -3,6 +3,7 @@ mod middleware;
 mod db;
 mod search;
 mod mcp;
+mod mcp_server;
 mod settings;
 
 use tauri::{Emitter, Manager, State};
@@ -21,6 +22,13 @@ static OLLAMA_SETUP_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("你好, {}! 欢迎使用道生一。", name)
+}
+
+/// MCP 服务器模式入口：`daoshengyi --mcp-server` 启动 stdio MCP server，
+/// 把记忆检索/保存、联网搜索、对话历史搜索暴露给 Claude Desktop 等 MCP 客户端。
+pub fn run_mcp_server() -> i32 {
+    let rt = tokio::runtime::Runtime::new().expect("无法创建 tokio runtime");
+    rt.block_on(mcp_server::serve())
 }
 
 /// 追加诊断日志到应用数据目录（用户看不到终端时，可从这里排查）

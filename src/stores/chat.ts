@@ -999,6 +999,36 @@ export const useChatStore = defineStore("chat", () => {
       await runRead(text.trim().slice(6).trim());
       return;
     }
+    // 新建对话：/new
+    if (text.trim() === "/new") {
+      createConversation();
+      return;
+    }
+    // 清空当前对话：/clear
+    if (text.trim() === "/clear") {
+      clearCurrentConversation();
+      return;
+    }
+    // 帮助：/help
+    if (text.trim() === "/help") {
+      const hcId = activeConversationId.value || createConversation();
+      addUserMessage(hcId, "/help");
+      const helpText =
+        "**可用命令：**\n" +
+        "- `/run <命令>`：执行终端命令\n" +
+        "- `/read <路径>`：读取本地文件\n" +
+        "- `/new`：新建对话\n" +
+        "- `/clear`：清空当前对话\n\n" +
+        "输入 `/` 可弹出命令面板。";
+      const hc = conversations.value.find((c) => c.id === hcId);
+      if (hc) {
+        const m = reactive<ChatMessage>({ id: uuidv4(), role: "assistant", content: helpText, timestamp: Date.now(), streaming: false });
+        hc.messages.push(m);
+        hc.updatedAt = Date.now();
+        scheduleSave();
+      }
+      return;
+    }
 
     let convId = activeConversationId.value;
     if (!convId) {

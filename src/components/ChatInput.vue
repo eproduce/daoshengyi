@@ -39,7 +39,72 @@ function handleSend() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  if (slashOpen.value && slashFiltered.value.length) {
+    if (e.key === "Enter") { e.preventDefault(); commitSlash(); return; }
+    if (e.key === "Tab") { e.preventDefault(); slashActive.value = (slashActive.value + 1) % slashFiltered.value.length; return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); slashActive.value = Math.min(slashActive.value + 1, slashFiltered.value.length - 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); slashActive.value = Math.max(slashActive.value - 1, 0); return; }
+    if (e.key === "Escape") { slashOpen.value = false; return; }
+  } else if (e.key === "Escape") {
+    slashOpen.value = false;
+  }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+}
+
+function canSend(): boolean {
+  return inputText.value.trim().length > 0 || attachedImages.value.length > 0 || attachedFiles.value.length > 0;
+}
+
+// --- Slash 命令面板（输入 / 弹出命令，借鉴 Hermes composer 交互） ---
+const SLASH_COMMANDS = [
+  { name: "/run", args: "<命令>", desc: "执行终端命令" },
+  { name: "/read", args: "<路径>", desc: "读取本地文件" },
+  { name: "/new", args: "", desc: "新建对话" },
+  { name: "/clear", args: "", desc: "清空当前对话" },
+  { name: "/help", args: "", desc: "查看可用命令" },
+];
+const slashOpen = ref(false);
+const slashActive = ref(0);
+const slashFiltered = ref(SLASH_COMMANDS);
+
+/// 当前光标所在的词（用于识别 `/` 开头的命令输入）
+function currentWord(): { start: number; word: string } | null {
+  const ta = textareaRef.value;
+  if (!ta) return null;
+  const selStart = ta.selectionStart ?? ta.value.length;
+  const before = ta.value.slice(0, selStart);
+  const m = before.match(/(\S*)$/);
+  if (!m) return null;
+  return { start: selStart - m[1].length, word: m[1] };
+}
+
+function updateSlash() {
+  const w = currentWord();
+  if (w && w.word.startsWith("/")) {
+    const q = w.word.slice(1).toLowerCase();
+    slashFiltered.value = SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(q));
+    slashActive.value = 0;
+    slashOpen.value = slashFiltered.value.length > 0;
+  } else {
+    slashOpen.value = false;
+  }
+}
+
+function commitSlash() {
+  const c = slashFiltered.value[slashActive.value];
+  const w = currentWord();
+  const ta = textareaRef.value;
+  if (!c || !w || !ta) { slashOpen.value = false; return; }
+  const selStart = ta.selectionStart ?? ta.value.length;
+  const prefix = `${c.name}${c.args ? " " : ""}`;
+  const next = ta.value.slice(0, w.start) + prefix + ta.value.slice(selStart);
+  inputText.value = next;
+  slashOpen.value = false;
+  requestAnimationFrame(() => {
+    ta.focus();
+    const pos = w.start + prefix.length;
+    ta.setSelectionRange(pos, pos);
+  });
 }
 
 function autoResize() {
@@ -244,14 +309,27 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
     <!-- 输入行 -->
     <div class="ci-wrap">
       <textarea ref="textareaRef" v-model="inputText" class="ci-text"
-        :placeholder="placeholder || '输入消息，Enter 发送，Shift+Enter 换行...'"
+        :placeholder="placeholder || '输入消息，Enter 发送，Shift+Enter 换行；输入 / 弹出命令'"
         :disabled="disabled" rows="1"
-        @input="autoResize" @keydown="handleKeydown" @paste="handlePaste"></textarea>
-      <button class="ci-send" :disabled="disabled || (!inputText.trim() && !attachedImages.length && !attachedFiles.length)" @click="handleSend">
-        <svg v-if="!disabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        @input="autoResize; updateSlash()" @keydown="handleKeydown" @keyup="updateSlash"
+        @click="updateSlash" @paste="handlePaste"></textarea>
+      <!-- Slash 命令面板（输入 / 弹出） -->
+      <div v-if="slashOpen && slashFiltered.length" class="ci-slash">
+        <div class="ci-slash-head">命令 <span class="ci-slash-hint">Enter 执行 · Tab 选择 · Esc 关闭</span></div>
+        <div
+          v-for="(c, i) in slashFiltered" :key="c.name"
+          class="ci-slash-item" :class="{ on: i === slashActive }"
+          @mousedown.prevent="slashActive = i; commitSlash()"
+        >
+          <span class="ci-slash-name">{{ c.name }}<span v-if="c.args" class="ci-slash-args"> {{ c.args }}</span></span>
+          <span class="ci-slash-desc">{{ c.desc }}</span>
+        </div>
+      </div>
+      <button v-if="disabled" class="ci-send ci-stop" title="停止生成" @click="chatStore.stopStreaming()">⏹</button>
+      <button v-else class="ci-send" :disabled="!canSend()" @click="handleSend">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
         </svg>
-        <span v-else class="spinner"></span>
       </button>
     </div>
 
@@ -341,7 +419,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-attach-item:hover .ci-attach-x { opacity: 1; }
 
 /* 输入行 */
-.ci-wrap { display: flex; gap: 8px; align-items: flex-end; background: var(--bg-secondary); border: 1.5px solid transparent; border-radius: 10px; padding: 6px 10px; transition: border-color .2s, box-shadow .2s; }
+.ci-wrap { position: relative; display: flex; gap: 8px; align-items: flex-end; background: var(--bg-secondary); border: 1.5px solid transparent; border-radius: 10px; padding: 6px 10px; transition: border-color .2s, box-shadow .2s; }
 .ci-wrap:focus-within { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(99,102,241,.08); }
 
 .ci-text { flex: 1; border: none; outline: none; resize: none; background: transparent; color: var(--text-primary); font-size: 14px; line-height: 1.6; font-family: inherit; max-height: 160px; min-height: 44px; }
@@ -350,6 +428,30 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-send { flex-shrink: 0; width: 32px; height: 32px; border: none; border-radius: 8px; background: var(--accent-color); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }
 .ci-send:disabled { opacity: .3; cursor: not-allowed; }
 .ci-send:not(:disabled):hover { background: var(--accent-hover); }
+.ci-stop { background: #ef4444; font-size: 15px; }
+.ci-stop:hover { background: #dc2626; }
+
+/* Slash 命令面板 */
+.ci-slash {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 30;
+  background: var(--bg-elevated); border: 1px solid var(--border-color);
+  border-radius: 10px; box-shadow: var(--shadow-md); overflow: hidden;
+}
+.ci-slash-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px; font-size: 11px; color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+.ci-slash-hint { font-size: 10px; opacity: .8; }
+.ci-slash-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 7px 12px; cursor: pointer; font-size: 12px; color: var(--text-primary);
+}
+.ci-slash-item:hover { background: var(--bg-hover); }
+.ci-slash-item.on { background: color-mix(in srgb, var(--accent-color) 14%, transparent); }
+.ci-slash-name { font-weight: 600; white-space: nowrap; }
+.ci-slash-args { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+.ci-slash-desc { color: var(--text-muted); font-size: 11px; }
 
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid transparent; border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
