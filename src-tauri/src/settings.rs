@@ -53,6 +53,9 @@ pub struct AppSettings {
     /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
     #[serde(default = "default_approval_mode")]
     pub approval_mode: String,
+    /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
+    #[serde(default)]
+    pub auxiliary_profile_id: Option<String>,
 }
 
 fn default_approval_mode() -> String {
@@ -69,6 +72,7 @@ impl Default for AppSettings {
             workspace: None,
             yolo_mode: false,
             approval_mode: "manual".to_string(),
+            auxiliary_profile_id: None,
         }
     }
 }

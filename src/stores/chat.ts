@@ -213,7 +213,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑一轮 chat_once
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
-      const config = store.currentConfig;
+      const config = store.getAuxConfig();
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
       // 登记子代理记录（可视化面板实时显示）
       const rec = store.spawnSubagent(goal);
@@ -513,6 +513,24 @@ export const useChatStore = defineStore("chat", () => {
       maxContextMessages: p.maxContextMessages ?? 50,
     };
   });
+
+  /// 辅助任务使用的模型配置：配置了 auxiliaryProfileId 则用对应 Profile，否则跟随主模型
+  function getAuxConfig(): ApiConfig {
+    const auxId = getSettings().auxiliaryProfileId;
+    const p = auxId ? profiles.value.find((x) => x.id === auxId) : undefined;
+    if (p && p.baseUrl) {
+      return {
+        baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model,
+        maxTokens: p.maxTokens, temperature: p.temperature,
+        thinkingEnabled: p.thinkingEnabled ?? false,
+        reasoningEffort: p.reasoningEffort ?? "high",
+        systemPrompt: p.systemPrompt ?? "",
+        enableWebSearch: false,
+        maxContextMessages: 20,
+      };
+    }
+    return currentConfig.value;
+  }
 
   // --- 子代理可视化（记录运行中的子代理，供面板展示） ---
   const subagents = ref<SubagentRecord[]>([]);
@@ -833,7 +851,7 @@ export const useChatStore = defineStore("chat", () => {
   /// Smart 智能审批：用当前模型判断危险命令是否可安全自动执行。
   /// 判断失败或无法调用时保守返回 false（走手动确认）。
   async function judgeCommandSafety(cmdStr: string): Promise<boolean> {
-    const config = currentConfig.value;
+    const config = getAuxConfig();
     if (!config || !config.baseUrl || !config.apiKey) return false;
     const sys =
       "你是命令安全审查器，判断一条 shell 命令是否可以安全自动执行。\n" +
@@ -1363,6 +1381,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteArchived,
     sendMessage,
     stopStreaming,
+    getAuxConfig,
     subagents,
     spawnSubagent,
     completeSubagent,

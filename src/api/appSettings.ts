@@ -28,6 +28,8 @@ export interface AppSettingsPayload {
   yoloMode: boolean;
   /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
   approvalMode: "manual" | "smart" | "yolo";
+  /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
+  auxiliaryProfileId: string;
 }
 
 let cache: AppSettingsPayload = {
@@ -38,6 +40,7 @@ let cache: AppSettingsPayload = {
   workspace: null,
   yoloMode: false,
   approvalMode: "manual",
+  auxiliaryProfileId: "",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

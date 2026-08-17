@@ -132,6 +132,14 @@ function onApprovalModeChange(mode: "manual" | "smart" | "yolo") {
   updateSettings({ approvalMode: mode, yoloMode: mode === "yolo" });
 }
 
+// 辅助任务模型（用于 Smart 审批 / 子代理等）：空 = 跟随主模型
+const auxiliaryProfileId = ref(getSettings().auxiliaryProfileId || "");
+function onAuxProfileChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value;
+  auxiliaryProfileId.value = v;
+  updateSettings({ auxiliaryProfileId: v });
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -378,6 +386,16 @@ function handleDelete() {
           </div>
           <span class="form-hint">检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span>
         </div>
+
+        <!-- 辅助任务模型 -->
+        <div class="form-group">
+          <label class="form-label">🧩 辅助任务模型</label>
+          <select :value="auxiliaryProfileId" class="form-select" @change="onAuxProfileChange">
+            <option value="">跟随主模型</option>
+            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <span class="form-hint">用于 Smart 智能审批、子代理等辅助任务；可选更便宜/更快的模型，节省主模型额度。不配置则跟随主模型。</span>
+        </div>
       </div>
 
       <!-- MCP 服务器管理 -->
@@ -564,6 +582,12 @@ function handleDelete() {
 .approval-mode.active { border-color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, transparent); }
 .approval-mode-name { font-size: 13px; font-weight: 600; white-space: nowrap; }
 .approval-mode-desc { font-size: 11px; color: var(--text-muted); }
+.form-select {
+  width: 100%; padding: 8px 10px; border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-primary);
+  font-size: 13px; font-family: inherit; outline: none;
+}
+.form-select:focus { border-color: var(--accent-color); }
 .form-textarea {
   padding: 10px 14px; border: 1.5px solid var(--border-color);
   border-radius: var(--radius-md); background: var(--bg-secondary);
