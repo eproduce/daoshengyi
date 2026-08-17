@@ -108,6 +108,23 @@
 - 借鉴点已纳入《开发计划》§3（YOLO 开关 / 用量图表 / 会话归档 / 健康面板 / 定时任务 / 子代理委派等）
 - 完整调研笔记在会话记忆 `hermes-cn-research.md`
 
+### ✅ 改名：MCP 服务器 →「🧩 插件」体系（2026-08-17）
+- 插件管理面板改为「🧩 插件」：Tab「已安装」「🌐 插件市场」，按钮「+ 添加插件（第三方）」
+- 设置弹窗左侧菜单第 2 项改为「🧩 插件」
+
+### ✅ 功能：社区插件市场（方向 A，Smithery 接入）
+- **背景**：用户要求接 mcp.so，实测其 API 全被 Cloudflare 防护（403），Smithery/Glama 开放（HTTP 200）
+- **Rust（mcp.rs）**：MCP 客户端新增**远程 HTTP（streamable HTTP MCP）模式**
+  - `McpClient` 增加 `http/endpoint/session_id` Option 字段；`connect` 按 command 是否 `http(s)://` 前缀分发远程/stdio
+  - `remote_connect` + 共用 `handshake`（initialize → initialized → tools/list）
+  - `send_request` 远程分支：POST JSON-RPC，`mcp-session-id` 头保存/回传，响应兼容 JSON 与 SSE（`data:` 行按 id 匹配）
+  - `send_notification` 远程分支：POST 通知后忽略响应
+  - `Drop` 仅 stdio 模式 kill 进程
+- **Rust（lib.rs）**：新增命令 `fetch_community_plugins`（Smithery 列表）、`fetch_remote_plugin_endpoint`（详情 deploymentUrl）
+- **前端（McpSettings.vue）**：插件市场加「🌐 社区插件（远程 · 免安装）」区——搜索 + 加载 Smithery 列表（名称/描述/✓已验证/使用量），安装即查远程端点添加为 `command=URL` 的远程插件并自动连接
+- **验证**：`cargo check` ✓、`npx vite build` ✓、`npm test`（30 项全绿）✓
+- **注意**：Rust 改动需重启 dev 客户端生效（远程模式在前端 HMR 下无法生效）
+
 ### ✅ 基础设施
 - `npm run tauri dev` 首次完整构建通过（1m 07s），文件系统 MCP 连接成功（14 工具）
 - 拉取远程后验证：工作区配置、`/run` 终端卡片、`/read` 文件读取均保留；HEAD 与 origin/main 同步

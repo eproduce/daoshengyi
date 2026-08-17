@@ -1630,6 +1630,111 @@ async fn mcp_disconnect(app: tauri::AppHandle, manager: State<'_, McpManager>, n
     Ok(removed)
 }
 
+// --- 社区插件市场（Smithery） ---
+
+#[derive(serde::Serialize, Clone)]
+struct CommunityPlugin {
+    id: String,          // 唯一标识（如 gmail）
+    name: String,        // 显示名
+    description: String,
+    source: String,      // "smithery"
+    verified: bool,
+    use_count: i64,
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// 拉取社区插件列表（当前来源：Smithery registry，开放无鉴权）
+#[tauri::command]
+async fn fetch_community_plugins(query: Option<String>) -> Result<Vec<CommunityPlugin>, String> {
+    let q = query.unwrap_or_default();
+    let url = format!("https://registry.smithery.ai/servers?q={}", urlencode(&q));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("请求插件市场失败: {}", e))?;
+    let text = resp.text().await.map_err(|e| format!("读取插件市场响应: {}", e))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析插件市场响应: {}", e))?;
+    let servers = v
+        .get("servers")
+        .and_then(|x| x.as_array())
+        .ok_or("插件市场响应缺少 servers 字段")?;
+    let mut out = Vec::new();
+    for s in servers {
+        let id = s.get("qualifiedName").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let name = s.get("displayName").and_then(|x| x.as_str()).unwrap_or(&id).to_string();
+        let description = s.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let verified = s.get("verified").and_then(|x| x.as_bool()).unwrap_or(false);
+        let use_count = s.get("useCount").and_then(|x| x.as_i64()).unwrap_or(0);
+        out.push(CommunityPlugin {
+            id: id.clone(),
+            name,
+            description,
+            source: "smithery".into(),
+            verified,
+            use_count,
+        });
+    }
+    Ok(out)
+}
+
+/// 查询插件详情，返回远程 HTTP MCP 端点（deploymentUrl）
+#[tauri::command]
+async fn fetch_remote_plugin_endpoint(id: String) -> Result<String, String> {
+    let clean = id.trim_start_matches("smithery:").trim().to_string();
+    if clean.is_empty() {
+        return Err("插件 ID 为空".into());
+    }
+    let url = format!("https://registry.smithery.ai/servers/{}", urlencode(&clean));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("查询插件详情失败: {}", e))?;
+    let text = resp.text().await.map_err(|e| format!("读取插件详情: {}", e))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析插件详情: {}", e))?;
+    if let Some(u) = v.get("deploymentUrl").and_then(|x| x.as_str()) {
+        if !u.is_empty() {
+            return Ok(u.to_string());
+        }
+    }
+    if let Some(conns) = v.get("connections").and_then(|x| x.as_array()) {
+        for c in conns {
+            if let Some(u) = c.get("deploymentUrl").and_then(|x| x.as_str()) {
+                if !u.is_empty() {
+                    return Ok(u.to_string());
+                }
+            }
+        }
+    }
+    Err(format!("插件 '{}' 没有可用的远程端点", clean))
+}
+
 /// 在已连接客户端中解析 server 名（宽松匹配，容忍 LLM 输出偏差）
 fn resolve_mcp_server(
     clients: &std::collections::HashMap<String, mcp::McpClient>,
@@ -1843,6 +1948,8 @@ pub fn run() {
             mcp_call_tool,
             mcp_list_tools,
             list_tool_audit,
+            fetch_community_plugins,
+            fetch_remote_plugin_endpoint,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

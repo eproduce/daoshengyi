@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore } from "@/stores/mcp";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
 
@@ -57,6 +58,65 @@ function openAdd() {
   editing.value = "";
   form.value = { name: "", command: "", args: "", envText: "", enabled: true };
   error.value = "";
+}
+
+// --- 社区插件（Smithery 远程市场，免安装即用） ---
+interface CommunityPlugin {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+  verified: boolean;
+  use_count: number;
+}
+const communityPlugins = ref<CommunityPlugin[]>([]);
+const communitySearch = ref("");
+const communityLoading = ref(false);
+const communityInstalling = ref<string | null>(null);
+
+async function loadCommunityPlugins() {
+  communityLoading.value = true;
+  error.value = "";
+  try {
+    const q = communitySearch.value.trim();
+    const list = await invoke<CommunityPlugin[]>("fetch_community_plugins", { query: q || null });
+    communityPlugins.value = list;
+    if (list.length === 0) error.value = "没有找到匹配的社区插件";
+  } catch (e: unknown) {
+    error.value = `加载社区插件失败: ${e}`;
+  } finally {
+    communityLoading.value = false;
+  }
+}
+
+function communityInstalled(id: string) {
+  // 远程插件 command 是 deploymentUrl（如 https://gmail.run.tools），按 URL 是否含插件 id 判断
+  return store.servers.some((s) => s.command.startsWith("http") && s.command.toLowerCase().includes(id.toLowerCase()));
+}
+
+/// 安装社区插件：查询其远程 HTTP 端点（deploymentUrl），作为 command=URL 的远程插件添加
+async function installCommunity(p: CommunityPlugin) {
+  if (communityInstalled(p.id) || communityInstalling.value) return;
+  communityInstalling.value = p.id;
+  error.value = "";
+  try {
+    const url = await invoke<string>("fetch_remote_plugin_endpoint", { id: p.id });
+    const existing = store.servers.find((s) => s.command === url);
+    if (existing) {
+      error.value = `「${p.name}」已在安装列表中`;
+      communityInstalling.value = null;
+      return;
+    }
+    store.add({ name: p.name, command: url, args: "", env: {}, enabled: true });
+    activeTab.value = "servers";
+    // agent 自动控制：添加后自动连接（远程插件无进程，连接即建立会话）
+    store.connectEnabled();
+    error.value = `✅ 已添加「${p.name}」（远程），自动连接中…`;
+  } catch (e: unknown) {
+    error.value = `安装「${p.name}」失败: ${e}`;
+  } finally {
+    communityInstalling.value = null;
+  }
 }
 
 function openEdit(id: string) {
@@ -166,6 +226,50 @@ function cancel() {
         </div>
       </div>
 
+      <!-- 社区插件（Smithery 远程市场） -->
+      <div class="mcp-community">
+        <div class="mcp-community-head">
+          <span class="mcp-community-title">🌐 社区插件 <span class="mcp-community-badge">远程 · 免安装</span></span>
+          <div class="mcp-community-acts">
+            <input
+              v-model="communitySearch"
+              placeholder="搜索社区插件..."
+              class="mcp-input mcp-community-search"
+              @keyup.enter="loadCommunityPlugins"
+            />
+            <button class="mcp-btn mcp-btn-pri" :disabled="communityLoading" @click="loadCommunityPlugins">
+              {{ communityLoading ? '加载中…' : '🔍 加载' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="communityPlugins.length" class="mcp-community-list">
+          <div v-for="p in communityPlugins" :key="p.id" class="mcp-card">
+            <div class="mcp-card-info">
+              <div class="mcp-card-name">
+                {{ p.name }}
+                <span v-if="p.verified" class="mcp-mini-tag mcp-verified">✓ 已验证</span>
+                <span class="mcp-card-cat">smithery</span>
+              </div>
+              <div class="mcp-card-desc">{{ p.description }}</div>
+              <div class="mcp-card-tags" v-if="p.use_count > 0">
+                <span class="mcp-mini-tag">🔥 {{ p.use_count }} 次使用</span>
+              </div>
+            </div>
+            <button
+              class="mcp-btn mcp-btn-sm"
+              :class="communityInstalled(p.id) ? 'mcp-btn-sec' : 'mcp-btn-pri'"
+              :disabled="communityInstalled(p.id) || communityInstalling !== null"
+              @click="installCommunity(p)"
+            >
+              {{ communityInstalled(p.id) ? '已安装' : (communityInstalling === p.id ? '安装中…' : '安装') }}
+            </button>
+          </div>
+        </div>
+        <div v-else-if="!communityLoading" class="mcp-community-hint">
+          点击「🔍 加载」从 Smithery 社区市场拉取可用插件（如 gmail、github 等），安装即连接远程端点，无需本地进程。
+        </div>
+      </div>
+
       <div v-for="item in filteredCatalog" :key="item.id" class="mcp-card">
         <div class="mcp-card-icon">{{ item.icon }}</div>
         <div class="mcp-card-info">
@@ -235,6 +339,15 @@ function cancel() {
 /* 插件市场 */
 .mcp-market { margin-top: 4px; }
 .mcp-market-bar { margin-bottom: 12px; }
+.mcp-community { margin-bottom: 18px; padding: 10px 12px; border: 1px dashed var(--border-color); border-radius: 10px; }
+.mcp-community-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.mcp-community-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.mcp-community-badge { font-size: 10px; font-weight: 400; color: #4ade80; border: 1px solid #4ade80; border-radius: 10px; padding: 1px 6px; margin-left: 4px; }
+.mcp-community-acts { display: flex; gap: 6px; align-items: center; }
+.mcp-community-search { width: 180px; margin-bottom: 0; }
+.mcp-community-list { display: flex; flex-direction: column; gap: 6px; }
+.mcp-community-hint { font-size: 11px; color: var(--text-muted); padding: 6px 0; }
+.mcp-verified { color: #4ade80; border-color: #4ade80; }
 .mcp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
 .mcp-cat {
   padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 12px;
