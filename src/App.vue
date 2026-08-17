@@ -6,6 +6,7 @@ import SubagentPanel from "./components/SubagentPanel.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
+import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
 import { useOllamaStore } from "./stores/ollama";
 import { useTheme } from "./composables/useTheme";
@@ -71,6 +72,10 @@ function handleSend(text: string, images: ImageAttachment[], files: FileAttachme
 
 function handleStop() { chatStore.stopStreaming(); }
 
+function onPersonaChange(e: Event) {
+  chatStore.setPersona((e.target as HTMLSelectElement).value);
+}
+
 // 导出对话
 function exportMarkdown() {
   const conv = chatStore.activeConversation;
@@ -120,6 +125,15 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
+          <select
+            class="topbar__persona"
+            :value="chatStore.activePersonaId"
+            title="切换人格 / 对话角色"
+            @change="onPersonaChange"
+          >
+            <option value="">🧑 通用助手</option>
+            <option v-for="p in PERSONAS" :key="p.id" :value="p.id">{{ p.emoji }} {{ p.name }}</option>
+          </select>
           <div
             v-if="chatStore.conversationStats.tokens > 0"
             class="topbar__stats"
@@ -252,6 +266,15 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   background-clip: text;
 }
 .topbar__right { display: flex; align-items: center; gap: 6px; }
+
+.topbar__persona {
+  padding: 5px 10px; border: 1px solid var(--border-color); border-radius: 16px;
+  background: var(--bg-secondary); color: var(--text-secondary);
+  font-size: 11px; font-family: inherit; cursor: pointer; outline: none;
+  max-width: 150px;
+}
+.topbar__persona:focus { border-color: var(--accent-color); }
+.topbar__persona option { background: var(--bg-secondary); color: var(--text-primary); }
 
 .topbar__stats {
   display: flex; align-items: center; gap: 8px;

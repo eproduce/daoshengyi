@@ -3,6 +3,7 @@ import { ref, computed, watch, reactive } from "vue";
 import type { Conversation, ChatMessage, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
+import { getPersona } from "@/data/personas-catalog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
@@ -513,6 +514,14 @@ export const useChatStore = defineStore("chat", () => {
       maxContextMessages: p.maxContextMessages ?? 50,
     };
   });
+
+  // --- Persona 人格（角色/对话风格，全局偏好） ---
+  const PERSONA_KEY = "daoshengyi_persona";
+  const activePersonaId = ref(localStorage.getItem(PERSONA_KEY) || "");
+  function setPersona(id: string) {
+    activePersonaId.value = id;
+    try { localStorage.setItem(PERSONA_KEY, id); } catch { /* ignore */ }
+  }
 
   /// 辅助任务使用的模型配置：配置了 auxiliaryProfileId 则用对应 Profile，否则跟随主模型
   function getAuxConfig(): ApiConfig {
@@ -1066,7 +1075,11 @@ export const useChatStore = defineStore("chat", () => {
 
       // 注入当前日期（防止日期幻觉），作为系统提示基础。
       // 用"天"粒度：每天只变一次，system 前缀稳定 → 历史消息可整段命中缓存。
-      let sp = withCurrentDate(config.systemPrompt || "你是道生一，一个AI桌面助手。");
+      let spBase = config.systemPrompt || "你是道生一，一个AI桌面助手。";
+      // Persona 人格：作为角色前缀注入（与技能库互补）
+      const persona = getPersona(activePersonaId.value);
+      if (persona) spBase = `${persona.prompt}\n\n${spBase}`;
+      let sp = withCurrentDate(spBase);
 
       // ---- 稳定上下文：进 system（跨消息不变，保证前缀可缓存） ----
       // 注入已启用的技能
@@ -1382,6 +1395,8 @@ export const useChatStore = defineStore("chat", () => {
     sendMessage,
     stopStreaming,
     getAuxConfig,
+    activePersonaId,
+    setPersona,
     subagents,
     spawnSubagent,
     completeSubagent,
