@@ -125,6 +125,19 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
     })
 }
 
+/// 写文本文件（仅允许常见导出扩展名，避免任意写文件）。
+/// 会话导出在 WKWebView 下不支持 <a download>，由前端配合原生保存对话框调用本命令落盘。
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let allowed = ["md", "json", "txt", "markdown"];
+    let lower = path.to_lowercase();
+    let ok = allowed.iter().any(|ext| lower.ends_with(&format!(".{}", ext)));
+    if !ok {
+        return Err("仅支持导出为 .md / .json / .txt / .markdown 文件".into());
+    }
+    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
 // --- 定时任务 ---
 
 /// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
@@ -1807,6 +1820,7 @@ pub fn run() {
             web_search,
             fetch_page,
             system_diagnostics,
+            write_text_file,
             list_scheduled_tasks,
             save_scheduled_task,
             delete_scheduled_task,

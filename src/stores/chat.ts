@@ -1195,13 +1195,26 @@ export const useChatStore = defineStore("chat", () => {
 
   // --- 对话导出 (Rust) ---
   async function downloadExport(id: string, format: "md" | "json") {
+    const conv = conversations.value.find(c => c.id === id);
+    const filename = `${conv?.title || "对话"}.${format}`;
     try {
       const content = await invoke<string>("export_conversation_cmd", { id, format });
-      const conv = conversations.value.find(c => c.id === id);
+      // Tauri 桌面环境：WKWebView 不支持 <a download>，改用原生保存对话框 + Rust 写文件
+      if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const path = await save({
+          defaultPath: filename,
+          filters: [{ name: format === "md" ? "Markdown" : "JSON", extensions: [format] }],
+        });
+        if (!path) return; // 用户取消
+        await invoke("write_text_file", { path, content });
+        return;
+      }
+      // 浏览器预览：回退 <a download>
       const blob = new Blob([content], { type: "text/plain" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${conv?.title || "对话"}.${format}`;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (e) { console.warn("[道生一] 导出失败:", e); }
