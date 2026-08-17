@@ -94,7 +94,7 @@ function cancel() {
 <template>
   <div class="mcp-panel">
     <div class="mcp-header">
-      <h3>🔌 MCP 服务器</h3>
+      <h3>🧩 插件</h3>
       <span class="mcp-summary" v-if="store.servers.length">
         {{ store.connectedCount() }}/{{ store.servers.length }} 已连接 · {{ store.totalTools() }} 工具
       </span>
@@ -103,10 +103,10 @@ function cancel() {
     <!-- Tabs -->
     <div class="mcp-tabs">
       <button :class="['mcp-tab', { active: activeTab === 'servers' }]" @click="activeTab = 'servers'">
-        我的服务器 ({{ store.servers.length }})
+        已安装 ({{ store.servers.length }})
       </button>
       <button :class="['mcp-tab', { active: activeTab === 'market' }]" @click="activeTab = 'market'">
-        🧩 插件市场
+        🌐 插件市场
       </button>
     </div>
 
@@ -116,7 +116,7 @@ function cancel() {
     <div v-show="activeTab === 'servers'">
       <!-- 编辑表单 -->
       <div v-if="editing !== null" class="mcp-form">
-        <input v-model="form.name" placeholder="服务器名称" class="mcp-input" />
+        <input v-model="form.name" placeholder="插件名称" class="mcp-input" />
         <input v-model="form.command" placeholder="命令 (如 npx, python, node)" class="mcp-input" />
         <input v-model="form.args" placeholder="参数 (如 -y @modelcontextprotocol/server-filesystem /tmp)" class="mcp-input" />
         <textarea v-model="form.envText" rows="3" class="mcp-input" placeholder="环境变量（每行 KEY=VALUE，可选；如&#10;PUPPETEER_EXECUTABLE_PATH=/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge）"></textarea>
@@ -143,12 +143,12 @@ function cancel() {
       </div>
 
       <div v-if="store.servers.length === 0 && editing === null" class="mcp-empty">
-        尚未配置 MCP 服务器。
-        <br>去「插件市场」安装，或手动添加。
+        尚未安装插件。
+        <br>去「插件市场」安装，或手动添加第三方插件（支持任意 MCP 服务器命令）。
       </div>
 
       <button v-if="editing === null" class="mcp-btn mcp-btn-pri mcp-btn-full" @click="openAdd">
-        + 添加 MCP 服务器
+        + 添加插件（第三方）
       </button>
     </div>
 

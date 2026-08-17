@@ -186,7 +186,7 @@ function handleDelete() {
         <!-- 左侧菜单 -->
         <nav class="settings-nav">
           <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'"><span class="settings-tab__icon">🔑</span>API 配置</button>
-          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon">🔌</span>MCP 服务器</button>
+          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon">🧩</span>插件</button>
           <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'"><span class="settings-tab__icon">🧠</span>本地模型</button>
           <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'"><span class="settings-tab__icon">📊</span>用量统计</button>
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon">🩺</span>诊断</button>
