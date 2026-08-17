@@ -68,8 +68,13 @@ function getMcpToolsPrompt(): string {
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
     "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。不确定时可先用 web_search 或 fetch_page 探索。" +
-    "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>" +
-    "\n\n完成任务后，如果调用过浏览器类工具（如 puppeteer_*），请最后调用关闭工具（如 puppeteer_close）释放资源；没有则无需关闭。";
+    "\n\n## 浏览器自动化使用要点\n" +
+    "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
+    "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
+    "- puppeteer_screenshot 截图仅用于视觉确认；若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
+    "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
+    "\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>" +
+    "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。";
 }
 
 /// 任务完成后关闭浏览器，形成使用闭环。
@@ -120,6 +125,11 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // LLM 填的 server 名可能与实际配置不一致（省略/偏差），映射到已连接服务器
   const knownServers = new Set(mcpToolsCache.map((t) => t.server));
   const effectiveServer = knownServers.has(server) ? server : (mcpToolsCache[0]?.server ?? server);
+  // 增强浏览器自动化：navigate 时若模型未指定 waitUntil，默认等待网络空闲，
+  // 确保 JS 动态渲染完成，避免紧跟的 screenshot 截到空白页面。
+  if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
+    (args as Record<string, unknown>).waitUntil = "networkidle2";
+  }
   const result = await invoke<{content:{type:string;text?:string;data?:string}[];isError?:boolean}>("mcp_call_tool", {
     server: effectiveServer, toolName: tool, arguments: args,
   });
