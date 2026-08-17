@@ -656,10 +656,16 @@ export const useChatStore = defineStore("chat", () => {
     updateSettings({ activeProfileId: id });
   });
 
+  /// 切换 Profile 时是否显示“切换中”提示
+  const profileSwitching = ref(false);
   function switchProfile(id: string) {
-    if (profiles.value.some((p) => p.id === id)) {
-      activeProfileId.value = id;
-    }
+    if (!profiles.value.some((p) => p.id === id)) return;
+    if (id === activeProfileId.value) return;
+    // 优雅切换：停止进行中的流式生成，避免旧配置的请求中断报错刷屏（借鉴 Hermes profile 切换 overlay）
+    if (isStreaming.value) stopStreaming();
+    activeProfileId.value = id;
+    profileSwitching.value = true;
+    setTimeout(() => { profileSwitching.value = false; }, 800);
   }
 
   function updateProfile(id: string, partial: Partial<ApiProfile>) {
@@ -1378,6 +1384,7 @@ export const useChatStore = defineStore("chat", () => {
     activeProfileId,
     activeProfile,
     currentConfig,
+    profileSwitching,
     isStreaming,
     streamingContent,
     streamingReasoning,

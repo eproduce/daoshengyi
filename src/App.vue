@@ -216,6 +216,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <div v-if="chatStore.isStreaming" class="stop-bar">
         <button class="stop-btn" @click="handleStop">⏹ 停止生成</button>
       </div>
+
+      <!-- 切换模型配置提示 -->
+      <div v-if="chatStore.profileSwitching" class="switch-overlay">
+        <div class="switch-overlay__box">🔄 正在切换模型配置…</div>
+      </div>
     </div>
 
     <!-- 设置弹窗 -->
@@ -358,6 +363,19 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   cursor: pointer; box-shadow: var(--shadow-md); transition: all 0.2s;
 }
 .stop-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* 切换模型配置提示 overlay */
+.switch-overlay {
+  position: absolute; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.35); backdrop-filter: blur(2px);
+}
+.switch-overlay__box {
+  padding: 16px 28px; border-radius: 14px;
+  background: var(--bg-elevated); border: 1px solid var(--border-color);
+  color: var(--text-primary); font-size: 14px; font-weight: 600;
+  box-shadow: var(--shadow-md);
+}
 
 /* Ollama 引导横幅 */
 .ollama-banner {
