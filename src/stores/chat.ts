@@ -45,7 +45,7 @@ function getMcpToolsPrompt(): string {
   // 内置工具：如实描述特性/优势/适用场景，由大模型根据任务自行选择，不硬编码倾向
   const builtin =
     "\n\n## 内置工具（server 填 `app`）\n" +
-    "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）；对需要登录/点击/JS 动态渲染的页面可能拿不全。参数 {\"url\": \"完整网址\"}\n" +
+    "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {\"url\": \"完整网址\"}\n" +
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
@@ -144,7 +144,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const url = String(args.url || "");
       if (!url) throw new Error("fetch_page 需要 url 参数");
       const res = await invoke<{title: string; text: string; url: string}>("fetch_page", { url });
-      return `【${res.title}】\n${res.text.slice(0, 4000)}`;
+      let out = `【${res.title}】\n${res.text.slice(0, 4000)}`;
+      // JS 动态渲染/反爬识别：内容过少或命中拦截词时，提示模型改用浏览器自动化（Puppeteer）
+      const short = (res.text || "").trim().length < 300;
+      const blocked = /安全验证|验证码|captcha|访问验证|请输入验证码|滑动验证|人机验证/i.test(`${res.title} ${res.text}`);
+      if (short || blocked) {
+        out += `\n\n⚠️ 页面内容过少${blocked ? "（疑似被反爬拦截）" : ""}，很可能是 JS 动态渲染、需登录或需等待加载。` +
+          `请改用浏览器自动化工具获取动态内容：先调用 puppeteer_navigate 打开该 URL（可传 waitUntil: "networkidle0" 等待渲染完成），` +
+          `再用 puppeteer_evaluate 执行 JS 提取页面数据（如 document.body.innerText），或 puppeteer_screenshot 截图分析。不要重复 fetch_page。`;
+      }
+      return out;
     }
     case "web_search": {
       const query = String(args.query || "");
