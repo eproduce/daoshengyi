@@ -23,11 +23,19 @@
   - 🟡 辅助任务独立模型槽 / Persona 人格市场 / 切换优雅重启 overlay
 - 架构差异（不必照搬）：Hermes 是托管内核外壳（managed/local/remote），道生一是单体
 
-### 🚧 本地 GPU：方案 A（llama.cpp Metal）
-- Ollama 0.32.13 在此 Intel Mac 枚举 0 GPU（纯 CPU）；Homebrew llama.cpp 也 no usable GPU（x86_64 未开 Metal）
-- 已克隆源码 `~/llama.cpp-metal`，用 `cmake -DGGML_METAL=ON` 编译中
-- Ollama 的 llava-phi3 blob 可直接给 llama-server：model(sha256-377876be, 2.3G) + mmproj(sha256-004fc096, 607M)
-- 待：验证 Metal 是否枚举 AMD 5300M → 测速对比 CPU 9.9 tok/s → 道生一对接
+### ✅ 落地：Hermes 借鉴 6 项全部完成（高 3 + 中 3，逐项推送）
+- 🔴 Smart 智能审批：审批三档 manual/smart/yolo；smart 用辅助模型判断命令安全（`judgeCommandSafety`，可配独立辅助模型），失败保守走确认（`fedc36e`）
+- 🔴 子代理可视化面板：`SubagentPanel.vue` 展示 goal/状态/耗时/结论预览，可清空已结束，支持并行（`fedc36e`）
+- 🔴 CLI 委派增强：`delegate_coding_agent` 支持 print/exec/review/resume 4 模式 + max-turns + resume 会话；返回结构化结果（退出码/耗时/token），前端展示（`a5b978f`）
+- 🟡 辅助任务模型槽：设置「辅助任务模型」复用已配置 Profile（无需重复存 Key），Smart 审批/子代理优先用辅助模型省主模型额度（`0040449`）
+- 🟡 Persona 人格市场：`personas-catalog.ts` 8 个人格，顶栏切换，注入系统提示词角色前缀（与技能库互补）（`5f37971`）
+- 🟡 切换优雅 overlay：switchProfile 停止进行中流 + 800ms 切换提示遮罩（`53f3edf`）
+- 低价值项：浅色主题道生一已有（`useTheme` 双主题 + 系统偏好），无需新增
+
+### ✅ 本地 GPU 方案 A：结论（此 Intel Mac 不可行）
+- 自编译 `LLAMA_METAL=1` 成功枚举 `MTL0: AMD Radeon Pro 5300M (4080 MiB)`，但实测推理仅 2.0-2.2 t/s（比 CPU 9.9 t/s 慢 5 倍）+ 输出异常 → **Metal offload 在 Intel Mac 是负优化**
+- 结论：Ollama（0 GPU）/ Homebrew llama.cpp（无 Metal）/ 自编译 Metal（负优化）均无法有效用 AMD 5300M
+- 建议：本地模型保持 CPU（轻量图片理解）+ 重推理走云端 DeepSeek；坚持 GPU 需 Apple Silicon
 
 ### ✅ 修复：fetch MCP 插件不可用（`npx mcp-server-fetch` 报错）
 - **现象**：启动 MCP 报 `mcp-server-fetch: line 1: /Applications: is a directory` / `syntax error`
