@@ -49,6 +49,14 @@ function highlight() {
 
 async function copyAll() { await chatStore.copyToClipboard(props.message.content); copied.value = true; setTimeout(() => copied.value = false, 2000); }
 
+// 工具活动卡片展开状态（按工具名）
+const toolOpen = ref<Set<string>>(new Set());
+function toggleTool(name: string) {
+  const s = new Set(toolOpen.value);
+  s.has(name) ? s.delete(name) : s.add(name);
+  toolOpen.value = s;
+}
+
 // 流式结束后高亮 + 首次挂载高亮
 let highlighted = false;
 onMounted(() => { if (props.message.content && !props.message.streaming) highlighted = false; });
@@ -108,6 +116,27 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
             <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label">🧠 深度思考</span>
           </div>
           <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
+        </div>
+
+        <!-- ReAct 工具活动卡片 -->
+        <div v-if="message.tools?.length" class="msg-tools">
+          <div
+            v-for="(t, i) in message.tools" :key="i"
+            class="tool-card" :class="`tool-card--${t.status}`"
+          >
+            <div class="tool-card__head" @click="toggleTool(t.name)">
+              <span class="tool-card__icon">{{ t.status === 'error' ? '❌' : t.status === 'running' ? '⏳' : '✅' }}</span>
+              <span class="tool-card__name">{{ t.name }}</span>
+              <span v-if="t.server && t.server !== 'app'" class="tool-card__server">{{ t.server }}</span>
+              <span v-if="t.durationMs !== undefined" class="tool-card__dur">{{ (t.durationMs / 1000).toFixed(1) }}s</span>
+              <span class="tool-card__arrow">{{ toolOpen.has(t.name) ? '▾' : '▸' }}</span>
+            </div>
+            <div v-show="toolOpen.has(t.name)" class="tool-card__body">
+              <div v-if="t.argsPreview" class="tool-card__pre"><div class="tool-card__label">参数</div><pre>{{ t.argsPreview }}</pre></div>
+              <div v-if="t.resultPreview" class="tool-card__pre"><div class="tool-card__label">结果</div><pre>{{ t.resultPreview }}</pre></div>
+              <div v-if="t.error" class="tool-card__pre tool-card__err"><div class="tool-card__label">错误</div><pre>{{ t.error }}</pre></div>
+            </div>
+          </div>
         </div>
 
         <template v-if="message.content">
@@ -224,6 +253,33 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .reason-head:hover { background: var(--bg-hover); }
 .reason-arrow { font-size: 9px; color: var(--text-muted); }
 .reason-label { font-weight: 600; color: var(--text-secondary); }
+
+/* ReAct 工具活动卡片 */
+.msg-tools { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.tool-card { border: 1px solid var(--border-color); border-radius: var(--radius-sm); overflow: hidden; }
+.tool-card--done { border-color: rgba(34,197,94,.3); }
+.tool-card--error { border-color: rgba(248,113,113,.4); }
+.tool-card__head {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+  background: var(--bg-secondary); cursor: pointer; font-size: 12px;
+}
+.tool-card__head:hover { background: var(--bg-hover); }
+.tool-card__icon { font-size: 12px; }
+.tool-card__name { font-weight: 600; color: var(--text-primary); }
+.tool-card__server { font-size: 10px; color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 4px; padding: 0 4px; }
+.tool-card__dur { margin-left: auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tool-card__arrow { font-size: 9px; color: var(--text-muted); }
+.tool-card__body { padding: 8px 10px; border-top: 1px solid var(--border-color); background: var(--bg-primary); }
+.tool-card__pre { margin-bottom: 6px; }
+.tool-card__pre:last-child { margin-bottom: 0; }
+.tool-card__label { font-size: 10px; color: var(--text-muted); margin-bottom: 3px; }
+.tool-card__pre pre {
+  margin: 0; padding: 6px 8px; background: #0d0d1a; border-radius: 6px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px; line-height: 1.5;
+  color: var(--text-secondary); white-space: pre-wrap; word-break: break-all;
+  max-height: 160px; overflow: auto;
+}
+.tool-card__err pre { color: #f87171; }
 .reason-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent-bg); color: var(--accent-color); font-weight: 600; animation: pulse 2s infinite; }
 .reason-body { padding: 8px 12px; font-size: 12px; color: var(--text-muted); line-height: 1.55; border-top: 1px solid var(--border-color); max-height: 240px; overflow-y: auto; white-space: pre-wrap; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }

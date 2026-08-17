@@ -48,6 +48,19 @@ export interface ChatMessage {
   duration?: number;
   tokens?: number;
   cost?: number;
+  /// ReAct 工具调用记录（工具活动卡片）
+  tools?: ChatTool[];
+}
+
+/// 一次工具调用记录（工具活动卡片）
+export interface ChatTool {
+  name: string;
+  server: string;
+  status: "running" | "done" | "error";
+  durationMs?: number;
+  argsPreview?: string;
+  resultPreview?: string;
+  error?: string;
 }
 
 /// 对话会话

@@ -295,7 +295,8 @@ async function runReactLoop(
   maxIterations = 5,
   onProgress?: (text: string) => void,
   onReasoning?: (text: string) => void,
-  onCache?: (hit: number, miss: number) => void
+  onCache?: (hit: number, miss: number) => void,
+  onTool?: (tool: import("@/types").ChatTool) => void
 ): Promise<ReactLoopResult> {
   const toolResults: string[] = [];
   const convo = [...messages];
@@ -330,9 +331,16 @@ async function runReactLoop(
       `### 🔧 调用工具：\`${toolCall.tool}\`\n\n` +
       `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>`
     );
+    const startTool = Date.now();
     try {
       const result = await callMcpTool(toolCall.server, toolCall.tool, toolCall.arguments);
       const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
+      onTool?.({
+        name: toolCall.tool, server: toolCall.server || "app", status: "done",
+        durationMs: Date.now() - startTool,
+        argsPreview: argsStr.slice(0, 300),
+        resultPreview: clipped.slice(0, 300),
+      });
       toolResults.push(`<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`);
       convo.push({ role: "assistant", content });
       convo.push({
@@ -341,6 +349,12 @@ async function runReactLoop(
       });
     } catch (e: unknown) {
       const err = e instanceof Error ? e.message : String(e);
+      onTool?.({
+        name: toolCall.tool, server: toolCall.server || "app", status: "error",
+        durationMs: Date.now() - startTool,
+        argsPreview: argsStr.slice(0, 300),
+        error: err.slice(0, 300),
+      });
       toolResults.push(`> ❌ 工具调用失败: \`${err}\``);
       convo.push({ role: "assistant", content });
       convo.push({ role: "user", content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。` });
@@ -1219,11 +1233,14 @@ export const useChatStore = defineStore("chat", () => {
         }));
         try {
           // ReAct 期间实时显示"正在调用 xx 工具"，并把非流式返回的思考过程也累积展示
+          const reactTools: import("@/types").ChatTool[] = [];
           const react = await runReactLoop(config, flatMsgs, 5,
             (text) => { streamingContent.value = text; },
             (r) => { streamingReasoning.value += r; },
-            (hit, miss) => { cacheHitTotal.value += hit; cacheMissTotal.value += miss; }
+            (hit, miss) => { cacheHitTotal.value += hit; cacheMissTotal.value += miss; },
+            (t) => reactTools.push(t)
           );
+          if (reactTools.length) assistantMsg.tools = [...reactTools];
           if (react.finalAnswer) {
             // ReAct 循环给出了最终答案，直接展示（跳过流式）
             streamingContent.value =
