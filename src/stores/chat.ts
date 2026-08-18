@@ -198,6 +198,19 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   return out;
 }
 
+/// 工具结果回填到上下文前截断：防止超大结果（如 directory_tree 列整个目录树、
+/// 大文件全文）撑爆模型上下文（如 DeepSeek 1M token 上限）。
+/// 超长保留开头并明确提示模型已截断，可缩小范围重查。
+const MAX_TOOL_RESULT_CHARS = 6000;
+function truncateToolResult(result: string): string {
+  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  return (
+    `${result.slice(0, MAX_TOOL_RESULT_CHARS)}` +
+    `\n\n…[工具结果过长已截断（原 ${result.length} 字符，仅保留前 ${MAX_TOOL_RESULT_CHARS} 字符）。` +
+    `如确需完整内容，请缩小查询范围或用更精准的参数重新调用工具]`
+  );
+}
+
 /** 调用应用内置工具（fetch_page 网页抓取、web_search 搜索） */
 /// 从用户提问中提取搜索关键词（去标点、去常见请求/疑问/分析词），提升自动搜索相关度。
 /// 自动搜索在发送前执行、无法先让模型给关键词，只能做轻量启发式清洗；
@@ -1371,7 +1384,7 @@ export const useChatStore = defineStore("chat", () => {
           rustMsgs.push({ role: "assistant", content: roundResult.content });
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n${result}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
+            content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
           });
         } catch (e: unknown) {
           const err = e instanceof Error ? e.message : String(e);
@@ -1387,7 +1400,7 @@ export const useChatStore = defineStore("chat", () => {
           rustMsgs.push({ role: "assistant", content: roundResult.content });
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。`,
+            content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。`,
           });
         }
       } while (true);
