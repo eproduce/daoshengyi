@@ -146,6 +146,41 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
+/// 内置可信文件写入工具（供 agent 使用）：写入文本文件并**校验文件真实存在**后返回真实绝对路径。
+/// 设计原因：社区 filesystem MCP 服务器的 write 工具可能谎报成功（返回 "Successfully wrote to ..."
+/// 但实际未落盘），导致前端文件链接点击后打不开。本命令由应用自身写盘，确保路径真实可用。
+/// 安全边界：仅允许写入当前用户主目录（$HOME）下的文件。
+#[tauri::command]
+fn write_file_agent(path: String, content: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
+    // 展开 ~/ 为 $HOME/，其余必须是绝对路径
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{}", home, rest)
+    } else if path.starts_with('/') {
+        path.clone()
+    } else {
+        return Err("文件路径必须是绝对路径或以 ~/ 开头".into());
+    };
+    // 仅允许写入主目录内，避免越权写系统目录
+    if !expanded.starts_with(&format!("{}/", home)) {
+        return Err(format!("仅允许写入用户主目录（{}）内的文件", home));
+    }
+    // 创建父目录（如 ~/Desktop、~/Documents 等）
+    if let Some(parent) = std::path::Path::new(&expanded).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&expanded, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    // 写入后校验文件真实存在，杜绝"谎报成功"
+    if !std::path::Path::new(&expanded).exists() {
+        return Err("写入校验失败：文件未生成，请重试".into());
+    }
+    let size = std::fs::metadata(&expanded).map(|m| m.len()).unwrap_or(0);
+    Ok(format!(
+        "已成功写入文件：{}\n（共 {} 字节，真实路径如上，回复用户时请原样引用该路径，禁止改写文件名或目录）",
+        expanded, size
+    ))
+}
+
 // --- 定时任务 ---
 
 /// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
@@ -2090,6 +2125,7 @@ pub fn run() {
             fetch_page,
             system_diagnostics,
             write_text_file,
+            write_file_agent,
             list_scheduled_tasks,
             save_scheduled_task,
             delete_scheduled_task,

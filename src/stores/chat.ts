@@ -62,7 +62,9 @@ function getMcpToolsPrompt(): string {
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
     "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。" +
-    "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。";
+    "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
+    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
+    "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -79,14 +81,21 @@ function getMcpToolsPrompt(): string {
     "3. **查企业/实体时**：尽量给出 名称、类型/所在地、主营业务/简介、成立时间 等关键事实，并附**官方或权威来源链接**（官网、百科、工商信息等）；不同来源信息冲突时标注各来源。\n" +
     "4. **未找到**：明确说「未找到可靠的公开信息」，说明可能原因（如反爬、无公开资料），并给出可进一步核实的途径；**严禁编造**企业名、数据或来源。\n" +
     "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。";
+  // 文件导出规范：必须用内置可信 write_file，禁止用社区 filesystem 的写入工具（会谎报成功）
+  const fileRule =
+    "\n\n## 文件导出规范\n" +
+    "需要把内容保存为本地文件（如 CSV 考勤表、报告、脚本等）时，**必须使用内置 write_file 工具（server 填 `app`）**，由应用真实写盘并校验。\n" +
+    "- **禁止使用社区 filesystem MCP 服务器的写入类工具**（write_file / write_text_file / writeFile 等）——这类服务器可能谎报成功（返回 Successfully wrote to ... 但实际未写入），导致文件打不开。\n" +
+    "- write_file 返回的**真实绝对路径是唯一可信路径**：最终回复必须**原样引用**它，禁止改写文件名、目录或编造路径。\n" +
+    "- 不确定目标目录是否存在时，可先用内置 list_dir 工具（server 填 `app`）查看。";
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + searchFormat + pending +
+    return builtin + realtime + searchFormat + fileRule + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin + realtime + searchFormat +
+  return builtin + realtime + searchFormat + fileRule +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -128,6 +137,21 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // 按需激活：模型请求 __connect__，或调用了未连接服务器的工具（未先激活）时，
   // 连接该服务器后返回工具列表，让模型重选具体工具。浏览器服务器借此才真正启动。
   const mcp = useMcpStore();
+
+  // 关键守卫：写入类工具一律转发到内置可信 write_file（应用自身写盘+校验）。
+  // 社区 filesystem MCP 服务器可能谎报成功（返回成功但实际未写入），导致文件链接打不开。
+  if (/^(write_file|write_text_file|writeFile|create_file|save_file)$/i.test(tool)) {
+    const path = String((args as Record<string, unknown>)?.path ?? "");
+    const content = String((args as Record<string, unknown>)?.content ?? "");
+    if (path) {
+      try {
+        return await callBuiltinTool("write_file", { path, content });
+      } catch (e) {
+        return `【文件写入被内置工具接管，但执行失败】${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+  }
+
   const target = mcp.servers.find(s => s.name === server) ?? mcp.servers.find(s => s.enabled && !s.connected);
   if (tool === "__connect__" || (target && target.enabled && !target.connected && target.name === server)) {
     if (!target) {
@@ -246,6 +270,23 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const length = Number(args.length || 4000);
       const text = await invoke<string>("read_pdf_part", { path, offset, length });
       return text || "（该段落无文本，可能已到文件末尾）";
+    }
+    case "write_file": {
+      const path = String(args.path || "");
+      const content = String(args.content ?? "");
+      if (!path) throw new Error("write_file 需要 path 参数");
+      if (!content) throw new Error("write_file 需要 content 参数");
+      // 由应用自身写盘并校验真实存在，返回真实绝对路径
+      const real = await invoke<string>("write_file_agent", { path, content });
+      return real;
+    }
+    case "list_dir": {
+      const path = String(args.path || "");
+      if (!path) throw new Error("list_dir 需要 path 参数");
+      const res = await invoke<{ dir: boolean; path: string; name: string; size?: number }[]>("read_file", { path });
+      if (!Array.isArray(res)) return `（${path} 不是目录）`;
+      return `目录 ${path} 内容（${res.length} 项）：\n` +
+        res.map(r => (r.dir ? `📁 ${r.name}/` : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`)).join("\n");
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);
