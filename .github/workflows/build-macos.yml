@@ -1,0 +1,92 @@
+# 道生一 macOS 打包流水线
+# - 手动触发：Actions → Build macOS → Run workflow
+# - 推送 v* 标签：自动打包并发布 GitHub Release（附 x64 + aarch64 两个 dmg）
+#
+# 注意：
+# - bundle.resources 里的 ocr_tool 是编译产物（.gitignore 忽略），CI 会先用 swiftc 编译 ocr_tool.swift
+# - 产物为 ad-hoc 签名（未配置 Apple 开发者证书），首次打开若被 Gatekeeper 拦截，右键「打开」放行
+# - 架构：macos-13(Intel)→x64；macos-14(Apple Silicon)→aarch64
+
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-macos:
+    name: Bundle macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Intel (x86_64)：打 x64 安装包
+          - os: macos-13
+            arch: x86_64
+          # Apple Silicon (aarch64)：打 arm64 安装包
+          - os: macos-14
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      # ocr_tool 是编译产物且被 gitignore，需先编译（Vision/ImageIO 为系统框架，swiftc 自动链接）
+      - name: Compile OCR tool (native arch)
+        working-directory: src-tauri
+        run: swiftc -O ocr_tool.swift -o ocr_tool
+
+      # beforeBuildCommand 会先执行 npm run build（vue-tsc + vite build）
+      - name: Build & bundle (Tauri, native arch)
+        run: npm run tauri build
+
+      - name: Upload artifacts (dmg + app)
+        uses: actions/upload-artifact@v4
+        with:
+          name: daoshengyi-${{ matrix.arch }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  # 推送 v* 标签时：汇总两个架构的 dmg 发布为 GitHub Release
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create / Update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la release/
+          gh release create "$GITHUB_REF_NAME" release/*.dmg --generate-notes \
+            --repo "$GITHUB_REPOSITORY" \
+          || gh release upload "$GITHUB_REF_NAME" release/*.dmg \
+            --repo "$GITHUB_REPOSITORY" --clobber
