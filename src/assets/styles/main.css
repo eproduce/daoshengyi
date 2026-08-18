@@ -29,9 +29,9 @@
   --avatar-user: linear-gradient(135deg, #6366f1, #8b5cf6);
   --avatar-ai: linear-gradient(135deg, #06b6d4, #3b82f6);
 
-  --logo-bg: #ffffff;
+  --logo-bg: #e9edfa;
   --logo-fg: #1a1a2e;
-  --logo-border: #e8e8ec;
+  --logo-border: #d4daf0;
 
   --danger-color: #ef4444;
   --danger-bg: rgba(239, 68, 68, 0.08);
@@ -75,9 +75,9 @@
 
   --avatar-bg: #2a2a42;
 
-  --logo-bg: #1e1e34;
-  --logo-fg: #cfcfdf;
-  --logo-border: #2a2a40;
+  --logo-bg: #262647;
+  --logo-fg: #d8d8ea;
+  --logo-border: #3b3b5e;
 
   --danger-color: #f87171;
   --danger-bg: rgba(248, 113, 113, 0.1);

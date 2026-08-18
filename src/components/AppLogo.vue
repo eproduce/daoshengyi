@@ -21,7 +21,11 @@ withDefaults(defineProps<{ size?: number }>(), { size: 28 });
 </template>
 
 <style scoped>
-.app-logo { display: block; flex-shrink: 0; }
+.app-logo {
+  display: block; flex-shrink: 0;
+  /* 轻微投影让图标方块在背景上更有"独立图标"的层次感 */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.14));
+}
 .logo-bg {
   fill: var(--logo-bg);
   stroke: var(--logo-border, transparent);
