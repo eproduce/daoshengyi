@@ -273,17 +273,22 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .topbar__right { display: flex; align-items: center; gap: 6px; }
 
 .topbar__persona {
-  padding: 5px 10px; border: 1px solid var(--border-color); border-radius: 16px;
-  background: var(--bg-secondary); color: var(--text-secondary);
-  font-size: 11px; font-family: inherit; cursor: pointer; outline: none;
-  max-width: 150px;
+  appearance: none; -webkit-appearance: none;
+  height: 28px; padding: 0 26px 0 12px;
+  border: 1px solid var(--border-color); border-radius: 16px;
+  background-color: var(--bg-secondary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  color: var(--text-secondary); font-size: 11px; line-height: 1; font-family: inherit;
+  cursor: pointer; outline: none; max-width: 160px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar__persona:focus { border-color: var(--accent-color); }
 .topbar__persona option { background: var(--bg-secondary); color: var(--text-primary); }
 
 .topbar__stats {
   display: flex; align-items: center; gap: 8px;
-  padding: 5px 12px; margin-right: 4px;
+  height: 28px; padding: 0 12px; margin-right: 4px;
   border: 1px solid var(--border-color); border-radius: 16px;
   background: var(--bg-secondary);
 }
