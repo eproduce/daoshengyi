@@ -138,8 +138,8 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // 连接该服务器后返回工具列表，让模型重选具体工具。浏览器服务器借此才真正启动。
   const mcp = useMcpStore();
 
-  // 关键守卫：写入类工具一律转发到内置可信 write_file（应用自身写盘+校验）。
-  // 社区 filesystem MCP 服务器可能谎报成功（返回成功但实际未写入），导致文件链接打不开。
+  // 关键守卫：写入类工具一律转发到内置可信 write_file（应用自身写盘+校验+返回真实绝对路径）。
+  // 目的：确保文件真实落盘、并让模型拿到唯一的真实路径原样引用（防止它在回复时改写/编造路径，导致链接打不开）。
   if (/^(write_file|write_text_file|writeFile|create_file|save_file)$/i.test(tool)) {
     const path = String((args as Record<string, unknown>)?.path ?? "");
     const content = String((args as Record<string, unknown>)?.content ?? "");

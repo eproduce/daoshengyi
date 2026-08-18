@@ -147,8 +147,8 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 /// 内置可信文件写入工具（供 agent 使用）：写入文本文件并**校验文件真实存在**后返回真实绝对路径。
-/// 设计原因：社区 filesystem MCP 服务器的 write 工具可能谎报成功（返回 "Successfully wrote to ..."
-/// 但实际未落盘），导致前端文件链接点击后打不开。本命令由应用自身写盘，确保路径真实可用。
+/// 目的：由应用自身写盘，确保文件真实落盘；并把唯一真实路径返回给模型，要求其**原样引用**
+/// （防止模型在最终回复中改写/编造文件路径，导致前端文件链接点击后打不开）。
 /// 安全边界：仅允许写入当前用户主目录（$HOME）下的文件。
 #[tauri::command]
 fn write_file_agent(path: String, content: String) -> Result<String, String> {
