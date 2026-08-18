@@ -113,19 +113,43 @@ marked.use({
 
 function md(s: string) { return s ? marked.parse(normalizeMath(s)) as string : ""; }
 
-// 拦截本地文件链接：用系统默认应用打开（如 Excel/Numbers 打开 CSV）
+// 拦截内容区链接点击：
+// - 本地文件链接（local-file-link）→ 用系统默认应用打开（如 Excel/Numbers 打开 CSV）
+// - 普通 web 链接（http/https/mailto/tel）→ 在系统默认浏览器打开，
+//   避免 webview 内导航外链导致卡住/白屏（Tauri webview 不应导航外部 URL）
 async function onContentClick(e: MouseEvent) {
-  const a = (e.target as HTMLElement).closest?.('a.local-file-link');
-  if (!a) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const path = decodeURIComponent(a.getAttribute("data-path") || "");
-  if (!path) return;
-  try {
-    await invoke("open_file", { path });
-  } catch (err) {
-    alert(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`);
+  const link = (e.target as HTMLElement).closest?.('a[href]') as HTMLAnchorElement | null;
+  if (!link) return;
+
+  // 本地文件链接：系统默认应用打开
+  if (link.classList.contains("local-file-link")) {
+    e.preventDefault();
+    e.stopPropagation();
+    const path = decodeURIComponent(link.getAttribute("data-path") || "");
+    if (!path) return;
+    try {
+      await invoke("open_file", { path });
+    } catch (err) {
+      alert(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
   }
+
+  // 普通 web 链接：系统浏览器打开
+  const href = link.getAttribute("href") || "";
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(href)) {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const { open } = await import("@tauri-apps/plugin-shell");
+      open(href);
+    } catch (err) {
+      // Tauri 插件不可用（浏览器预览等）：回退新窗口
+      console.warn("[道生一] 打开链接失败，回退 window.open:", err);
+      window.open(href, "_blank", "noopener");
+    }
+  }
+  // 其余（href="#" 内部占位链接）不拦截，交给组件自身处理
 }
 
 function highlight() {
