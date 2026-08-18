@@ -301,6 +301,9 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
           <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
           <button class="msg-act-btn" @click="chatStore.retryLast()">🔄 重试</button>
         </div>
+        <div v-else-if="message.role === 'user' && message.content" class="msg-actions">
+          <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
+        </div>
       </div>
     </div>
   </div>
