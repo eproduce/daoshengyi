@@ -154,6 +154,13 @@ html, body {
 .markdown-body .katex { white-space: nowrap; }
 .markdown-body .katex,
 .markdown-body .katex * { overflow-wrap: normal; word-break: normal; }
+/* 修复复制公式时字母翻倍：KaTeX 的 MathML 无障碍层与可见 HTML 层都会被选中复制，
+   导致 $p$ 复制成 "pp"、"3^6=729" 复制成 "36=72936=729"。让 MathML 层不可选中，
+   复制只取可见层（不影响屏幕阅读器，user-select 不改变无障碍树）。 */
+.markdown-body .katex .katex-mathml {
+  user-select: none;
+  -webkit-user-select: none;
+}
 /* 块级公式超宽时横向滚动，不撑破气泡 */
 .markdown-body .katex-display {
   max-width: 100%;

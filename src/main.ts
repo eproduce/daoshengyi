@@ -46,3 +46,31 @@ listen<string>("menu://action", (e) => {
     case "open-agents": ui.openSettings("agents"); break;
   }
 }).catch(() => {});
+
+// ── 修复复制 KaTeX 公式字母翻倍 ───────────────────────────────────────
+// KaTeX 每个公式含「隐藏的 MathML 无障碍层 + 可见 HTML 层」，复制时两层都会被选中，
+// 导致 "$p$" 复制成 "pp"、"3^6=729" 复制成 "36=72936=729"。
+// 这里在 copy 事件中剥离选区里的 .katex-mathml，只保留可见层（对所有复制方式生效）。
+// 说明：user-select:none（main.css）已覆盖常规鼠标选择；此处理器兜底 ⌘A/程序化复制等。
+document.addEventListener("copy", (e) => {
+  try {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const frag = sel.getRangeAt(0).cloneContents();
+    if (!frag.querySelector(".katex")) return; // 选区里没有公式就不干预默认复制
+    frag.querySelectorAll(".katex .katex-mathml").forEach((n) => n.remove());
+    const holder = document.createElement("div");
+    holder.style.position = "fixed";
+    holder.style.left = "-9999px";
+    holder.appendChild(frag);
+    document.body.appendChild(holder);
+    const text = holder.textContent ?? "";
+    const html = holder.innerHTML;
+    holder.remove();
+    if (e.clipboardData) {
+      e.clipboardData.setData("text/plain", text);
+      e.clipboardData.setData("text/html", html);
+      e.preventDefault();
+    }
+  } catch { /* 异常时回退系统默认复制 */ }
+});
