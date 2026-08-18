@@ -278,21 +278,61 @@ async function triggerAttach() {
   attachInputRef.value?.click();
 }
 
-// --- 拖拽（统一走 processFile → Rust） ---
+/// Tauri 原生拖拽：直接拿磁盘路径走统一 read_attachment（免 base64 中转，PDF 也有 path）
+async function handleDroppedPath(path: string) {
+  try {
+    const res = await invoke<{ kind: string; mime: string; content: string }>("read_attachment", { path });
+    const name = path.split("/").pop() || path;
+    if (res.kind === "image") {
+      attachedImages.value.push({
+        id: uuidv4(), base64: `data:${res.mime};base64,${res.content}`,
+        mimeType: res.mime, fileName: name,
+      });
+    } else {
+      const isPdf = res.mime === "application/pdf" || /\.pdf$/i.test(name);
+      attachedFiles.value.push({
+        id: uuidv4(), name, content: res.content, mimeType: res.mime,
+        path: isPdf ? path : undefined,
+      });
+    }
+  } catch (e) {
+    alert(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// --- 拖拽：Tauri 用原生 file-drop 事件拿磁盘路径；浏览器预览回退 HTML5 ---
+let unlistenDrag: (() => void) | undefined;
+async function setupNativeDragDrop() {
+  if (!isTauri()) return;
+  try {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    unlistenDrag = await getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "drop") {
+        for (const p of event.payload.paths) void handleDroppedPath(p);
+      }
+    });
+  } catch (e) {
+    console.warn("[道生一] 原生拖拽监听失败，回退 HTML5:", e);
+  }
+}
 function onDragOver(e: DragEvent) { e.preventDefault(); }
 function onDrop(e: DragEvent) {
   e.preventDefault();
-  if (!e.dataTransfer?.files) return;
+  if (!e.dataTransfer?.files?.length) return;
   for (let i = 0; i < e.dataTransfer.files.length; i++) {
     processFile(e.dataTransfer.files[i]);
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   nextTick(() => textareaRef.value?.focus());
   document.addEventListener("click", onDocClick);
+  await setupNativeDragDrop();
 });
-onUnmounted(() => document.removeEventListener("click", onDocClick));
+onUnmounted(() => {
+  document.removeEventListener("click", onDocClick);
+  unlistenDrag?.();
+});
 
 const effortLabels: Record<string, string> = { low: "低", high: "高", max: "最大" };
 </script>

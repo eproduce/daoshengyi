@@ -464,10 +464,47 @@ struct CommandOutput {
     timed_out: bool,
 }
 
-/// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）
+/// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）；传入目录时返回内容列表（ls 风格）
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+    let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        let mut entries: Vec<(String, bool, u64)> = Vec::new();
+        for entry in std::fs::read_dir(p).map_err(|e| format!("读取目录失败: {}", e))? {
+            if let Ok(ent) = entry {
+                let name = ent.file_name().to_string_lossy().to_string();
+                let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+                entries.push((name, is_dir, size));
+            }
+        }
+        // 目录优先，再按名称排序
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if entries.is_empty() {
+            return Ok("（空目录）".to_string());
+        }
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|(name, is_dir, size)| {
+                if *is_dir { format!("📁 {}/", name) } else { format!("📄 {}  ({})", name, fmt_size(*size)) }
+            })
+            .collect();
+        return Ok(format!("【目录】{}\n\n{}", path, lines.join("\n")));
+    }
+    if p.is_file() {
+        return std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e));
+    }
+    Err(format!("路径不存在: {}", path))
+}
+
+fn fmt_size(b: u64) -> String {
+    if b >= 1024 * 1024 {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    } else if b >= 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else {
+        format!("{} B", b)
+    }
 }
 
 /// 附件读取结果
