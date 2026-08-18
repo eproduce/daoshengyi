@@ -33,26 +33,27 @@ const terminalOutput = computed(() => {
 
 const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
 
-// 识别本地文件路径 → 转成可点击链接（daoshengyi-file:// 协议，点击用系统默认应用打开）
+// 识别本地文件路径 → 转成可点击链接（href="#" + data-path，点击拦截调系统打开，避免未知协议被 webview 拦截）
 const LOCAL_FILE_RE = /(?<![\[\(])((?:~|\/[A-Za-z0-9_@.\/-]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|c|cpp|h|hpp|html?|css|sql|db|zip|tar\.gz|7z)))/gi;
 
 function linkifyLocalPaths(s: string): string {
   return s.replace(LOCAL_FILE_RE, (m) => {
     const name = m.split("/").pop() || m;
-    return `[📄 ${name}](daoshengyi-file://${encodeURIComponent(m)})`;
+    const encoded = encodeURIComponent(m);
+    return `<a href="#" class="local-file-link" data-path="${encoded}">📄 ${name}</a>`;
   });
 }
 
 function md(s: string) { return s ? marked.parse(linkifyLocalPaths(s)) as string : ""; }
 
-// 拦截 daoshengyi-file:// 链接：用系统默认应用打开本地文件（如 Excel/Numbers 打开 CSV）
+// 拦截本地文件链接：用系统默认应用打开（如 Excel/Numbers 打开 CSV）
 async function onContentClick(e: MouseEvent) {
-  const a = (e.target as HTMLElement).closest?.('a[href^="daoshengyi-file://"]');
+  const a = (e.target as HTMLElement).closest?.('a.local-file-link');
   if (!a) return;
   e.preventDefault();
   e.stopPropagation();
-  const href = a.getAttribute("href") || "";
-  const path = decodeURIComponent(href.replace("daoshengyi-file://", ""));
+  const path = decodeURIComponent(a.getAttribute("data-path") || "");
+  if (!path) return;
   try {
     await invoke("open_file", { path });
   } catch (err) {
@@ -239,6 +240,9 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .message--user .attach-card { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.3); }
 .message--user .attach-card-name { color: #fff; }
 .message__content { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }
+.local-file-link { color: var(--accent-color); text-decoration: underline; cursor: pointer; font-weight: 500; }
+.local-file-link:hover { opacity: .8; }
+.message--user .message__content .local-file-link { color: #fff; }
 .message__cursor { display: inline-block; width: 7px; height: 16px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; border-radius: 2px; }
 .message__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; padding: 0 4px; }
 .message--user .message__meta { justify-content: flex-end; }
