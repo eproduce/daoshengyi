@@ -276,7 +276,12 @@ async function triggerAttach() {
               mimeType: res.mime, fileName: name,
             });
           } else {
-            attachedFiles.value.push({ id: uuidv4(), name, content: res.content, mimeType: res.mime });
+            const isPdf = res.mime === "application/pdf" || /\.pdf$/i.test(name);
+            attachedFiles.value.push({
+              id: uuidv4(), name, content: res.content, mimeType: res.mime,
+              // PDF 记录磁盘路径，供 pdf_read 分段浏览工具使用
+              path: isPdf ? p : undefined,
+            });
           }
         } catch (e) {
           alert(`读取附件失败: ${e instanceof Error ? e.message : String(e)}`);

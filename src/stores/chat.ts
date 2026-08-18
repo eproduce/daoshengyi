@@ -61,7 +61,8 @@ function getMcpToolsPrompt(): string {
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
-    "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。";
+    "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。" +
+    "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -237,6 +238,14 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 子代理若也返回工具调用 JSON，则剥离展示
       const visible = finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）";
       return `【子代理结论】\n${visible}`;
+    }
+    case "pdf_read": {
+      const path = String(args.path || "");
+      if (!path) throw new Error("pdf_read 需要 path 参数");
+      const offset = Number(args.offset || 0);
+      const length = Number(args.length || 4000);
+      const text = await invoke<string>("read_pdf_part", { path, offset, length });
+      return text || "（该段落无文本，可能已到文件末尾）";
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);
@@ -1155,10 +1164,18 @@ export const useChatStore = defineStore("chat", () => {
       })}（Asia/Shanghai）。`);
       // 图片描述作为上下文（不展示在对话里，但模型可见）
       if (descCtx) volatileCtx.push(descCtx);
-      // 注入文件上下文（文本/PDF 提取内容作为 AI 可读的上下文）
+      // 注入文件上下文（PDF 走"分次浏览"：只给概要预览 + pdf_read 工具提示，按需分段读取）
       if (attachments && attachments.length > 0) {
         const fileCtx = attachments
-          .map((f) => `\n--- 文件: ${f.name} ---\n${f.content.slice(0, 30000)}`)
+          .map((f) => {
+            const isPdf = f.mimeType === "application/pdf" || /\.pdf$/i.test(f.name);
+            if (isPdf && f.path) {
+              return `\n--- PDF 文件: ${f.name}（共 ${f.content.length} 字符）---\n` +
+                `[内容较长，先展示开头预览]\n${f.content.slice(0, 2500)}\n` +
+                `[如需完整内容，请调用 pdf_read 工具分段读取：参数 path="${f.path}", offset 从 0 起按 4000 逐段]`;
+            }
+            return `\n--- 文件: ${f.name} ---\n${f.content.slice(0, 30000)}`;
+          })
           .join("");
         volatileCtx.push(`[用户提供的文件上下文]\n${fileCtx}`);
       }

@@ -515,6 +515,17 @@ fn extract_pdf_text(data: String) -> Result<String, String> {
         .map_err(|e| format!("PDF 文本提取失败: {}", e))
 }
 
+/// 分段读取 PDF：提取全文后返回 [offset, offset+length) 的字符区间（按 char 切，避免 UTF-8 边界问题）
+#[tauri::command]
+fn read_pdf_part(path: String, offset: i64, length: i64) -> Result<String, String> {
+    let text = pdf_extract::extract_text(&path)
+        .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
+    let chars: Vec<char> = text.chars().collect();
+    let start = (offset.max(0) as usize).min(chars.len());
+    let len = (length.max(0) as usize).min(chars.len() - start);
+    Ok(chars[start..start + len].iter().collect())
+}
+
 // --- Ollama 本地视觉模型管理（自动部署 llava-phi3） ---
 
 #[derive(serde::Serialize)]
@@ -2014,6 +2025,7 @@ pub fn run() {
             read_file,
             read_attachment,
             extract_pdf_text,
+            read_pdf_part,
             ollama_status,
             ollama_setup,
             ollama_describe_image,

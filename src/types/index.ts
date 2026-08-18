@@ -15,6 +15,8 @@ export interface FileAttachment {
   name: string;
   content: string;
   mimeType?: string;
+  /// 附件来源的磁盘路径（附件按钮选择的文件），供 PDF 分段浏览工具使用
+  path?: string;
 }
 
 /// 多模态消息内容
