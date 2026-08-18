@@ -211,6 +211,16 @@ function truncateToolResult(result: string): string {
   );
 }
 
+/// 上下文总长保护阈值（字符）：工具结果持续回填会让 messages 逼近模型上限
+/// （DeepSeek 1M token ≈ 200 万字符），超过阈值停止继续调工具，留足余量避免 [400]。
+const MAX_CONTEXT_CHARS = 1_500_000;
+function totalMsgChars(msgs: { role: string; content: unknown }[]): number {
+  return msgs.reduce((sum, m) => {
+    const t = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    return sum + t.length;
+  }, 0);
+}
+
 /** 调用应用内置工具（fetch_page 网页抓取、web_search 搜索） */
 /// 从用户提问中提取搜索关键词（去标点、去常见请求/疑问/分析词），提升自动搜索相关度。
 /// 自动搜索在发送前执行、无法先让模型给关键词，只能做轻量启发式清洗；
@@ -1358,6 +1368,11 @@ export const useChatStore = defineStore("chat", () => {
         if (round >= MAX_TOOL_ROUNDS) {
           // 达到上限：直接停止工具循环（避免模型反复调工具造成死循环），
           // 以已执行的工具卡片收尾；streamingContent 若有残留工具 JSON 由 finally 剥离
+          break;
+        }
+        // 上下文总长保护：工具结果持续回填会让 messages 逼近模型上限，
+        // 接近阈值时停止继续调工具，避免下一轮请求 [400] 超长错误
+        if (totalMsgChars(rustMsgs) > MAX_CONTEXT_CHARS) {
           break;
         }
 
