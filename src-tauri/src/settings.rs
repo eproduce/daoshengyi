@@ -184,9 +184,15 @@ fn load_or_create_key(app_dir: &Path) -> Result<[u8; KEY_LEN], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // 每个测试用唯一临时目录，避免 cargo test 并行跑时多个测试共用同一目录、
+    // 一个测试的 remove_dir_all 删掉另一个正在写密钥文件的目录（ENOENT 竞态）
+    static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
     fn tmp_cipher() -> (SecretCipher, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("ds_test_{}", std::process::id()));
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ds_test_{}_{}", std::process::id(), seq));
         std::fs::create_dir_all(&dir).unwrap();
         let cipher = SecretCipher::new(&dir).unwrap();
         (cipher, dir)
@@ -243,6 +249,7 @@ mod tests {
             yolo_mode: false,
             approval_mode: "manual".into(),
             auxiliary_profile_id: None,
+            brave_api_key: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -271,6 +278,7 @@ mod tests {
             yolo_mode: false,
             approval_mode: "manual".into(),
             auxiliary_profile_id: None,
+            brave_api_key: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
