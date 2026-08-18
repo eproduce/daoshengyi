@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore } from "@/stores/mcp";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
+import { getSettings, updateSettings } from "@/api/appSettings";
 
 const store = useMcpStore();
 const activeTab = ref<"servers" | "market">("servers");
@@ -11,6 +12,12 @@ const form = ref({ name: "", command: "", args: "", envText: "", enabled: true }
 const error = ref("");
 // 连接由 agent 自动控制（应用启动自动连接 + 发消息自动重连），
 // 此处不再提供手动连接/重新连接，仅展示状态。
+
+// Brave 搜索 API Key（全局：Brave 搜索插件的内置配置，供内置 web_search 工具优先走 Brave API，加密落盘）
+const braveApiKey = ref(getSettings().braveApiKey || "");
+function saveBraveApiKey() {
+  updateSettings({ braveApiKey: braveApiKey.value.trim() });
+}
 
 /// 解析环境变量文本（每行 KEY=VALUE，# 开头为注释）
 function parseEnv(text: string): Record<string, string> {
@@ -172,6 +179,22 @@ function cancel() {
 
     <div v-if="error" class="mcp-error">{{ error }}</div>
 
+    <!-- 内置 Brave 搜索插件配置（全局联网搜索源） -->
+    <div class="mcp-brave">
+      <div class="mcp-brave-title">🔍 Brave 搜索 <span class="mcp-mini-tag">内置搜索插件</span></div>
+      <div class="mcp-brave-row">
+        <input
+          v-model="braveApiKey"
+          type="password"
+          placeholder="BSA...（可选，免费 2000 次/月）"
+          class="mcp-input"
+          @change="saveBraveApiKey"
+        />
+        <button class="mcp-btn mcp-btn-pri" @click="saveBraveApiKey">保存</button>
+      </div>
+      <div class="mcp-brave-hint">联网搜索优先走 Brave API（质量更稳）。获取：brave.com/search/api → 注册 → Free plan → 创建 Key；也可在对话中把 Key 发给 AI 代为配置。无法访问境外网络时可留空，自动用必应中国等国内源。</div>
+    </div>
+
     <!-- Tab: 我的服务器 -->
     <div v-show="activeTab === 'servers'">
       <!-- 编辑表单 -->
@@ -298,6 +321,17 @@ function cancel() {
 </template>
 
 <style scoped>
+.mcp-brave {
+  background: rgba(128,128,255,.05);
+  border: 1px solid rgba(128,128,255,.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.mcp-brave-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.mcp-brave-row { display: flex; gap: 8px; align-items: center; }
+.mcp-brave-row .mcp-input { margin-bottom: 0; flex: 1; }
+.mcp-brave-hint { font-size: 11px; color: #888; margin-top: 6px; line-height: 1.5; }
 .mcp-panel { padding: 8px 0; }
 .mcp-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .mcp-header h3 { margin: 0; font-size: 15px; }
