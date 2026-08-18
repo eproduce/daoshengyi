@@ -124,7 +124,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     id: "brave-search",
     name: "Brave 搜索",
     icon: "🔍",
-    description: "Brave Search 联网搜索（需配置 API Key）",
+    description: "Brave Search 联网搜索（安装时配置 API Key）",
     category: "搜索",
     command: "npx",
     args: "-y @modelcontextprotocol/server-brave-search",
