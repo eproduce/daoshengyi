@@ -45,12 +45,23 @@ function linkifyLocalPaths(s: string): string {
   });
 }
 
-// 用 marked 的 text renderer 在渲染时把路径替换为链接：renderer 输出直接拼进最终 HTML，
-// 不经过 marked 对 raw HTML 的二次解析/转义，确保链接确实渲染成可点击元素
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 用 marked 的 renderer 在渲染时把路径替换为链接：renderer 输出直接拼进最终 HTML，
+// 不经过 marked 对 raw HTML 的二次解析/转义，确保链接确实渲染成可点击元素。
+// 同时覆盖 text（纯文本）与 codespan（反引号行内代码），因为 agent 常把路径包在 ` 里
 marked.use({
   renderer: {
     text(token: { text: string }) {
       return linkifyLocalPaths(token.text);
+    },
+    codespan(token: { text: string }) {
+      const linked = linkifyLocalPaths(token.text);
+      // 是本地文件路径 → 直接渲染成可点击链接，而不是 <code>
+      if (linked !== token.text) return linked;
+      return `<code>${escapeHtml(token.text)}</code>`;
     },
   },
 });
@@ -112,7 +123,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
   <div v-if="message.role === 'assistant' && message.streaming" class="message message--assistant">
     <div class="message__avatar"><AppLogo :size="24" /></div>
     <div class="message__body">
-      <div class="message__bubble">
+      <div class="message__bubble bubble-active">
         <!-- 直接绑定 store 的 streaming ref，渲染最快 -->
         <div v-if="chatStore.streamingReasoning" class="msg-reason">
           <div class="reason-head" @click="showReasoning = !showReasoning">
@@ -228,6 +239,38 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
   position: relative;
 }
 .message--assistant .message__bubble { border-bottom-left-radius: 4px; }
+
+/* 动态光圈流转：agent 思考/处理任务时气泡边缘流光旋转（仅 streaming 中的气泡） */
+@property --spin-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.message--assistant .bubble-active::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--spin-angle),
+    transparent 0%,
+    var(--accent-color) 12%,
+    #8b5cf6 24%,
+    #22d3ee 36%,
+    transparent 48%,
+    transparent 62%,
+    var(--accent-color) 74%,
+    transparent 86%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: spinAngle 2.6s linear infinite;
+}
+@keyframes spinAngle { to { --spin-angle: 360deg; } }
 .message--user .message__bubble {
   background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
   border-color: transparent;
