@@ -251,7 +251,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       let finalText = "";
       try {
         const data = await chatOnce(config, [
-          { role: "system", content: withCurrentDate(sys) },
+          { role: "system", content: withMathRule(withCurrentDate(sys)) },
           { role: "user", content: `子任务：${goal}` },
         ]);
         if (!data) throw new Error("子代理执行超时或失败");
@@ -311,6 +311,17 @@ function withCurrentDate(sp: string): string {
   );
 }
 
+/// 数学公式书写规范：注入系统提示，从源头减少模型输出的残缺/裸公式、误用 > 引用等格式问题
+const MATH_FORMAT_RULE = `【数学公式书写规范】回复含数学公式时，务必遵守：
+1. 所有数学公式（含单个字母变量）必须用美元符成对包裹：行内公式用一个美元符包住，独立公式用两个美元符换行包裹。例如"设 G 是有限群"应写为"设 $G$ 是有限群"，不要写裸字母或重复（如 GG、HH）。
+2. 美元符必须成对且正确闭合，不要把公式与中文文字混在同一个美元符对里，公式前后可留空格。
+3. 公式不要用 ">" 块引用标记包裹，也不要在公式前后添加多余的 ">" 字符。
+4. 使用 LaTeX 语法：幂用 ^（如 $n=a^2+b^2+c^2+d^2$）、乘法用 \\cdot（如 $|G|=|H|\\cdot[G:H]$）、分数用 \\frac、根号用 \\sqrt。`;
+
+function withMathRule(sp: string): string {
+  return `${sp}\n\n${MATH_FORMAT_RULE}`;
+}
+
 /// ReAct 循环返回：finalAnswer 存在表示拿到最终答案；否则交由流式兜底回答
 interface ReactLoopResult {
   finalAnswer?: string;
@@ -331,7 +342,7 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
         temperature: 0.3, // 工具决策用低温更稳定
         thinking_enabled: config.thinkingEnabled,
         reasoning_effort: config.reasoningEffort,
-        system_prompt: withCurrentDate(config.systemPrompt || "你是道生一，一个AI桌面助手。"),
+        system_prompt: withMathRule(withCurrentDate(config.systemPrompt || "你是道生一，一个AI桌面助手。")),
         enable_web_search: config.enableWebSearch,
       },
       messages: convo,
@@ -1181,7 +1192,7 @@ export const useChatStore = defineStore("chat", () => {
       // Persona 人格：作为角色前缀注入（与技能库互补）
       const persona = getPersona(activePersonaId.value);
       if (persona) spBase = `${persona.prompt}\n\n${spBase}`;
-      let sp = withCurrentDate(spBase);
+      let sp = withMathRule(withCurrentDate(spBase));
 
       // ---- 稳定上下文：进 system（跨消息不变，保证前缀可缓存） ----
       // 注入已启用的技能
