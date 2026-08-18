@@ -165,15 +165,16 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-// --- 图片处理 ---
+// --- 剪贴板粘贴（图片 / PDF 走统一 Rust 处理） ---
 function handlePaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items;
   if (!items) return;
   for (let i = 0; i < items.length; i++) {
-    if (items[i].type.startsWith("image/")) {
+    const type = items[i].type;
+    const file = items[i].getAsFile();
+    if (file && (type.startsWith("image/") || /\.pdf$/i.test(file.name))) {
       e.preventDefault();
-      const blob = items[i].getAsFile();
-      if (blob) processImageFile(blob);
+      processFile(file);
     }
   }
 }
@@ -186,58 +187,38 @@ function handleAttachSelect(e: Event) {
   input.value = "";
 }
 
+// 附件统一入口：拖拽/粘贴/文件选择都先经 Rust 保存临时文件 + read_attachment 处理，
+// 与「附件按钮」走同一条 Rust 路径（图片转 base64 / PDF 提取文本 / 文本读取），
+// PDF 额外记录磁盘 path 供分段浏览工具使用。
 function processFile(file: File) {
-  if (file.type.startsWith("image/")) processImageFile(file);
-  else processDocFile(file);
-}
-
-function processImageFile(file: File) {
-  if (!file.type.startsWith("image/")) return;
-  if (file.size > 20 * 1024 * 1024) { alert("图片不能超过 20MB"); return; }
+  if (file.size > 20 * 1024 * 1024) { alert("附件不能超过 20MB"); return; }
   const reader = new FileReader();
-  reader.onload = () => attachedImages.value.push({
-    id: uuidv4(), base64: reader.result as string,
-    mimeType: file.type, fileName: file.name,
-  });
+  reader.onload = async () => {
+    try {
+      const dataUrl = reader.result as string;
+      const b64 = dataUrl.split(",")[1] || dataUrl;
+      const path = await invoke<string>("save_temp_attachment", { data: b64, name: file.name });
+      const res = await invoke<{ kind: string; mime: string; content: string }>("read_attachment", { path });
+      if (res.kind === "image") {
+        attachedImages.value.push({
+          id: uuidv4(), base64: `data:${res.mime};base64,${res.content}`,
+          mimeType: res.mime, fileName: file.name,
+        });
+      } else {
+        const isPdf = res.mime === "application/pdf" || /\.pdf$/i.test(file.name);
+        attachedFiles.value.push({
+          id: uuidv4(), name: file.name, content: res.content, mimeType: res.mime,
+          path: isPdf ? path : undefined,
+        });
+      }
+    } catch (e) {
+      alert(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
   reader.readAsDataURL(file);
 }
 
 function removeImage(id: string) { attachedImages.value = attachedImages.value.filter((i) => i.id !== id); }
-
-// --- 文本文件处理（PDF 走 Rust 提取文本，避免 readAsText 读到二进制乱码） ---
-function processDocFile(file: File) {
-  if (file.size > 5 * 1024 * 1024) { alert("文件不能超过 5MB"); return; }
-  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-  if (isPdf) {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const bytes = new Uint8Array(reader.result as ArrayBuffer);
-        let bin = "";
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        const b64 = btoa(bin);
-        const text = await invoke<string>("extract_pdf_text", { data: b64 });
-        attachedFiles.value.push({
-          id: uuidv4(), name: file.name,
-          content: text.trim() || "（PDF 未提取到文本，可能为扫描件）",
-          mimeType: "application/pdf",
-        });
-      } catch (e) {
-        alert(`PDF 读取失败: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = () => attachedFiles.value.push({
-    id: uuidv4(),
-    name: file.name,
-    content: reader.result as string,
-    mimeType: file.type || "text/plain",
-  });
-  reader.readAsText(file);
-}
 
 function removeFile(id: string) { attachedFiles.value = attachedFiles.value.filter((f) => f.id !== id); }
 
@@ -297,15 +278,13 @@ async function triggerAttach() {
   attachInputRef.value?.click();
 }
 
-// --- 拖拽 ---
+// --- 拖拽（统一走 processFile → Rust） ---
 function onDragOver(e: DragEvent) { e.preventDefault(); }
 function onDrop(e: DragEvent) {
   e.preventDefault();
   if (!e.dataTransfer?.files) return;
   for (let i = 0; i < e.dataTransfer.files.length; i++) {
-    const f = e.dataTransfer.files[i];
-    if (f.type.startsWith("image/")) processImageFile(f);
-    else processDocFile(f);
+    processFile(e.dataTransfer.files[i]);
   }
 }
 

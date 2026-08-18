@@ -526,6 +526,24 @@ fn read_pdf_part(path: String, offset: i64, length: i64) -> Result<String, Strin
     Ok(chars[start..start + len].iter().collect())
 }
 
+/// 把 base64 附件写入临时目录并返回路径（拖拽/粘贴无磁盘路径的文件，先落盘再走 read_attachment 统一处理）
+#[tauri::command]
+fn save_temp_attachment(data: String, name: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let safe_name: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    let dir = std::env::temp_dir().join("daoshengyi_attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let path = dir.join(format!("{}_{}", chrono::Utc::now().timestamp_millis(), safe_name));
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入临时文件失败: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 // --- Ollama 本地视觉模型管理（自动部署 llava-phi3） ---
 
 #[derive(serde::Serialize)]
@@ -2026,6 +2044,7 @@ pub fn run() {
             read_attachment,
             extract_pdf_text,
             read_pdf_part,
+            save_temp_attachment,
             ollama_status,
             ollama_setup,
             ollama_describe_image,
