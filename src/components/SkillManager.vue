@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useSkillStore } from "@/stores/skill";
+import { useUiStore } from "@/stores/ui";
 import { SKILL_CATALOG } from "@/data/skills-catalog";
 
 import type { Skill } from "@/types";
 
 const store = useSkillStore();
-const visible = ref(false);
+const ui = useUiStore();
 const activeTab = ref<"mine" | "catalog" | "import">("mine");
 const editing = ref<string | null>(null);
 const form = ref<Pick<Skill, "name" | "description" | "prompt" | "category" | "enabled" | "source">>({
@@ -21,15 +22,20 @@ const fileInput = ref<HTMLInputElement>();
 const myEnabled = computed(() => store.skills.filter(s => s.enabled).length);
 
 function open() {
-  visible.value = true;
   activeTab.value = store.skills.length > 0 ? "mine" : "catalog";
+  ui.openSkills();
 }
 
 function cancel() {
-  visible.value = false;
+  ui.closeSkills();
   editing.value = null;
   importMsg.value = "";
 }
+
+// 从菜单栏「技能库」打开时，同样初始化到合适的分页
+watch(() => ui.skillsOpen, (v) => {
+  if (v) activeTab.value = store.skills.length > 0 ? "mine" : "catalog";
+});
 
 function openEdit(id: string) {
   const s = store.skills.find((x) => x.id === id);
@@ -122,7 +128,7 @@ const categoryColors: Record<string, string> = {
     </button>
 
     <Teleport to="body">
-      <div v-if="visible" class="sk-overlay" @click.self="cancel">
+      <div v-if="ui.skillsOpen" class="sk-overlay" @click.self="cancel">
         <div class="sk-panel">
 
           <!-- Header + Tabs -->

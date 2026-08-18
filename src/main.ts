@@ -5,6 +5,7 @@ import App from "./App.vue";
 import { useMcpStore } from "./stores/mcp";
 import { useOllamaStore } from "./stores/ollama";
 import { useChatStore } from "./stores/chat";
+import { useUiStore } from "./stores/ui";
 import "./assets/styles/main.css";
 
 const app = createApp(App);
@@ -23,3 +24,25 @@ listen("ollama-configured", () => {
   chat.reloadProfilesFromRust().catch(() => {});
 });
 app.mount("#app");
+
+// 系统菜单栏事件分发：菜单在 src-tauri/src/lib.rs 构建，点击后经 Rust
+// on_menu_event 转发为 "menu://action" 事件，这里按动作 id 路由到对应功能。
+listen<string>("menu://action", (e) => {
+  const ui = useUiStore();
+  const chat = useChatStore();
+  switch (e.payload) {
+    case "about": ui.openAbout(); break;
+    case "settings": ui.openSettings("api"); break;
+    case "new-chat": chat.createConversation(); break;
+    case "export-md": ui.requestExport(); break;
+    case "toggle-sidebar": ui.toggleSidebar(); break;
+    case "toggle-theme": ui.requestThemeToggle(); break;
+    case "open-skills": ui.openSkills(); break;
+    case "open-mcp": ui.openSettings("mcp"); break;
+    case "open-ollama": ui.openSettings("ollama"); break;
+    case "open-stats": ui.openSettings("stats"); break;
+    case "open-tasks": ui.openSettings("tasks"); break;
+    case "open-health": ui.openSettings("health"); break;
+    case "open-agents": ui.openSettings("agents"); break;
+  }
+}).catch(() => {});

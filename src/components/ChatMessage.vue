@@ -2,6 +2,8 @@
 import { ref, computed, watch, nextTick, onMounted, onUpdated } from "vue";
 import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
+import "katex/dist/katex.min.css";
+import { katexMarkedExtension } from "@/utils/katex-marked";
 import hljs from "@/utils/hljs";
 import { useChatStore } from "@/stores/chat";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,7 +33,8 @@ const terminalOutput = computed(() => {
   return c.split("\n").slice(1).join("\n").trim();
 });
 
-const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
+const marked = new Marked(katexMarkedExtension());
+marked.setOptions({ breaks: true, gfm: true });
 
 // 识别本地文件路径 → 转成可点击链接（href="#" + data-path，点击拦截调系统打开）
 // 支持 ~/ 开头与中文目录；排除 markdown 链接/括号内
@@ -49,12 +52,54 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// ── 数学公式预处理 ────────────────────────────────────────────────
+// marked-katex-extension 默认只识别 $...$ / $$...$$，且要求 $ 前后有空格或标点。
+// 这里做三层兜底，兼容中文模型的常见写法：
+//  1. 先保护代码块/行内代码，避免误改代码里的 $ 或 \(...\)
+//  2. 中文字符紧贴 $ 时补空格，否则 "设$x^2$" 这种写法不会被识别
+//  3. 把 LaTeX 风格 \(...\) / \[...\] 归一化为 $...$ / $$...$$
+const MATH_PH = "\u0000";
+// 与 $ 相邻时需要补空格的字符：汉字 + 中文全角标点（，。；：、（）「」《》…—）
+// 否则 "坐标，$q$ 为..." 这种 $ 紧贴标点的情况不会被识别为公式
+const CJK_ADJACENT = "\\u4e00-\\u9fa5\\u3000-\\u303f\\uff00-\\uffef";
+function protectCodeSpans(s: string) {
+  const blocks: string[] = [];
+  const text = s
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, (m) => { blocks.push(m); return `${MATH_PH}b${blocks.length - 1}${MATH_PH}`; })
+    .replace(/`+[^`\n]*?`+/g, (m) => { blocks.push(m); return `${MATH_PH}i${blocks.length - 1}${MATH_PH}`; });
+  return {
+    text,
+    restore(t: string) {
+      return t.replace(new RegExp(`${MATH_PH}[bi](\\d+)${MATH_PH}`, "g"), (_, idx) => blocks[Number(idx)]);
+    },
+  };
+}
+function normalizeMath(s: string): string {
+  const { text, restore } = protectCodeSpans(s);
+  const out = text
+    // 中文（含全角标点）与 $ 紧贴 → 补空格，让 inline 公式能被识别
+    .replace(new RegExp(`([${CJK_ADJACENT}])(\\$+)`, "g"), "$1 $2")
+    .replace(new RegExp(`(\\$+)([${CJK_ADJACENT}])`, "g"), "$1 $2")
+    // \(...\) → $...$
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, body: string) => `$${body.trim()}$`)
+    // \[...\] → 块级 $$...$$
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`);
+  return restore(out);
+}
+
 // 用 marked 的 renderer 在渲染时把路径替换为链接：renderer 输出直接拼进最终 HTML，
 // 不经过 marked 对 raw HTML 的二次解析/转义，确保链接确实渲染成可点击元素。
 // 同时覆盖 text（纯文本）与 codespan（反引号行内代码），因为 agent 常把路径包在 ` 里
 marked.use({
   renderer: {
-    text(token: { text: string }) {
+    // 关键：marked 会把整段内联内容打包成一个可能带「嵌套 tokens」的 text token
+    // （里面是 strong/em/inlineKatex 等）。必须先经 parseInline 渲染这些嵌套 token，
+    // 否则加粗、公式等会以字面量出现（如 **xx**、$...$）。只有纯文本 token 才做路径链接化。
+    text(this: unknown, token: { text: string; tokens?: unknown[] }) {
+      const parser = (this as { parser?: { parseInline(tokens: unknown[]): string } }).parser;
+      if (parser && token.tokens?.length) {
+        return parser.parseInline(token.tokens);
+      }
       return linkifyLocalPaths(token.text);
     },
     codespan(token: { text: string }) {
@@ -66,7 +111,7 @@ marked.use({
   },
 });
 
-function md(s: string) { return s ? marked.parse(s) as string : ""; }
+function md(s: string) { return s ? marked.parse(normalizeMath(s)) as string : ""; }
 
 // 拦截本地文件链接：用系统默认应用打开（如 Excel/Numbers 打开 CSV）
 async function onContentClick(e: MouseEvent) {
@@ -250,7 +295,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .message--user .message__body { align-items: flex-end; }
 .message--assistant .message__body { align-items: flex-start; }
 .message__bubble {
-  max-width: 78%; min-width: 0;
+  max-width: 85%; min-width: 0;
   padding: 10px 14px;
   border-radius: 14px;
   background: var(--bg-assistant-bubble);

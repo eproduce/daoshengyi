@@ -5,30 +5,35 @@ import ChatMessage from "./components/ChatMessage.vue";
 import SubagentPanel from "./components/SubagentPanel.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import AboutDialog from "./components/AboutDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
 import { useOllamaStore } from "./stores/ollama";
+import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
 import type { ImageAttachment, FileAttachment } from "@/types";
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
+const ui = useUiStore();
 const { theme, toggleTheme } = useTheme();
-
-const showSettings = ref(false);
-const settingsInitialTab = ref<"api" | "mcp" | "ollama">("api");
-const showSidebar = ref(true);
 
 // 首次启动自动检测 Ollama 本地视觉模型（结合硬件评估智能引导）
 const ollamaBanner = ref(false);       // 硬件允许 → 一键部署横幅
 const ollamaNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
 const hardwareMessage = ref("");
-function openSettings(tab: "api" | "mcp" | "ollama" = "api") {
-  settingsInitialTab.value = tab;
-  showSettings.value = true;
+function openSettings(tab: SettingsTab = "api") {
+  ui.openSettings(tab);
 }
+
+// 系统菜单事件（main.ts 分发）触发的响应：切换主题 / 导出对话
+watch(() => ui.themeToggleCounter, () => toggleTheme());
+watch(() => ui.exportCounter, () => {
+  const id = chatStore.activeConversationId;
+  if (id) chatStore.downloadExport(id, "md");
+});
 async function checkOllamaOnStart() {
   // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
   await ollamaStore.init();
@@ -109,7 +114,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="app-layout">
     <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ 'sidebar--collapsed': !showSidebar }">
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': !ui.sidebarVisible }">
       <ChatHistory />
     </aside>
 
@@ -118,7 +123,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <!-- 顶部栏 -->
       <header class="topbar">
         <div class="topbar__left">
-          <button class="topbar__btn" title="切换侧边栏" @click="showSidebar = !showSidebar">
+          <button class="topbar__btn" title="切换侧边栏" @click="ui.toggleSidebar()">
             ☰
           </button>
           <AppLogo :size="22" class="topbar__logo" />
@@ -209,7 +214,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <ChatInput
         :disabled="chatStore.isStreaming"
         @send="handleSend"
-        @open-settings="showSettings = true"
+        @open-settings="ui.openSettings('api')"
       />
 
       <!-- 停止生成按钮 -->
@@ -224,7 +229,10 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
     </div>
 
     <!-- 设置弹窗 -->
-    <SettingsDialog v-if="showSettings" :initial-tab="settingsInitialTab" @close="showSettings = false" />
+    <SettingsDialog v-if="ui.settingsOpen" :initial-tab="ui.settingsTab" @close="ui.closeSettings()" />
+
+    <!-- 关于道生一 -->
+    <AboutDialog v-if="ui.aboutOpen" @close="ui.closeAbout()" />
   </div>
 </template>
 
@@ -314,9 +322,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   scroll-behavior: smooth;
 }
 
-/* 消息内容居中容器：宽屏下限制阅读宽度（借鉴 Hermes 工作台的居中布局） */
+/* 消息内容居中容器：小屏填满可用宽度，大屏封顶 1400px，减少高分屏全屏时的两侧空白 */
 .messages-inner {
-  max-width: 920px; margin: 0 auto; min-height: 100%;
+  max-width: min(100% - 48px, 1400px); margin: 0 auto; min-height: 100%;
   display: flex; flex-direction: column;
   padding: 16px 24px 28px;
 }

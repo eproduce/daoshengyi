@@ -6,16 +6,17 @@ withDefaults(defineProps<{ size?: number }>(), { size: 28 });
   <svg
     :width="size"
     :height="size"
-    viewBox="0 0 48 48"
+    viewBox="0 0 64 64"
     class="app-logo"
     aria-hidden="true"
   >
-    <!-- 圆角方形背景 -->
-    <rect class="logo-bg" x="5" y="5" width="38" height="38" rx="9" />
-    <!-- 顶部菱形（道） -->
-    <polygon class="logo-fg" points="24,11 27.5,14.5 24,18 20.5,14.5" />
-    <!-- 底部横线（一） -->
-    <rect class="logo-fg" x="14" y="26" width="20" height="4" rx="2" />
+    <!-- 与系统 Dock 图标同源造型（scripts/gen-icons.cjs：圆点"道"+横条"一"），
+         颜色随明暗主题切换（--logo-*），避免固定深色在浅色主题下显得突兀 -->
+    <rect width="64" height="64" rx="14" class="logo-bg" />
+    <!-- 点 — 道 -->
+    <circle cx="32" cy="18" r="3.5" class="logo-fg" opacity="0.9" />
+    <!-- 一 — 生一 -->
+    <rect x="16" y="34" width="32" height="5" rx="2.5" class="logo-fg" opacity="0.85" />
   </svg>
 </template>
 

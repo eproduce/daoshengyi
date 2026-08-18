@@ -469,8 +469,9 @@ function handleDelete() {
       </div>
 
     <div class="settings-dialog__footer">
+      <!-- 删除/保存 只对「API 配置」页生效（针对正在编辑的模型配置），其余页只保留关闭 -->
       <button
-        v-if="!isNew && chatStore.profiles.length > 1"
+        v-if="activeTab === 'api' && !isNew && chatStore.profiles.length > 1"
         class="btn-danger"
         @click="handleDelete"
       >
@@ -478,7 +479,7 @@ function handleDelete() {
       </button>
       <div class="settings-dialog__footer-spacer"></div>
       <button class="btn-secondary" @click="emit('close')">取消</button>
-      <button class="btn-primary" @click="handleSave">保存</button>
+      <button v-if="activeTab === 'api'" class="btn-primary" @click="handleSave">保存</button>
     </div>
   </div>
   </div>

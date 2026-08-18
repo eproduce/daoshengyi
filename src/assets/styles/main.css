@@ -148,3 +148,17 @@ html, body {
 .markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 16px 0; }
 .markdown-body img { max-width: 100%; border-radius: var(--radius-sm); }
 .hljs { background: transparent !important; }
+
+/* ── KaTeX 公式 ─────────────────────────────────────────────────── */
+/* 覆盖 .markdown-body 的 word-break，避免长公式被折行拆碎 */
+.markdown-body .katex { white-space: nowrap; }
+.markdown-body .katex,
+.markdown-body .katex * { overflow-wrap: normal; word-break: normal; }
+/* 块级公式超宽时横向滚动，不撑破气泡 */
+.markdown-body .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  margin: 12px 0;
+  padding: 4px 0 8px;
+}

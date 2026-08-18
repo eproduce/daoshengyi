@@ -7,6 +7,7 @@ mod mcp_server;
 mod settings;
 
 use tauri::{Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use futures::StreamExt;
 use db::Database;
 use tokio::sync::Mutex;
@@ -2231,11 +2232,98 @@ fn remove_tags(html: &str, tag: &str) -> String {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 返回应用版本（供「关于道生一」弹窗显示，避免前端硬编码版本号）
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+// --- 系统菜单栏 ---
+
+/// 构建中文系统菜单栏，替换 Tauri 默认英文菜单。
+/// 自定义菜单项点击后统一转发为 `menu://action` 事件（payload 为动作 id），
+/// 前端在 main.ts 中 listen 并分发到对应功能。预定义项（隐藏/退出/编辑/窗口）由系统原生处理。
+fn build_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<Menu<R>> {
+    // 道生一（macOS 首个菜单标题会被系统替换为应用名）
+    let app_menu = Submenu::with_id_and_items(app, "app", "道生一", true, &[
+        &MenuItem::with_id(app, "about", "关于道生一", true, None::<&str>)?,
+        &MenuItem::with_id(app, "settings", "设置…", true, Some("CmdOrCtrl+,"))?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::hide(app, Some("隐藏道生一"))?,
+        &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
+        &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::quit(app, Some("退出道生一"))?,
+    ])?;
+
+    // 文件
+    let file_menu = Submenu::with_id_and_items(app, "file", "文件", true, &[
+        &MenuItem::with_id(app, "new-chat", "新建对话", true, Some("CmdOrCtrl+N"))?,
+        &MenuItem::with_id(app, "export-md", "导出对话为 Markdown…", true, None::<&str>)?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+    ])?;
+
+    // 编辑（撤销/重做/剪切/复制/粘贴/全选：系统原生动作）
+    let edit_menu = Submenu::with_id_and_items(app, "edit", "编辑", true, &[
+        &PredefinedMenuItem::undo(app, Some("撤销"))?,
+        &PredefinedMenuItem::redo(app, Some("重做"))?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::cut(app, Some("剪切"))?,
+        &PredefinedMenuItem::copy(app, Some("复制"))?,
+        &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+        &PredefinedMenuItem::select_all(app, Some("全选"))?,
+    ])?;
+
+    // 视图
+    let view_menu = Submenu::with_id_and_items(app, "view", "视图", true, &[
+        &MenuItem::with_id(app, "toggle-sidebar", "切换侧边栏", true, Some("CmdOrCtrl+B"))?,
+        &MenuItem::with_id(app, "toggle-theme", "切换主题", true, Some("CmdOrCtrl+Shift+L"))?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?,
+    ])?;
+
+    // 窗口
+    let window_menu = Submenu::with_id_and_items(app, "window", "窗口", true, &[
+        &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+        &PredefinedMenuItem::maximize(app, Some("最大化"))?,
+    ])?;
+
+    // 工具（关键功能入口）
+    let tools_menu = Submenu::with_id_and_items(app, "tools", "工具", true, &[
+        &MenuItem::with_id(app, "open-skills", "技能库", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-mcp", "插件（MCP）", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-ollama", "本地模型（Ollama）", true, None::<&str>)?,
+        &PredefinedMenuItem::separator(app)?,
+        &MenuItem::with_id(app, "open-stats", "用量统计", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-agents", "编码 Agent 委派", true, None::<&str>)?,
+    ])?;
+
+    Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &tools_menu])
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            const ACTIONS: &[&str] = &[
+                "about", "settings", "new-chat", "export-md",
+                "toggle-sidebar", "toggle-theme",
+                "open-skills", "open-mcp", "open-ollama",
+                "open-stats", "open-tasks", "open-health", "open-agents",
+            ];
+            if ACTIONS.contains(&id) {
+                let _ = app.emit("menu://action", id);
+            }
+        })
         .setup(|app| {
             let app_dir = app.path().app_data_dir().expect("无法获取数据目录");
             let database = Database::new(app_dir.clone()).expect("数据库初始化失败");
@@ -2302,6 +2390,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            app_version,
             send_message,
             chat_once,
             load_conversations,
