@@ -140,6 +140,12 @@ function onAuxProfileChange(e: Event) {
   updateSettings({ auxiliaryProfileId: v });
 }
 
+// Brave Search API Key（全局，所有 Profile 共用；联网搜索优先走 Brave API）
+const braveApiKey = ref(getSettings().braveApiKey || "");
+function saveBraveApiKey() {
+  updateSettings({ braveApiKey: braveApiKey.value.trim() });
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -324,6 +330,17 @@ function handleDelete() {
             <input v-model="editingProfile.enableWebSearch" type="checkbox" class="toggle-input" />
           </label>
           <span class="form-hint">允许模型搜索互联网获取最新信息</span>
+        </div>
+
+        <div class="form-group">
+          <label>🔑 Brave 搜索 API Key</label>
+          <input
+            v-model="braveApiKey"
+            type="password"
+            placeholder="BSA...（可选，免费 2000 次/月）"
+            @change="saveBraveApiKey"
+          />
+          <span class="form-hint">联网搜索优先走 Brave API（质量更稳）。获取：brave.com/search/api → 注册 → Free plan → 创建 Key；也可在对话中把 Key 发给 AI，让它调用 set_brave_api_key 帮你配置。无法访问境外网络时可留空，自动用必应中国等国内源。</span>
         </div>
 
         <div class="form-group">

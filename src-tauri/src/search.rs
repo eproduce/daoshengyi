@@ -45,37 +45,52 @@ async fn search_brave(query: &str, key: &str) -> Result<Vec<SearchResult>, Strin
     Ok(results)
 }
 
-/// 必应 HTML 搜索（Bing DOM 改版后结果块为 <li class="b_algo">，标题 <h2><a>）
+/// 必应 HTML 搜索（Bing DOM 改版后结果块为 <li class="b_algo">，标题 <h2><a>）。
+/// 依次尝试必应中国（cn.bing.com，国内直连稳定）与国际版（www.bing.com，境外质量更全），
+/// 取第一个非空结果；每个域名独立短超时，避免某域名不可达时干等拖慢搜索。
 async fn search_bing(query: &str) -> Result<Vec<SearchResult>, String> {
-    let url = format!("https://www.bing.com/search?q={}&count=10&setlang=zh-cn", urlencoding(query));
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0")
-        .timeout(std::time::Duration::from_secs(10))
-        .build().map_err(|e| format!("err:{}", e))?;
+    let mut last_err = "必应搜索无结果".to_string();
+    for domain in ["cn.bing.com", "www.bing.com"] {
+        let url = format!("https://{}/search?q={}&count=10&setlang=zh-cn", domain, urlencoding(query));
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0")
+            .timeout(std::time::Duration::from_secs(6))
+            .build().map_err(|e| format!("err:{}", e))?;
 
-    let html = client.get(&url).send().await.map_err(|e| format!("err:{}", e))?
-        .text().await.map_err(|e| format!("err:{}", e))?;
+        let html = match client.get(&url).send().await {
+            Ok(r) => match r.text().await {
+                Ok(t) => t,
+                Err(e) => { last_err = format!("必应 {} 读取失败: {}", domain, e); continue; }
+            },
+            Err(e) => { last_err = format!("必应 {} 连接失败: {}", domain, e); continue; }
+        };
 
-    let mut results = Vec::new();
-    let mut pos = 0;
-    while results.len() < 10 {
-        let start = match html[pos..].find("<li class=\"b_algo\"") {
-            Some(i) => pos + i, None => break,
-        };
-        let end = match html[start..].find("</li>") {
-            Some(i) => start + i, None => break,
-        };
-        let block = &html[start..end];
-        let title = extract_h2(block);
-        let url = extract_h2_link(block);
-        let snippet = extract_bing_caption(block);
-        if !title.is_empty() && !url.is_empty() {
-            results.push(SearchResult { title, url, snippet: snippet.chars().take(300).collect() });
+        let mut results = Vec::new();
+        let mut pos = 0;
+        while results.len() < 10 {
+            let start = match html[pos..].find("<li class=\"b_algo\"") {
+                Some(i) => pos + i, None => break,
+            };
+            let end = match html[start..].find("</li>") {
+                Some(i) => start + i, None => break,
+            };
+            let block = &html[start..end];
+            let title = extract_h2(block);
+            let url = extract_h2_link(block);
+            let snippet = extract_bing_caption(block);
+            if !title.is_empty() && !url.is_empty() {
+                results.push(SearchResult { title, url, snippet: snippet.chars().take(300).collect() });
+            }
+            pos = end + 5;
         }
-        pos = end + 5;
+        if !results.is_empty() {
+            eprintln!("[Bing {}] {} results", domain, results.len());
+            return Ok(results);
+        }
+        last_err = format!("必应 {} 无结果", domain);
     }
-    eprintln!("[Bing] {} results", results.len());
-    Ok(results)
+    eprintln!("[Bing] {}", last_err);
+    Ok(Vec::new())
 }
 
 /// 提取 Bing 标题：<h2 ...>...</h2>（开标签允许带属性）

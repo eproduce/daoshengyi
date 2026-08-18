@@ -56,6 +56,9 @@ pub struct AppSettings {
     /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
     #[serde(default)]
     pub auxiliary_profile_id: Option<String>,
+    /// Brave Search API Key（联网搜索优先走 Brave API，免费 2000 次/月）
+    #[serde(default)]
+    pub brave_api_key: String,
 }
 
 fn default_approval_mode() -> String {
@@ -73,6 +76,7 @@ impl Default for AppSettings {
             yolo_mode: false,
             approval_mode: "manual".to_string(),
             auxiliary_profile_id: None,
+            brave_api_key: String::new(),
         }
     }
 }
@@ -131,6 +135,7 @@ impl SecretCipher {
         for p in settings.profiles.iter_mut() {
             p.api_key = self.encrypt(&p.api_key)?;
         }
+        settings.brave_api_key = self.encrypt(&settings.brave_api_key)?;
         Ok(())
     }
 
@@ -142,6 +147,11 @@ impl SecretCipher {
                 if let Ok(plain) = self.decrypt(&p.api_key) {
                     p.api_key = plain;
                 }
+            }
+        }
+        if !settings.brave_api_key.is_empty() {
+            if let Ok(plain) = self.decrypt(&settings.brave_api_key) {
+                settings.brave_api_key = plain;
             }
         }
         Ok(())
