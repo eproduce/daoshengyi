@@ -608,6 +608,12 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
         return Ok(AttachmentContent { kind: "text".into(), mime: "application/vnd.ms-excel".into(), content: text });
     }
 
+    // Apple Numbers 表格：调用系统 Numbers.app 导出为 CSV 后读取
+    if ext == "numbers" {
+        let text = read_numbers_content(&path)?;
+        return Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text });
+    }
+
     // 其余按文本：二进制检测（含 NUL 字节判定）+ GBK 回退
     if bytes.contains(&0u8) {
         return Err("该附件是二进制格式，暂不支持作为文本读取；请另存为 CSV/TXT，或转为 PDF/Excel 后再上传".into());
@@ -675,6 +681,117 @@ fn read_excel_content(path: &str) -> Result<String, String> {
     }
     if out.trim().is_empty() { return Err("Excel 中未读取到内容".into()); }
     Ok(out)
+}
+
+/// 读取 Apple Numbers 表格。优先用系统 Numbers.app 导出 CSV（最完整）；
+/// 未安装 Numbers / 未授权时，回退为把 .numbers 当 zip 解压并提取内部可读文本
+/// （小表格通常是未压缩 protobuf，单元格文本可直接提取，供 agent 分析）。
+fn read_numbers_content(path: &str) -> Result<String, String> {
+    // 1) 系统 Numbers.app 导出（若有）
+    if let Ok(text) = export_numbers_via_app(path) {
+        return Ok(text);
+    }
+    // 2) 纯 Rust 兜底：zip 解压 + 文本提取
+    extract_numbers_text(path)
+}
+
+/// 调用系统 Numbers.app 把 .numbers 导出为 CSV 后读取。
+/// 首次使用会请求「控制 Numbers」自动化授权；未安装或未授权时返回 Err。
+fn export_numbers_via_app(path: &str) -> Result<String, String> {
+    let out_csv = std::env::temp_dir().join(format!("numbers_export_{}.csv", std::process::id()));
+    let out_str = out_csv.to_string_lossy().replace('"', "\\\"");
+    let path_str = path.replace('"', "\\\"");
+    let script = format!(
+        "with timeout of 30 seconds\n\
+         tell application \"Numbers\"\n\
+         \tset theDoc to open POSIX file \"{path}\"\n\
+         \tdelay 1\n\
+         \texport theDoc to POSIX file \"{out}\" as CSV\n\
+         \tclose theDoc saving no\n\
+         end tell\n\
+         end timeout",
+        path = path_str, out = out_str
+    );
+    let status = std::process::Command::new("osascript")
+        .arg("-e").arg(&script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("调用 Numbers 失败: {}", e))?;
+    if !status.success() {
+        return Err("Numbers.app 导出失败（可能未安装或未授权）".into());
+    }
+    let bytes = std::fs::read(&out_csv).map_err(|e| format!("读取导出的 CSV 失败: {}", e))?;
+    let _ = std::fs::remove_file(&out_csv);
+    if bytes.is_empty() { return Err("Numbers 导出内容为空".into()); }
+    read_text_bytes(&bytes)
+}
+
+/// 把 .numbers 当 zip 解压，从 IWA/JSON/表格内部文件提取可读文本（尽力而为）
+fn extract_numbers_text(path: &str) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("打开 Numbers 文件失败: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Numbers 文件无法解压: {}", e))?;
+    let mut collected = String::new();
+    let mut seen = 0usize;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("读取 Numbers 内部失败: {}", e))?;
+        let name = entry.name().to_string();
+        // 只看 IWA / JSON / 表格相关的内部文件
+        let is_target = name.ends_with(".iwa")
+            || name.ends_with(".json")
+            || name.contains("Sheet")
+            || name.contains("Table")
+            || name.contains("Document");
+        if !is_target { continue; }
+        let mut buf = Vec::new();
+        if entry.read_to_end(&mut buf).is_err() { continue; }
+        // IWA 数据可能整体 snappy 压缩，尝试解压；失败则用原始字节
+        let decompressed = if name.ends_with(".iwa") {
+            snap::raw::Decoder::new().decompress_vec(&buf).unwrap_or_else(|_| buf.clone())
+        } else { buf.clone() };
+        let text = extract_readable_text(&decompressed);
+        if !text.trim().is_empty() {
+            collected.push_str(&format!("\n【{}】\n{}\n", name, text));
+            seen += 1;
+        }
+        if seen >= 20 { break; }
+    }
+    if collected.trim().is_empty() {
+        Err("未能从 Numbers 文件中提取到可读内容。请在 Numbers / WPS / LibreOffice 中另存为 CSV 或 Excel 后再上传".into())
+    } else {
+        Ok(collected)
+    }
+}
+
+/// 从二进制中提取连续可读的 UTF-8 文本片段（过滤控制字符与单字符碎片）
+fn extract_readable_text(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let flush = |out: &mut Vec<String>, cur: &mut String| {
+        let t = cur.trim();
+        let printable: usize = t.chars().filter(|c| !c.is_ascii_control()).count();
+        if printable >= 3 { out.push(t.to_string()); }
+        cur.clear();
+    };
+    for c in s.chars() {
+        if c.is_ascii_control() {
+            if !matches!(c, '\t' | '\n' | '\r') { flush(&mut out, &mut cur); continue; }
+            cur.push(c);
+        } else {
+            cur.push(c);
+        }
+    }
+    flush(&mut out, &mut cur);
+    // 去重相邻重复（protobuf 里同一字符串常出现多次）
+    let mut result: Vec<String> = Vec::new();
+    for line in out {
+        if result.last().map(|l| l == &line).unwrap_or(false) { continue; }
+        if result.iter().any(|l| l.contains(&line) && l.len() > line.len() * 2) { continue; }
+        result.push(line);
+    }
+    result.join("\n")
 }
 
 /// 从 base64 的 PDF 内容提取文本（拖拽/粘贴 PDF 用，避免前端 readAsText 读到二进制乱码）
