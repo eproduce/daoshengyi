@@ -65,7 +65,8 @@ function getMcpToolsPrompt(): string {
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
-    "\n- **set_brave_api_key** (app): 保存用户提供的 Brave Search API Key（联网搜索更稳定）。仅当用户在对话中明确给出 key 时调用。参数 {\"key\": \"用户给的完整 Key\"}。";
+    "\n- **set_brave_api_key** (app): 保存用户提供的 Brave Search API Key（联网搜索更稳定）。仅当用户在对话中明确给出 key 时调用。参数 {\"key\": \"用户给的完整 Key\"}。" +
+    "\n- **send_im** (app): 主动推送一条消息到飞书或企业微信群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -241,6 +242,21 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!key) throw new Error("set_brave_api_key 需要 key 参数（用户在对话中提供的 Brave Search API Key）");
       updateSettings({ braveApiKey: key }); // 同步更新内存缓存 + debounce 写盘；不 reload 避免读到旧值覆盖
       return `已保存 Brave Search API Key（${key.slice(0, 6)}…${key.slice(-4)}）。后续联网搜索将优先使用 Brave API。`;
+    }
+    case "send_im": {
+      // 主动推送消息到飞书/企业微信群机器人（只发不收，无代理直连）
+      const platform = String(args.platform || "").toLowerCase();
+      const text = String(args.text || "");
+      if (!text) throw new Error("send_im 需要 text 参数（要推送的内容）");
+      const isWecom = platform.includes("wecom") || platform.includes("企业") || platform.includes("weixin");
+      const isFeishu = platform.includes("feishu") || platform.includes("飞书") || platform.includes("lark");
+      if (!isWecom && !isFeishu) throw new Error("send_im 需要 platform 参数：feishu（飞书）或 wecom（企业微信）");
+      const webhook = isWecom ? getSettings().wecomWebhook : getSettings().feishuWebhook;
+      if (!webhook) {
+        throw new Error(`未配置${isWecom ? "企业微信" : "飞书"} Webhook，请先在「设置 → 推送」中填写群机器人 Webhook 地址。`);
+      }
+      const result = await invoke<string>("send_im_message", { platform: isWecom ? "wecom" : "feishu", text, webhook });
+      return result;
     }
     case "describe_image": {
       const path = String(args.path || "");

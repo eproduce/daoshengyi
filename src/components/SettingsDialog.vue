@@ -13,14 +13,14 @@ import ScheduledTasks from "./ScheduledTasks.vue";
 import CodingAgents from "./CodingAgents.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -140,6 +140,16 @@ function onAuxProfileChange(e: Event) {
   updateSettings({ auxiliaryProfileId: v });
 }
 
+// 主动推送 Webhook（飞书 / 企业微信群机器人，加密落盘）
+const feishuWebhook = ref(getSettings().feishuWebhook || "");
+const wecomWebhook = ref(getSettings().wecomWebhook || "");
+function savePushWebhooks() {
+  updateSettings({
+    feishuWebhook: feishuWebhook.value.trim(),
+    wecomWebhook: wecomWebhook.value.trim(),
+  });
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -206,6 +216,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon">🩺</span>诊断</button>
           <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon">⏰</span>定时任务</button>
           <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'"><span class="settings-tab__icon">🤖</span>编码 Agent</button>
+          <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon">📤</span>推送</button>
         </nav>
 
         <!-- 右侧内容 -->
@@ -465,6 +476,30 @@ function handleDelete() {
 
       <!-- 编码 Agent -->
       <div v-show="activeTab === 'agents'"><CodingAgents /></div>
+
+      <!-- 主动推送（飞书 / 企业微信群机器人） -->
+      <div v-show="activeTab === 'push'">
+        <div class="form-group">
+          <label>飞书群机器人 Webhook</label>
+          <input
+            v-model="feishuWebhook"
+            type="password"
+            placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
+            @change="savePushWebhooks"
+          />
+          <span class="form-hint">飞书群 → 设置 → 群机器人 → 添加「自定义机器人」→ 复制 Webhook 地址</span>
+        </div>
+        <div class="form-group">
+          <label>企业微信群机器人 Webhook</label>
+          <input
+            v-model="wecomWebhook"
+            type="password"
+            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+            @change="savePushWebhooks"
+          />
+          <span class="form-hint">企业微信群 → 添加「群机器人」→ 复制 Webhook 地址。之后可让 Agent 调用 send_im 主动推送，或配定时任务用 curl 定时推送。</span>
+        </div>
+      </div>
         </div>
       </div>
 

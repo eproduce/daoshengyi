@@ -59,6 +59,12 @@ pub struct AppSettings {
     /// Brave Search API Key（联网搜索优先走 Brave API，免费 2000 次/月）
     #[serde(default)]
     pub brave_api_key: String,
+    /// 飞书群机器人 Webhook（主动推送用）
+    #[serde(default)]
+    pub feishu_webhook: String,
+    /// 企业微信群机器人 Webhook（主动推送用）
+    #[serde(default)]
+    pub wecom_webhook: String,
 }
 
 fn default_approval_mode() -> String {
@@ -77,6 +83,8 @@ impl Default for AppSettings {
             approval_mode: "manual".to_string(),
             auxiliary_profile_id: None,
             brave_api_key: String::new(),
+            feishu_webhook: String::new(),
+            wecom_webhook: String::new(),
         }
     }
 }
@@ -136,6 +144,8 @@ impl SecretCipher {
             p.api_key = self.encrypt(&p.api_key)?;
         }
         settings.brave_api_key = self.encrypt(&settings.brave_api_key)?;
+        settings.feishu_webhook = self.encrypt(&settings.feishu_webhook)?;
+        settings.wecom_webhook = self.encrypt(&settings.wecom_webhook)?;
         Ok(())
     }
 
@@ -152,6 +162,16 @@ impl SecretCipher {
         if !settings.brave_api_key.is_empty() {
             if let Ok(plain) = self.decrypt(&settings.brave_api_key) {
                 settings.brave_api_key = plain;
+            }
+        }
+        if !settings.feishu_webhook.is_empty() {
+            if let Ok(plain) = self.decrypt(&settings.feishu_webhook) {
+                settings.feishu_webhook = plain;
+            }
+        }
+        if !settings.wecom_webhook.is_empty() {
+            if let Ok(plain) = self.decrypt(&settings.wecom_webhook) {
+                settings.wecom_webhook = plain;
             }
         }
         Ok(())
@@ -250,6 +270,8 @@ mod tests {
             approval_mode: "manual".into(),
             auxiliary_profile_id: None,
             brave_api_key: String::new(),
+            feishu_webhook: String::new(),
+            wecom_webhook: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -279,6 +301,8 @@ mod tests {
             approval_mode: "manual".into(),
             auxiliary_profile_id: None,
             brave_api_key: String::new(),
+            feishu_webhook: String::new(),
+            wecom_webhook: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

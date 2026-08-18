@@ -32,6 +32,10 @@ export interface AppSettingsPayload {
   auxiliaryProfileId: string;
   /// Brave Search API Key（联网搜索优先走 Brave API；全局共用，Rust 端加密落盘）
   braveApiKey: string;
+  /// 飞书群机器人 Webhook（主动推送用）
+  feishuWebhook: string;
+  /// 企业微信群机器人 Webhook（主动推送用）
+  wecomWebhook: string;
 }
 
 let cache: AppSettingsPayload = {
@@ -44,6 +48,8 @@ let cache: AppSettingsPayload = {
   approvalMode: "manual",
   auxiliaryProfileId: "",
   braveApiKey: "",
+  feishuWebhook: "",
+  wecomWebhook: "",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

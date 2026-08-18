@@ -1887,6 +1887,50 @@ async fn web_search(query: String, brave_key: String) -> Result<Vec<search::Sear
     search::search_web(&query, &brave_key).await
 }
 
+/// 主动推送消息到 IM 群机器人（飞书 / 企业微信）。只发不收，无需公网、无代理。
+/// 飞书：POST {webhook} body {"msg_type":"text","content":{"text":..}}
+/// 企业微信：POST {webhook} body {"msgtype":"text","text":{"content":..}}
+/// 校验 HTTP 状态 + 平台业务错误码（errcode / code 非 0 视为失败）。
+#[tauri::command]
+async fn send_im_message(platform: String, text: String, webhook: String) -> Result<String, String> {
+    if webhook.trim().is_empty() {
+        return Err("未配置 Webhook 地址".into());
+    }
+    let body = match platform.as_str() {
+        "feishu" => serde_json::json!({
+            "msg_type": "text",
+            "content": { "text": text },
+        }),
+        _ => serde_json::json!({ // wecom
+            "msgtype": "text",
+            "text": { "content": text },
+        }),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| format!("客户端构建失败: {}", e))?;
+    let resp = client.post(&webhook)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+    let status = resp.status();
+    let text_body = resp.text().await.unwrap_or_default();
+    // 飞书/企业微信即使 HTTP 200 也可能返回业务错误码，需再校验
+    let json: serde_json::Value = serde_json::from_str(&text_body).unwrap_or(serde_json::Value::Null);
+    let errcode = json.get("errcode").and_then(|v| v.as_i64());
+    let code = json.get("code").and_then(|v| v.as_i64());
+    let biz_ok = match (errcode, code) {
+        (Some(e), _) => e == 0,
+        (_, Some(c)) => c == 0,
+        _ => true,
+    };
+    if status.is_success() && biz_ok {
+        Ok(format!("✅ 已通过 {} 推送成功", platform))
+    } else {
+        Err(format!("推送失败 [{}]: {}", status, text_body.chars().take(200).collect::<String>()))
+    }
+}
+
 #[derive(serde::Serialize, Clone)]
 struct PageContent {
     title: String,
@@ -2413,6 +2457,7 @@ pub fn run() {
             set_fact_embedding,
             search_by_embedding,
             web_search,
+            send_im_message,
             fetch_page,
             system_diagnostics,
             write_text_file,
