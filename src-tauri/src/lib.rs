@@ -527,7 +527,8 @@ fn read_file(path: String) -> Result<String, String> {
         return Ok(format!("【目录】{}\n\n{}", path, lines.join("\n")));
     }
     if p.is_file() {
-        return std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e));
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+        return read_text_bytes(&bytes);
     }
     Err(format!("路径不存在: {}", path))
 }
@@ -572,14 +573,18 @@ struct AttachmentContent {
     content: String,
 }
 
-/// 读取附件内容（统一入口）：图片转 base64，PDF 提取文本，其余按文本读取
+/// 读取附件内容（统一入口）：图片转 base64，PDF/Excel 提取文本，其余按文本读取。
+/// 用「扩展名 + magic bytes」双判断分流，扩展名缺失时也能正确识别 PDF/图片；
+/// 文本读取带 GBK 回退，非 UTF-8 中文文件也能读。
 #[tauri::command]
 fn read_attachment(path: String) -> Result<AttachmentContent, String> {
     let p = std::path::Path::new(&path);
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // 图片：扩展名 + magic
     let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "heic", "ico"];
-    if image_exts.contains(&ext.as_str()) {
-        let bytes = std::fs::read(&path).map_err(|e| format!("读取图片失败: {}", e))?;
+    if image_exts.contains(&ext.as_str()) || detect_image_magic(&bytes) {
         let mime = match ext.as_str() {
             "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif",
             "webp" => "image/webp", "bmp" => "image/bmp", "svg" => "image/svg+xml",
@@ -589,13 +594,87 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         return Ok(AttachmentContent { kind: "image".into(), mime: mime.into(), content: b64 });
     }
-    if ext == "pdf" {
-        let text = pdf_extract::extract_text(&path)
+
+    // PDF：扩展名 + %PDF magic（拖拽时扩展名可能丢失）
+    if ext == "pdf" || bytes.starts_with(b"%PDF") {
+        let text = pdf_extract::extract_text_from_mem(&bytes)
             .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
         return Ok(AttachmentContent { kind: "text".into(), mime: "application/pdf".into(), content: text });
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // Excel：xls/xlsx/xlsm/xlsb 用 calamine 解析单元格内容
+    if matches!(ext.as_str(), "xls" | "xlsx" | "xlsm" | "xlsb") {
+        let text = read_excel_content(&path)?;
+        return Ok(AttachmentContent { kind: "text".into(), mime: "application/vnd.ms-excel".into(), content: text });
+    }
+
+    // 其余按文本：二进制检测（含 NUL 字节判定）+ GBK 回退
+    if bytes.contains(&0u8) {
+        return Err("该附件是二进制格式，暂不支持作为文本读取；请另存为 CSV/TXT，或转为 PDF/Excel 后再上传".into());
+    }
+    let text = read_text_bytes(&bytes)?;
     Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text })
+}
+
+/// 图片 magic bytes 检测（扩展名缺失时兜底识别）
+fn detect_image_magic(b: &[u8]) -> bool {
+    b.starts_with(b"\x89PNG\r\n\x1a\n")
+        || b.starts_with(b"\xFF\xD8\xFF")
+        || b.starts_with(b"GIF8")
+        || (b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP")
+        || b.starts_with(b"BM")
+        || (b.len() > 8 && &b[4..8] == b"ftyp")
+}
+
+/// 健壮文本读取：优先 UTF-8（去掉 BOM），失败回退 GB18030/GBK（覆盖中文 Excel 导出等编码）
+fn read_text_bytes(bytes: &[u8]) -> Result<String, String> {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return Ok(s.trim_start_matches('\u{feff}').to_string());
+    }
+    let (decoded, _, _) = encoding_rs::GB18030.decode(bytes);
+    Ok(decoded.into_owned())
+}
+
+/// 把 Excel 工作表追加为 CSV 风格文本
+fn append_excel_range(out: &mut String, sheet: &str, range: &calamine::Range<calamine::Data>) {
+    out.push_str(&format!("\n【工作表 {}】\n", sheet));
+    for row in range.rows() {
+        let cells: Vec<String> = row.iter().map(|c| match c {
+            calamine::Data::String(s) => s.clone(),
+            calamine::Data::Float(f) => f.to_string(),
+            calamine::Data::Int(i) => i.to_string(),
+            calamine::Data::Bool(b) => b.to_string(),
+            calamine::Data::DateTime(dt) => dt.to_string(),
+            calamine::Data::DateTimeIso(s) | calamine::Data::DurationIso(s) => s.clone(),
+            _ => String::new(),
+        }).collect();
+        out.push_str(&cells.join(","));
+        out.push('\n');
+    }
+}
+
+/// 用 calamine 解析 Excel（.xls/.xlsx/.xlsm/.xlsb），按工作表输出单元格（CSV 风格）
+fn read_excel_content(path: &str) -> Result<String, String> {
+    use calamine::{Reader, Xls, Xlsx};
+    let mut out = String::new();
+    let lower = path.to_lowercase();
+    if lower.ends_with(".xls") {
+        let file = std::fs::File::open(path).map_err(|e| format!("打开 Excel 失败: {}", e))?;
+        let mut wb = Xls::new(file).map_err(|e| format!("读取 Excel(.xls) 失败: {}", e))?;
+        let sheets = wb.sheet_names().to_vec();
+        for s in sheets {
+            if let Ok(range) = wb.worksheet_range(&s) { append_excel_range(&mut out, &s, &range); }
+        }
+    } else {
+        let file = std::fs::File::open(path).map_err(|e| format!("打开 Excel 失败: {}", e))?;
+        let mut wb = Xlsx::new(file).map_err(|e| format!("读取 Excel(.xlsx) 失败: {}", e))?;
+        let sheets = wb.sheet_names().to_vec();
+        for s in sheets {
+            if let Ok(range) = wb.worksheet_range(&s) { append_excel_range(&mut out, &s, &range); }
+        }
+    }
+    if out.trim().is_empty() { return Err("Excel 中未读取到内容".into()); }
+    Ok(out)
 }
 
 /// 从 base64 的 PDF 内容提取文本（拖拽/粘贴 PDF 用，避免前端 readAsText 读到二进制乱码）
