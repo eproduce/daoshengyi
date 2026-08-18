@@ -140,13 +140,17 @@ function onAuxProfileChange(e: Event) {
   updateSettings({ auxiliaryProfileId: v });
 }
 
-// 主动推送 Webhook（飞书 / 企业微信群机器人，加密落盘）
+// 主动推送 Webhook（飞书 / 企业微信 / 钉钉群机器人，加密落盘）
 const feishuWebhook = ref(getSettings().feishuWebhook || "");
 const wecomWebhook = ref(getSettings().wecomWebhook || "");
+const dingtalkWebhook = ref(getSettings().dingtalkWebhook || "");
+const dingtalkSecret = ref(getSettings().dingtalkSecret || "");
 function savePushWebhooks() {
   updateSettings({
     feishuWebhook: feishuWebhook.value.trim(),
     wecomWebhook: wecomWebhook.value.trim(),
+    dingtalkWebhook: dingtalkWebhook.value.trim(),
+    dingtalkSecret: dingtalkSecret.value.trim(),
   });
 }
 
@@ -498,6 +502,26 @@ function handleDelete() {
             @change="savePushWebhooks"
           />
           <span class="form-hint">企业微信群 → 添加「群机器人」→ 复制 Webhook 地址。之后可让 Agent 调用 send_im 主动推送，或配定时任务用 curl 定时推送。</span>
+        </div>
+        <div class="form-group">
+          <label>钉钉群机器人 Webhook</label>
+          <input
+            v-model="dingtalkWebhook"
+            type="password"
+            placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+            @change="savePushWebhooks"
+          />
+          <span class="form-hint">钉钉群 → 设置 → 机器人 → 添加「自定义」→ 复制 Webhook 地址</span>
+        </div>
+        <div class="form-group">
+          <label>钉钉加签密钥（可选）</label>
+          <input
+            v-model="dingtalkSecret"
+            type="password"
+            placeholder="SEC...（钉钉安全设置选「加签」时才需填写）"
+            @change="savePushWebhooks"
+          />
+          <span class="form-hint">钉钉机器人安全设置若选「加签」，填 SEC 开头的密钥；选「自定义关键词」则留空</span>
         </div>
       </div>
         </div>

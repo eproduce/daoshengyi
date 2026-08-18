@@ -36,6 +36,10 @@ export interface AppSettingsPayload {
   feishuWebhook: string;
   /// 企业微信群机器人 Webhook（主动推送用）
   wecomWebhook: string;
+  /// 钉钉群机器人 Webhook（主动推送用）
+  dingtalkWebhook: string;
+  /// 钉钉群机器人加签密钥（SEC 开头，可选）
+  dingtalkSecret: string;
 }
 
 let cache: AppSettingsPayload = {
@@ -50,6 +54,8 @@ let cache: AppSettingsPayload = {
   braveApiKey: "",
   feishuWebhook: "",
   wecomWebhook: "",
+  dingtalkWebhook: "",
+  dingtalkSecret: "",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

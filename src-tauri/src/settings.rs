@@ -65,6 +65,12 @@ pub struct AppSettings {
     /// 企业微信群机器人 Webhook（主动推送用）
     #[serde(default)]
     pub wecom_webhook: String,
+    /// 钉钉群机器人 Webhook（主动推送用）
+    #[serde(default)]
+    pub dingtalk_webhook: String,
+    /// 钉钉群机器人加签密钥（SEC 开头，可选；安全设置选「加签」时必填）
+    #[serde(default)]
+    pub dingtalk_secret: String,
 }
 
 fn default_approval_mode() -> String {
@@ -85,6 +91,8 @@ impl Default for AppSettings {
             brave_api_key: String::new(),
             feishu_webhook: String::new(),
             wecom_webhook: String::new(),
+            dingtalk_webhook: String::new(),
+            dingtalk_secret: String::new(),
         }
     }
 }
@@ -146,6 +154,8 @@ impl SecretCipher {
         settings.brave_api_key = self.encrypt(&settings.brave_api_key)?;
         settings.feishu_webhook = self.encrypt(&settings.feishu_webhook)?;
         settings.wecom_webhook = self.encrypt(&settings.wecom_webhook)?;
+        settings.dingtalk_webhook = self.encrypt(&settings.dingtalk_webhook)?;
+        settings.dingtalk_secret = self.encrypt(&settings.dingtalk_secret)?;
         Ok(())
     }
 
@@ -172,6 +182,16 @@ impl SecretCipher {
         if !settings.wecom_webhook.is_empty() {
             if let Ok(plain) = self.decrypt(&settings.wecom_webhook) {
                 settings.wecom_webhook = plain;
+            }
+        }
+        if !settings.dingtalk_webhook.is_empty() {
+            if let Ok(plain) = self.decrypt(&settings.dingtalk_webhook) {
+                settings.dingtalk_webhook = plain;
+            }
+        }
+        if !settings.dingtalk_secret.is_empty() {
+            if let Ok(plain) = self.decrypt(&settings.dingtalk_secret) {
+                settings.dingtalk_secret = plain;
             }
         }
         Ok(())
@@ -272,6 +292,8 @@ mod tests {
             brave_api_key: String::new(),
             feishu_webhook: String::new(),
             wecom_webhook: String::new(),
+            dingtalk_webhook: String::new(),
+            dingtalk_secret: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -303,6 +325,8 @@ mod tests {
             brave_api_key: String::new(),
             feishu_webhook: String::new(),
             wecom_webhook: String::new(),
+            dingtalk_webhook: String::new(),
+            dingtalk_secret: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

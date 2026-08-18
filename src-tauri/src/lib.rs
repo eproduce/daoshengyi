@@ -1892,16 +1892,31 @@ async fn web_search(query: String, brave_key: String) -> Result<Vec<search::Sear
 /// 企业微信：POST {webhook} body {"msgtype":"text","text":{"content":..}}
 /// 校验 HTTP 状态 + 平台业务错误码（errcode / code 非 0 视为失败）。
 #[tauri::command]
-async fn send_im_message(platform: String, text: String, webhook: String) -> Result<String, String> {
+async fn send_im_message(platform: String, text: String, webhook: String, secret: String) -> Result<String, String> {
     if webhook.trim().is_empty() {
         return Err("未配置 Webhook 地址".into());
+    }
+    // 钉钉支持加签：timestamp + HMAC-SHA256(secret) 签名追加到 URL（飞书/企业微信无此机制）
+    let mut url = webhook;
+    if platform == "dingtalk" && !secret.trim().is_empty() {
+        use base64::Engine as _;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let ts = chrono::Utc::now().timestamp_millis();
+        let string_to_sign = format!("{}\n{}", ts, secret.trim());
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.trim().as_bytes())
+            .map_err(|e| format!("签名失败: {}", e))?;
+        mac.update(string_to_sign.as_bytes());
+        let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url = format!("{}{}timestamp={}&sign={}", url, sep, ts, urlencode(&sign));
     }
     let body = match platform.as_str() {
         "feishu" => serde_json::json!({
             "msg_type": "text",
             "content": { "text": text },
         }),
-        _ => serde_json::json!({ // wecom
+        _ => serde_json::json!({ // wecom / dingtalk 结构一致
             "msgtype": "text",
             "text": { "content": text },
         }),
@@ -1909,13 +1924,13 @@ async fn send_im_message(platform: String, text: String, webhook: String) -> Res
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build().map_err(|e| format!("客户端构建失败: {}", e))?;
-    let resp = client.post(&webhook)
+    let resp = client.post(&url)
         .header("Content-Type", "application/json")
         .body(body.to_string())
         .send().await.map_err(|e| format!("网络错误: {}", e))?;
     let status = resp.status();
     let text_body = resp.text().await.unwrap_or_default();
-    // 飞书/企业微信即使 HTTP 200 也可能返回业务错误码，需再校验
+    // 飞书/企业微信/钉钉即使 HTTP 200 也可能返回业务错误码，需再校验
     let json: serde_json::Value = serde_json::from_str(&text_body).unwrap_or(serde_json::Value::Null);
     let errcode = json.get("errcode").and_then(|v| v.as_i64());
     let code = json.get("code").and_then(|v| v.as_i64());
