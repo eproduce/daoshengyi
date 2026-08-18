@@ -1332,9 +1332,12 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       if (!reactDone) {
-        // ReAct 未给出最终答案（超时/耗尽/失败）：清掉 ReAct 期间的"正在调用工具"占位，
-        // 让流式从头生成完整回复，避免残留占位文本混在答案前面
+        // ReAct 未给出最终答案（超时/耗尽/失败）或未调用工具回退流式：
+        // 清掉 ReAct 期间的"正在调用工具"占位与已累积的推理/内容，
+        // 让流式从头生成完整回复（推理过程 + 内容都逐字输出），
+        // 避免残留占位文本混在答案前面、或推理一次性展示且与流式重复叠加
         streamingContent.value = "";
+        streamingReasoning.value = "";
         // 先注册监听并 await 确保注册完成，再调用 invoke，避免事件竞态丢失
         let resolveDone!: () => void;
         let rejectDone!: (e: Error) => void;
