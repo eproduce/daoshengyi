@@ -197,6 +197,18 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
 }
 
 /** 调用应用内置工具（fetch_page 网页抓取、web_search 搜索） */
+/// 从用户提问中提取搜索关键词（去标点、去常见请求/疑问/分析词），提升自动搜索相关度。
+/// 自动搜索在发送前执行、无法先让模型给关键词，只能做轻量启发式清洗；
+/// 清洗后为空则退回原始提问。
+function extractSearchKeywords(text: string): string {
+  const cleaned = text
+    .replace(/[，。！？、；：""''（）【】《》…—·,.!?;:'"()\[\]{}<>]/g, " ")
+    .replace(/(请|帮我|麻烦|请问|怎么样|什么样|为什么|怎么|如何|怎样|为啥|啥|一下|看看|查查|查|帮忙|分析|解释|介绍|总结|简述|说明|告诉我|我想知道|推荐|给)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  return cleaned || text.trim();
+}
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
   switch (tool) {
     case "fetch_page": {
@@ -1154,12 +1166,26 @@ export const useChatStore = defineStore("chat", () => {
           .join("");
         volatileCtx.push(`[用户提供的文件上下文]\n${fileCtx}`);
       }
-      // 联网搜索结果
+      // 联网搜索结果（enableWebSearch 开关 → 发送前自动搜索并可视化展示；非工具调用）
       if (config.enableWebSearch && text.trim()) {
+        // 先展示"正在联网搜索"，让用户看到搜索过程（与图片识别占位同理）
+        const autoQuery = extractSearchKeywords(text.trim());
+        streamingContent.value = `🌐 正在联网搜索：${autoQuery.slice(0, 24)}...`;
         try {
-          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: text.trim(), braveKey: "" });
-          if (results.length > 0) volatileCtx.push(formatSearchResults(text.trim(), results));
+          const results = await invoke<{title:string;url:string;snippet:string}[]>( "web_search", { query: autoQuery, braveKey: "" } );
+          if (results.length > 0) {
+            volatileCtx.push(formatSearchResults(autoQuery, results));
+            // 搜索结果做成可见卡片（进 toolChain，随最终答案一起展示在气泡里）
+            const list = results.slice(0, 5).map(r => `- [${r.title}](${r.url})\n  ${r.snippet}`).join("\n");
+            toolChain.push(
+              `### 🌐 联网搜索\n\n**查询**：\`${autoQuery}\`\n\n` +
+              `<details><summary>共 ${results.length} 条结果</summary>\n\n${list}\n\n</details>`
+            );
+          } else {
+            streamingContent.value = `🌐 联网搜索「${autoQuery}」未找到结果，继续回答...`;
+          }
         } catch { /* 搜索暂不可用 */ }
+        streamingContent.value = ""; // 清空占位，交由流式回复填充
       }
       // 注入相关记忆（语义 + 关键词混合检索）——15 秒超时兜底，避免阻塞主对话
       const memText = await Promise.race([
