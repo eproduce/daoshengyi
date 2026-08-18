@@ -542,10 +542,16 @@ fn fmt_size(b: u64) -> String {
     }
 }
 
+/// 检查本地文件是否真实存在（前端渲染文件链接前调用，只把真实存在的文件渲染为可点击链接，
+/// 防止 agent 在回复文本中编造不存在的文件路径，导致点击后打开失败）
+#[tauri::command]
+fn file_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 /// 用系统默认应用打开文件（macOS open / Windows start / Linux xdg-open）
 #[tauri::command]
-fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+fn open_file(path: String) -> Result<(), String> {    #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(&path).status();
     #[cfg(target_os = "windows")]
     let status = std::process::Command::new("cmd").args(["/c", "start", "", &path]).status();
@@ -2136,6 +2142,7 @@ pub fn run() {
             execute_command,
             read_file,
             open_file,
+            file_exists,
             read_attachment,
             extract_pdf_text,
             read_pdf_part,

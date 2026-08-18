@@ -97,6 +97,26 @@ function highlight() {
   });
 }
 
+// 只把【真实存在】的文件渲染为可点击链接：逐一检查 data-path 指向的文件是否存在，
+// 不存在的替换为"文件不存在"提示文本（防止 agent 在回复中编造路径，点击后打开失败）
+async function verifyFileLinks() {
+  const el = document.querySelector(`[data-msg-id="${props.message.id}"]`);
+  if (!el) return;
+  const links = [...el.querySelectorAll<HTMLAnchorElement>("a.local-file-link")];
+  for (const a of links) {
+    const path = decodeURIComponent(a.getAttribute("data-path") || "");
+    if (!path) continue;
+    let exists = false;
+    try { exists = await invoke<boolean>("file_exists", { path }); } catch { exists = false; }
+    if (exists) continue;
+    const span = document.createElement("span");
+    span.className = "file-link-missing";
+    span.title = `${path}（文件不存在）`;
+    span.textContent = `📄 ${a.textContent}（文件不存在）`;
+    a.replaceWith(span);
+  }
+}
+
 async function copyAll() { await chatStore.copyToClipboard(props.message.content); copied.value = true; setTimeout(() => copied.value = false, 2000); }
 
 // 工具活动卡片展开状态（按工具名）
@@ -107,13 +127,13 @@ function toggleTool(name: string) {
   toolOpen.value = s;
 }
 
-// 流式结束后高亮 + 首次挂载高亮
+// 流式结束后高亮 + 首次挂载高亮 + 校验文件链接存在性
 let highlighted = false;
 onMounted(() => { if (props.message.content && !props.message.streaming) highlighted = false; });
 onUpdated(() => {
   if (props.message.content && !props.message.streaming && !highlighted) {
     highlighted = true;
-    nextTick(highlight);
+    nextTick(() => { highlight(); verifyFileLinks(); });
   }
 });
 watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
@@ -296,6 +316,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
 .message__content { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }
 .local-file-link { color: var(--accent-color); text-decoration: underline; cursor: pointer; font-weight: 500; }
 .local-file-link:hover { opacity: .8; }
+.file-link-missing { color: var(--text-muted); font-weight: 500; cursor: default; font-style: italic; }
 .message--user .message__content .local-file-link { color: #fff; }
 .message__cursor { display: inline-block; width: 7px; height: 16px; background: var(--accent-color); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 2px; border-radius: 2px; }
 .message__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; padding: 0 4px; }
