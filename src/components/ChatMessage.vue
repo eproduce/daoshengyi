@@ -4,6 +4,7 @@ import type { ChatMessage as Msg, ImageAttachment } from "@/types";
 import { Marked } from "marked";
 import hljs from "@/utils/hljs";
 import { useChatStore } from "@/stores/chat";
+import { invoke } from "@tauri-apps/api/core";
 import { formatCost } from "@/utils/tokens";
 import AppLogo from "./AppLogo.vue";
 
@@ -31,7 +32,33 @@ const terminalOutput = computed(() => {
 });
 
 const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
-function md(s: string) { return s ? marked.parse(s) as string : ""; }
+
+// 识别本地文件路径 → 转成可点击链接（daoshengyi-file:// 协议，点击用系统默认应用打开）
+const LOCAL_FILE_RE = /(?<![\[\(])((?:~|\/[A-Za-z0-9_@.\/-]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|c|cpp|h|hpp|html?|css|sql|db|zip|tar\.gz|7z)))/gi;
+
+function linkifyLocalPaths(s: string): string {
+  return s.replace(LOCAL_FILE_RE, (m) => {
+    const name = m.split("/").pop() || m;
+    return `[📄 ${name}](daoshengyi-file://${encodeURIComponent(m)})`;
+  });
+}
+
+function md(s: string) { return s ? marked.parse(linkifyLocalPaths(s)) as string : ""; }
+
+// 拦截 daoshengyi-file:// 链接：用系统默认应用打开本地文件（如 Excel/Numbers 打开 CSV）
+async function onContentClick(e: MouseEvent) {
+  const a = (e.target as HTMLElement).closest?.('a[href^="daoshengyi-file://"]');
+  if (!a) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const href = a.getAttribute("href") || "";
+  const path = decodeURIComponent(href.replace("daoshengyi-file://", ""));
+  try {
+    await invoke("open_file", { path });
+  } catch (err) {
+    alert(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 function highlight() {
   // 直接从 DOM 找代码块，不依赖 ref 时序
@@ -149,7 +176,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
             </div>
             <pre class="terminal-card__body">{{ terminalOutput }}</pre>
           </div>
-          <div v-else class="message__content markdown-body" v-html="md(message.content)"></div>
+          <div v-else class="message__content markdown-body" v-html="md(message.content)" @click="onContentClick"></div>
         </template>
       </div>
 

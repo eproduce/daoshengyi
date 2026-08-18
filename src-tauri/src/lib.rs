@@ -507,6 +507,22 @@ fn fmt_size(b: u64) -> String {
     }
 }
 
+/// 用系统默认应用打开文件（macOS open / Windows start / Linux xdg-open）
+#[tauri::command]
+fn open_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(&path).status();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("cmd").args(["/c", "start", "", &path]).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = std::process::Command::new("xdg-open").arg(&path).status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => Err(format!("打开失败（退出码非零）: {}", path)),
+        Err(e) => Err(format!("打开失败: {}", e)),
+    }
+}
+
 /// 附件读取结果
 #[derive(serde::Serialize)]
 struct AttachmentContent {
@@ -2078,6 +2094,7 @@ pub fn run() {
             delegate_coding_agent,
             execute_command,
             read_file,
+            open_file,
             read_attachment,
             extract_pdf_text,
             read_pdf_part,
