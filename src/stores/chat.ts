@@ -1314,10 +1314,16 @@ export const useChatStore = defineStore("chat", () => {
           );
           if (reactTools.length) assistantMsg.tools = [...reactTools];
           if (react.finalAnswer) {
-            // ReAct 循环给出了最终答案，直接展示（跳过流式）
-            streamingContent.value =
-              (react.toolResults.length > 0 ? react.toolResults.join("\n") + "\n\n" : "") + react.finalAnswer;
-            reactDone = true;
+            const usedTools = react.toolResults.length > 0 || reactTools.length > 0;
+            if (usedTools) {
+              // ReAct 实际调用了工具后给出最终答案 → 直接展示（工具场景可接受非流式）
+              streamingContent.value =
+                (react.toolResults.length > 0 ? react.toolResults.join("\n") + "\n\n" : "") + react.finalAnswer;
+              reactDone = true;
+            }
+            // 未调用任何工具（模型直接给出普通回答）→ 不设 reactDone，
+            // 回退到下方流式路径重新流式生成，恢复"逐字输出"体验。
+            // （否则只要启用了 MCP 服务器，所有普通回复都会走 chat_once 一次性展示）
           } else if (react.toolResults.length > 0) {
             // 循环耗尽仍在调工具：把过程附到上下文，交给流式兜底回答
             rustMsgs.push({ role: "user", content: react.toolResults.join("\n") + "\n请直接给出最终答案。" });
