@@ -2051,10 +2051,15 @@ pub fn run() {
                 });
             }
 
+            // devtools 默认不自动打开；需要调试时用环境变量开启：
+            //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
             #[cfg(debug_assertions)]
             {
-                let window = app.get_webview_window("main").unwrap();
-                window.open_devtools();
+                if std::env::var("DAOSHENGYI_DEVTOOLS").map(|v| v == "1").unwrap_or(false) {
+                    if let Some(window) = app.get_webview_window("main") {
+                        window.open_devtools();
+                    }
+                }
             }
             Ok(())
         })
