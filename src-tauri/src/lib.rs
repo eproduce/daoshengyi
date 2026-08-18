@@ -504,6 +504,17 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
     Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text })
 }
 
+/// 从 base64 的 PDF 内容提取文本（拖拽/粘贴 PDF 用，避免前端 readAsText 读到二进制乱码）
+#[tauri::command]
+fn extract_pdf_text(data: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("PDF base64 解码失败: {}", e))?;
+    pdf_extract::extract_text_from_mem(&bytes)
+        .map_err(|e| format!("PDF 文本提取失败: {}", e))
+}
+
 // --- Ollama 本地视觉模型管理（自动部署 llava-phi3） ---
 
 #[derive(serde::Serialize)]
@@ -2002,6 +2013,7 @@ pub fn run() {
             execute_command,
             read_file,
             read_attachment,
+            extract_pdf_text,
             ollama_status,
             ollama_setup,
             ollama_describe_image,

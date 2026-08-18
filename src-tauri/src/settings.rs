@@ -217,7 +217,7 @@ mod tests {
                 base_url: "https://api.deepseek.com".into(),
                 api_key: "sk-secret".into(),
                 model: "deepseek-v4-flash".into(),
-                max_tokens: 4096,
+                max_tokens: 8192,
                 temperature: 0.7,
                 thinking_enabled: true,
                 reasoning_effort: "high".into(),

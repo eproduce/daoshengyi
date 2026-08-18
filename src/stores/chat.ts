@@ -368,7 +368,7 @@ async function runReactLoop(
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
     id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
-    apiKey: "", model: "deepseek-v4-flash", maxTokens: 4096, temperature: 0.7,
+    apiKey: "", model: "deepseek-v4-flash", maxTokens: 8192, temperature: 0.7,
     thinkingEnabled: true, reasoningEffort: "high",
     systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
     enableWebSearch: false, maxContextMessages: 50,
@@ -1158,7 +1158,7 @@ export const useChatStore = defineStore("chat", () => {
       // 注入文件上下文（文本/PDF 提取内容作为 AI 可读的上下文）
       if (attachments && attachments.length > 0) {
         const fileCtx = attachments
-          .map((f) => `\n--- 文件: ${f.name} ---\n${f.content.slice(0, 12000)}`)
+          .map((f) => `\n--- 文件: ${f.name} ---\n${f.content.slice(0, 30000)}`)
           .join("");
         volatileCtx.push(`[用户提供的文件上下文]\n${fileCtx}`);
       }

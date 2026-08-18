@@ -204,9 +204,31 @@ function processImageFile(file: File) {
 
 function removeImage(id: string) { attachedImages.value = attachedImages.value.filter((i) => i.id !== id); }
 
-// --- 文本文件处理 ---
+// --- 文本文件处理（PDF 走 Rust 提取文本，避免 readAsText 读到二进制乱码） ---
 function processDocFile(file: File) {
   if (file.size > 5 * 1024 * 1024) { alert("文件不能超过 5MB"); return; }
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (isPdf) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const bytes = new Uint8Array(reader.result as ArrayBuffer);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const b64 = btoa(bin);
+        const text = await invoke<string>("extract_pdf_text", { data: b64 });
+        attachedFiles.value.push({
+          id: uuidv4(), name: file.name,
+          content: text.trim() || "（PDF 未提取到文本，可能为扫描件）",
+          mimeType: "application/pdf",
+        });
+      } catch (e) {
+        alert(`PDF 读取失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => attachedFiles.value.push({
     id: uuidv4(),
