@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-17**
+> **最后更新：2026-08-18**
 
 ---
 
@@ -20,7 +20,7 @@
 
 ---
 
-## 1. 已完成能力（截至 2026-08-17）
+## 1. 已完成能力（截至 2026-08-18）
 
 | 模块 | 说明 |
 |------|------|
@@ -40,6 +40,10 @@
 | Ollama 集成 | 一键部署 + 本地视觉/OCR |
 | 缓存命中率 | 流式 SSE 末尾 usage 统计（cache_hit / cache_miss） |
 | UI | IM 气泡布局 + AppLogo 品牌头像 + 主题变量 |
+| 数学公式渲染 | KaTeX（自建 marked 扩展 `katex-marked.ts`），`$...$` / `$$...$$` / `\(...\)`，兼容中文紧贴 |
+| 中文菜单栏 | 6 菜单（道生一/文件/编辑/视图/窗口/工具）+ `menu://action` 事件分发 + 关于弹窗 |
+| 消息宽度 | 内容容器自适应（`min(100%-48px, 1400px)`），减少全屏空白 |
+| 图标统一 | `AppLogo` 与 Dock 图标同源造型，颜色随明暗主题切换 |
 
 ---
 
@@ -57,12 +61,13 @@
   - `src/components/McpSettings.vue`：编辑表单支持 env（文本 `KEY=VALUE` 多行），`openAdd/openEdit/save/installPlugin` 处理 env
 - **待验证**：`cargo check` + `npx vite build` + `npm test` + 端到端 puppeteer 测试 + 推送 GitHub
 
-### 2.2 日期幻觉 + 编造数据 bug（用户 2026-08-17 报告）
+### 2.2 日期幻觉 + 编造数据 bug（用户 2026-08-17 报告，**已修复**，见进度文档 08-17）
 - 现象：模型日期幻觉；未调用工具时编造数据（如天气）
-- 排查点：
-  - `withCurrentDate`（chat.ts）天粒度注入是否在 `sendMessage` 与 `chat_once` 两条路径都生效（远程拉取后 550 行改动可能影响）
-  - 精确时间是否放入"本次补充上下文"（最新用户消息）
-  - 工具调用强制：涉及时效性/数据类问题时是否强制要求先调 `fetch_page`/`web_search`
+- 修复要点：
+  - `withCurrentDate`（chat.ts）强调"唯一可信日期来源，回答前先核对，严禁编造训练数据日期"
+  - `volatileCtx`【当前时间】补全完整日期（年月日 + 星期 + 时分）
+  - `getMcpToolsPrompt` 新增「强制要求（实时/时效信息）」——实时数据必须先调 `web_search`/`fetch_page`，拿不到明确说「无法获取」，严禁编造
+- 验证：`vite build` + `npm test`（30 项）通过，已推送
 
 ---
 
@@ -106,6 +111,9 @@
 | Token 统计 | `assistantMsg` 用 `reactive<ChatMessage>` 创建保证累加 |
 | Vue 模板 setTimeout | 会报 `_ctx.setTimeout is not a function`，回调移入 `<script setup>` |
 | DeepSeek embeddings | 无 embeddings 端点，`generateEmbedding` 对 deepseek 直接跳过 |
+| marked 自定义 text renderer | 必须处理 `token.tokens`（有则先 `parseInline` 渲染嵌套 strong/em/katex），否则加粗/公式以字面量显示 |
+| marked-katex-extension | 类型入口是裸 TS 源码，`strict + noUnusedParameters` 报 TS6133 → 自建 `katex-marked.ts` |
+| 前端菜单事件 | `@tauri-apps/api` 旧版无 `getCurrentWindow().onMenuEvent`（新版本才有）→ 用 Rust `on_menu_event` + emit + 前端 listen |
 | listen 竞态 | 先 `await` 注册监听再 `invoke` |
 | flex 弹窗滚动 | 用 `height:min(85vh,720px)` + `min-height:0`，勿用 `max-height` 导致 flex 失效 |
 

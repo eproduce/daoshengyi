@@ -4,6 +4,16 @@
 >
 > 一个**本地优先**的 AI Agent 桌面客户端，基于 **Tauri 2 + Vue 3 + Rust** 构建。深度绑定 **DeepSeek** 等国产大模型，同时支持本地 **Ollama** 视觉模型与 macOS 系统 **OCR**，让对话不只是聊天，更能自主调用工具、操作浏览器、读写文件、执行命令。
 
+## 📸 界面截图
+
+| 浅色主题对话 | 深色主题对话 |
+|---|---|
+| ![浅色主题](docs/assets/screenshots/chat-light.png) | ![深色主题](docs/assets/screenshots/chat-dark.png) |
+
+| 设置面板 | 关于道生一 |
+|---|---|
+| ![设置面板](docs/assets/screenshots/settings.png) | ![关于道生一](docs/assets/screenshots/about.png) |
+
 ## ✨ 功能特性
 
 ### 🤖 智能对话
@@ -12,6 +22,8 @@
 - **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点；本地 Ollama 一键接入
 - **日期防幻觉** — 自动注入当天日期，回答"今天/今年"类问题不胡诌
 - **缓存命中率统计** — 解析模型 `usage.prompt_cache_hit/miss_tokens`，顶栏实时显示 `缓存 xx%`
+- **数学公式渲染** — KaTeX 渲染 `$...$` / `$$...$$` / `\(...\)` 等 LaTeX 公式，兼容中文紧贴与全角标点写法
+- **Markdown 增强** — 加粗/斜体/列表/标题 + 本地文件路径自动转可点击链接（系统应用打开）
 
 ### 🛠 Agent 工具调用（ReAct 循环）
 - **LLM 自主决策** — 由大模型根据任务自行选择工具，无需手动触发
@@ -46,7 +58,9 @@
 ### 🔒 安全与体验
 - **API Key 加密落盘** — AES-256-GCM，密钥文件权限 0600
 - **本地优先** — 数据、密钥、记忆全部存储在本机
-- **Markdown + 代码高亮**、亮/暗主题一键切换
+- **Markdown + 代码高亮 + 数学公式**、亮/暗主题一键切换
+- **中文系统菜单栏** — 道生一/文件/编辑/视图/窗口/工具 6 个菜单，快捷键直达核心功能
+- **关于弹窗** — 品牌图标、版本、技术栈与 GitHub 链接
 
 ## 技术栈
 
@@ -58,7 +72,7 @@
 | 状态管理 | Pinia |
 | 桌面框架 | Tauri 2（Rust） |
 | 后端能力 | reqwest、SQLite（rusqlite）、AES-256-GCM |
-| Markdown | marked + highlight.js |
+| Markdown | marked + highlight.js + KaTeX（数学公式） |
 | 本地视觉 | Ollama（llava-phi3） |
 | 本地 OCR | macOS Vision（`ocr_tool.swift`） |
 
@@ -129,18 +143,19 @@ daoshengyi/
 │   ├── api/                    # API 请求层（agent / appSettings / search）
 │   ├── assets/styles/          # 全局样式
 │   ├── components/             # 组件
+│   │   ├── AboutDialog.vue     # 关于道生一弹窗
 │   │   ├── ChatHistory.vue     # 对话历史侧边栏
 │   │   ├── ChatInput.vue       # 消息输入框
-│   │   ├── ChatMessage.vue     # 消息气泡（流式 + Markdown + 深度思考）
+│   │   ├── ChatMessage.vue     # 消息气泡（流式 + Markdown + KaTeX + 深度思考）
 │   │   ├── McpSettings.vue     # MCP 服务器设置
 │   │   ├── QuickBar.vue        # 快捷指令栏
 │   │   ├── SettingsDialog.vue  # API/模型设置
 │   │   └── SkillManager.vue    # 技能管理
 │   ├── composables/useTheme.ts # 主题管理
 │   ├── data/                   # 静态数据（MCP 市场 / 提示词模板 / 技能库）
-│   ├── stores/                 # Pinia 状态（chat / mcp / memory / ollama / skill）
+│   ├── stores/                 # Pinia 状态（chat / mcp / memory / ollama / skill / ui）
 │   ├── types/index.ts          # TypeScript 类型定义
-│   ├── utils/                  # 工具（hljs / tokens / tool-call）
+│   ├── utils/                  # 工具（hljs / tokens / tool-call / katex-marked）
 │   ├── App.vue                 # 主布局
 │   └── main.ts                 # 入口（含事件监听）
 ├── src-tauri/                  # Tauri 2 后端
