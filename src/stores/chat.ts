@@ -1282,7 +1282,16 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
 
-      // 估算输入 token（用于费用计算）
+      // 发送前上下文总长保护：历史里若残留超大消息（如早期 directory_tree 全量结果
+      // 被持久化进 SQLite），主动从最早的非 system 消息开始裁剪，保证请求不超模型
+      // 上限、工具循环不会因总长超限提前 break 导致回复中断
+      const MAX_SEND_CHARS = 1_200_000;
+      while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && rustMsgs.length > 2) {
+        const idx = rustMsgs.findIndex(m => m.role !== "system");
+        if (idx === -1) break;
+        rustMsgs.splice(idx, 1);
+      }
+      // 裁剪后重算输入 token（用于费用计算）
       inputTokens = rustMsgs.reduce((sum, m) => {
         const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
         return sum + estimateMessageTokens(text);
@@ -1306,6 +1315,7 @@ export const useChatStore = defineStore("chat", () => {
       // 返回 toolCall 非空 → 本轮流式输出的是一段工具调用（需执行后继续）；为 null → 最终答案。
       async function streamRound(msgs: { role: string; content: unknown }[]): Promise<{ toolCall: ToolCall | null; content: string }> {
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
+        const requestId = uuidv4(); // 本轮请求唯一 id：事件过滤，避免旧请求的 sse-delta/done 串扰新一轮
         let resolveDone!: () => void;
         let rejectDone!: (e: Error) => void;
         const doneP = new Promise<void>((resolve, reject) => {
@@ -1317,7 +1327,8 @@ export const useChatStore = defineStore("chat", () => {
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
 
         roundUnlisten.push(
-          await listen<{ reasoning_content?: string; content?: string; tokens?: number; cache_hit?: number; cache_miss?: number }>("sse-delta", e => {
+          await listen<{ request_id?: string; reasoning_content?: string; content?: string; tokens?: number; cache_hit?: number; cache_miss?: number }>("sse-delta", e => {
+            if (e.payload.request_id && e.payload.request_id !== requestId) return; // 忽略其他请求的事件
             const d = e.payload;
             if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
             if (d.content) {
@@ -1334,14 +1345,20 @@ export const useChatStore = defineStore("chat", () => {
             if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
             if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
           }),
-          await listen<string>("sse-error", e => rejectDone(new Error(e.payload))),
-          await listen("sse-done", () => resolveDone()),
+          await listen<{ request_id?: string; error?: string }>("sse-error", e => {
+            if (e.payload.request_id && e.payload.request_id !== requestId) return;
+            rejectDone(new Error(e.payload.error || "模型流式错误"));
+          }),
+          await listen<string>("sse-done", e => {
+            if (e.payload && e.payload !== requestId) return;
+            resolveDone();
+          }),
         );
 
         // 发起流式（不 await）。注意：stream_chat 失败（网络/Key/模型名错误）时 Rust 直接
         // return Err 而不会 emit sse-error，必须把 invoke 的真实错误也交给 rejectDone，
         // 否则前端只会干等到 120 秒超时；正常路径 invoke resolve、重复 reject 无害。
-        invoke("send_message", { config: rustCfg, messages: msgs }).catch((e) => {
+        invoke("send_message", { requestId, config: rustCfg, messages: msgs }).catch((e) => {
           rejectDone(e instanceof Error ? e : new Error(String(e)));
         });
 

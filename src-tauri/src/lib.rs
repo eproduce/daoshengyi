@@ -427,6 +427,7 @@ async fn send_message(
     app: tauri::AppHandle,
     config: api::ApiConfig,
     mut messages: Vec<api::ChatMessage>,
+    request_id: String,
 ) -> Result<(), String> {
     middleware::preprocess_messages(&mut messages);
     let has_image = messages.iter().any(|m| m.content.is_array());
@@ -465,7 +466,14 @@ async fn send_message(
                             eprintln!("{}", sm);
                             append_log(&app, &sm);
                         }
-                        let _ = app.emit("sse-delta", &delta);
+                        let _ = app.emit("sse-delta", &serde_json::json!({
+                            "request_id": request_id,
+                            "reasoning_content": delta.reasoning_content,
+                            "content": delta.content,
+                            "tokens": delta.tokens,
+                            "cache_hit": delta.cache_hit,
+                            "cache_miss": delta.cache_miss,
+                        }));
                     }
                 }
             }
@@ -473,7 +481,7 @@ async fn send_message(
                 let em = format!("[sse] 流错误: {}", e);
                 eprintln!("{}", em);
                 append_log(&app, &em);
-                let _ = app.emit("sse-error", &e);
+                let _ = app.emit("sse-error", &serde_json::json!({"request_id": request_id, "error": e}));
                 return Err(e);
             }
         }
@@ -481,12 +489,19 @@ async fn send_message(
     // 处理最后可能残留的不完整行
     if let Some(delta) = api::parse_sse_line(buf.trim()) {
         delta_count += 1;
-        let _ = app.emit("sse-delta", &delta);
+        let _ = app.emit("sse-delta", &serde_json::json!({
+            "request_id": request_id,
+            "reasoning_content": delta.reasoning_content,
+            "content": delta.content,
+            "tokens": delta.tokens,
+            "cache_hit": delta.cache_hit,
+            "cache_miss": delta.cache_miss,
+        }));
     }
     let done_msg = format!("[sse] 完成, 共 {} 个 delta", delta_count);
     eprintln!("{}", done_msg);
     append_log(&app, &done_msg);
-    let _ = app.emit("sse-done", ());
+    let _ = app.emit("sse-done", &request_id);
     Ok(())
 }
 
