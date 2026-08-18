@@ -11,7 +11,7 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson, type ToolCall } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
@@ -323,12 +323,6 @@ function withMathRule(sp: string): string {
   return `${sp}\n\n${MATH_FORMAT_RULE}`;
 }
 
-/// ReAct 循环返回：finalAnswer 存在表示拿到最终答案；否则交由流式兜底回答
-interface ReactLoopResult {
-  finalAnswer?: string;
-  toolResults: string[];
-}
-
 /// 非流式模型请求（chat_once）带前端超时兜底：
 /// 网络/服务端偶尔会无响应，超时返回 null，避免 ReAct 循环一直等待导致气泡卡死为空泡泡
 const CHAT_ONCE_TIMEOUT_MS = 60000;
@@ -350,83 +344,6 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
     }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), CHAT_ONCE_TIMEOUT_MS)),
   ]);
-}
-
-/** ReAct 循环：非流式调用 LLM，执行工具，直到得到最终答案 */
-async function runReactLoop(
-  config: ApiConfig,
-  messages: { role: string; content: string }[],
-  maxIterations = 5,
-  onProgress?: (text: string) => void,
-  onReasoning?: (text: string) => void,
-  onCache?: (hit: number, miss: number) => void,
-  onTool?: (tool: ChatTool) => void
-): Promise<ReactLoopResult> {
-  const toolResults: string[] = [];
-  const convo = [...messages];
-
-  for (let i = 0; i < maxIterations; i++) {
-    // 通过 Rust 端非流式请求（chat_once）：与流式同架构走 reqwest，避免前端
-    // fetch 跨域被 CORS 拦截导致 ReAct 一直失败、回退到流式后模型只能“口头”调工具
-    const data = await chatOnce(config, convo);
-    if (!data) break; // 超时/失败：停止循环，交由流式兜底回答
-    // 思考过程也累积展示（非流式返回的 reasoning_content）
-    if (data.reasoning_content) onReasoning?.(data.reasoning_content);
-    // 累积缓存命中/未命中
-    if ((data.cache_hit ?? 0) > 0 || (data.cache_miss ?? 0) > 0) {
-      onCache?.(data.cache_hit ?? 0, data.cache_miss ?? 0);
-    }
-    const content: string = data.content || "";
-
-    const toolCall = parseToolCall(content);
-    if (!toolCall) {
-      // 没有工具调用，是最终答案 → 关闭浏览器形成闭环
-      await closeBrowserIfOpen();
-      return { finalAnswer: content, toolResults };
-    }
-
-    // 实时告诉用户正在调用哪个工具（避免出现"正在分析并调用工具..."这类莫名的占位）
-    const serverName = toolCall.server && toolCall.server !== "default" ? `（${toolCall.server}）` : "";
-    onProgress?.(`🔧 正在调用工具：${toolCall.tool}${serverName}...`);
-
-    // 执行工具（展示为清晰的工具调用卡片，参数折叠，避免原始 JSON 刷屏）
-    const argsStr = JSON.stringify(toolCall.arguments, null, 2);
-    toolResults.push(
-      `### 🔧 调用工具：\`${toolCall.tool}\`\n\n` +
-      `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>`
-    );
-    const startTool = Date.now();
-    try {
-      const result = await callMcpTool(toolCall.server, toolCall.tool, toolCall.arguments);
-      const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
-      onTool?.({
-        name: toolCall.tool, server: toolCall.server || "app", status: "done",
-        durationMs: Date.now() - startTool,
-        argsPreview: argsStr.slice(0, 300),
-        resultPreview: clipped.slice(0, 300),
-      });
-      toolResults.push(`<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`);
-      convo.push({ role: "assistant", content });
-      convo.push({
-        role: "user",
-        content: `<tool_result>\n${result}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
-      });
-    } catch (e: unknown) {
-      const err = e instanceof Error ? e.message : String(e);
-      onTool?.({
-        name: toolCall.tool, server: toolCall.server || "app", status: "error",
-        durationMs: Date.now() - startTool,
-        argsPreview: argsStr.slice(0, 300),
-        error: err.slice(0, 300),
-      });
-      toolResults.push(`> ❌ 工具调用失败: \`${err}\``);
-      convo.push({ role: "assistant", content });
-      convo.push({ role: "user", content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。` });
-    }
-  }
-  // 达到最大迭代次数仍未得到最终答案，也关闭浏览器形成闭环
-  await closeBrowserIfOpen();
-  return { toolResults };
 }
 
 const DEFAULT_PROFILES: ApiProfile[] = [
@@ -1168,6 +1085,9 @@ export const useChatStore = defineStore("chat", () => {
     let unlistenFns: UnlistenFn[] = [];
     let inputTokens = 0;
     const memory = useMemorySystem();
+    // 方案 B：流式工具循环的展示记录（工具卡片逐段累积，最终拼进 assistantMsg.content）
+    const toolChain: string[] = [];
+    const toolCards: ChatTool[] = [];
 
     try {
       // 本地图片识别失败/超时：明确报错，避免静默降级成空回复
@@ -1291,66 +1211,41 @@ export const useChatStore = defineStore("chat", () => {
         system_prompt: sp, enable_web_search: config.enableWebSearch,
       };
 
-      // ReAct 自动工具调用：有 MCP 工具时先跑决策循环。
-      // 注意：含图片（或图片已识别成文字 descCtx）时不走 ReAct——
-      // 图片场景应直接流式回复，完整展示 DeepSeek 的思考过程与内容；
-      // ReAct 会跳过流式直接给结果，导致思考/工具过程不可见。
-      let reactDone = false;
-      // 有已连接工具，或有未连接但可按需激活的服务器（如浏览器）时，都先跑决策循环
-      const hasPendingMcp = useMcpStore().servers.some(s => s.enabled && !s.connected);
-      if ((mcpToolsCache.length > 0 || hasPendingMcp) && !(images && images.length > 0) && !descCtx) {
-        const flatMsgs = rustMsgs.map(m => ({
-          role: m.role,
-          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-        }));
-        try {
-          // ReAct 期间实时显示"正在调用 xx 工具"，并把非流式返回的思考过程也累积展示
-          const reactTools: ChatTool[] = [];
-          const react = await runReactLoop(config, flatMsgs, 5,
-            (text) => { streamingContent.value = text; },
-            (r) => { streamingReasoning.value += r; },
-            (hit, miss) => { cacheHitTotal.value += hit; cacheMissTotal.value += miss; },
-            (t) => reactTools.push(t)
-          );
-          if (reactTools.length) assistantMsg.tools = [...reactTools];
-          if (react.finalAnswer) {
-            const usedTools = react.toolResults.length > 0 || reactTools.length > 0;
-            if (usedTools) {
-              // ReAct 实际调用了工具后给出最终答案 → 直接展示（工具场景可接受非流式）
-              streamingContent.value =
-                (react.toolResults.length > 0 ? react.toolResults.join("\n") + "\n\n" : "") + react.finalAnswer;
-              reactDone = true;
-            }
-            // 未调用任何工具（模型直接给出普通回答）→ 不设 reactDone，
-            // 回退到下方流式路径重新流式生成，恢复"逐字输出"体验。
-            // （否则只要启用了 MCP 服务器，所有普通回复都会走 chat_once 一次性展示）
-          } else if (react.toolResults.length > 0) {
-            // 循环耗尽仍在调工具：把过程附到上下文，交给流式兜底回答
-            rustMsgs.push({ role: "user", content: react.toolResults.join("\n") + "\n请直接给出最终答案。" });
-          }
-        } catch { /* ReAct 失败，回退到流式 */ }
-      }
+      // ---- 方案 B：流式优先 + <tool_call> 流式检测工具循环 ----
+      // 全程走 send_message 流式（思考过程与内容都逐字输出）；
+      // 流式中一旦出现完整 <tool_call>...</tool_call> 标记，则停止本轮流式、
+      // 执行工具、把结果塞回上下文、再发起新一轮流式，直到模型给出最终答案。
+      // 不再使用 ReAct 非流式循环（chat_once），彻底恢复"逐字输出"体验。
+      const MAX_TOOL_ROUNDS = 8;
 
-      if (!reactDone) {
-        // ReAct 未给出最终答案（超时/耗尽/失败）或未调用工具回退流式：
-        // 清掉 ReAct 期间的"正在调用工具"占位与已累积的推理/内容，
-        // 让流式从头生成完整回复（推理过程 + 内容都逐字输出），
-        // 避免残留占位文本混在答案前面、或推理一次性展示且与流式重复叠加
-        streamingContent.value = "";
-        streamingReasoning.value = "";
-        // 先注册监听并 await 确保注册完成，再调用 invoke，避免事件竞态丢失
+      // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
+      // 返回 toolCall 非空 → 本轮流式输出的是一段工具调用（需执行后继续）；为 null → 最终答案。
+      async function streamRound(msgs: { role: string; content: unknown }[]): Promise<{ toolCall: ToolCall | null; content: string }> {
+        streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
         let resolveDone!: () => void;
         let rejectDone!: (e: Error) => void;
         const doneP = new Promise<void>((resolve, reject) => {
           resolveDone = resolve;
           rejectDone = reject;
         });
+        const roundUnlisten: UnlistenFn[] = [];
+        let toolCall: ToolCall | null = null;
+        let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
 
-        unlistenFns.push(
+        roundUnlisten.push(
           await listen<{ reasoning_content?: string; content?: string; tokens?: number; cache_hit?: number; cache_miss?: number }>("sse-delta", e => {
             const d = e.payload;
             if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
-            if (d.content) streamingContent.value += d.content;
+            if (d.content) {
+              streamingContent.value += d.content;
+              toolBuffer += d.content;
+              // 检测到完整 </tool_call> 才解析（避免把流式中途的半截 JSON 当工具调用）；
+              // 解析成功 → 提前结束本轮流式，转去执行工具
+              if (!toolCall && toolBuffer.includes("</tool_call>")) {
+                const parsed = parseToolCall(toolBuffer);
+                if (parsed) { toolCall = parsed; resolveDone(); }
+              }
+            }
             if (d.tokens) assistantMsg.tokens = d.tokens;
             if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
             if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
@@ -1359,16 +1254,89 @@ export const useChatStore = defineStore("chat", () => {
           await listen("sse-done", () => resolveDone()),
         );
 
-        await invoke("send_message", { config: rustCfg, messages: rustMsgs });
-        // doneP 加超时兜底：若 Rust 流式一直不返回（网络卡死），超时抛错进入 catch，
-        // 确保 finally 一定执行、气泡不会卡死成空泡泡
-        await Promise.race([
-          doneP,
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000)
-          ),
-        ]);
+        // 发起流式（不 await）。注意：stream_chat 失败（网络/Key/模型名错误）时 Rust 直接
+        // return Err 而不会 emit sse-error，必须把 invoke 的真实错误也交给 rejectDone，
+        // 否则前端只会干等到 120 秒超时；正常路径 invoke resolve、重复 reject 无害。
+        invoke("send_message", { config: rustCfg, messages: msgs }).catch((e) => {
+          rejectDone(e instanceof Error ? e : new Error(String(e)));
+        });
+
+        // doneP 加超时兜底：若 Rust 流式一直不返回（网络卡死），超时抛错进入外层 catch，
+        // 确保 finally 一定执行、气泡不会卡死成空泡泡；
+        // 无论正常结束还是抛错，都要移除本轮监听，避免事件监听泄漏
+        try {
+          await Promise.race([
+            doneP,
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000)
+            ),
+          ]);
+        } finally {
+          roundUnlisten.forEach(f => f());
+        }
+        return { toolCall, content: toolBuffer };
       }
+
+      // 主循环：发起流式；若返回工具调用则执行并把结果回填上下文后继续
+      let round = 0;
+      let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
+      do {
+        roundResult = await streamRound(rustMsgs);
+        const tc = roundResult.toolCall;
+        if (!tc) break; // 无工具调用 → 最终答案，退出循环
+
+        round++;
+        if (round >= MAX_TOOL_ROUNDS) {
+          // 达到上限：直接停止工具循环（避免模型反复调工具造成死循环），
+          // 以已执行的工具卡片收尾；streamingContent 若有残留工具 JSON 由 finally 剥离
+          break;
+        }
+
+        // 实时显示"正在调用工具"
+        const serverName = tc.server && tc.server !== "default" ? `（${tc.server}）` : "";
+        streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
+        const argsStr = JSON.stringify(tc.arguments, null, 2);
+        const startTool = Date.now();
+        try {
+          const result = await callMcpTool(tc.server, tc.tool, tc.arguments);
+          const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
+          const card =
+            `### 🔧 调用工具：\`${tc.tool}\`\n\n` +
+            `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>` +
+            `\n<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`;
+          toolChain.push(card);
+          toolCards.push({
+            name: tc.tool, server: tc.server || "app", status: "done",
+            durationMs: Date.now() - startTool,
+            argsPreview: argsStr.slice(0, 300),
+            resultPreview: clipped.slice(0, 300),
+          });
+          streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
+          rustMsgs.push({ role: "assistant", content: roundResult.content });
+          rustMsgs.push({
+            role: "user",
+            content: `<tool_result>\n${result}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
+          });
+        } catch (e: unknown) {
+          const err = e instanceof Error ? e.message : String(e);
+          const card = `> ❌ 工具调用失败: \`${err}\``;
+          toolChain.push(card);
+          toolCards.push({
+            name: tc.tool, server: tc.server || "app", status: "error",
+            durationMs: Date.now() - startTool,
+            argsPreview: argsStr.slice(0, 300),
+            error: err.slice(0, 300),
+          });
+          streamingContent.value = card;
+          rustMsgs.push({ role: "assistant", content: roundResult.content });
+          rustMsgs.push({
+            role: "user",
+            content: `<tool_result>\n错误: ${err}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。`,
+          });
+        }
+      } while (true);
+      // 任务结束：断开浏览器服务器，形成使用闭环
+      await closeBrowserIfOpen();
 
     } catch (err: unknown) {
       if (err instanceof Error) {
@@ -1381,8 +1349,12 @@ export const useChatStore = defineStore("chat", () => {
       }
     } finally {
       unlistenFns.forEach(f => f());
-      // 流式兜底：即使走了流式路径，也剥离模型口头输出的工具调用 JSON，避免展示莫名其妙的内容
-      assistantMsg.content = stripToolJson(streamingContent.value);
+      // 流式兜底：剥离模型口头输出的工具调用 JSON；工具卡片（toolChain）逐段拼在最前
+      const finalText = stripToolJson(streamingContent.value);
+      assistantMsg.content = toolChain.length > 0
+        ? (finalText ? toolChain.join("\n\n") + "\n\n" + finalText : toolChain.join("\n\n"))
+        : finalText;
+      if (toolCards.length > 0) assistantMsg.tools = toolCards;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算
