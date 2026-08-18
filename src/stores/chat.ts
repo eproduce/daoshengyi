@@ -1220,7 +1220,12 @@ export const useChatStore = defineStore("chat", () => {
         volatileCtx.push(`[用户提供的文件上下文]\n${fileCtx}`);
       }
       // 联网搜索结果（enableWebSearch 开关 → 发送前自动搜索并可视化展示；非工具调用）
-      if (config.enableWebSearch && text.trim()) {
+      // 本地文件系统类问题（含本地路径/目录/项目等）不触发自动联网搜索，
+      // 例如「列出 /Users/xx 目录下的项目」应走文件系统工具而非联网搜索
+      const LOCAL_FS_HINTS = /(目录|文件夹|项目|文件|读取|列出|打开|查看|结构|workspace|本地|源码)/;
+      const hasLocalPath = /(~\/|\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\-/]+)/.test(text);
+      const isLocalFsQuery = hasLocalPath && LOCAL_FS_HINTS.test(text);
+      if (config.enableWebSearch && text.trim() && !isLocalFsQuery) {
         // 先展示"正在联网搜索"，让用户看到搜索过程（与图片识别占位同理）
         const autoQuery = extractSearchKeywords(text.trim());
         streamingContent.value = `🌐 正在联网搜索：${autoQuery.slice(0, 24)}...`;
