@@ -33,8 +33,9 @@ const terminalOutput = computed(() => {
 
 const marked = new Marked(); marked.setOptions({ breaks: true, gfm: true });
 
-// 识别本地文件路径 → 转成可点击链接（href="#" + data-path，点击拦截调系统打开，避免未知协议被 webview 拦截）
-const LOCAL_FILE_RE = /(?<![\[\(])((?:~|\/[A-Za-z0-9_@.\/-]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|c|cpp|h|hpp|html?|css|sql|db|zip|tar\.gz|7z)))/gi;
+// 识别本地文件路径 → 转成可点击链接（href="#" + data-path，点击拦截调系统打开）
+// 支持 ~/ 开头与中文目录；排除 markdown 链接/括号内
+const LOCAL_FILE_RE = /(?<![\w\/])((?:~\/|\/)[A-Za-z0-9_@.\/\-\u4e00-\u9fa5]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|c|cpp|h|hpp|html?|css|sql|db|zip|tar\.gz|7z))/gi;
 
 function linkifyLocalPaths(s: string): string {
   return s.replace(LOCAL_FILE_RE, (m) => {
@@ -44,7 +45,17 @@ function linkifyLocalPaths(s: string): string {
   });
 }
 
-function md(s: string) { return s ? marked.parse(linkifyLocalPaths(s)) as string : ""; }
+// 用 marked 的 text renderer 在渲染时把路径替换为链接：renderer 输出直接拼进最终 HTML，
+// 不经过 marked 对 raw HTML 的二次解析/转义，确保链接确实渲染成可点击元素
+marked.use({
+  renderer: {
+    text(token: { text: string }) {
+      return linkifyLocalPaths(token.text);
+    },
+  },
+});
+
+function md(s: string) { return s ? marked.parse(s) as string : ""; }
 
 // 拦截本地文件链接：用系统默认应用打开（如 Excel/Numbers 打开 CSV）
 async function onContentClick(e: MouseEvent) {

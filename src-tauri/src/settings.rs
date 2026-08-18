@@ -231,6 +231,8 @@ mod tests {
             active_conversation_id: None,
             workspace: None,
             yolo_mode: false,
+            approval_mode: "manual".into(),
+            auxiliary_profile_id: None,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -257,6 +259,8 @@ mod tests {
             active_conversation_id: None,
             workspace: None,
             yolo_mode: false,
+            approval_mode: "manual".into(),
+            auxiliary_profile_id: None,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
