@@ -11,7 +11,7 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson, type ToolCall } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson, formatToolResultPreview, type ToolCall } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
@@ -1227,11 +1227,14 @@ export const useChatStore = defineStore("chat", () => {
         volatileCtx.push(`[用户提供的文件上下文]\n${fileCtx}`);
       }
       // 联网搜索结果（enableWebSearch 开关 → 发送前自动搜索并可视化展示；非工具调用）
-      // 本地文件系统类问题（含本地路径/目录/项目等）不触发自动联网搜索，
-      // 例如「列出 /Users/xx 目录下的项目」应走文件系统工具而非联网搜索
+      // 本地文件系统类问题（含本地路径，或含强本地词且无联网意图）不触发自动联网搜索，
+      // 例如「列出 /Users/xx 目录下的项目」「op目录」应走文件系统工具而非联网搜索
       const LOCAL_FS_HINTS = /(目录|文件夹|项目|文件|读取|列出|打开|查看|结构|workspace|本地|源码)/;
       const hasLocalPath = /(~\/|\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\-/]+)/.test(text);
-      const isLocalFsQuery = hasLocalPath && LOCAL_FS_HINTS.test(text);
+      const WEB_INTENT = /(天气|新闻|股票|汇率|价格|最新|热点|资讯|排名|趋势|行情|政策|招聘|公司|产品|游戏|电影|事件|公告|教程|指南|怎么|如何|是什么|搜索|查询)/;
+      const isLocalFsQuery =
+        (hasLocalPath && LOCAL_FS_HINTS.test(text)) ||
+        (/(目录|文件夹|本地文件|项目结构|目录结构)/.test(text) && !WEB_INTENT.test(text));
       if (config.enableWebSearch && text.trim() && !isLocalFsQuery) {
         // 先展示"正在联网搜索"，让用户看到搜索过程（与图片识别占位同理）
         const autoQuery = extractSearchKeywords(text.trim());
@@ -1412,7 +1415,7 @@ export const useChatStore = defineStore("chat", () => {
         const startTool = Date.now();
         try {
           const result = await callMcpTool(tc.server, tc.tool, tc.arguments);
-          const clipped = result.length > 800 ? result.slice(0, 800) + "\n...(结果已截断)" : result;
+          const clipped = formatToolResultPreview(tc.tool, result);
           const card =
             `### 🔧 调用工具：\`${tc.tool}\`\n\n` +
             `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>` +
