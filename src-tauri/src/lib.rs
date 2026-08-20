@@ -460,6 +460,21 @@ async fn send_message(
                         let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let ch = delta.cache_hit.unwrap_or(0);
                         let cm = delta.cache_miss.unwrap_or(0);
+                        // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
+                        if let Some(c) = &delta.content {
+                            if c.contains('\u{FFFD}') {
+                                let warn = format!("[sse] ⚠️ content 含乱码 U+FFFD，片段: {}", c.chars().take(160).collect::<String>());
+                                eprintln!("{}", warn);
+                                append_log(&app, &warn);
+                            }
+                        }
+                        if let Some(r) = &delta.reasoning_content {
+                            if r.contains('\u{FFFD}') {
+                                let warn = format!("[sse] ⚠️ reasoning 含乱码 U+FFFD，片段: {}", r.chars().take(160).collect::<String>());
+                                eprintln!("{}", warn);
+                                append_log(&app, &warn);
+                            }
+                        }
                         // usage 块（choices 为空、仅有缓存/总 token）也打印，便于排查缓存命中率
                         if rl > 0 || cl > 0 || ch > 0 || cm > 0 {
                             let sm = format!("[sse] reasoning_len={} content_len={} cache_hit={} cache_miss={}", rl, cl, ch, cm);

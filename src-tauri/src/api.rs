@@ -78,7 +78,14 @@ pub async fn stream_chat(
                             out.push_str(std::str::from_utf8(&pending[..valid]).unwrap());
                             pending.drain(..valid);
                         }
-                        // valid == 0 时整个尾部都是不完整字符，全部保留等待下一 chunk
+                        // 若存在确定的无效字节序列（error_len 非 None，即不是“不完整多字节”而是真无效），
+                        // 必须丢弃它（至少 1 字节），否则 valid_up_to 永远为 0、pending 无限增长，
+                        // 后续所有内容都不再输出 → 表现为流中断/内容丢失
+                        if let Some(err_len) = e.error_len() {
+                            let skip = err_len.max(1).min(pending.len());
+                            pending.drain(..skip);
+                        }
+                        // 剩余尾部（不完整多字节，error_len=None）保留等待下一 chunk 补全
                     }
                 }
             }
