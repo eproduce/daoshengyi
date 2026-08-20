@@ -1,6 +1,6 @@
 // 临时测试：提示词模板数据 + ReAct 工具调用解析
 import { PROMPT_TEMPLATES } from "../src/data/prompt-templates.ts";
-import { parseToolCall, stripToolJson, formatToolResultPreview } from "../src/utils/tool-call.ts";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall } from "../src/utils/tool-call.ts";
 
 let pass = 0;
 let fail = 0;
@@ -56,6 +56,13 @@ assert(dsmlSpacePipes?.arguments?.path === "/tmp", "双竖线变体 arguments");
 
 const dsmlMulti = stripToolJson('块一<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>中<|DSML|tool_call|>{"name":"b","arguments":{}}<|/DSML|tool_call|>块二');
 assert(!dsmlMulti.includes('DSML') && dsmlMulti.includes('块一') && dsmlMulti.includes('中') && dsmlMulti.includes('块二'), 'stripToolJson 剥离多处 DSML 块');
+
+// 工具调用闭合标记检测（流式停止条件）：标准 + DSML 各变体
+assert(hasCompleteToolCall('<tool_call>{"server":"a","tool":"b","arguments":{}}</tool_call>'), '识别标准闭合标记');
+assert(hasCompleteToolCall('<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>'), '识别 DSML 闭合标记');
+assert(hasCompleteToolCall('<|DSML|tool_call|>{"name":"a","arguments":{}}<|/DSML|tool_call|>'), '识别半角 DSML 闭合标记');
+assert(hasCompleteToolCall('< | | DSML | | tool_call >{"name":"a","arguments":{}}< / | | DSML | | tool_call >'), '识别双竖线+空格 DSML 闭合标记');
+assert(!hasCompleteToolCall('<tool_call>{"server":"a","tool":"b","arguments":{}}'), '半截 JSON 未闭合返回 false');
 
 const dsmlStripped = stripToolJson('先看<｜DSML｜tool_call｜>{"name":"x","arguments":{}}</｜DSML｜tool_call｜>然后继续');
 assert(!dsmlStripped.includes('DSML') && dsmlStripped.includes('先看'), 'stripToolJson 剥离 DSML 标记');

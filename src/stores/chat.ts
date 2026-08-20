@@ -11,7 +11,7 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson, formatToolResultPreview, type ToolCall } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, type ToolCall } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
@@ -111,7 +111,12 @@ function getMcpToolsPrompt(): string {
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
     "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。不确定时可先用 web_search 或 fetch_page 探索。" +
-    "\n\n## 浏览器自动化使用要点\n" +
+    "\n\n## 文件系统使用要点\n" +
+    "- 查看目录**优先用 list_directory 只列一层**（能看到该目录下的子目录/文件清单），不要用 directory_tree 递归列整个目录树。\n" +
+    "- directory_tree 会递归展开全部子目录（含 .git、node_modules、target、build 等海量文件），结果巨大且会被截断，无法完整看到；禁止对含这些大目录的项目用它。\n" +
+    "- 正确做法：先 list_directory 看顶层 → 针对需要的子目录再用 list_directory 逐层深入 → 读关键文件用 read_multiple_files。\n" +
+    "- 分析用户本地目录/项目时，这些就是本地文件系统操作，不要联网搜索。\n" +
+    "\n## 浏览器自动化使用要点\n" +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
     "- puppeteer_screenshot 截图仅用于视觉确认；若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
@@ -1344,9 +1349,10 @@ export const useChatStore = defineStore("chat", () => {
             if (d.content) {
               streamingContent.value += d.content;
               toolBuffer += d.content;
-              // 检测到完整 </tool_call> 才解析（避免把流式中途的半截 JSON 当工具调用）；
+              // 检测到完整的工具调用闭合标记才解析（避免把流式中途的半截 JSON 当工具调用）；
+              // 兼容标准 </tool_call> 与 DeepSeek DSML </｜DSML｜tool_call｜> 闭合标记，
               // 解析成功 → 提前结束本轮流式，转去执行工具
-              if (!toolCall && toolBuffer.includes("</tool_call>")) {
+              if (!toolCall && hasCompleteToolCall(toolBuffer)) {
                 const parsed = parseToolCall(toolBuffer);
                 if (parsed) { toolCall = parsed; resolveDone(); }
               }

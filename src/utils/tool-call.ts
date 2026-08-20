@@ -38,6 +38,18 @@ const DSML_TOOL_CALL_RE =
 const DSML_TOOL_CALL_GLOBAL_RE =
   /<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*>[\s\S]*?<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*\/[^>]*>/gi;
 
+/// 判断工具调用块是否已完整闭合，避免把流式中途的半截 JSON 当工具调用提前解析。
+/// 兼容两种闭合标记：
+/// 1. 标准格式 </tool_call>
+/// 2. DeepSeek DSML 原生格式 </｜DSML｜tool_call｜>（含全角/半角竖线/双竖线/空格变体，
+///    < 与 / 之间可能有 |，如 <|/DSML|tool_call|>）
+export function hasCompleteToolCall(buffer: string): boolean {
+  return (
+    /<\s*\/\s*tool_call\s*>/.test(buffer) ||
+    /<\s*[^>]*\/\s*[^>]*DSML[^>]*tool_call[^>]*>/i.test(buffer)
+  );
+}
+
 /// 解析 LLM 响应中的工具调用：
 /// 1. 优先匹配标准 <tool_call> JSON 块
 /// 2. 匹配 DeepSeek DSML 原生 tool_call（deepseek 思考模式常输出此格式，name 字段）
