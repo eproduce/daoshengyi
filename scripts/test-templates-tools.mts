@@ -49,6 +49,14 @@ assert(dsml?.arguments?.path === "/tmp", "DSML arguments");
 const dsmlHalf = parseToolCall('<|DSML|tool_call|>{"name":"read_file","arguments":{"path":"a"}}<|/DSML|tool_call|>');
 assert(dsmlHalf?.tool === "read_file", "解析半角竖线 DSML");
 
+// 截图里的双竖线 + 空格变体：< | | DSML | | tool_call >
+const dsmlSpacePipes = parseToolCall('< | | DSML | | tool_call >{"name":"list_dir","arguments":{"path":"/tmp"}}< / | | DSML | | tool_call >');
+assert(dsmlSpacePipes?.tool === "list_dir", "解析双竖线+空格 DSML 变体", JSON.stringify(dsmlSpacePipes));
+assert(dsmlSpacePipes?.arguments?.path === "/tmp", "双竖线变体 arguments");
+
+const dsmlMulti = stripToolJson('块一<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>中<|DSML|tool_call|>{"name":"b","arguments":{}}<|/DSML|tool_call|>块二');
+assert(!dsmlMulti.includes('DSML') && dsmlMulti.includes('块一') && dsmlMulti.includes('中') && dsmlMulti.includes('块二'), 'stripToolJson 剥离多处 DSML 块');
+
 const dsmlStripped = stripToolJson('先看<｜DSML｜tool_call｜>{"name":"x","arguments":{}}</｜DSML｜tool_call｜>然后继续');
 assert(!dsmlStripped.includes('DSML') && dsmlStripped.includes('先看'), 'stripToolJson 剥离 DSML 标记');
 

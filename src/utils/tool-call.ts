@@ -32,9 +32,11 @@ function extractToolCalls(content: string): ToolCall[] {
 }
 
 /// 匹配 DeepSeek DSML 原生 tool_call 标签：<｜DSML｜tool_call｜>...</｜DSML｜tool_call｜>
-/// 兼容全角竖线｜ / 半角竖线 | / 中间带空格等变体
+/// 只要标签内同时含 DSML 与 tool_call 即命中，兼容：全角｜ / 半角| / 双竖线 / 空格等变体
 const DSML_TOOL_CALL_RE =
-  /<\s*[｜|]\s*DSML\s*[｜|]\s*tool_call\s*[｜|]\s*>\s*([\s\S]*?)\s*<\/\s*[｜|]\s*DSML\s*[｜|]\s*tool_call\s*[｜|]\s*>/;
+  /<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*>\s*([\s\S]*?)\s*<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*\/[^>]*>/i;
+const DSML_TOOL_CALL_GLOBAL_RE =
+  /<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*>[\s\S]*?<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*\/[^>]*>/gi;
 
 /// 解析 LLM 响应中的工具调用：
 /// 1. 优先匹配标准 <tool_call> JSON 块
@@ -89,7 +91,7 @@ export function stripToolJson(text: string): string {
   let t = text
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
-    .replace(DSML_TOOL_CALL_RE, "")
+    .replace(DSML_TOOL_CALL_GLOBAL_RE, "")
     .trim();
 
   const re = /\{(?:[^{}]|\{[^{}]*\})*\}/g;
