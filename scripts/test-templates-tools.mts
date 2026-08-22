@@ -1,6 +1,6 @@
 // 临时测试：提示词模板数据 + ReAct 工具调用解析
 import { PROMPT_TEMPLATES } from "../src/data/prompt-templates.ts";
-import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall } from "../src/utils/tool-call.ts";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText } from "../src/utils/tool-call.ts";
 
 let pass = 0;
 let fail = 0;
@@ -56,6 +56,13 @@ assert(dsmlSpacePipes?.arguments?.path === "/tmp", "双竖线变体 arguments");
 
 const dsmlMulti = stripToolJson('块一<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>中<|DSML|tool_call|>{"name":"b","arguments":{}}<|/DSML|tool_call|>块二');
 assert(!dsmlMulti.includes('DSML') && dsmlMulti.includes('块一') && dsmlMulti.includes('中') && dsmlMulti.includes('块二'), 'stripToolJson 剥离多处 DSML 块');
+
+// 流式可见正文：剔除工具调用标记（含未闭合半截），不闪现乱码
+assert(visibleText('先看<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>再答') === '先看', 'visibleText 剔除已闭合 DSML 块');
+assert(visibleText('再看<｜DSML｜tool_') === '再看', 'visibleText 截断未闭合 DSML 开标记（半截）');
+assert(visibleText('正文<tool_call>{"server":"a","tool":"b","arguments":{}}</tool_call>尾') === '正文', 'visibleText 剔除标准 tool_call 块');
+assert(visibleText('连续块一<｜DSML｜tool_call｜>{"name":"a","arguments":{}}</｜DSML｜tool_call｜>中<｜DSML｜tool_call｜>') === '连续块一', 'visibleText 多工具块只留第一块前正文');
+assert(visibleText('普通回复：这是一个测试。') === '普通回复：这是一个测试。', 'visibleText 无工具调用时原样保留');
 
 // 工具调用闭合标记检测（流式停止条件）：标准 + DSML 各变体
 assert(hasCompleteToolCall('<tool_call>{"server":"a","tool":"b","arguments":{}}</tool_call>'), '识别标准闭合标记');

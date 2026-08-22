@@ -97,6 +97,18 @@ export function formatToolResultPreview(tool: string | undefined, result: string
   return raw.length > 400 ? `${raw.slice(0, 400)}\n\n...(结果已截断)` : raw;
 }
 
+/// 流式实时显示用：只保留第一个工具开标记之前的可见正文，其余（工具调用 JSON、
+/// 及其后的内容）一律不显示。模型连续输出多个工具调用时，若直接 append 原始 content
+/// 会把 <｜DSML｜tool_call｜> 这类开/闭合标记实时显示成"乱码"；
+/// 这里保证工具标记及其后内容永远不进正文（工具执行后卡片会替换整段流式正文）。
+/// 兼容：<tool_call> 标准格式、<｜DSML｜tool_call｜> DSML 格式（含 < 与 DSML 之间有
+/// 全角/半角竖线的变体）、以及刚开头尚无 > 的半截（如 <｜DSML｜tool_）。
+export function visibleText(raw: string): string {
+  const open = raw.search(/<\s*[^<>]*(?:tool_call|DSML|tool)/i);
+  const head = open === -1 ? raw : raw.slice(0, open);
+  return head.replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "").trim();
+}
+
 /// 从文本中剥离工具调用 JSON（<tool_call> / <tool_result> / DSML 块或含 tool/name 键的裸 JSON），
 /// 用于流式输出兜底清理，避免模型把工具调用原样展示给用户。
 export function stripToolJson(text: string): string {

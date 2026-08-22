@@ -11,7 +11,7 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, type ToolCall } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText, type ToolCall } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 // --- MCP 工具辅助 ---
@@ -1347,8 +1347,10 @@ export const useChatStore = defineStore("chat", () => {
             const d = e.payload;
             if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
             if (d.content) {
-              streamingContent.value += d.content;
               toolBuffer += d.content;
+              // 实时显示"可见正文"：剔除工具调用标记（含未闭合的半截），
+              // 避免模型连续输出多个工具调用时 <｜DSML｜tool_call｜> 原始标记闪现成乱码
+              streamingContent.value = visibleText(toolBuffer);
               // 检测到完整的工具调用闭合标记才解析（避免把流式中途的半截 JSON 当工具调用）；
               // 兼容标准 </tool_call> 与 DeepSeek DSML </｜DSML｜tool_call｜> 闭合标记，
               // 解析成功 → 提前结束本轮流式，转去执行工具
