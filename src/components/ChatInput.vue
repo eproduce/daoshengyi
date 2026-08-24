@@ -6,7 +6,8 @@ import { useChatStore } from "@/stores/chat";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
-import { FileText, Settings } from "lucide-vue-next";
+import { Settings } from "lucide-vue-next";
+import { fileTypeIcon } from "@/utils/file-icons";
 
 const chatStore = useChatStore();
 
@@ -347,7 +348,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         <button class="ci-attach-x" title="移除" @click="removeImage(img.id)">✕</button>
       </div>
       <div v-for="f in attachedFiles" :key="f.id" class="ci-attach-item ci-attach-file">
-        <span class="ci-file-icon"><FileText :size="15" /></span>
+        <span class="ci-file-icon"><component :is="fileTypeIcon(f.name, f.mimeType)" :size="15" /></span>
         <span class="ci-file-name">{{ f.name }}</span>
         <button class="ci-attach-x" title="移除" @click="removeFile(f.id)">✕</button>
       </div>

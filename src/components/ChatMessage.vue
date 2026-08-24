@@ -9,7 +9,8 @@ import { useChatStore } from "@/stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { formatCost } from "@/utils/tokens";
 import AppLogo from "./AppLogo.vue";
-import { Brain, FileText, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User } from "lucide-vue-next";
+import { Brain, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User } from "lucide-vue-next";
+import { fileTypeIcon } from "@/utils/file-icons";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -271,7 +272,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         <!-- 附件上下文卡片（文件内容不直接展示，仅显示文件名） -->
         <div v-if="message.attachments?.length" class="message__attachments">
           <div v-for="f in message.attachments" :key="f.id" class="attach-card" :title="`${f.name} · ${(f.content || '').length} 字符`">
-            <span class="attach-card-icon"><FileText :size="15" /></span>
+            <span class="attach-card-icon"><component :is="fileTypeIcon(f.name, f.mimeType)" :size="15" /></span>
             <span class="attach-card-name">{{ f.name }}</span>
           </div>
         </div>
