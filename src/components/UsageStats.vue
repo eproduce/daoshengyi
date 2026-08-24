@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useChatStore } from "@/stores/chat";
+import { ChartColumn } from "lucide-vue-next";
 
 const chat = useChatStore();
 
@@ -68,7 +69,7 @@ function fmtSec(n: number): string {
 
 <template>
   <div class="usage-panel">
-    <h3>📊 用量统计</h3>
+    <h3><ChartColumn :size="17" /> 用量统计</h3>
     <p class="usage-desc">基于本地 SQLite 对话记录汇总（含每轮 token / 费用 / 耗时估算）</p>
 
     <!-- 概况卡片 -->

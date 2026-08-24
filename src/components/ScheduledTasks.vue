@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "@/stores/uuid";
+import { AlarmClock } from "lucide-vue-next";
 
 interface ScheduledTask {
   id: string;
@@ -85,7 +86,7 @@ function scheduleLabel(t: ScheduledTask): string {
 <template>
   <div class="tasks-panel">
     <div class="tasks-panel__head">
-      <h3>⏰ 定时任务</h3>
+      <h3><AlarmClock :size="17" /> 定时任务</h3>
       <button class="btn-icon" title="刷新" @click="load">⟳</button>
     </div>
     <p v-if="error" class="tasks-error">{{ error }}</p>

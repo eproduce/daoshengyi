@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useChatStore } from "@/stores/chat";
 import { ref, onMounted, onUnmounted } from "vue";
+import { Brain, Settings } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const emit = defineEmits<{
@@ -60,7 +61,7 @@ onUnmounted(() => document.removeEventListener("click", onDocumentClick));
       @click="toggleThinking"
       :title="chatStore.activeProfile?.thinkingEnabled ? '关闭深度思考' : '开启深度思考'"
     >
-      <span class="thinking-toggle__icon">🧠</span>
+      <span class="thinking-toggle__icon"><Brain :size="14" /></span>
       <span class="thinking-toggle__label">{{ chatStore.activeProfile?.thinkingEnabled ? '深度思考' : '快速回答' }}</span>
     </button>
 
@@ -82,7 +83,7 @@ onUnmounted(() => document.removeEventListener("click", onDocumentClick));
       </div>
       <div class="quick-bar__dropdown-footer">
         <button class="quick-bar__settings-btn" @click="emit('openSettings'); showDropdown = false">
-          ⚙️ 管理配置
+          <Settings :size="14" /> 管理配置
         </button>
       </div>
     </div>

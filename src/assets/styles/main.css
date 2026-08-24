@@ -169,3 +169,19 @@ html, body {
   margin: 12px 0;
   padding: 4px 0 8px;
 }
+
+/* ── 线性图标（lucide-vue-next）────────────────────────────────── */
+/* 统一：图标尺寸随文字（1em）、颜色继承 currentColor，stroke 粗细 2，
+   保证各处替换 emoji 后视觉一致、可随主题/文字颜色变化 */
+.lucide {
+  width: 1em;
+  height: 1em;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+/* 旧 emoji 图标容器的兼容对齐 */
+[class*="__icon"] svg.lucide,
+[class*="-icon"] svg.lucide,
+[class*="__btn"] svg.lucide {
+  vertical-align: -0.15em;
+}

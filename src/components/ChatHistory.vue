@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
+import { Archive, Plus } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 // 是否显示归档视图（归档会话：恢复 / 导出 / 彻底删除）
@@ -10,11 +11,12 @@ const showArchived = ref(false);
 <template>
   <div class="history-panel">
     <div class="history-panel__header">
-      <h3>{{ showArchived ? "🗄 已归档" : "对话历史" }}</h3>
+      <h3 v-if="showArchived"><Archive :size="15" /> 已归档</h3>
+      <h3 v-else>对话历史</h3>
       <div class="history-panel__acts">
-        <button v-if="!showArchived" class="btn-icon" title="查看归档" @click="showArchived = true">🗄</button>
+        <button v-if="!showArchived" class="btn-icon" title="查看归档" @click="showArchived = true"><Archive :size="15" /></button>
         <button v-else class="btn-icon" title="返回对话列表" @click="showArchived = false">←</button>
-        <button v-if="!showArchived" class="btn-icon" title="新建对话" @click="chatStore.createConversation()">＋</button>
+        <button v-if="!showArchived" class="btn-icon" title="新建对话" @click="chatStore.createConversation()"><Plus :size="15" /></button>
       </div>
     </div>
     <div class="history-panel__list">
@@ -35,7 +37,7 @@ const showArchived = ref(false);
           </div>
           <div class="history-item__btns">
             <button class="history-item__btn" title="导出为 Markdown" @click.stop="chatStore.downloadExport(conv.id, 'md')">⤓</button>
-            <button class="history-item__btn" title="归档（隐藏，可恢复）" @click.stop="chatStore.archiveConversation(conv.id)">🗂</button>
+            <button class="history-item__btn" title="归档（隐藏，可恢复）" @click.stop="chatStore.archiveConversation(conv.id)"><Archive :size="14" /></button>
             <button class="history-item__delete" title="删除对话" @click.stop="chatStore.deleteConversation(conv.id)">✕</button>
           </div>
         </div>

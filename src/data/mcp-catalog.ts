@@ -17,7 +17,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "filesystem",
     name: "文件系统",
-    icon: "📁",
+    icon: "Folder",
     description: "读写本地文件、浏览目录、搜索文件",
     category: "系统",
     command: "npx",
@@ -27,7 +27,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "puppeteer",
     name: "浏览器自动化",
-    icon: "🌍",
+    icon: "Globe",
     description: "网页交互、点击、截图（Puppeteer，默认用本机 Edge 内核）",
     category: "网络",
     command: "npx",
@@ -43,7 +43,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "git",
     name: "Git",
-    icon: "🌿",
+    icon: "GitBranch",
     description: "Git 仓库操作、提交、diff、日志",
     category: "开发",
     command: "npx",
@@ -53,7 +53,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "github",
     name: "GitHub",
-    icon: "🐙",
+    icon: "Github",
     description: "GitHub 仓库、Issue、PR 操作",
     category: "开发",
     command: "npx",
@@ -63,7 +63,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "sqlite",
     name: "SQLite",
-    icon: "🗄️",
+    icon: "Database",
     description: "SQLite 数据库查询与分析",
     category: "数据",
     command: "npx",
@@ -73,7 +73,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "postgres",
     name: "PostgreSQL",
-    icon: "🐘",
+    icon: "Server",
     description: "Postgres 数据库查询（需修改连接串）",
     category: "数据",
     command: "npx",
@@ -83,7 +83,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "redis",
     name: "Redis",
-    icon: "🔴",
+    icon: "CircleDot",
     description: "Redis 键值读写与命令执行",
     category: "数据",
     command: "npx",
@@ -93,7 +93,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "memory",
     name: "记忆",
-    icon: "🧠",
+    icon: "Brain",
     description: "知识图谱持久化记忆（独立于内置记忆）",
     category: "工具",
     command: "npx",
@@ -103,7 +103,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "time",
     name: "时间",
-    icon: "🕐",
+    icon: "Clock",
     description: "获取当前时间、时区转换",
     category: "工具",
     command: "npx",
@@ -113,7 +113,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "everything",
     name: "Everything 示例",
-    icon: "🧪",
+    icon: "FlaskConical",
     description: "官方示例服务器（用于学习 MCP 协议）",
     category: "工具",
     command: "npx",
@@ -123,7 +123,7 @@ export const MCP_CATALOG: McpCatalogItem[] = [
   {
     id: "brave-search",
     name: "Brave 搜索",
-    icon: "🔍",
+    icon: "Search",
     description: "Brave Search 联网搜索（安装时配置 API Key）",
     category: "搜索",
     command: "npx",

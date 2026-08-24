@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { Bot, Rocket } from "lucide-vue-next";
 
 interface CodingAgentInfo {
   id: string;
@@ -90,7 +91,7 @@ async function delegate() {
 <template>
   <div class="agents-panel">
     <div class="agents-panel__head">
-      <h3>🤖 编码 Agent 委派</h3>
+      <h3><Bot :size="17" /> 编码 Agent 委派</h3>
       <button class="btn-icon" :disabled="loading" title="重新检测" @click="load">{{ loading ? "…" : "⟳" }}</button>
     </div>
     <p v-if="error" class="agents-error">{{ error }}</p>
@@ -141,7 +142,7 @@ async function delegate() {
         placeholder="要委派给编码 Agent 的任务，如：检查 src/utils/tokens.ts 并修复其中的类型错误"
       ></textarea>
       <button class="btn-primary" :disabled="delegating || !delegateTask.trim() || (delegateMode === 'resume' && !delegateResumeSession.trim())" @click="delegate">
-        {{ delegating ? "执行中…" : "🚀 委派执行" }}
+        {{ delegating ? "执行中…" : "" }}<Rocket v-if="!delegating" :size="14" /> 委派执行
       </button>
 
       <div v-if="delegateError" class="delegate-error">{{ delegateError }}</div>

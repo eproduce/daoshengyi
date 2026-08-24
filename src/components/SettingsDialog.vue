@@ -12,6 +12,7 @@ import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import CodingAgents from "./CodingAgents.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Bot, Send, Globe, Folder, ShieldAlert, Cpu, Monitor } from "lucide-vue-next";
 
 const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push" }>();
 const emit = defineEmits<{
@@ -206,21 +207,21 @@ function handleDelete() {
   <div class="settings-overlay" @click.self="emit('close')">
     <div class="settings-dialog">
       <div class="settings-dialog__header">
-        <h2 class="settings-title">⚙️ 设置</h2>
+        <h2 class="settings-title"><Settings :size="18" /> 设置</h2>
         <button class="btn-close" @click="emit('close')">✕</button>
       </div>
 
       <div class="settings-dialog__body">
         <!-- 左侧菜单 -->
         <nav class="settings-nav">
-          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'"><span class="settings-tab__icon">🔑</span>API 配置</button>
-          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon">🧩</span>插件</button>
-          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'"><span class="settings-tab__icon">🧠</span>本地模型</button>
-          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'"><span class="settings-tab__icon">📊</span>用量统计</button>
-          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon">🩺</span>诊断</button>
-          <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon">⏰</span>定时任务</button>
-          <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'"><span class="settings-tab__icon">🤖</span>编码 Agent</button>
-          <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon">📤</span>推送</button>
+          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'"><span class="settings-tab__icon"><KeyRound :size="15" /></span>API 配置</button>
+          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon"><Puzzle :size="15" /></span>插件</button>
+          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'"><span class="settings-tab__icon"><Brain :size="15" /></span>本地模型</button>
+          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'"><span class="settings-tab__icon"><ChartColumn :size="15" /></span>用量统计</button>
+          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断</button>
+          <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务</button>
+          <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'"><span class="settings-tab__icon"><Bot :size="15" /></span>编码 Agent</button>
+          <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
         </nav>
 
         <!-- 右侧内容 -->
@@ -335,7 +336,7 @@ function handleDelete() {
 
         <div class="form-group">
           <label class="toggle-row">
-            <span>🌐 联网搜索</span>
+            <span><Globe :size="14" /> 联网搜索</span>
             <input v-model="editingProfile.enableWebSearch" type="checkbox" class="toggle-input" />
           </label>
           <span class="form-hint">允许模型搜索互联网获取最新信息</span>
@@ -374,7 +375,7 @@ function handleDelete() {
 
         <!-- Agent 工作区 -->
         <div class="form-group">
-          <label>📂 Agent 工作区</label>
+          <label><Folder :size="14" /> Agent 工作区</label>
           <input
             v-model="workspace"
             type="text"
@@ -387,7 +388,7 @@ function handleDelete() {
 
         <!-- 危险命令审批模式 -->
         <div class="form-group">
-          <label class="form-label">⚠️ 危险命令审批模式</label>
+          <label class="form-label"><ShieldAlert :size="14" /> 危险命令审批模式</label>
           <div class="approval-modes">
             <button
               v-for="m in APPROVAL_MODES"
@@ -404,7 +405,7 @@ function handleDelete() {
 
         <!-- 辅助任务模型 -->
         <div class="form-group">
-          <label class="form-label">🧩 辅助任务模型</label>
+          <label class="form-label"><Puzzle :size="14" /> 辅助任务模型</label>
           <select :value="auxiliaryProfileId" class="form-select" @change="onAuxProfileChange">
             <option value="">跟随主模型</option>
             <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
@@ -418,10 +419,10 @@ function handleDelete() {
 
       <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
       <div v-show="activeTab === 'ollama'" class="ollama-panel">
-        <h3>🧠 本地视觉模型（Ollama）</h3>
+        <h3><Cpu :size="17" /> 本地视觉模型（Ollama）</h3>
         <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
         <div v-if="ollamaStore.hw" class="hw-card">
-          <div class="hw-card__title">🖥️ 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
+          <div class="hw-card__title"><Monitor :size="15" /> 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
           <div class="hw-card__row">CPU：{{ ollamaStore.hw.cpu_cores }} 核{{ ollamaStore.hw.cpu_brand ? ' · ' + ollamaStore.hw.cpu_brand : '' }}</div>
           <div class="hw-card__row">内存：{{ ollamaStore.hw.memory_gb }} GB</div>
           <div class="hw-card__row">显卡：{{ ollamaStore.hw.gpu_name || '核显' }}{{ ollamaStore.hw.gpu_memory_mb ? ' · ' + ollamaStore.hw.gpu_memory_mb + ' MB' : '' }}{{ ollamaStore.hw.has_metal ? ' · Metal' : '' }}</div>

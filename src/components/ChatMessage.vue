@@ -9,6 +9,7 @@ import { useChatStore } from "@/stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { formatCost } from "@/utils/tokens";
 import AppLogo from "./AppLogo.vue";
+import { Brain, FileText, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -217,7 +218,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         <div v-if="chatStore.streamingReasoning" class="msg-reason">
           <div class="reason-head" @click="showReasoning = !showReasoning">
             <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span>
-            <span class="reason-label">🧠 深度思考</span>
+            <span class="reason-label"><Brain :size="14" /> 深度思考</span>
             <span v-if="!chatStore.streamingContent" class="reason-badge">进行中</span>
           </div>
           <div v-show="showReasoning" class="reason-body">{{ chatStore.streamingReasoning }}</div>
@@ -233,7 +234,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
   </div>
 
   <div v-else class="message" :class="`message--${message.role}`" :data-msg-id="message.id">
-    <div class="message__avatar"><span v-if="message.role === 'user'">👤</span><AppLogo v-else :size="24" /></div>
+    <div class="message__avatar"><User v-if="message.role === 'user'" :size="18" /><AppLogo v-else :size="24" /></div>
     <div class="message__body">
       <div class="message__bubble">
         <div v-if="message.images?.length" class="message__images">
@@ -245,14 +246,14 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         <!-- 附件上下文卡片（文件内容不直接展示，仅显示文件名） -->
         <div v-if="message.attachments?.length" class="message__attachments">
           <div v-for="f in message.attachments" :key="f.id" class="attach-card" :title="`${f.name} · ${(f.content || '').length} 字符`">
-            <span class="attach-card-icon">📄</span>
+            <span class="attach-card-icon"><FileText :size="15" /></span>
             <span class="attach-card-name">{{ f.name }}</span>
           </div>
         </div>
 
         <div v-if="message.reasoning_content" class="msg-reason">
           <div class="reason-head" @click="showReasoning = !showReasoning">
-            <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label">🧠 深度思考</span>
+            <span class="reason-arrow">{{ showReasoning ? '▾' : '▸' }}</span><span class="reason-label"><Brain :size="14" /> 深度思考</span>
           </div>
           <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
         </div>
@@ -264,7 +265,11 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
             class="tool-card" :class="`tool-card--${t.status}`"
           >
             <div class="tool-card__head" @click="toggleTool(t.name)">
-              <span class="tool-card__icon">{{ t.status === 'error' ? '❌' : t.status === 'running' ? '⏳' : '✅' }}</span>
+              <span class="tool-card__icon">
+                <CheckCircle2 v-if="t.status !== 'error' && t.status !== 'running'" :size="14" />
+                <Loader2 v-else-if="t.status === 'running'" :size="14" class="spin" />
+                <XCircle v-else :size="14" />
+              </span>
               <span class="tool-card__name">{{ t.name }}</span>
               <span v-if="t.server && t.server !== 'app'" class="tool-card__server">{{ t.server }}</span>
               <span v-if="t.durationMs !== undefined" class="tool-card__dur">{{ (t.durationMs / 1000).toFixed(1) }}s</span>
@@ -298,11 +303,11 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         <span v-if="message.role === 'assistant' && message.tokens" class="msg-meta">· {{ message.tokens }} tokens</span>
         <span v-if="message.role === 'assistant' && message.cost" class="msg-meta">· {{ formatCost(message.cost) }}</span>
         <div v-if="message.role === 'assistant' && message.content" class="msg-actions">
-          <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
-          <button class="msg-act-btn" @click="chatStore.retryLast()">🔄 重试</button>
+          <button class="msg-act-btn" @click="copyAll"><Copy v-if="!copied" :size="14" />{{ copied ? '已复制' : '复制' }}</button>
+          <button class="msg-act-btn" @click="chatStore.retryLast()"><RotateCw :size="14" /> 重试</button>
         </div>
         <div v-else-if="message.role === 'user' && message.content" class="msg-actions">
-          <button class="msg-act-btn" @click="copyAll">{{ copied ? '✓ 已复制' : '📋 复制' }}</button>
+          <button class="msg-act-btn" @click="copyAll"><Copy v-if="!copied" :size="14" />{{ copied ? '已复制' : '复制' }}</button>
         </div>
       </div>
     </div>

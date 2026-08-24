@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { Stethoscope } from "lucide-vue-next";
 
 interface Diag {
   os: string;
@@ -40,7 +41,7 @@ function fmtMem(mb: number): string {
 <template>
   <div class="health-panel">
     <div class="health-panel__head">
-      <h3>🩺 运行时诊断</h3>
+      <h3><Stethoscope :size="17" /> 运行时诊断</h3>
       <button class="btn-icon" :disabled="loading" title="刷新" @click="refresh">{{ loading ? "…" : "⟳" }}</button>
     </div>
     <p v-if="error" class="health-error">{{ error }}</p>

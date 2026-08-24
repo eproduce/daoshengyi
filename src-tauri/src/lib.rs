@@ -40,6 +40,13 @@ fn append_log(app: &tauri::AppHandle, msg: &str) {
         .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
 }
 
+/// 供前端写诊断日志（排查前端工具循环等看不到终端的问题）
+#[tauri::command]
+fn debug_log(app: tauri::AppHandle, msg: String) {
+    append_log(&app, &format!("[frontend] {}", msg));
+    eprintln!("[frontend] {}", msg);
+}
+
 // --- 运行时诊断（系统健康 + 日志查看） ---
 
 fn run_sys_cmd(cmd: &str, args: &[&str]) -> String {
@@ -2514,6 +2521,7 @@ pub fn run() {
             set_prevent_sleep,
             check_coding_agents,
             delegate_coding_agent,
+            debug_log,
             execute_command,
             read_file,
             open_file,

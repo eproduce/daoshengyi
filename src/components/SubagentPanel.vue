@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useChatStore, type SubagentRecord } from "@/stores/chat";
+import { Network, RefreshCw, CheckCircle2, XCircle, Hourglass } from "lucide-vue-next";
 
 const store = useChatStore();
 
@@ -20,7 +21,7 @@ function timeStr(ms: number) {
 <template>
   <div v-if="store.subagents.length" class="subagent-panel">
     <div class="subagent-head">
-      <span class="subagent-title">🧵 子代理</span>
+      <span class="subagent-title"><Network :size="15" /> 子代理</span>
       <span class="subagent-count">{{ store.subagents.length }} 个</span>
       <button
         v-if="store.subagents.some((s) => s.status !== 'running')"
@@ -37,7 +38,10 @@ function timeStr(ms: number) {
         :class="statusMeta(r).cls"
       >
         <span class="subagent-status" :title="statusMeta(r).label">
-          {{ statusMeta(r).icon }}
+          <RefreshCw v-if="r.status === 'running'" :size="14" class="spin" />
+          <CheckCircle2 v-else-if="r.status === 'completed'" :size="14" />
+          <XCircle v-else-if="r.status === 'failed'" :size="14" />
+          <Hourglass v-else :size="14" />
         </span>
         <div class="subagent-body">
           <div class="subagent-goal">{{ r.goal }}</div>

@@ -3,6 +3,7 @@ import { ref, computed, watch } from "vue";
 import { useSkillStore } from "@/stores/skill";
 import { useUiStore } from "@/stores/ui";
 import { SKILL_CATALOG } from "@/data/skills-catalog";
+import { BookOpen, Package, Download, Pencil, Upload, Trash2, FolderUp } from "lucide-vue-next";
 
 import type { Skill } from "@/types";
 
@@ -133,7 +134,7 @@ const categoryColors: Record<string, string> = {
 
           <!-- Header + Tabs -->
           <div class="sk-head">
-            <h3>📚 技能库</h3>
+            <h3><BookOpen :size="17" /> 技能库</h3>
             <div class="sk-tabs">
               <button :class="['sk-tab', { active: activeTab === 'mine' }]" @click="activeTab = 'mine'">
                 我的 ({{ myEnabled }}/{{ store.skills.length }})
@@ -170,17 +171,21 @@ const categoryColors: Record<string, string> = {
                 <div class="sk-item-name">
                   {{ s.name }}
                   <span class="sk-tag" :style="{ background: categoryColors[s.category] || '#888' }">{{ s.category }}</span>
-                  <span class="sk-src-tag">{{ s.source === 'catalog' ? '📦' : s.source === 'import' ? '📥' : '✏️' }}</span>
+                  <span class="sk-src-tag">
+                    <Package v-if="s.source === 'catalog'" :size="12" />
+                    <Download v-else-if="s.source === 'import'" :size="12" />
+                    <Pencil v-else :size="12" />
+                  </span>
                 </div>
                 <div class="sk-item-desc">{{ s.description || '无描述' }}</div>
               </div>
               <div class="sk-item-acts">
-                <button class="sk-btn-mini" @click="doExport(s.id)" title="导出为 .md">📤</button>
+                <button class="sk-btn-mini" @click="doExport(s.id)" title="导出为 .md"><Upload :size="14" /></button>
                 <label class="sk-toggle">
                   <input type="checkbox" :checked="s.enabled" @change="store.toggleSkill(s.id)" />
                   <span class="sk-toggle-s"></span>
                 </label>
-                <button class="sk-btn-mini" @click="store.removeSkill(s.id)" title="删除">🗑</button>
+                <button class="sk-btn-mini" @click="store.removeSkill(s.id)" title="删除"><Trash2 :size="14" /></button>
               </div>
             </div>
 
@@ -229,7 +234,7 @@ const categoryColors: Record<string, string> = {
             <div class="sk-import-block">
               <h4>从 .md 文件导入</h4>
               <div class="sk-drop" @click="fileInput?.click()" @dragover.prevent @drop.prevent="(e) => { const f = e.dataTransfer?.files?.[0]; if (f) store.importFromFile(f).then(s => importMsg = `✅ ${s.name}`).catch(e => importMsg = `❌ ${e.message}`); }">
-                📁 拖拽 .md 文件到此处，或点击选择
+                <FolderUp :size="18" /> 拖拽 .md 文件到此处，或点击选择
               </div>
               <input ref="fileInput" type="file" accept=".md,.markdown,text/markdown" hidden @change="onFileChange" />
             </div>

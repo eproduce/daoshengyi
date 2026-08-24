@@ -14,6 +14,7 @@ import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
 import type { ImageAttachment, FileAttachment } from "@/types";
+import { Download, Trash2, Moon, Sun, Settings, MessageSquarePlus, Terminal, FileText, Paperclip, AlarmClock, Stethoscope } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
@@ -152,13 +153,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               :title="`缓存命中 ${chatStore.cacheHitTotal.toLocaleString()} tok / 未命中 ${chatStore.cacheMissTotal.toLocaleString()} tok`"
             >缓存 {{ chatStore.cacheHitRate.toFixed(0) }}%</span>
           </div>
-          <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">📥</button>
-          <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()">🗑</button>
+          <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown"><Download :size="17" /></button>
+          <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()"><Trash2 :size="17" /></button>
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
-            {{ theme === "light" ? "🌙" : "☀️" }}
+            <Moon v-if="theme === 'light'" :size="17" />
+            <Sun v-else :size="17" />
           </button>
           <button class="topbar__btn" title="API 设置" @click="openSettings('api')">
-            ⚙️
+            <Settings :size="17" />
           </button>
         </div>
       </header>
@@ -189,12 +191,12 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             <h2>道生一</h2>
             <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
             <div class="empty-state__tips">
-              <div class="tip-card"><span class="tip-key">⌘/Ctrl + N</span> 新建对话</div>
-              <div class="tip-card"><span class="tip-key">/run</span> 执行终端命令</div>
-              <div class="tip-card"><span class="tip-key">/read</span> 读取本地文件</div>
-              <div class="tip-card"><span class="tip-key">📋 粘贴图片</span> 本地视觉识别</div>
-              <div class="tip-card"><span class="tip-key">⏰ 定时任务</span> 后台自动执行</div>
-              <div class="tip-card"><span class="tip-key">🩺 诊断</span> 系统健康与日志</div>
+              <div class="tip-card"><span class="tip-key"><MessageSquarePlus :size="14" /> ⌘/Ctrl + N</span> 新建对话</div>
+              <div class="tip-card"><span class="tip-key"><Terminal :size="14" /> /run</span> 执行终端命令</div>
+              <div class="tip-card"><span class="tip-key"><FileText :size="14" /> /read</span> 读取本地文件</div>
+              <div class="tip-card"><span class="tip-key"><Paperclip :size="14" /> 粘贴图片</span> 本地视觉识别</div>
+              <div class="tip-card"><span class="tip-key"><AlarmClock :size="14" /> 定时任务</span> 后台自动执行</div>
+              <div class="tip-card"><span class="tip-key"><Stethoscope :size="14" /> 诊断</span> 系统健康与日志</div>
             </div>
           </div>
 

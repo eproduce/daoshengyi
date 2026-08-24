@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore } from "@/stores/mcp";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
 import { getSettings, updateSettings } from "@/api/appSettings";
+import { Puzzle, Globe, Trash2, RefreshCw, Folder, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Search, Circle } from "lucide-vue-next";
+
+// mcp-catalog 的 icon 字段存 lucide 图标名，这里映射为组件动态渲染
+const mcpIcons: Record<string, Component> = { Folder, Globe, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Search };
 
 const store = useMcpStore();
 const activeTab = ref<"servers" | "market">("servers");
@@ -170,7 +174,7 @@ function cancel() {
 <template>
   <div class="mcp-panel">
     <div class="mcp-header">
-      <h3>🧩 插件</h3>
+      <h3><Puzzle :size="17" /> 插件</h3>
       <span class="mcp-summary" v-if="store.servers.length">
         {{ store.connectedCount() }}/{{ store.servers.length }} 已连接 · {{ store.totalTools() }} 工具
       </span>
@@ -182,7 +186,7 @@ function cancel() {
         已安装 ({{ store.servers.length }})
       </button>
       <button :class="['mcp-tab', { active: activeTab === 'market' }]" @click="activeTab = 'market'">
-        🌐 插件市场
+        <Globe :size="14" /> 插件市场
       </button>
     </div>
 
@@ -214,7 +218,7 @@ function cancel() {
         </div>
         <div class="mcp-item-acts">
           <!-- 连接由 agent 自动控制，不再提供手动连接/重新连接 -->
-          <button class="mcp-btn-mini" @click="store.remove(s.id)">🗑</button>
+          <button class="mcp-btn-mini" @click="store.remove(s.id)" title="移除插件"><Trash2 :size="14" /></button>
         </div>
       </div>
 
@@ -245,7 +249,7 @@ function cancel() {
       <!-- 社区插件（Smithery 远程市场） -->
       <div class="mcp-community">
         <div class="mcp-community-head">
-          <span class="mcp-community-title">🌐 社区插件 <span class="mcp-community-badge">远程 · 免安装</span></span>
+          <span class="mcp-community-title"><Globe :size="14" /> 社区插件 <span class="mcp-community-badge">远程 · 免安装</span></span>
           <div class="mcp-community-acts">
             <input
               v-model="communitySearch"
@@ -254,7 +258,7 @@ function cancel() {
               @keyup.enter="loadCommunityPlugins"
             />
             <button class="mcp-btn mcp-btn-pri" :disabled="communityLoading" @click="loadCommunityPlugins">
-              {{ communityLoading ? '加载中…' : '🔍 加载' }}
+              <RefreshCw v-if="!communityLoading" :size="14" />{{ communityLoading ? '加载中…' : '加载' }}
             </button>
           </div>
         </div>
@@ -287,7 +291,7 @@ function cancel() {
       </div>
 
       <div v-for="item in filteredCatalog" :key="item.id" class="mcp-card">
-        <div class="mcp-card-icon">{{ item.icon }}</div>
+        <div class="mcp-card-icon"><component :is="mcpIcons[item.icon] || Circle" :size="17" /></div>
         <div class="mcp-card-info">
           <div class="mcp-card-name">
             {{ item.name }}

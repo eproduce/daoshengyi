@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import AppLogo from "./AppLogo.vue";
+import { Github } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -41,7 +42,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
           <span class="about-tag">TypeScript</span>
         </div>
         <div class="about-links">
-          <button class="about-link" @click="openHome">🌐 GitHub</button>
+          <button class="about-link" @click="openHome"><Github :size="15" /> GitHub</button>
         </div>
         <div class="about-copy">© 2026 道生一 · 道生一，一生二，二生三，三生万物</div>
         <button class="about-close" @click="emit('close')">关闭</button>
