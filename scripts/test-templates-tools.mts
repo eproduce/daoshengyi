@@ -71,6 +71,13 @@ assert(hasCompleteToolCall('<|DSML|tool_call|>{"name":"a","arguments":{}}<|/DSML
 assert(hasCompleteToolCall('< | | DSML | | tool_call >{"name":"a","arguments":{}}< / | | DSML | | tool_call >'), '识别双竖线+空格 DSML 闭合标记');
 assert(!hasCompleteToolCall('<tool_call>{"server":"a","tool":"b","arguments":{}}'), '半截 JSON 未闭合返回 false');
 
+// 模型手写伪卡片（### 🔧 调用工具 + 参数 JSON）：也要能提取执行 + 识别闭合
+const fakeCard = '### 🔧 调用工具：`directory_tree`\n\n<details><summary>参数</summary>\n\n```json\n{"path":"/Users/x/src"}\n```\n\n</details>';
+assert(hasCompleteToolCall(fakeCard), '识别伪卡片闭合（</details>）');
+const fakeParsed = parseToolCall(fakeCard);
+assert(fakeParsed?.tool === "directory_tree" && fakeParsed?.arguments?.path === "/Users/x/src", '从伪卡片提取工具调用', JSON.stringify(fakeParsed));
+assert(!hasCompleteToolCall('### 🔧 调用工具：`directory_tree`\n<details><summary>参数</summary>'), '伪卡片未闭合返回 false');
+
 const dsmlStripped = stripToolJson('先看<｜DSML｜tool_call｜>{"name":"x","arguments":{}}</｜DSML｜tool_call｜>然后继续');
 assert(!dsmlStripped.includes('DSML') && dsmlStripped.includes('先看'), 'stripToolJson 剥离 DSML 标记');
 

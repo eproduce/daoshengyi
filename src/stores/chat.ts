@@ -14,6 +14,11 @@ import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText, type ToolCall } from "@/utils/tool-call";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
+/// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
+async function dbg(msg: string): Promise<void> {
+  try { await invoke("debug_log", { msg }); } catch { /* 日志失败不影响主流程 */ }
+}
+
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
 export async function refreshMcpTools() {
@@ -61,8 +66,18 @@ function getMcpToolsPrompt(): string {
     "\n\n## 回答完整输出要求\n" +
     "无论你的思考（reasoning）过程多么详细，**最终答案必须完整、详细地呈现在回复正文中**：\n" +
     "用结构化 Markdown（标题/列表/表格）给出完整的结论、分析与要点，不要只给一句简短结论，也不要把主要内容只写在思考里。\n";
+  // 工具调用唯一格式：模型误把历史消息里的 UI 卡片（### 🔧 调用工具 / <details>参数</details>）
+  // 当成调用格式写在正文里，导致工具不执行、回复中断（日志：有闭合标记但解析失败/伪卡片）。
+  const toolCallRule =
+    "\n\n## 工具调用唯一格式（极重要）\n" +
+    "需要调用工具时，**唯一方式**是在回复正文中输出工具调用标记：\n" +
+    "<tool_call>{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}</tool_call>\n" +
+    "- **绝对禁止**在正文中写「### 🔧 调用工具」「<details>参数</details>」「✅ 工具结果」等卡片式文本假装已调用工具——那只是普通文本，工具不会执行，回复会中断。\n" +
+    "- 也不要输出残缺的标签或裸 JSON；工具调用必须成对包含开/闭标记，JSON 必须是合法对象且含 tool/name 与 arguments。\n" +
+    "- 系统会自动执行你的工具调用并把**真实结果**回填给你，你只需等结果返回后再继续回答，无需自己模拟结果。\n";
   const builtin =
     outputRule +
+    toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
     "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {\"url\": \"完整网址\"}\n" +
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
@@ -1324,7 +1339,10 @@ export const useChatStore = defineStore("chat", () => {
       // 流式中一旦出现完整 <tool_call>...</tool_call> 标记，则停止本轮流式、
       // 执行工具、把结果塞回上下文、再发起新一轮流式，直到模型给出最终答案。
       // 不再使用 ReAct 非流式循环（chat_once），彻底恢复"逐字输出"体验。
-      const MAX_TOOL_ROUNDS = 8;
+      // DeepSeek 思考模式把工具调用写在 reasoning，且一次只规划一个工具、逐目录探索，
+      // 轮次需求高（本次 list_directory×2 + read_multiple_files×2 就到 7 轮）——上限过低
+      // 会导致最后一个工具被丢弃、无最终答案。故提高到 20 并在接近上限时提示收尾。
+      const MAX_TOOL_ROUNDS = 20;
 
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
       // 返回 toolCall 非空 → 本轮流式输出的是一段工具调用（需执行后继续）；为 null → 最终答案。
@@ -1340,12 +1358,27 @@ export const useChatStore = defineStore("chat", () => {
         const roundUnlisten: UnlistenFn[] = [];
         let toolCall: ToolCall | null = null;
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
+        let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
 
         roundUnlisten.push(
           await listen<{ request_id?: string; reasoning_content?: string; content?: string; tokens?: number; cache_hit?: number; cache_miss?: number }>("sse-delta", e => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return; // 忽略其他请求的事件
             const d = e.payload;
-            if (d.reasoning_content) streamingReasoning.value += d.reasoning_content;
+            if (d.reasoning_content) {
+              streamingReasoning.value += d.reasoning_content;
+              reasoningBuffer += d.reasoning_content;
+              // DeepSeek 思考模式把工具调用计划（<tool_call>{JSON}</tool_call>）写在
+              // reasoning（隐藏思考）里、content 只留简短正文 → 必须也从 reasoning 检测，
+              // 否则工具永不执行、回复中断（现象：思考很长但正文只有一句话"断了"）
+              if (!toolCall && hasCompleteToolCall(reasoningBuffer)) {
+                const parsed = parseToolCall(reasoningBuffer);
+                if (parsed) {
+                  toolCall = parsed;
+                  dbg(`[round ${requestId.slice(0, 8)}] 思考中发现工具调用 ${parsed.server}/${parsed.tool}`);
+                  resolveDone();
+                }
+              }
+            }
             if (d.content) {
               toolBuffer += d.content;
               // 实时显示"可见正文"：剔除工具调用标记（含未闭合的半截），
@@ -1356,7 +1389,13 @@ export const useChatStore = defineStore("chat", () => {
               // 解析成功 → 提前结束本轮流式，转去执行工具
               if (!toolCall && hasCompleteToolCall(toolBuffer)) {
                 const parsed = parseToolCall(toolBuffer);
-                if (parsed) { toolCall = parsed; resolveDone(); }
+                if (parsed) {
+                  toolCall = parsed;
+                  dbg(`[round ${requestId.slice(0, 8)}] 检测到工具调用 ${parsed.server}/${parsed.tool}，buffer长度=${toolBuffer.length}`);
+                  resolveDone();
+                } else {
+                  dbg(`[round ${requestId.slice(0, 8)}] 有闭合标记但解析失败，buffer=${toolBuffer.slice(-200)}`);
+                }
               }
             }
             if (d.tokens) assistantMsg.tokens = d.tokens;
@@ -1376,7 +1415,9 @@ export const useChatStore = defineStore("chat", () => {
         // 发起流式（不 await）。注意：stream_chat 失败（网络/Key/模型名错误）时 Rust 直接
         // return Err 而不会 emit sse-error，必须把 invoke 的真实错误也交给 rejectDone，
         // 否则前端只会干等到 120 秒超时；正常路径 invoke resolve、重复 reject 无害。
+        dbg(`[round ${requestId.slice(0, 8)}] 发起 send_message，messages=${msgs.length}`);
         invoke("send_message", { requestId, config: rustCfg, messages: msgs }).catch((e) => {
+          dbg(`[round ${requestId.slice(0, 8)}] invoke send_message 错误: ${e instanceof Error ? e.message : String(e)}`);
           rejectDone(e instanceof Error ? e : new Error(String(e)));
         });
 
@@ -1399,10 +1440,32 @@ export const useChatStore = defineStore("chat", () => {
       // 主循环：发起流式；若返回工具调用则执行并把结果回填上下文后继续
       let round = 0;
       let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
-      do {
+      while (round < MAX_TOOL_ROUNDS) {
+        dbg(`[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}`);
         roundResult = await streamRound(rustMsgs);
         const tc = roundResult.toolCall;
-        if (!tc) break; // 无工具调用 → 最终答案，退出循环
+        dbg(`[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`);
+        if (!tc) {
+          // 模型**尝试**了工具调用（正文出现闭合标记）但解析失败：
+          // 空 <tool_call></tool_call>、JSON 不合法、或写成「### 🔧 调用工具」卡片文本。
+          // 这些都不会真正执行工具 → 回复中断（用户看到"断了"）。
+          // 这里主动注入修正指令重试一轮，而不是直接放弃。
+          if (hasCompleteToolCall(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+            round++;
+            dbg(`[loop] 工具调用格式无效（有闭合标记但解析失败），第 ${round} 轮注入修正指令重试`);
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你上一条回复里的工具调用格式无效：要么是空的 <tool_call></tool_call>，要么 JSON 不合法，要么写成了「### 🔧 调用工具」卡片文本——这些都**不会真正执行工具**。\n" +
+                "请重新用**唯一合法格式**输出：\n" +
+                "<tool_call>\n{\"server\":\"文件系统\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
+                "JSON 必须是合法对象且含 server、tool、arguments 三个字段；不要写卡片文本，不要输出空标记。",
+            });
+            continue; // 重新发起一轮流式
+          }
+          break; // 无工具调用 → 最终答案，退出循环
+        }
 
         round++;
         if (round >= MAX_TOOL_ROUNDS) {
@@ -1421,8 +1484,10 @@ export const useChatStore = defineStore("chat", () => {
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
         const argsStr = JSON.stringify(tc.arguments, null, 2);
         const startTool = Date.now();
+        dbg(`[tool] 开始执行 ${tc.server}/${tc.tool}，args=${argsStr.slice(0, 120)}`);
         try {
           const result = await callMcpTool(tc.server, tc.tool, tc.arguments);
+          dbg(`[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`);
           const clipped = formatToolResultPreview(tc.tool, result);
           const card =
             `### 🔧 调用工具：\`${tc.tool}\`\n\n` +
@@ -1437,12 +1502,17 @@ export const useChatStore = defineStore("chat", () => {
           });
           streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
           rustMsgs.push({ role: "assistant", content: roundResult.content });
+          // 接近工具轮次上限时，明确要求模型收尾，避免它一直探索目录而始终不输出最终答案
+          const closingHint = round >= MAX_TOOL_ROUNDS - 3
+            ? "\n\n⚠️ 已接近工具调用次数上限（剩余次数有限）。请基于**当前已获取的全部目录/文件结果**直接给出完整、详细的最终分析总结，**不要再调用更多工具**。"
+            : "";
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。`,
+            content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
           });
         } catch (e: unknown) {
           const err = e instanceof Error ? e.message : String(e);
+          dbg(`[tool] ${tc.tool} 执行失败: ${err}`);
           const card = `> ❌ 工具调用失败: \`${err}\``;
           toolChain.push(card);
           toolCards.push({
@@ -1458,7 +1528,30 @@ export const useChatStore = defineStore("chat", () => {
             content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。`,
           });
         }
-      } while (true);
+      }
+
+      // 工具循环结束：若执行了工具但正文没有最终答案（streamingContent 仍被工具卡片/占位占用，
+      // 或为空），自动追加一轮强制模型在正文输出完整分析——避免"只有工具调用记录、没有分析结果"
+      const sc = streamingContent.value.trim();
+      const hasFinalAnswer = sc.length > 0 && !/^###\s*(🔧|🌐)/.test(sc);
+      if (toolChain.length > 0 && !hasFinalAnswer) {
+        dbg(`[loop] 工具已执行但正文无答案（streamingContent=${sc.length} 字符），追加收尾轮`);
+        rustMsgs.push({
+          role: "user",
+          content: "已获取足够的目录/文件信息。请现在把完整、详细的最终分析总结直接写在回复正文中（不要输出任何工具调用标记，不要只写在思考里）。",
+        });
+        try {
+          const fr = await streamRound(rustMsgs);
+          const fc = stripToolJson(fr.content).trim();
+          if (fc.length > 0) {
+            streamingContent.value = fc;
+          } else if (streamingReasoning.value) {
+            streamingContent.value = `（模型正文未输出，以下为思考摘要）\n\n${streamingReasoning.value.slice(-2000)}`;
+          }
+        } catch (e) {
+          dbg(`[loop] 收尾轮失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
 
@@ -1469,9 +1562,19 @@ export const useChatStore = defineStore("chat", () => {
         if (images && images.length > 0 && /400|unsupported|not.?support|image|content_type/i.test(msg)) {
           msg += "\n\n💡 当前模型可能不支持图片输入。请在「设置 → API 配置」中添加支持视觉能力的模型（如 OpenAI、Gemini、Qwen-VL 等），或切换到支持图片的模型。";
         }
-        streamingContent.value = streamingContent.value || `[错误] ${msg}`;
+        dbg(`[sendMessage] 外层错误: ${msg}`);
+        // 修复：工具已执行过（streamingContent 被工具卡片占用、非空）时，错误分支
+        // `|| '[错误]'` 不触发、错误被静默吞掉 → 用户只看到工具卡片没有最终答案。
+        // 这里始终把错误以可见形式拼进 toolChain，确保任何中断都对用户可见。
+        if (toolChain.length > 0) {
+          toolChain.push(`> ❌ 回复生成中断: ${msg}`);
+          streamingContent.value = ""; // 清空，让 finally 只拼 toolChain（含错误卡片）
+        } else {
+          streamingContent.value = streamingContent.value || `[错误] ${msg}`;
+        }
       }
     } finally {
+      dbg(`[sendMessage] finally: toolChain=${toolChain.length}，streamingContent=${streamingContent.value.length}，reasoning=${streamingReasoning.value.length}`);
       unlistenFns.forEach(f => f());
       // 流式兜底：剥离模型口头输出的工具调用 JSON；工具卡片（toolChain）逐段拼在最前
       const finalText = stripToolJson(streamingContent.value);

@@ -39,21 +39,43 @@ const DSML_TOOL_CALL_GLOBAL_RE =
   /<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*>[\s\S]*?<(?=[^>]*DSML)(?=[^>]*tool_call)[^>]*\/[^>]*>/gi;
 
 /// 判断工具调用块是否已完整闭合，避免把流式中途的半截 JSON 当工具调用提前解析。
-/// 兼容两种闭合标记：
+/// 兼容三种闭合标记：
 /// 1. 标准格式 </tool_call>
 /// 2. DeepSeek DSML 原生格式 </｜DSML｜tool_call｜>（含全角/半角竖线/双竖线/空格变体，
 ///    < 与 / 之间可能有 |，如 <|/DSML|tool_call|>）
+/// 3. 模型手写的伪卡片「### 🔧 调用工具 + <details>参数</details>」完整出现
+///    （模型误把 UI 卡片当调用格式时，也要能识别并执行）
 export function hasCompleteToolCall(buffer: string): boolean {
   return (
     /<\s*\/\s*tool_call\s*>/.test(buffer) ||
-    /<\s*[^>]*\/\s*[^>]*DSML[^>]*tool_call[^>]*>/i.test(buffer)
+    /<\s*[^>]*\/\s*[^>]*DSML[^>]*tool_call[^>]*>/i.test(buffer) ||
+    /###\s*🔧\s*调用工具[\s\S]*?<\/details>/.test(buffer)
   );
+}
+
+/// 从模型手写的伪卡片「### 🔧 调用工具：\`tool\` + 参数 JSON 代码块」中提取工具调用。
+/// 模型可能把历史消息里的 UI 卡片格式误当成工具调用格式写在正文里，
+/// 这里兜底识别，让工具仍能真正执行（否则卡片只是文本、工具不执行、回复中断）。
+const FAKE_TOOL_CARD_RE = /###\s*🔧\s*调用工具：\s*`?([\w-]+)`?[\s\S]*?```(?:json)?\s*([\s\S]*?)\s*```/i;
+function parseFakeToolCard(content: string): ToolCall | null {
+  const m = content.match(FAKE_TOOL_CARD_RE);
+  if (!m) return null;
+  const tool = m[1];
+  if (!tool) return null;
+  try {
+    const args = JSON.parse(m[2]);
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      return { server: "default", tool, arguments: args as Record<string, unknown> };
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 /// 解析 LLM 响应中的工具调用：
 /// 1. 优先匹配标准 <tool_call> JSON 块
 /// 2. 匹配 DeepSeek DSML 原生 tool_call（deepseek 思考模式常输出此格式，name 字段）
-/// 3. 兼容模型直接输出裸 JSON（可能夹杂叙述文字，如"让我先查看允许访问的目录：{...}"）
+/// 3. 匹配模型手写的伪卡片（### 🔧 调用工具：\`tool\` + 参数 JSON）
+/// 4. 兼容模型直接输出裸 JSON（可能夹杂叙述文字，如"让我先查看允许访问的目录：{...}"）
 export function parseToolCall(content: string): ToolCall | null {
   const tagMatch = content.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/);
   if (tagMatch) {
@@ -65,6 +87,8 @@ export function parseToolCall(content: string): ToolCall | null {
     const parsed = parseJsonObject(dsmlMatch[1]);
     if (parsed) return parsed;
   }
+  const fakeCard = parseFakeToolCard(content);
+  if (fakeCard) return fakeCard;
   return extractToolCalls(content)[0] ?? null;
 }
 
