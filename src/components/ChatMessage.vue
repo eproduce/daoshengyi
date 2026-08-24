@@ -114,6 +114,29 @@ marked.use({
   },
 });
 
+// 自定义裸 URL 识别：URL 结尾必须是 ASCII URL 字符（排除中英文标点/空白/汉字/全角）。
+// marked 默认 autolink 会把 URL 后紧跟的中文正文吞进 href（如 …shtml。结束 →
+// href 含「。结束」），点击必 404。中文路径 URL（如 /news/黄金价格走势.html）因以
+// .html 结尾仍完整保留；markdown 链接 [t](url) 不受影响（link tokenizer 先处理）。
+marked.use({
+  tokenizer: {
+    url(src: string) {
+      const cap = /^https?:\/\/[^\s<]*[^\s<,.:;"')\]\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/u.exec(src);
+      if (cap) {
+        const text = cap[0];
+        return {
+          type: "link",
+          raw: text,
+          text,
+          href: text,
+          tokens: [{ type: "text", raw: text, text }],
+        };
+      }
+      return undefined;
+    },
+  },
+});
+
 function md(s: string) { return s ? marked.parse(normalizeMath(s)) as string : ""; }
 
 // 拦截内容区链接点击：

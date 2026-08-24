@@ -104,7 +104,8 @@ function getMcpToolsPrompt(): string {
     "2. **结构化呈现**：用 markdown 编号列表逐条给出 **信息主体 + 关键摘要 + 来源链接**，每条独立成行、条理清晰。\n" +
     "3. **查企业/实体时**：尽量给出 名称、类型/所在地、主营业务/简介、成立时间 等关键事实，并附**官方或权威来源链接**（官网、百科、工商信息等）；不同来源信息冲突时标注各来源。\n" +
     "4. **未找到**：明确说「未找到可靠的公开信息」，说明可能原因（如反爬、无公开资料），并给出可进一步核实的途径；**严禁编造**企业名、数据或来源。\n" +
-    "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。";
+    "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。\n" +
+    "6. **来源链接必须原样完整复制**：引用来源时，必须逐字原样复制搜索结果/工具返回中给出的**完整 URL**（如 `链接: https://...` 冒号后的整个地址），**禁止**截断路径、删改扩展名（如 `.shtml`/`.html`/`.pdf`）、缩写域名、自行拼接或凭空编造链接；每条引用的链接都必须是可直接打开访问的完整网址。";
   // 文件导出规范：必须用内置可信 write_file，禁止在正文模拟工具调用、编造路径
   const fileRule =
     "\n\n## 文件导出规范（重要）\n" +
@@ -292,7 +293,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!query) throw new Error("web_search 需要 query 参数");
       const results = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", { query, braveKey: getSettings().braveApiKey || "" });
       if (!results.length) return "（搜索无结果，请在回复中明确告知用户未找到可靠信息，不要编造）";
-      return "以下是搜索结果，请整理成清晰的中文回答后再回复用户（先说明找到几条，再逐条列要点+来源，不要原样粘贴）：\n\n" +
+      return "以下是搜索结果，请整理成清晰的中文回答后再回复用户（先说明找到几条，再逐条列要点+来源，不要原样粘贴）。**引用来源时逐字原样复制「链接: 」后的完整 URL，禁止截断路径/删改扩展名/自行拼接或编造链接**：\n\n" +
         results.map((r, i) => `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}`).join("\n\n");
     }
     case "set_brave_api_key": {
