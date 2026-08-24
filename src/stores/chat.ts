@@ -165,6 +165,13 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
     return callBuiltinTool(tool, args);
   }
 
+  // 拦截 directory_tree：它会递归列整个目录树（含 .git/node_modules/target 等海量文件），
+  // 实测对 daoshengyi 返回 1300 万字符、耗时 6 秒+且被截断——强制引导改用 list_directory
+  // 逐层查看，避免上下文爆炸与超时。
+  if (tool === "directory_tree") {
+    return "⚠️ directory_tree 会递归列整个目录树（含 .git/node_modules/target 等海量文件），结果超长会被截断且浪费大量时间。请改用 **list_directory** 只列一层，逐层查看需要的子目录。";
+  }
+
   // 按需激活：模型请求 __connect__，或调用了未连接服务器的工具（未先激活）时，
   // 连接该服务器后返回工具列表，让模型重选具体工具。浏览器服务器借此才真正启动。
   const mcp = useMcpStore();
