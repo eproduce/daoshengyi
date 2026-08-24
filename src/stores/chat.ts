@@ -105,7 +105,8 @@ function getMcpToolsPrompt(): string {
     "3. **查企业/实体时**：尽量给出 名称、类型/所在地、主营业务/简介、成立时间 等关键事实，并附**官方或权威来源链接**（官网、百科、工商信息等）；不同来源信息冲突时标注各来源。\n" +
     "4. **未找到**：明确说「未找到可靠的公开信息」，说明可能原因（如反爬、无公开资料），并给出可进一步核实的途径；**严禁编造**企业名、数据或来源。\n" +
     "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。\n" +
-    "6. **来源链接必须原样完整复制**：引用来源时，必须逐字原样复制搜索结果/工具返回中给出的**完整 URL**（如 `链接: https://...` 冒号后的整个地址），**禁止**截断路径、删改扩展名（如 `.shtml`/`.html`/`.pdf`）、缩写域名、自行拼接或凭空编造链接；每条引用的链接都必须是可直接打开访问的完整网址。";
+    "6. **来源链接必须原样完整复制**：引用来源时，必须逐字原样复制搜索结果/工具返回中给出的**完整 URL**（如 `链接: https://...` 冒号后的整个地址），**禁止**截断路径、删改扩展名（如 `.shtml`/`.html`/`.pdf`）、缩写域名、自行拼接或凭空编造链接；每条引用的链接都必须是可直接打开访问的完整网址。\n" +
+    "7. **禁止『口头承诺』式回复**：不要只写『我将访问 XX 官网获取信息』『接下来我去查询』『搜索与问题无关，我直接…』这类过程声明就结束回复——以过程声明代替实际内容 = 未完成任务。要么**立即输出工具调用**（web_search / fetch_page）真正获取数据，要么**直接给出基于已有信息的完整、结构化答案**（结论 / 步骤 / 要点）。";
   // 文件导出规范：必须用内置可信 write_file，禁止在正文模拟工具调用、编造路径
   const fileRule =
     "\n\n## 文件导出规范（重要）\n" +
@@ -236,6 +237,22 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
 /// 工具结果回填到上下文前截断：防止超大结果（如 directory_tree 列整个目录树、
 /// 大文件全文）撑爆模型上下文（如 DeepSeek 1M token 上限）。
 /// 超长保留开头并明确提示模型已截断，可缩小范围重查。
+/// 判定一段正文是否为「空洞的过程声明」——模型口头承诺要做某事但未执行、也未给出实质内容，
+/// 如「搜索与问题无关，我直接访问官网获取办事指南」。用于工具循环/收尾轮判定：
+/// 正文空洞时强制模型真正调用工具或给出完整答案，避免「只有工具卡片 + 一句意图声明」的断头回复。
+function isVagueBody(s: string): boolean {
+  const sc = s.trim();
+  if (sc.length === 0) return true;                        // 空正文
+  if (/^###\s*(🔧|🌐)/.test(sc)) return true;             // 仍被工具卡片/占位占用
+  if (sc.length > 120) return false;                       // 长正文视为已有实质内容
+  // 有列表/编号/冒号等结构 → 视为有内容
+  if (/[\n]|[-•*]\s|\d+[.、]\s|[：]|:\s/.test(sc)) return false;
+  // 短正文 + 第一人称/过渡词引导的「过程声明」（我/将/直接…访问/获取…）或「结果无关」
+  // → 空洞。纯建议（如「可访问官网查看最新政策」无引导词）不算空洞。
+  return /(我|将|准备|接下来|让我|直接|先|去).{0,12}(访问|获取|查看|打开|查询|搜索|查)/.test(sc)
+    || /无关|与问题不相关/.test(sc);
+}
+
 const MAX_TOOL_RESULT_CHARS = 6000;
 function truncateToolResult(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
@@ -1492,6 +1509,24 @@ export const useChatStore = defineStore("chat", () => {
             });
             continue; // 重新发起一轮流式
           }
+          // 正文空洞（模型口头承诺要做某事、却未调用工具也未给实质内容，如
+          // 「搜索与问题无关，我直接访问官网获取办事指南」）→ 注入指令要求真正执行
+          // 或直接完整作答后重试一轮，避免「工具卡片 + 一句意图声明」就断头。
+          if (isVagueBody(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+            round++;
+            dbg(`[loop] 正文空洞（仅过程声明），第 ${round} 轮注入指令要求实际执行或完整作答`);
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你上一条回复只声明了『要做某事』（例如“访问官网获取信息”“接下来去查询”“搜索与问题无关，我直接…”），既没有实际调用工具，也没有给出实质内容——这样的回复不算完成任务。\n" +
+                "请二选一：\n" +
+                "1) 若确实还需要信息：立即输出 <tool_call> 调用对应工具（如 fetch_page 抓取网页 / web_search 重新搜索）真正获取数据，再继续；\n" +
+                "2) 若已有足够信息：直接在正文给出**完整、详细、结构化的最终回答**（结论 / 步骤 / 要点）。\n" +
+                "不要只写过程声明，不要输出空 <tool_call>。",
+            });
+            continue; // 重新发起一轮流式
+          }
           break; // 无工具调用 → 最终答案，退出循环
         }
 
@@ -1561,12 +1596,13 @@ export const useChatStore = defineStore("chat", () => {
       // 工具循环结束：若执行了工具但正文没有最终答案（streamingContent 仍被工具卡片/占位占用，
       // 或为空），自动追加一轮强制模型在正文输出完整分析——避免"只有工具调用记录、没有分析结果"
       const sc = streamingContent.value.trim();
-      const hasFinalAnswer = sc.length > 0 && !/^###\s*(🔧|🌐)/.test(sc);
+      const hasFinalAnswer = !isVagueBody(streamingContent.value);
       if (toolChain.length > 0 && !hasFinalAnswer) {
-        dbg(`[loop] 工具已执行但正文无答案（streamingContent=${sc.length} 字符），追加收尾轮`);
+        dbg(`[loop] 工具已执行但正文无实质答案（streamingContent=${sc.length} 字符，判定空洞=${isVagueBody(streamingContent.value)}），追加收尾轮`);
         rustMsgs.push({
           role: "user",
-          content: "已获取足够的目录/文件信息。请现在把完整、详细的最终分析总结直接写在回复正文中（不要输出任何工具调用标记，不要只写在思考里）。",
+          content:
+            "你之前的回复只声明了要做的事（如访问官网 / 进一步查询）或仅有过程性描述，没有给出实际内容。请基于已获取的工具结果，把**完整、详细、结构化的最终回答**直接写在回复正文中（结论 / 步骤 / 要点）；若确实还需信息，可输出 <tool_call> 调用工具继续获取后再作答。不要只写过程声明，不要输出空 <tool_call>。",
         });
         try {
           const fr = await streamRound(rustMsgs);
