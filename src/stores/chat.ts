@@ -1273,7 +1273,9 @@ export const useChatStore = defineStore("chat", () => {
           if (results.length > 0) {
             volatileCtx.push(formatSearchResults(autoQuery, results));
             // 搜索结果做成可见卡片（进 toolChain，随最终答案一起展示在气泡里）
-            const list = results.slice(0, 5).map(r => `- [${r.title}](${r.url})\n  ${r.snippet}`).join("\n");
+            // URL 用 <url> autolink（而非 [t](url)），避免 URL 含 ) 等特殊字符时
+            // markdown 链接被截断导致“地址不完整”
+            const list = results.slice(0, 5).map(r => `- **${r.title}**\n  <${r.url}>\n  ${r.snippet}`).join("\n");
             toolChain.push(
               `### 🌐 联网搜索\n\n**查询**：\`${autoQuery}\`\n\n` +
               `<details><summary>共 ${results.length} 条结果</summary>\n\n${list}\n\n</details>`

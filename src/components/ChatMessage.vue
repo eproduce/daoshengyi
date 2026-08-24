@@ -343,30 +343,26 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
   inherits: false;
   initial-value: 0deg;
 }
-.message--assistant .bubble-active::before {
-  content: "";
-  position: absolute;
-  inset: -1.5px;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(
-    from var(--spin-angle),
-    transparent 0%,
-    var(--accent-color) 12%,
-    #8b5cf6 24%,
-    #22d3ee 36%,
-    transparent 48%,
-    transparent 62%,
-    var(--accent-color) 74%,
-    transparent 86%
-  );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
+/* 动态光圈：仅描边渐变（background-clip 双背景实现，比 mask-composite 兼容）。
+   原 mask 方案在 WKWebView 下可能失效 → ::before 变成实心彩色层覆盖整个气泡
+   （即“五彩光圈穿透”），这里改用 border 渐变，内容区保持气泡底色，杜绝穿透。 */
+.message--assistant .bubble-active {
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--bg-assistant-bubble), var(--bg-assistant-bubble)) padding-box,
+    conic-gradient(
+      from var(--spin-angle),
+      var(--accent-color) 0%,
+      #8b5cf6 15%,
+      #22d3ee 30%,
+      var(--accent-color) 45%,
+      transparent 62%,
+      var(--accent-color) 78%,
+      transparent 92%
+    ) border-box;
   animation: spinAngle 2.6s linear infinite;
 }
+.message--assistant .bubble-active::before { display: none; }
 @keyframes spinAngle { to { --spin-angle: 360deg; } }
 .message--user .message__bubble {
   background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
