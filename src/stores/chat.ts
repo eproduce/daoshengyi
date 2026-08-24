@@ -491,6 +491,8 @@ export const useChatStore = defineStore("chat", () => {
       if (activeId && conversations.value.some(c => c.id === activeId)) {
         activeConversationId.value = activeId;
       }
+      // 加载用量历史累计（跨会话保留）
+      await refreshUsageAgg();
     } catch (e) {
       console.warn("[道生一] 数据库加载失败，使用空数据:", e);
     }
@@ -549,6 +551,15 @@ export const useChatStore = defineStore("chat", () => {
     const total = cacheHitTotal.value + cacheMissTotal.value;
     return total > 0 ? (cacheHitTotal.value / total) * 100 : null;
   });
+
+  // 用量历史累计（跨会话保留、删除会话不清零；数据来自后端 usage_agg 表）
+  const usageAgg = ref<{
+    total_tokens: number; total_cost: number; total_duration: number; total_msgs: number;
+    daily: { date: string; tokens: number; cost: number; msgs: number }[];
+  } | null>(null);
+  async function refreshUsageAgg() {
+    try { usageAgg.value = await invoke("get_usage_agg"); } catch { /* 忽略 */ }
+  }
 
   // 异步加载 Rust 端配置（优先于 localStorage 旧数据）
   initSettingsFromRust();
@@ -1604,6 +1615,20 @@ export const useChatStore = defineStore("chat", () => {
         assistantMsg.cost = estimateCost(currentConfig.value.model, inputTokens, assistantMsg.tokens || 0);
       } catch { /* 费用计算失败不影响主流程 */ }
       assistantMsg.streaming = false;
+      // 用量历史累计：即使删除会话也保留 token/费用统计（后端 usage_agg 表，按天累计）。
+      // 只统计 LLM 消耗（/run、/read 等本地指令不走这里，不计入）。
+      const aggTokens = assistantMsg.tokens || 0;
+      const aggCost = assistantMsg.cost || 0;
+      if (aggTokens > 0 || aggCost > 0) {
+        invoke("accumulate_usage", {
+          tokens: aggTokens,
+          cost: aggCost,
+          duration: assistantMsg.duration || 0,
+          timestamp: assistantMsg.timestamp,
+        })
+          .then(() => refreshUsageAgg())
+          .catch(() => {});
+      }
       // 空回复诊断：内容为空时必现可操作提示，避免静默空泡泡。
       // 只有思考过程而无内容（如模型把工具调用 JSON 当唯一输出被剥离）也算空回复。
       if (!assistantMsg.content) {
@@ -1718,6 +1743,8 @@ export const useChatStore = defineStore("chat", () => {
     cacheHitRate,
     cacheHitTotal,
     cacheMissTotal,
+    usageAgg,
+    refreshUsageAgg,
     profiles,
     activeProfileId,
     activeProfile,

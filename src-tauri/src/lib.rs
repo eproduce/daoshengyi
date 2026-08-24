@@ -1799,6 +1799,20 @@ fn export_conversation_cmd(db: State<Database>, id: String, format: String) -> R
     db.export_conversation(&id, &format)
 }
 
+/// 用量历史累计：每次 LLM 回复生成后调用一次（token/费用/耗时按天累计，删除会话不清零）
+#[tauri::command]
+fn accumulate_usage(db: State<Database>, tokens: i64, cost: f64, duration: f64, timestamp: i64) -> Result<(), String> {
+    db.accumulate_usage(tokens, cost, duration, timestamp)
+}
+
+/// 读取用量历史累计（总量 + 按天）
+#[tauri::command]
+fn get_usage_agg(db: State<Database>) -> Result<serde_json::Value, String> {
+    let total = db.get_usage_total()?;
+    let daily = db.get_usage_daily()?;
+    Ok(serde_json::json!({ "total": total, "daily": daily }))
+}
+
 // --- 记忆命令 ---
 
 #[tauri::command]
@@ -2495,6 +2509,8 @@ pub fn run() {
             delete_conversation_cmd,
             search_conversations_cmd,
             export_conversation_cmd,
+            accumulate_usage,
+            get_usage_agg,
             save_summary,
             get_summaries,
             save_fact,

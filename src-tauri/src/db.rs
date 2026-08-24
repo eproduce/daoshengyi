@@ -85,6 +85,22 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     last_result TEXT,
     created_at INTEGER NOT NULL
 );
+
+-- 用量历史累计（删除会话不冲减：token/费用统计跨会话永久保留）
+CREATE TABLE IF NOT EXISTS usage_agg (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
+    total_duration REAL NOT NULL DEFAULT 0,
+    total_msgs INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS usage_agg_daily (
+    date TEXT PRIMARY KEY,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0,
+    msgs INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -109,6 +125,22 @@ pub struct MsgRow {
     pub tokens: Option<i64>,
     pub duration: Option<f64>,
     pub cost: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UsageAggRow {
+    pub total_tokens: i64,
+    pub total_cost: f64,
+    pub total_duration: f64,
+    pub total_msgs: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UsageDailyRow {
+    pub date: String,
+    pub tokens: i64,
+    pub cost: f64,
+    pub msgs: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -158,6 +190,31 @@ impl Database {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
         // 旧库迁移：加 attachments 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []);
+        // 用量累计表迁移：首次创建时从现有 messages 一次性聚合历史数据，
+        // 之后仅通过 accumulate_usage 增量累加（删除会话不清零，统计跨会话保留）
+        let agg_exists: bool = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM usage_agg WHERE id=1)", [], |r| r.get(0))
+            .unwrap_or(false);
+        if !agg_exists {
+            let _ = conn.execute("INSERT INTO usage_agg (id) VALUES (1)", []);
+            let _ = conn.execute(
+                "UPDATE usage_agg SET
+                    total_tokens = (SELECT COALESCE(SUM(tokens),0) FROM messages WHERE role='assistant' AND tokens IS NOT NULL),
+                    total_cost   = (SELECT COALESCE(SUM(cost),0)   FROM messages WHERE role='assistant' AND cost IS NOT NULL),
+                    total_duration = (SELECT COALESCE(SUM(duration),0) FROM messages WHERE role='assistant' AND duration IS NOT NULL),
+                    total_msgs   = (SELECT COUNT(*) FROM messages WHERE role='assistant')
+                 WHERE id=1",
+                [],
+            );
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO usage_agg_daily (date, tokens, cost, msgs)
+                 SELECT date(timestamp/1000, 'unixepoch', 'localtime'),
+                        COALESCE(SUM(tokens),0), COALESCE(SUM(cost),0), COUNT(*)
+                 FROM messages WHERE role='assistant' AND tokens IS NOT NULL
+                 GROUP BY 1",
+                [],
+            );
+        }
         Ok(Database { conn: Mutex::new(conn) })
     }
 
@@ -206,6 +263,62 @@ impl Database {
         conn.execute("DELETE FROM conversations WHERE id=?1", params![id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // --- 用量历史累计（删除会话不冲减，跨会话保留统计） ---
+
+    /// 累加一次 LLM 消耗（每条 assistant 消息生成时调用一次；重试会再次调用，
+    /// 因为重试确实重新消耗了 API token/费用，计两次是准确的）
+    pub fn accumulate_usage(&self, tokens: i64, cost: f64, duration: f64, timestamp: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO usage_agg (id, total_tokens, total_cost, total_duration, total_msgs)
+             VALUES (1, ?1, ?2, ?3, 1)
+             ON CONFLICT(id) DO UPDATE SET
+                total_tokens   = total_tokens + ?1,
+                total_cost     = total_cost + ?2,
+                total_duration = total_duration + ?3,
+                total_msgs     = total_msgs + 1",
+            params![tokens, cost, duration],
+        ).map_err(|e| e.to_string())?;
+        // 按天累计（本地时区日期，与前端 new Date 一致）
+        conn.execute(
+            "INSERT INTO usage_agg_daily (date, tokens, cost, msgs)
+             VALUES (strftime('%Y-%m-%d', ?1/1000, 'unixepoch', 'localtime'), ?2, ?3, 1)
+             ON CONFLICT(date) DO UPDATE SET
+                tokens = tokens + ?2,
+                cost   = cost + ?3,
+                msgs   = msgs + 1",
+            params![timestamp, tokens, cost],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_usage_total(&self) -> Result<UsageAggRow, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT total_tokens, total_cost, total_duration, total_msgs FROM usage_agg WHERE id=1",
+            [],
+            |row| Ok(UsageAggRow {
+                total_tokens: row.get(0)?, total_cost: row.get(1)?,
+                total_duration: row.get(2)?, total_msgs: row.get(3)?,
+            }),
+        ).map_err(|e| e.to_string())
+    }
+
+    pub fn get_usage_daily(&self) -> Result<Vec<UsageDailyRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT date, tokens, cost, msgs FROM usage_agg_daily ORDER BY date ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(UsageDailyRow {
+                date: row.get(0)?, tokens: row.get(1)?, cost: row.get(2)?, msgs: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
     }
 
     pub fn get_messages(&self, conv_id: &str) -> Result<Vec<MsgRow>, String> {
@@ -342,6 +455,14 @@ impl Database {
     pub fn set_scheduled_task_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("UPDATE scheduled_tasks SET enabled=?1 WHERE id=?2", params![enabled as i64, id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn clear_usage_agg_for_test(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM usage_agg", []).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM usage_agg_daily", []).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -590,4 +711,91 @@ pub struct ToolAuditRow {
     pub is_error: bool,
     pub duration_ms: i64,
     pub created_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_PID: AtomicUsize = AtomicUsize::new(0);
+
+    fn tmp_db() -> (std::path::PathBuf, Database) {
+        let pid = TEST_PID.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("ds_db_test_{}_{}", std::process::id(), pid));
+        let db = Database::new(dir.clone()).unwrap();
+        (dir, db)
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn accumulate_usage_keeps_total_and_daily() {
+        let (dir, db) = tmp_db();
+        let t0 = db.get_usage_total().unwrap();
+        assert_eq!(t0.total_tokens, 0);
+        assert_eq!(t0.total_msgs, 0);
+
+        // 同一天累加 3 条
+        let ts = 1_700_000_000_000i64;
+        db.accumulate_usage(100, 0.001, 2.5, ts).unwrap();
+        db.accumulate_usage(200, 0.002, 3.0, ts).unwrap();
+        db.accumulate_usage(50, 0.0005, 1.0, ts + 3600000).unwrap();
+
+        let t = db.get_usage_total().unwrap();
+        assert_eq!(t.total_tokens, 350);
+        assert_eq!(t.total_msgs, 3);
+        assert!((t.total_cost - 0.0035).abs() < 1e-9);
+        assert!((t.total_duration - 6.5).abs() < 1e-9);
+
+        let daily = db.get_usage_daily().unwrap();
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].tokens, 350);
+
+        // 跨天累加 → 多一条按天记录，总量继续累加
+        db.accumulate_usage(10, 0.0001, 0.5, ts + 86400000).unwrap();
+        let t2 = db.get_usage_total().unwrap();
+        assert_eq!(t2.total_tokens, 360);
+        assert_eq!(t2.total_msgs, 4);
+        let daily2 = db.get_usage_daily().unwrap();
+        assert_eq!(daily2.len(), 2);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn migrate_aggregates_existing_messages_and_is_idempotent() {
+        let pid = TEST_PID.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("ds_db_mig_{}_{}", std::process::id(), pid));
+        let db = Database::new(dir.clone()).unwrap();
+
+        // 插入会话 + 消息（1 条 user + 1 条 assistant 带 tokens/cost/duration）
+        let conv = ConvRow { id: "c1".into(), title: "t".into(), model: "m".into(), created_at: 1, updated_at: 2 };
+        let msgs = vec![
+            MsgRow { id: "m1".into(), conversation_id: "c1".into(), role: "user".into(), content: "hi".into(), reasoning_content: None, images: None, attachments: None, timestamp: 1_700_000_000_000, tokens: None, duration: None, cost: None },
+            MsgRow { id: "m2".into(), conversation_id: "c1".into(), role: "assistant".into(), content: "ok".into(), reasoning_content: None, images: None, attachments: None, timestamp: 1_700_000_000_000, tokens: Some(123), duration: Some(1.5), cost: Some(0.001) },
+        ];
+        db.save_conversation(&conv, &msgs).unwrap();
+
+        // 模拟旧库：删除累计行，重开数据库触发迁移聚合
+        db.clear_usage_agg_for_test().unwrap();
+        drop(db);
+        let db2 = Database::new(dir.clone()).unwrap();
+        let t = db2.get_usage_total().unwrap();
+        assert_eq!(t.total_tokens, 123);
+        assert_eq!(t.total_msgs, 1);
+        assert!((t.total_cost - 0.001).abs() < 1e-9);
+
+        let daily = db2.get_usage_daily().unwrap();
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].tokens, 123);
+
+        // 再重开：迁移幂等，不会重复聚合
+        drop(db2);
+        let db3 = Database::new(dir.clone()).unwrap();
+        let t3 = db3.get_usage_total().unwrap();
+        assert_eq!(t3.total_tokens, 123);
+        cleanup(&dir);
+    }
 }

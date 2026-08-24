@@ -45,6 +45,24 @@ const totalStats = computed(() => {
   };
 });
 
+// 用量历史累计（后端 usage_agg 表，跨会话永久保留、含已删除会话）。
+// 优先展示累计值；旧库无累计数据时回退到现存会话聚合。
+const aggTotal = computed(() => ({
+  tokens: chat.usageAgg?.total_tokens ?? totalStats.value.tokens,
+  cost: chat.usageAgg?.total_cost ?? totalStats.value.cost,
+  msgs: chat.usageAgg?.total_msgs ?? totalStats.value.messages,
+  duration: chat.usageAgg?.total_duration ?? totalStats.value.avgDuration * totalStats.value.messages,
+}));
+const aggAvgDuration = computed(() =>
+  aggTotal.value.msgs > 0 ? aggTotal.value.duration / aggTotal.value.msgs : 0
+);
+// 按天趋势也用累计（含已删除会话），fallback 现存会话聚合
+const byDay = computed(() =>
+  chat.usageAgg?.daily?.length
+    ? chat.usageAgg.daily.map((d) => ({ date: d.date, tokens: d.tokens, cost: d.cost, count: d.msgs }))
+    : totalStats.value.byDay
+);
+
 // 缓存命中率（当前会话累计；无数据返回 null 表示暂不可用）
 const cacheRate = computed<number | null>(() => {
   const total = chat.cacheHitTotal + chat.cacheMissTotal;
@@ -52,7 +70,7 @@ const cacheRate = computed<number | null>(() => {
 });
 const cacheTokens = computed(() => chat.cacheHitTotal + chat.cacheMissTotal);
 
-const maxDayTokens = computed(() => Math.max(1, ...totalStats.value.byDay.map((d) => d.tokens)));
+const maxDayTokens = computed(() => Math.max(1, ...byDay.value.map((d) => d.tokens)));
 const topConvs = computed(() => totalStats.value.convList.slice(0, 8));
 const maxConvTokens = computed(() => Math.max(1, ...topConvs.value.map((c) => c.tokens)));
 
@@ -70,7 +88,7 @@ function fmtSec(n: number): string {
 <template>
   <div class="usage-panel">
     <h3><ChartColumn :size="17" /> 用量统计</h3>
-    <p class="usage-desc">基于本地 SQLite 对话记录汇总（含每轮 token / 费用 / 耗时估算）</p>
+    <p class="usage-desc">Token / 费用为历史累计（含已删除会话，永久保留）；会话数与分布基于现存会话</p>
 
     <!-- 概况卡片 -->
     <div class="usage-cards">
@@ -79,19 +97,19 @@ function fmtSec(n: number): string {
         <div class="usage-card__label">会话</div>
       </div>
       <div class="usage-card">
-        <div class="usage-card__num">{{ totalStats.messages }}</div>
+        <div class="usage-card__num">{{ aggTotal.msgs }}</div>
         <div class="usage-card__label">回复消息</div>
       </div>
       <div class="usage-card">
-        <div class="usage-card__num">{{ fmtTokens(totalStats.tokens) }}</div>
+        <div class="usage-card__num">{{ fmtTokens(aggTotal.tokens) }}</div>
         <div class="usage-card__label">总 Token</div>
       </div>
       <div class="usage-card">
-        <div class="usage-card__num">{{ fmtCost(totalStats.cost) }}</div>
+        <div class="usage-card__num">{{ fmtCost(aggTotal.cost) }}</div>
         <div class="usage-card__label">总费用</div>
       </div>
       <div class="usage-card">
-        <div class="usage-card__num">{{ totalStats.avgDuration ? fmtSec(totalStats.avgDuration) : "--" }}</div>
+        <div class="usage-card__num">{{ aggTotal.msgs ? fmtSec(aggAvgDuration) : "--" }}</div>
         <div class="usage-card__label">平均响应</div>
       </div>
     </div>
@@ -115,8 +133,8 @@ function fmtSec(n: number): string {
     <!-- 按天 Token 趋势 -->
     <div class="usage-block">
       <div class="usage-block__title">每日 Token 消耗</div>
-      <div v-if="totalStats.byDay.length" class="bar-chart" :style="{ height: '120px' }">
-        <div v-for="d in totalStats.byDay" :key="d.date" class="bar-chart__col" :title="`${d.date}：${d.tokens} token / ${d.count} 条`">
+      <div v-if="byDay.length" class="bar-chart" :style="{ height: '120px' }">
+        <div v-for="d in byDay" :key="d.date" class="bar-chart__col" :title="`${d.date}：${d.tokens} token / ${d.count} 条`">
           <div class="bar-chart__bar" :style="{ height: (d.tokens / maxDayTokens) * 100 + '%' }"></div>
           <div class="bar-chart__label">{{ d.date.slice(5) }}</div>
         </div>
