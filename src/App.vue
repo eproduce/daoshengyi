@@ -141,12 +141,12 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             <option v-for="p in PERSONAS" :key="p.id" :value="p.id">{{ p.emoji }} {{ p.name }}</option>
           </select>
           <div
-            v-if="chatStore.conversationStats.tokens > 0"
+            v-if="chatStore.usageAggTotal > 0"
             class="topbar__stats"
-            :title="`当前对话 Token 消耗与估算费用`"
+            :title="`历史累计 Token 消耗与估算费用（含已删除会话）；缓存命中率为当前对话`"
           >
-            <span class="stat">{{ chatStore.conversationStats.tokens.toLocaleString() }} tok</span>
-            <span class="stat">{{ formatCost(chatStore.conversationStats.cost) }}</span>
+            <span class="stat">{{ chatStore.usageAggTotal.toLocaleString() }} tok</span>
+            <span class="stat">{{ formatCost(chatStore.usageAggCost) }}</span>
             <span
               v-if="chatStore.cacheHitRate !== null"
               class="stat stat--cache"

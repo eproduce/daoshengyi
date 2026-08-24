@@ -48,10 +48,10 @@ const totalStats = computed(() => {
 // 用量历史累计（后端 usage_agg 表，跨会话永久保留、含已删除会话）。
 // 优先展示累计值；旧库无累计数据时回退到现存会话聚合。
 const aggTotal = computed(() => ({
-  tokens: chat.usageAgg?.total_tokens ?? totalStats.value.tokens,
-  cost: chat.usageAgg?.total_cost ?? totalStats.value.cost,
-  msgs: chat.usageAgg?.total_msgs ?? totalStats.value.messages,
-  duration: chat.usageAgg?.total_duration ?? totalStats.value.avgDuration * totalStats.value.messages,
+  tokens: chat.usageAgg?.total?.total_tokens ?? totalStats.value.tokens,
+  cost: chat.usageAgg?.total?.total_cost ?? totalStats.value.cost,
+  msgs: chat.usageAgg?.total?.total_msgs ?? totalStats.value.messages,
+  duration: chat.usageAgg?.total?.total_duration ?? totalStats.value.avgDuration * totalStats.value.messages,
 }));
 const aggAvgDuration = computed(() =>
   aggTotal.value.msgs > 0 ? aggTotal.value.duration / aggTotal.value.msgs : 0

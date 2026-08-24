@@ -554,8 +554,9 @@ export const useChatStore = defineStore("chat", () => {
   });
 
   // 用量历史累计（跨会话保留、删除会话不清零；数据来自后端 usage_agg 表）
+  // 注意：后端 get_usage_agg 返回 { total: UsageAggRow, daily: [...] }，累计值在 total 下
   const usageAgg = ref<{
-    total_tokens: number; total_cost: number; total_duration: number; total_msgs: number;
+    total: { total_tokens: number; total_cost: number; total_duration: number; total_msgs: number };
     daily: { date: string; tokens: number; cost: number; msgs: number }[];
   } | null>(null);
   async function refreshUsageAgg() {
@@ -596,6 +597,10 @@ export const useChatStore = defineStore("chat", () => {
     }
     return { tokens, cost };
   });
+
+  // 历史累计统计（后端 usage_agg，跨会话保留、含已删除会话）；fallback 当前对话
+  const usageAggTotal = computed(() => usageAgg.value?.total?.total_tokens ?? conversationStats.value.tokens);
+  const usageAggCost = computed(() => usageAgg.value?.total?.total_cost ?? conversationStats.value.cost);
 
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
@@ -1745,6 +1750,8 @@ export const useChatStore = defineStore("chat", () => {
     cacheHitTotal,
     cacheMissTotal,
     usageAgg,
+    usageAggTotal,
+    usageAggCost,
     refreshUsageAgg,
     profiles,
     activeProfileId,
