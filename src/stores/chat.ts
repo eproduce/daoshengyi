@@ -134,10 +134,12 @@ function getMcpToolsPrompt(): string {
     "- 正确做法：先 list_directory 看顶层 → 针对需要的子目录再用 list_directory 逐层深入 → 读关键文件用 read_multiple_files。\n" +
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作，不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点\n" +
+    "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、搜索、点击或操作页面时，**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
+    "- 若浏览器工具不在上方工具列表（按需激活），直接用 `{\"server\":\"浏览器自动化\",\"tool\":\"puppeteer_navigate\",...}` 调用即可，系统会自动连接浏览器。\n" +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
     "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
-    "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（临时目录 daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
+    "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（默认 ~/Pictures/道生一截图/daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
     "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
     "\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>" +
     "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。";
