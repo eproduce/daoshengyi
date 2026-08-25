@@ -1855,8 +1855,15 @@ fn get_summaries(db: State<Database>, conv_id: String) -> Result<Vec<db::Summary
 }
 
 #[tauri::command]
-fn save_fact(db: State<Database>, fact: db::FactRow) -> Result<(), String> {
-    db.save_fact(&fact)
+fn save_fact(db: State<Database>, fact: db::FactRow) -> Result<String, String> {
+    let (is_new, id) = db.save_fact(&fact)?;
+    Ok(if is_new { format!("saved:{}", id) } else { format!("merged:{}", id) })
+}
+
+/// 记忆维护（启动/每日后台调度用）：重要度衰减 + 遗忘 + FTS 清理
+#[tauri::command]
+fn maintain_facts(db: State<Database>) -> Result<String, String> {
+    db.maintain_facts()
 }
 
 #[tauri::command]
@@ -1948,8 +1955,8 @@ fn delete_fact_cmd(db: State<Database>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn prune_facts(db: State<Database>) -> Result<(), String> {
-    db.prune_facts(3, 60)
+fn prune_facts(db: State<Database>) -> Result<String, String> {
+    db.maintain_facts()
 }
 
 #[tauri::command]
@@ -2515,6 +2522,20 @@ pub fn run() {
                 });
             }
 
+            // 记忆维护线程：启动即跑一次，之后每 6 小时检查（每日约 4 次，幂等）。
+            // 做重要度衰减 + 低价值遗忘 + FTS 索引清理，让长期记忆"越用越聪明"且不膨胀。
+            {
+                let mem_dir = app_dir.clone();
+                std::thread::spawn(move || loop {
+                    if let Ok(db) = Database::new(mem_dir.clone()) {
+                        if let Ok(msg) = db.maintain_facts() {
+                            eprintln!("[memory] {}", msg);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+                });
+            }
+
             // devtools 默认不自动打开；需要调试时用环境变量开启：
             //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
             #[cfg(debug_assertions)]
@@ -2545,6 +2566,7 @@ pub fn run() {
             save_fact,
             search_facts,
             get_preferences,
+            maintain_facts,
             save_app_settings,
             load_app_settings,
             list_models,

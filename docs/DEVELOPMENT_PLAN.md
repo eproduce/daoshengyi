@@ -87,13 +87,15 @@
 
 ### 3.2 Phase 1 — 记忆内核增强（数据层，🟢）
 
-| # | 任务 | 说明 |
-|---|------|------|
-| 1.1 | 事实去重与合并 | `save_fact` 前检测近似重复：编辑距离 / 最长公共子串相似度 > 阈值则合并（累加 importance、保留新 fact）；LLM 复核可选，控制成本 |
-| 1.2 | 记忆衰减与遗忘调度 | 启动 / 每日后台自动执行 `prune_facts`；importance 随 access 上调、随时间衰减；`preference` 永久保护 |
-| 1.3 | FTS5 全文索引 | `memory_facts` 建 FTS5 虚拟表替代 `LIKE` 全表扫；中文 unigram 分词提升召回 |
-| 1.4 | 记忆分层 | episodic（会话摘要）+ semantic（事实）双库明确；跨会话摘要汇总 |
-| 1.5 | 用户画像沉淀 | `preference` 型 fact 独立加权，跨会话维护「用户档案」（姓名/职业/偏好/环境） |
+> **状态：1.1 / 1.2 / 1.3 已完成（2026-08-25），1.4 / 1.5 待做**
+
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| 1.1 | 事实去重与合并 | ✅ | `save_fact` 前字符集 Jaccard 相似度（>0.62 + 长度比惩罚）检测近似重复 → 合并：累加 importance（上限 10）、文本取更长、复用原 id；`mcp_server` memory_save 与前端 extractFacts 均反馈合并状态 |
+| 1.2 | 记忆衰减与遗忘调度 | ✅ | 新增 `maintain_facts`：>45 天未访问非 preference 的 importance 降 1（最低 1）；importance≤2 且 60 天未访问的删除；清理孤儿 FTS 行。lib.rs 后台线程启动即跑 + 每 6 小时检查；`prune_facts` 命令复用 |
+| 1.3 | FTS5 全文索引 | ✅ | `memory_facts_fts` FTS5 虚拟表（rowid 关联）；中文 unigram 分词（`cjk_terms`）+ 英文小写词；`search_facts` 改为 FTS5 bm25 × importance × recency 加权 + LIKE 兜底；`Database::new` 对旧库幂等回填索引；save/delete 同步维护 |
+| 1.4 | 记忆分层 | ⬜ | episodic（会话摘要）+ semantic（事实）双库明确；跨会话摘要汇总 |
+| 1.5 | 用户画像沉淀 | ⬜ | `preference` 型 fact 独立加权，跨会话维护「用户档案」（姓名/职业/偏好/环境） |
 
 ### 3.3 Phase 2 — 检索与注入（Agent 侧，🟡）
 

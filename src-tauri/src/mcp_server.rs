@@ -106,7 +106,7 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
                 created_at: now_ms(),
             };
             match db.save_fact(&row) {
-                Ok(_) => (format!("已保存记忆（类型 {}，重要度 {}）", row.fact_type, row.importance), false),
+                Ok((is_new, _)) => (format!("已保存记忆（类型 {}，重要度 {}{}）", row.fact_type, row.importance, if is_new { "" } else { "，与已有记忆合并" }), false),
                 Err(e) => (format!("保存失败: {}", e), true),
             }
         }

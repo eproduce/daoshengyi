@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS memory_facts (
 CREATE INDEX IF NOT EXISTS idx_facts_type ON memory_facts(fact_type);
 CREATE INDEX IF NOT EXISTS idx_summaries_conv ON memory_summaries(conversation_id);
 
+-- FTS5 全文索引：中文按 unigram（逐字）分词 + 英文单词，替代 LIKE 全表扫，
+-- 提升跨会话召回（DeepSeek 无 embeddings 时尤为重要）。
+-- rowid 与 memory_facts.rowid 一一对应；由 Rust 侧在 save/delete 时同步维护。
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(fact_terms, tokenize='unicode61');
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -214,6 +219,30 @@ impl Database {
                  GROUP BY 1",
                 [],
             );
+        }
+        // FTS5 索引回填：旧库 memory_facts 已有数据但 fts 表为空 → 逐条分词补建
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_facts_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let fact_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_facts", [], |r| r.get(0))
+            .unwrap_or(0);
+        if fts_count == 0 && fact_count > 0 {
+            let rows: Vec<(i64, String)> = conn
+                .prepare("SELECT rowid, fact FROM memory_facts")
+                .map_err(|e| e.to_string())?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            for (rid, fact) in rows {
+                let terms = cjk_terms(&fact);
+                let _ = conn.execute(
+                    "INSERT INTO memory_facts_fts(rowid, fact_terms) VALUES (?1, ?2)",
+                    params![rid, terms],
+                );
+            }
+            eprintln!("[memory] FTS 索引回填 {} 条", fact_count);
         }
         Ok(Database { conn: Mutex::new(conn) })
     }
@@ -490,13 +519,65 @@ impl Database {
         Ok(result)
     }
 
-    pub fn save_fact(&self, fact: &FactRow) -> Result<(), String> {
+    /// 保存事实（带 FTS 索引同步 + 近似去重合并）：
+    /// - 若与已有同类型事实高度相似（字符集相似度 > 0.62）→ 合并：累加 importance、
+    ///   保留更长/更新的文本、更新访问信息，返回合并目标 id
+    /// - 否则插入新事实，同步写 FTS 索引
+    /// 返回 (是否新插入, 生效的 id)
+    pub fn save_fact(&self, fact: &FactRow) -> Result<(bool, String), String> {
+        // 先去重：查同类型所有事实，做字符级相似度匹配
+        if let Some(existing) = self.find_similar_fact(&fact.fact, &fact.fact_type)? {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            // 合并：文本取更长者（信息更全），重要度累加，保留原始创建时间
+            let new_importance = (existing.importance + fact.importance).min(10);
+            let new_fact = if fact.fact.len() > existing.fact.len() { fact.fact.clone() } else { existing.fact.clone() };
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "UPDATE memory_facts SET fact=?1, importance=?2, access_count = access_count + 1, last_accessed=?3 WHERE id=?4",
+                params![new_fact, new_importance, now, existing.id],
+            ).map_err(|e| e.to_string())?;
+            // 同步更新 FTS 索引
+            if let Ok(rid) = conn.query_row("SELECT rowid FROM memory_facts WHERE id=?1", params![existing.id], |r| r.get::<_, i64>(0)) {
+                let _ = conn.execute("DELETE FROM memory_facts_fts WHERE rowid=?1", params![rid]);
+                let _ = conn.execute(
+                    "INSERT INTO memory_facts_fts(rowid, fact_terms) VALUES (?1, ?2)",
+                    params![rid, cjk_terms(&new_fact)],
+                );
+            }
+            return Ok((false, existing.id.clone()));
+        }
+
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT OR REPLACE INTO memory_facts (id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![fact.id, fact.conversation_id, fact.fact, fact.fact_type, fact.importance, fact.access_count, fact.last_accessed, fact.created_at],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+        // 同步 FTS 索引
+        if let Ok(rid) = conn.query_row("SELECT rowid FROM memory_facts WHERE id=?1", params![fact.id], |r| r.get::<_, i64>(0)) {
+            let _ = conn.execute("DELETE FROM memory_facts_fts WHERE rowid=?1", params![rid]);
+            let _ = conn.execute(
+                "INSERT INTO memory_facts_fts(rowid, fact_terms) VALUES (?1, ?2)",
+                params![rid, cjk_terms(&fact.fact)],
+            );
+        }
+        Ok((true, fact.id.clone()))
+    }
+
+    /// 查找与给定事实高度相似的同类型已有事实（字符集 Jaccard 相似度 > 0.62）
+    fn find_similar_fact(&self, fact: &str, fact_type: &str) -> Result<Option<FactRow>, String> {
+        let candidates = self.get_facts_by_type(fact_type, 500)?;
+        let mut best: Option<(f32, FactRow)> = None;
+        for c in candidates {
+            if c.fact == fact { return Ok(Some(c)); }
+            let sim = char_set_similarity(&c.fact, fact);
+            if sim > 0.62 {
+                match &best {
+                    Some((s, _)) if *s >= sim => {}
+                    _ => best = Some((sim, c)),
+                }
+            }
+        }
+        Ok(best.map(|(_, f)| f))
     }
 
     pub fn get_facts_by_type(&self, fact_type: &str, limit: i64) -> Result<Vec<FactRow>, String> {
@@ -512,18 +593,66 @@ impl Database {
         Ok(result)
     }
 
+    /// 混合检索：FTS5 全文（bm25 相关度）+ LIKE 兜底，按 相关度 × importance × recency 加权排序。
+    /// DeepSeek 无 embedding 时这是跨会话召回的主力（中文 unigram 分词替代 LIKE 全表扫）。
     pub fn search_facts(&self, query: &str, limit: i64) -> Result<Vec<FactRow>, String> {
-        let q = format!("%{}%", query);
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut rows: Vec<(f32, FactRow)> = Vec::new();
+
+        // 1) FTS5 全文检索（分词匹配，覆盖中文逐字 + 英文单词）
+        let terms = cjk_terms(query);
+        let match_q = fts_query(&terms);
+        if !match_q.is_empty() {
+            let sql = "SELECT mf.rowid, mf.id, mf.conversation_id, mf.fact, mf.fact_type, mf.importance, mf.access_count, mf.last_accessed, mf.created_at, bm25(memory_facts_fts) AS score
+                       FROM memory_facts_fts JOIN memory_facts mf ON mf.rowid = memory_facts_fts.rowid
+                       WHERE memory_facts_fts MATCH ?1";
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let iter = stmt.query_map(params![match_q], |row| {
+                let fact = FactRow {
+                    id: row.get(1)?, conversation_id: row.get(2)?, fact: row.get(3)?,
+                    fact_type: row.get(4)?, importance: row.get(5)?, access_count: row.get(6)?,
+                    last_accessed: row.get(7)?, created_at: row.get(8)?,
+                };
+                Ok((row.get::<_, f32>(9)?, fact))
+            }).map_err(|e| e.to_string())?;
+            for r in iter {
+                if let Ok((score, fact)) = r {
+                    let recency = if fact.last_accessed.is_some() { 1.0 } else { 0.5 };
+                    let weighted = -score * 1.0 + fact.importance as f32 * 0.3 + recency * 0.5;
+                    rows.push((weighted, fact));
+                }
+            }
+        }
+
+        // 2) LIKE 精确兜底（英文/数字/特殊串 FTS 可能不覆盖）
+        let q = format!("%{}%", query);
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts WHERE fact LIKE ?1 ORDER BY importance DESC LIMIT ?2"
+            "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts WHERE fact LIKE ?1 AND fact NOT IN (SELECT fact FROM memory_facts WHERE id IN (SELECT id FROM memory_facts LIMIT 0)) ORDER BY importance DESC LIMIT ?2"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![q, limit], |row| {
+        let iter = stmt.query_map(params![q, limit * 2], |row| {
             Ok(FactRow { id: row.get(0)?, conversation_id: row.get(1)?, fact: row.get(2)?, fact_type: row.get(3)?, importance: row.get(4)?, access_count: row.get(5)?, last_accessed: row.get(6)?, created_at: row.get(7)? })
         }).map_err(|e| e.to_string())?;
-        let mut result = Vec::new();
-        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
-        Ok(result)
+        for r in iter {
+            if let Ok(fact) = r {
+                let recency = if fact.last_accessed.is_some() { 1.0 } else { 0.5 };
+                let weighted = fact.importance as f32 * 0.5 + recency * 0.5;
+                rows.push((weighted, fact));
+            }
+        }
+
+        // 3) 按加权分降序去重
+        rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (_, f) in rows {
+            if seen.insert(f.id.clone()) {
+                out.push(f);
+                if out.len() >= limit as usize { break; }
+            }
+        }
+        let _ = now;
+        Ok(out)
     }
 
     pub fn touch_fact(&self, id: &str) -> Result<(), String> {
@@ -537,18 +666,45 @@ impl Database {
 
     pub fn delete_fact(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // 先删 FTS 索引再删记录
+        if let Ok(rid) = conn.query_row("SELECT rowid FROM memory_facts WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
+            let _ = conn.execute("DELETE FROM memory_facts_fts WHERE rowid=?1", params![rid]);
+        }
         conn.execute("DELETE FROM memory_facts WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub fn prune_facts(&self, min_access: i64, days_old: i64) -> Result<(), String> {
-        let cutoff = chrono::Utc::now().timestamp_millis() - days_old * 86400000;
+    /// 记忆维护（启动/每日调度）：衰减 + 遗忘 + FTS 清理。
+    /// - 重要度随时间衰减（>45 天未访问且非 preference，importance 降 1，最低 1）
+    /// - 遗忘：低价值（importance<=2）且 60 天未访问的非 preference 删除
+    /// - 清理孤儿 FTS 索引行
+    pub fn maintain_facts(&self) -> Result<String, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let day = 86400000i64;
+
+        // 1) 重要度衰减（保留 preference 与近期访问过的事实）
         conn.execute(
-            "DELETE FROM memory_facts WHERE access_count < ?1 AND last_accessed < ?2 AND fact_type != 'preference'",
-            params![min_access, cutoff],
+            "UPDATE memory_facts SET importance = MAX(1, importance - 1)
+             WHERE fact_type != 'preference' AND last_accessed IS NOT NULL
+               AND last_accessed < ?1 AND importance > 1",
+            params![now - 45 * day],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+
+        // 2) 遗忘低价值冷记忆
+        conn.execute(
+            "DELETE FROM memory_facts WHERE fact_type != 'preference' AND importance <= 2 AND last_accessed < ?1",
+            params![now - 60 * day],
+        ).map_err(|e| e.to_string())?;
+
+        // 3) 清理孤儿 FTS 行（记录已删但索引残留）
+        conn.execute(
+            "DELETE FROM memory_facts_fts WHERE rowid NOT IN (SELECT rowid FROM memory_facts)",
+            [],
+        ).map_err(|e| e.to_string())?;
+
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM memory_facts", [], |r| r.get(0)).unwrap_or(0);
+        Ok(format!("记忆维护完成，当前 {} 条事实", remaining))
     }
 
     // --- 向量检索 ---
@@ -679,6 +835,51 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
+/// 中文分词（unigram）：汉字逐字分词 + 英文/数字按空白词切分，供 FTS5 unicode61 索引。
+/// 例如 "华为技术有限公司" → "华 为 技 术 有 限 公 司"，"DeepSeek v4" → "deepseek v4"
+fn cjk_terms(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_ascii = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            if prev_ascii { out.push(c); }
+            else { out.push(' '); out.push(c.to_ascii_lowercase()); prev_ascii = true; }
+        } else if c.is_whitespace() {
+            prev_ascii = false;
+        } else {
+            // 汉字/标点/其它：逐字符为独立 token
+            out.push(' '); out.push(c); prev_ascii = false;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 把分词串转成 FTS5 MATCH 查询串：每个 token 用双引号包裹 + 空格（隐含 AND）
+fn fts_query(terms: &str) -> String {
+    let toks: Vec<String> = terms.split_whitespace().map(|t| format!("\"{}\"", t)).collect();
+    // 过多 token 会让 AND 过于严格，最多取 8 个
+    let limited: Vec<String> = toks.into_iter().take(8).collect();
+    limited.join(" ")
+}
+
+/// 字符集 Jaccard 相似度（用于事实去重）：
+/// 两段文本去空格后的字符集合交并比 × 长度比惩罚（长度差过大不算重复，
+/// 避免「用户喜欢简洁」与「用户喜欢简洁回答」这类包含关系被误并）
+fn char_set_similarity(a: &str, b: &str) -> f32 {
+    let va: Vec<char> = a.chars().filter(|c| !c.is_whitespace()).collect();
+    let vb: Vec<char> = b.chars().filter(|c| !c.is_whitespace()).collect();
+    if va.is_empty() || vb.is_empty() { return 0.0; }
+    let set_a: std::collections::HashSet<char> = va.iter().copied().collect();
+    let set_b: std::collections::HashSet<char> = vb.iter().copied().collect();
+    let inter = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 { return 0.0; }
+    let jaccard = inter as f32 / union as f32;
+    let len_ratio = va.len().min(vb.len()) as f32 / va.len().max(vb.len()) as f32;
+    if len_ratio < 0.55 { return 0.0; }
+    jaccard
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SummaryRow {
     pub id: String,
@@ -796,6 +997,82 @@ mod tests {
         let db3 = Database::new(dir.clone()).unwrap();
         let t3 = db3.get_usage_total().unwrap();
         assert_eq!(t3.total_tokens, 123);
+        cleanup(&dir);
+    }
+
+    fn test_fact(id: &str, text: &str, fact_type: &str, importance: i64) -> FactRow {
+        FactRow {
+            id: id.into(), conversation_id: Some("c1".into()), fact: text.into(),
+            fact_type: fact_type.into(), importance, access_count: 0,
+            last_accessed: None, created_at: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn fts_search_finds_chinese_by_unigram() {
+        let (dir, db) = tmp_db();
+        db.save_fact(&test_fact("f1", "用户喜欢简洁的回答方式", "preference", 8)).unwrap();
+        db.save_fact(&test_fact("f2", "项目使用 React 18 和 TypeScript", "info", 5)).unwrap();
+
+        // 中文 unigram：查询词与事实文本部分重合即可召回（"简洁"命中 f1）
+        let r = db.search_facts("简洁回答", 5).unwrap();
+        assert!(!r.is_empty(), "中文 unigram 检索应命中");
+        assert!(r.iter().any(|f| f.id == "f1"), "应召回 f1，实际: {:?}", r.iter().map(|f| &f.id).collect::<Vec<_>>());
+
+        // 英文单词检索
+        let r2 = db.search_facts("typescript", 5).unwrap();
+        assert!(r2.iter().any(|f| f.id == "f2"), "英文应命中 f2: {:?}", r2.iter().map(|f| &f.id).collect::<Vec<_>>());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn save_fact_dedups_similar_text() {
+        let (dir, db) = tmp_db();
+        let (new1, id1) = db.save_fact(&test_fact("f1", "用户喜欢简洁回答", "preference", 8)).unwrap();
+        assert!(new1);
+        // 近似重复：同字不同序（LLM 重复提取的典型）→ 合并而非新增
+        let (new2, id2) = db.save_fact(&test_fact("f2", "用户简洁回答喜欢", "preference", 7)).unwrap();
+        assert!(!new2, "同字重排应合并，而非新增");
+        assert_eq!(id1, id2, "合并后应复用原 id");
+
+        // 合并后重要度累加（上限 10）、文本取更长者
+        let all = db.get_facts_by_type("preference", 10).unwrap();
+        assert_eq!(all.len(), 1, "同义事实应只保留 1 条");
+        assert_eq!(all[0].importance, 10, "重要度 8+7 累加后钳制到上限 10");
+        assert!(all[0].fact.len() >= "用户喜欢简洁回答".len());
+
+        // 语义相反（含不同字符）→ 不应误合并，新增
+        let (new3, _) = db.save_fact(&test_fact("f3", "用户喜欢详细回答", "preference", 6)).unwrap();
+        assert!(new3, "不同偏好不应误合并");
+        // 完全不同的偏好 → 新增
+        let (new4, _) = db.save_fact(&test_fact("f4", "用户是后端工程师", "preference", 6)).unwrap();
+        assert!(new4);
+        assert_eq!(db.get_facts_by_type("preference", 10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn maintain_facts_decays_and_prunes() {
+        let (dir, db) = tmp_db();
+        // 旧记忆：preference 受保护不删
+        db.save_fact(&test_fact("p1", "用户喜欢番茄炒蛋", "preference", 9)).unwrap();
+        // 旧低价值 info：应被遗忘
+        db.save_fact(&test_fact("i1", "三年前的临时笔记", "info", 1)).unwrap();
+        // 近期访问的重要 info：应保留
+        db.save_fact(&test_fact("i2", "最近讨论的项目决定", "info", 7)).unwrap();
+        // 让 i1 变成"60 天前未访问"：直接更新 last_accessed 为旧时间
+        {
+            let conn = db.conn.lock().unwrap();
+            let old = 1_500_000_000_000i64; // 约 2023 年
+            conn.execute("UPDATE memory_facts SET last_accessed=?1 WHERE id IN ('i1')", params![old]).unwrap();
+        }
+        db.maintain_facts().unwrap();
+
+        let all = db.get_facts_by_type("info", 10).unwrap();
+        assert!(!all.iter().any(|f| f.id == "i1"), "低价值冷记忆应被遗忘");
+        assert!(all.iter().any(|f| f.id == "i2"), "近期重要记忆应保留");
+        let prefs = db.get_facts_by_type("preference", 10).unwrap();
+        assert!(prefs.iter().any(|f| f.id == "p1"), "preference 应受保护");
         cleanup(&dir);
     }
 }

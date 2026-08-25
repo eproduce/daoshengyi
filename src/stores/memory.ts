@@ -92,40 +92,43 @@ ${convText}
           importance: item.type === "preference" ? 8 : 5,
           access_count: 0, last_accessed: undefined, created_at: Date.now(),
         };
-        await invoke("save_fact", { fact: f }).catch(() => {});
+        // save_fact 后端做 FTS 索引 + 近似去重合并；返回 "saved:id" 或 "merged:目标id"
+        const saved = await invoke<string>("save_fact", { fact: f }).catch(() => "saved:" + f.id);
+        const mergedId = saved.startsWith("merged:") ? saved.slice(7) : null;
 
-        // 生成 embedding 并存储（后台，不阻塞）
+        // 生成 embedding 并存储（后台，不阻塞；已合并则对目标 id 写入）
         generateEmbedding(item.fact, config).then(emb => {
-          if (emb) invoke("set_fact_embedding", { id: f.id, embedding: emb }).catch(() => {});
+          if (emb) invoke("set_fact_embedding", { id: mergedId || f.id, embedding: emb }).catch(() => {});
         });
 
-        facts.push(f);
+        facts.push(mergedId ? { ...f, id: mergedId } : f);
       }
       return facts;
     } catch { return []; }
   }
 
-  // --- 检索相关记忆（语义 + 关键词混合）---
+  // --- 检索相关记忆（混合：FTS5 全文 + 语义向量 + 偏好，按相关度×重要度×时效排序）---
   async function retrieveMemories(query: string, config?: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
     try {
       const prefs = await invoke<FactRow[]>("get_preferences");
       let facts: FactRow[] = [];
 
-      // 尝试语义检索
+      // 1) FTS5 全文检索（后端 bm25×importance×recency 加权；中文 unigram，DeepSeek 下主力）
+      facts = await invoke<FactRow[]>("search_facts", { query, limit: 6n });
+
+      // 2) 语义向量补充（DeepSeek 无 embeddings 自动跳过，不产生结果）
       if (config?.apiKey) {
         const emb = await generateEmbedding(query, config);
         if (emb) {
-          const scored = await invoke<[FactRow, number][]>("search_by_embedding", { embedding: emb, limit: 5n });
-          facts = scored.map(([f]) => f);
+          const scored = await invoke<[FactRow, number][]>("search_by_embedding", { embedding: emb, limit: 3n });
+          const vecFacts = scored.map(([f]) => f);
+          // 与 FTS 结果按 fact 去重合并（向量优先排前）
+          facts = [...vecFacts.filter(v => !facts.some(f => f.fact === v.fact)), ...facts];
         }
       }
 
-      // 回退：关键词检索
-      if (facts.length === 0) {
-        facts = await invoke<FactRow[]>("search_facts", { query, limit: 5n });
-      }
-
-      const all = [...prefs, ...facts];
+      // 3) 合并偏好（总是注入，用户画像）
+      const all = [...prefs.filter(p => !facts.some(f => f.fact === p.fact)), ...facts];
       const seen = new Set<string>();
       const unique = all.filter(f => {
         if (seen.has(f.fact)) return false;
