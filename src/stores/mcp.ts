@@ -48,6 +48,12 @@ function migrateConfig<T extends { command: string; args: string; enabled: boole
 // 指定，与手动 env 配置共存（手动配置优先）。
 export const PUPPETEER_EDGE_PATH = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
 
+// server-puppeteer 默认视口 800x600 偏小，窗口放大后页面只占窗口一部分。
+// 通过 PUPPETEER_LAUNCH_OPTIONS（JSON，传给 puppeteer.launch()）把页面视口与
+// Edge 窗口大小设成一致（1440x900），让页面占满窗口。用户手动配置优先。
+export const PUPPETEER_DEFAULT_LAUNCH_OPTIONS =
+  '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}';
+
 function applyPuppeteerEnv<T extends { command: string; args: string; env?: Record<string, string> }>(c: T): T {
   const cmd = (c.command ?? "").toLowerCase();
   const args = c.args ?? "";
@@ -56,6 +62,8 @@ function applyPuppeteerEnv<T extends { command: string; args: string; env?: Reco
   const env = { ...(c.env ?? {}) };
   // 用户已显式指定浏览器则尊重；否则默认用本机 Edge
   if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = PUPPETEER_EDGE_PATH;
+  // 用户已显式配置启动参数则尊重；否则补默认视口=窗口大小，让页面占满窗口
+  if (!env.PUPPETEER_LAUNCH_OPTIONS) env.PUPPETEER_LAUNCH_OPTIONS = PUPPETEER_DEFAULT_LAUNCH_OPTIONS;
   return { ...c, env };
 }
 

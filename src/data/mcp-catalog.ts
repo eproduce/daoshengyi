@@ -37,6 +37,10 @@ export const MCP_CATALOG: McpCatalogItem[] = [
       // Testing 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），
       // 故默认指定本机 Microsoft Edge（Chromium 内核）。可自行改路径。
       PUPPETEER_EXECUTABLE_PATH: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      // 默认视口只有 800x600，窗口放大后页面只占窗口一部分。
+      // PUPPETEER_LAUNCH_OPTIONS 是 JSON，传给 puppeteer.launch()：把页面视口
+      // 与 Edge 窗口大小设成一致，让页面占满窗口。可自行调整尺寸。
+      PUPPETEER_LAUNCH_OPTIONS: '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}',
     },
     tags: ["浏览器", "自动化"],
   },
