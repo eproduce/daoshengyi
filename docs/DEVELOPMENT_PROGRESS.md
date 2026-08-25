@@ -8,6 +8,14 @@
 
 ## 2026-08-25
 
+### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成
+- **计划整合**：新增 `DEVELOPMENT_PLAN.md §3.7 编程代理能力路线`——把 ROADMAP 全部未实现项（Git/验证循环/代码库索引/多文件编辑 diff/Plan 模式/本地 embedding/权限矩阵/沙箱/记忆复习/插件生态/跨设备同步/多模型路由）按优先级+前置依赖排成 P-A1~P-A12，建议推进顺序 Git→验证循环→代码库索引→diff→Plan→embedding→权限沙箱
+- **P-A1 Git 集成**：
+  - Rust 新增 `git_operation(cwd, action, args, timeout)` 命令：用 git CLI 子进程（零新依赖，复用 execute_command 的 tokio 进程+超时+审计模式）；白名单子命令（status/diff/log/branch/remote/show/ls-files/rev-parse 只读 + add/commit/pull/push/checkout/init/clone 常规）+ 拒绝危险参数（--force/--hard/reset/rm/clean/--delete），防 agent 误操作
+  - 安全校验提取为纯函数 `validate_git_operation` + 3 个单元测试（允许安全操作/拒绝未知子命令/拒绝危险参数）
+  - 前端 `git` 内置工具（app）：参数 cwd/action/args，输出截断 6000 字符；系统提示词加 git 工具描述（使用时机：查看/提交/推送/对比/历史/分支）
+- **验证**：cargo test --lib 19 项通过（含 3 个 git 校验）；npm test 35 + vite build 通过；真实 git CLI 链路正常（status/log 输出正确）
+
 ### ✅ 长期记忆 1.5 用户画像 + 2.1 意图扩展 + 3.1 记忆编辑 + 记忆库净化
 - **1.5 用户画像沉淀**：`memory.ts` 新增 `getUserProfile()`——聚合 preference 偏好 + 高重要度(≥7)身份/环境信息，形成结构化「用户画像」；`sendMessage` 每次对话稳定注入 volatileCtx（5 秒超时兜底）；`retrieveMemories` 改为只补重要度≥7 的偏好（避免与画像重复）；`MemoryPanel` 新增「用户画像」高亮区块（chip 展示，粉色调，标注"每次对话自动注入"）
 - **2.1 意图关键词扩展**：`retrieveMemories` 在 FTS 首轮无结果时，用 LLM 从问题提取 2-3 个核心检索词（`expandKeywords`）逐个重试检索——解决"模糊提问"（如"我上次说的那家公司"）召回差问题；仅空结果时触发不增加正常路径成本

@@ -1792,6 +1792,87 @@ async fn execute_command(
     }
 }
 
+/// Git 操作（编程 Agent：提交/推送/拉取/diff/状态/日志等）。
+/// 用 git CLI 子进程执行（cwd 指定仓库目录），带超时 + 审计；禁止危险参数逃逸。
+/// 参数 action：status/diff/log/commit/push/pull/add/branch/其他（透传 git args）
+#[tauri::command]
+async fn git_operation(
+    db: State<'_, Database>,
+    cwd: String,
+    action: String,
+    args: Vec<String>,
+    timeout_secs: Option<u64>,
+) -> Result<CommandOutput, String> {
+    use tokio::io::AsyncReadExt;
+
+    let start = std::time::Instant::now();
+    let audit_args = format!("git {} {}", action, args.join(" "));
+    validate_git_operation(&action, &args)?;
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg(&action).args(&args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    if !cwd.trim().is_empty() {
+        cmd.current_dir(&cwd);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 git 失败: {}", e))?;
+    let mut stdout_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
+    let mut stderr_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(60));
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let (_, _, status_res) = tokio::join!(
+            stdout_pipe.read_to_end(&mut out_buf),
+            stderr_pipe.read_to_end(&mut err_buf),
+            child.wait(),
+        );
+        (status_res, out_buf, err_buf)
+    })
+    .await;
+
+    let duration = start.elapsed().as_millis() as i64;
+
+    match result {
+        Ok((status_res, out_buf, err_buf)) => {
+            let status = status_res.map_err(|e| format!("等待 git 失败: {}", e))?;
+            let stdout = String::from_utf8_lossy(&out_buf).to_string();
+            let stderr = String::from_utf8_lossy(&err_buf).to_string();
+            let exit_code = status.code().unwrap_or(-1);
+            let _ = db.log_tool_call("git", &audit_args, &format!("exit={} out={} err={}", exit_code, stdout, stderr), exit_code != 0, duration);
+            Ok(CommandOutput { stdout, stderr, exit_code, timed_out: false })
+        }
+        Err(_) => {
+            let msg = format!("git 操作超时（{}s），已终止", timeout_secs.unwrap_or(60));
+            let _ = db.log_tool_call("git", &audit_args, &msg, true, duration);
+            Ok(CommandOutput { stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true })
+        }
+    }
+}
+
+/// Git 操作安全校验：白名单子命令 + 拒绝危险参数（可独立测试的纯逻辑）
+fn validate_git_operation(action: &str, args: &[String]) -> Result<(), String> {
+    const SAFE_RO: &[&str] = &["status", "diff", "log", "branch", "remote", "show", "ls-files", "rev-parse"];
+    const SAFE_RW: &[&str] = &["add", "commit", "pull", "push", "checkout", "init", "clone"];
+    if !SAFE_RO.contains(&action) && !SAFE_RW.contains(&action) {
+        return Err(format!(
+            "git_operation 不支持该子命令: {}（仅限 {}）",
+            action,
+            SAFE_RO.iter().chain(SAFE_RW).cloned().collect::<Vec<_>>().join("/")
+        ));
+    }
+    // 禁止破坏性/危险参数（防止 agent 误操作或注入）
+    let dangerous = ["--force", "--hard", "reset", "rm", "clean", "--delete"];
+    if args.iter().any(|a| dangerous.iter().any(|d| a.contains(d))) {
+        return Err(format!("git_operation 拒绝危险参数: {:?}", args));
+    }
+    Ok(())
+}
+
 // --- 对话持久化命令 ---
 
 #[tauri::command]
@@ -2613,6 +2694,7 @@ pub fn run() {
             delegate_coding_agent,
             debug_log,
             execute_command,
+            git_operation,
             read_file,
             open_file,
             file_exists,
@@ -2649,4 +2731,35 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_git_operation;
+
+    #[test]
+    fn git_validate_allows_safe_ops() {
+        assert!(validate_git_operation("status", &[]).is_ok());
+        assert!(validate_git_operation("diff", &[]).is_ok());
+        assert!(validate_git_operation("log", &["--oneline".to_string(), "-5".to_string()]).is_ok());
+        assert!(validate_git_operation("commit", &["-m".to_string(), "feat: x".to_string()]).is_ok());
+        assert!(validate_git_operation("push", &[]).is_ok());
+    }
+
+    #[test]
+    fn git_validate_rejects_unknown_action() {
+        assert!(validate_git_operation("reset", &[]).is_err());
+        assert!(validate_git_operation("rm", &[]).is_err());
+        assert!(validate_git_operation("clean", &[]).is_err());
+        assert!(validate_git_operation("rebase", &[]).is_err());
+    }
+
+    #[test]
+    fn git_validate_rejects_dangerous_args() {
+        assert!(validate_git_operation("pull", &["--force".to_string()]).is_err());
+        assert!(validate_git_operation("checkout", &["--hard".to_string()]).is_err());
+        assert!(validate_git_operation("branch", &["--delete".to_string(), "x".to_string()]).is_err());
+        // 正常参数不受影响
+        assert!(validate_git_operation("checkout", &["main".to_string()]).is_ok());
+    }
 }

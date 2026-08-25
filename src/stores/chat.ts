@@ -87,6 +87,7 @@ function getMcpToolsPrompt(): string {
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
+    "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
     "\n- **memory_save** (app): 把用户明确告诉你的重要信息保存到长期记忆（跨会话生效，下次对话自动想起）。参数 {\"fact\": \"要记住的内容\", \"fact_type\": \"preference\" 偏好 | \"info\" 信息 | \"decision\" 决策 | \"todo\" 待办, \"importance\": 重要度 1-10}。**使用时机**：用户告知个人偏好（如「我喜欢简洁回答」）、重要个人信息（姓名/职业/所在地）、作出的决定、或叮嘱你要记住的待办事项时——主动调用记住，不要只放在本次回答里。\n" +
     "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
     "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
@@ -519,6 +520,21 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         deleted.push(f.fact);
       }
       return `✅ 已遗忘 ${deleted.length} 条记忆：\n` + deleted.map((d, i) => `${i + 1}. ${d}`).join("\n");
+    }
+    case "git": {
+      // Git 操作（编程 Agent）：在指定仓库目录执行 git 子命令
+      const cwd = String(args.cwd || args.path || args.dir || "").trim();
+      const action = String(args.action || args.subcommand || "").trim();
+      const gitArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+      if (!cwd) throw new Error("git 需要 cwd 参数（仓库目录绝对路径）");
+      if (!action) throw new Error("git 需要 action 参数（如 status / diff / log / commit / push / pull / add / checkout / branch）");
+      const res = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>("git_operation", {
+        cwd, action, args: gitArgs, timeoutSecs: 60,
+      });
+      const out = res.stdout || res.stderr || "";
+      const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
+      const status = res.exit_code === 0 ? "" : `\n（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）`;
+      return `git ${action} ${gitArgs.join(" ")}\n${head}${status}`;
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);
