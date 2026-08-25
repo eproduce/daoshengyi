@@ -1580,15 +1580,44 @@ fn resolve_image_data_uri(input: &str) -> Result<String, String> {
 
 /// 把 base64 图片（data URI）保存到临时文件，返回路径。供浏览器截图落盘后给视觉/OCR 分析。
 #[tauri::command]
-fn save_temp_image(data: String) -> Result<String, String> {
+/// 保存截图/图片。用户显式指定了保存路径则以用户为准（支持 ~ 展开，自动建父目录）；
+/// 否则保存到用户可见的持久目录 ~/Pictures/道生一截图/（避免临时目录被系统清理、
+/// 也让用户方便打开查看）。返回真实绝对路径。
+fn save_temp_image(data: String, path: Option<String>) -> Result<String, String> {
     let bytes = decode_data_uri(&data).ok_or("图片数据格式无效")?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("daoshengyi-shot-{}-{}.png", std::process::id(), ts));
-    std::fs::write(&path, &bytes).map_err(|e| format!("保存图片失败: {}", e))?;
-    Ok(path.to_string_lossy().to_string())
+    let home = std::env::var("HOME").unwrap_or_default();
+    let target: std::path::PathBuf = match path {
+        Some(p) if !p.trim().is_empty() => {
+            let p = p.trim();
+            if p == "~" || p.starts_with("~/") {
+                if home.is_empty() { std::path::PathBuf::from(p) }
+                else { std::path::Path::new(&home).join(p.trim_start_matches("~/")) }
+            } else {
+                std::path::PathBuf::from(p)
+            }
+        }
+        _ => {
+            let dir = if home.is_empty() {
+                std::env::temp_dir()
+            } else {
+                std::path::Path::new(&home).join("Pictures").join("道生一截图")
+            };
+            std::fs::create_dir_all(&dir).map_err(|e| format!("创建截图目录失败: {}", e))?;
+            dir.join(format!("daoshengyi-shot-{}.png", ts))
+        }
+    };
+    // 用户指定路径时确保父目录存在
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    std::fs::write(&target, &bytes).map_err(|e| format!("保存图片失败: {}", e))?;
+    Ok(target.to_string_lossy().to_string())
 }
 
 /// 用本地 OCR（macOS Vision）提取本地图片文件中的文字。

@@ -218,11 +218,16 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
     (args as Record<string, unknown>).waitUntil = "networkidle2";
   }
-  // puppeteer_screenshot 的 server 端会用 width??800 / height??600 重置页面视口，
-  // 导致窗口打开时占满、一截图就缩回 800x600（页面变小、四周留白）。
-  // 模型未显式指定大小时，补齐与浏览器窗口一致的视口，保持页面占满窗口。
+  // puppeteer_screenshot 拦截：①用户/模型可通过 path / savePath 指定保存位置
+  // （自定义参数，剥掉不传给 server）；②server 端会用 width??800/height??600
+  // 重置页面视口，模型未显式指定大小时补齐与浏览器窗口一致的视口，保持页面占满窗口。
+  let screenshotUserPath: string | null = null;
   if (tool === "puppeteer_screenshot" && args && typeof args === "object") {
     const a = args as Record<string, unknown>;
+    const sp = a.path ?? a.savePath;
+    if (typeof sp === "string" && sp.trim()) screenshotUserPath = sp.trim();
+    delete a.path;
+    delete a.savePath;
     if (a.width === undefined || a.height === undefined) {
       const vp = puppeteerViewport();
       if (a.width === undefined) a.width = vp.width;
@@ -239,7 +244,8 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   let out = text;
   for (const img of images) {
     try {
-      const p = await invoke<string>("save_temp_image", { data: img.data });
+      // 用户指定了保存路径则用之，否则保存到持久目录 ~/Pictures/道生一截图/
+      const p = await invoke<string>("save_temp_image", { data: img.data, path: screenshotUserPath });
       out += `\n\n截图已保存到: ${p}\n（如需理解截图内容，可调用内置工具 describe_image 描述图片 或 ocr_image 提取文字，参数 path 填该路径）`;
     } catch { /* 保存失败忽略 */ }
   }
