@@ -47,19 +47,18 @@
 
 ---
 
-## 2. 进行中（当前积压，优先处理）
+## 2. 近期积压（✅ 已全部收尾）
 
-### 2.1 Puppeteer MCP env 支持（半成品，需收尾）
+### 2.1 Puppeteer MCP env 支持（✅ 已完成，2026-08-25 确认收尾）
 - **目的**：server-puppeteer 需 Chrome/Chromium；旧版 Chrome for Testing 在 macOS 26 被系统 SIGKILL（`spawn error -88`），改用本机 **Microsoft Edge**（`PUPPETEER_EXECUTABLE_PATH`）。
-- **已改**：
+- **完成项**（全链路已实现并推送，核心提交 `0930eda`）：
   - `src-tauri/src/mcp.rs`：`McpServerConfig` 加 `env: HashMap<String,String>`；spawn 时 `cmd.envs`
   - `src-tauri/src/lib.rs`：`mcp_connect` 加 `env` 参数
   - `src/api/appSettings.ts`：`McpServerPersist` 加 `env?`
   - `src/stores/mcp.ts`：接口/`save`/`connect`/`connectByName` 透传 env；`applyPuppeteerEnv` 迁移自动补 Edge 路径
-- **待改**：
   - `src/data/mcp-catalog.ts`：`McpCatalogItem` 加 `env?`；puppeteer 条目加 `env: { PUPPETEER_EXECUTABLE_PATH: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" }`
   - `src/components/McpSettings.vue`：编辑表单支持 env（文本 `KEY=VALUE` 多行），`openAdd/openEdit/save/installPlugin` 处理 env
-- **待验证**：`cargo check` + `npx vite build` + `npm test` + 端到端 puppeteer 测试 + 推送 GitHub
+- **验证**：`npm test`（35 项）+ `npx vite build` + `cargo check` 通过；已推送 GitHub
 
 ### 2.2 日期幻觉 + 编造数据 bug（用户 2026-08-17 报告，**已修复**，见进度文档 08-17）
 - 现象：模型日期幻觉；未调用工具时编造数据（如天气）
