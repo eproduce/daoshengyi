@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Pencil, Trash2, RefreshCw, Sparkles, BookOpen, History } from "lucide-vue-next";
+import { Pencil, Trash2, RefreshCw, Sparkles, BookOpen, History, Search } from "lucide-vue-next";
 
 interface FactRow {
   id: string; conversation_id?: string | null; fact: string; fact_type: string;
@@ -18,6 +18,7 @@ const TYPE_LABEL: Record<string, string> = { preference: "偏好", info: "信息
 const facts = ref<FactRow[]>([]);
 const summaries = ref<SummaryRow[]>([]);
 const filter = ref<string>("");
+const searchKw = ref("");
 const loading = ref(false);
 const error = ref("");
 const maintenanceMsg = ref("");
@@ -51,6 +52,13 @@ const profile = computed(() =>
     .filter(f => f.fact_type === "preference" || f.importance >= 7)
     .sort((a, b) => b.importance - a.importance)
 );
+
+// 全文搜索：本地过滤（大小写不敏感、子串匹配事实内容）
+const filteredFacts = computed(() => {
+  const kw = searchKw.value.trim().toLowerCase();
+  if (!kw) return facts.value;
+  return facts.value.filter(f => f.fact.toLowerCase().includes(kw));
+});
 
 async function deleteFact(id: string) {
   await invoke("delete_fact_cmd", { id }).catch(() => {});
@@ -104,6 +112,10 @@ onMounted(load);
           {{ t === "" ? "全部类型" : TYPE_LABEL[t] }}
         </option>
       </select>
+      <div class="memory-search">
+        <Search :size="14" class="memory-search__icon" />
+        <input v-model="searchKw" class="memory-search__input" placeholder="搜索记忆内容…" />
+      </div>
       <button class="memory-btn" @click="load" :disabled="loading">
         <RefreshCw :size="14" :class="{ spinning: loading }" /> 刷新
       </button>
@@ -132,8 +144,8 @@ onMounted(load);
     </div>
 
     <div class="memory-list">
-      <div v-if="facts.length === 0 && !loading" class="memory-empty">暂无记忆（对话结束后自动提取）</div>
-      <div v-for="f in facts" :key="f.id" class="memory-item" :class="`memory-item--${f.fact_type}`">
+      <div v-if="filteredFacts.length === 0 && !loading" class="memory-empty">{{ facts.length === 0 ? "暂无记忆（对话结束后自动提取）" : "没有匹配的搜索词" }}</div>
+      <div v-for="f in filteredFacts" :key="f.id" class="memory-item" :class="`memory-item--${f.fact_type}`">
         <div class="memory-item__head">
           <span class="memory-badge">{{ TYPE_LABEL[f.fact_type] || f.fact_type }}</span>
           <span class="memory-importance" :title="`重要度 ${f.importance}/10`">
@@ -173,6 +185,9 @@ onMounted(load);
 .memory-desc { color: var(--text-secondary, #888); font-size: 12px; line-height: 1.6; margin: 0; }
 .memory-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .memory-filter { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; }
+.memory-search { position: relative; display: inline-flex; align-items: center; }
+.memory-search__icon { position: absolute; left: 8px; color: #999; }
+.memory-search__input { padding: 4px 8px 4px 26px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; width: 160px; }
 .memory-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }
 .memory-btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .spinning { animation: spin 1s linear infinite; }
