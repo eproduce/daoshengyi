@@ -112,6 +112,17 @@ marked.use({
       if (linked !== token.text) return linked;
       return `<code>${escapeHtml(token.text)}</code>`;
     },
+    // 代码块（``` ... ```）：若整块内容就是单个本地文件路径（无语言标记、无换行），
+    // 同样渲染成可点击链接（agent 常把截图路径包在代码块里，否则点不开）。
+    code(token: { text: string; lang?: string }) {
+      const trimmed = token.text.trim();
+      if (!token.lang && !trimmed.includes("\n")) {
+        const linked = linkifyLocalPaths(trimmed);
+        if (linked !== trimmed) return linked;
+      }
+      const lang = token.lang || "";
+      return `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>${escapeHtml(token.text)}</code></pre>`;
+    },
   },
 });
 
