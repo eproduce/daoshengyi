@@ -11,17 +11,18 @@ import UsageStats from "./UsageStats.vue";
 import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import CodingAgents from "./CodingAgents.vue";
+import MemoryPanel from "./MemoryPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Bot, Send, Globe, Folder, ShieldAlert, Cpu, Monitor } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Bot, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen } from "lucide-vue-next";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push" | "memory" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "push" | "memory">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -221,6 +222,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断</button>
           <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务</button>
           <button :class="['settings-tab', { active: activeTab === 'agents' }]" @click="activeTab = 'agents'"><span class="settings-tab__icon"><Bot :size="15" /></span>编码 Agent</button>
+          <button :class="['settings-tab', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'"><span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆</button>
           <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
         </nav>
 
@@ -481,6 +483,9 @@ function handleDelete() {
 
       <!-- 编码 Agent -->
       <div v-show="activeTab === 'agents'"><CodingAgents /></div>
+
+      <!-- 长期记忆 -->
+      <div v-show="activeTab === 'memory'"><MemoryPanel /></div>
 
       <!-- 主动推送（飞书 / 企业微信群机器人） -->
       <div v-show="activeTab === 'push'">

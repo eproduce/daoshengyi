@@ -1876,6 +1876,18 @@ fn get_preferences(db: State<Database>) -> Result<Vec<db::FactRow>, String> {
     db.get_facts_by_type("preference", 20)
 }
 
+/// 列出全部事实（记忆管理面板用）：fact_type 空=全部；按 重要度/最近访问 排序
+#[tauri::command]
+fn list_facts(db: State<Database>, fact_type: String, limit: i64) -> Result<Vec<db::FactRow>, String> {
+    db.list_facts(&fact_type, limit)
+}
+
+/// 列出全部会话摘要（记忆管理面板用）
+#[tauri::command]
+fn list_all_summaries(db: State<Database>, limit: i64) -> Result<Vec<db::SummaryRow>, String> {
+    db.list_all_summaries(limit)
+}
+
 // --- 应用设置存取（配置 + 加密 API Key） ---
 
 const SETTINGS_KEY: &str = "app_settings";
@@ -2447,6 +2459,7 @@ fn build_app_menu<R: tauri::Runtime>(
         &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-agents", "编码 Agent 委派", true, None::<&str>)?,
+        &MenuItem::with_id(app, "open-memory", "长期记忆", true, None::<&str>)?,
     ])?;
 
     Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &tools_menu])
@@ -2465,6 +2478,7 @@ pub fn run() {
                 "toggle-sidebar", "toggle-theme",
                 "open-skills", "open-mcp", "open-ollama",
                 "open-stats", "open-tasks", "open-health", "open-agents",
+                "open-memory",
             ];
             if ACTIONS.contains(&id) {
                 let _ = app.emit("menu://action", id);
@@ -2566,6 +2580,8 @@ pub fn run() {
             save_fact,
             search_facts,
             get_preferences,
+            list_facts,
+            list_all_summaries,
             maintain_facts,
             save_app_settings,
             load_app_settings,

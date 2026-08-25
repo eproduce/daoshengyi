@@ -519,6 +519,20 @@ impl Database {
         Ok(result)
     }
 
+    /// 列出全部会话摘要（记忆管理面板用），按创建时间倒序
+    pub fn list_all_summaries(&self, limit: i64) -> Result<Vec<SummaryRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, summary, msg_range_start, msg_range_end, created_at FROM memory_summaries ORDER BY created_at DESC LIMIT ?1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(SummaryRow { id: row.get(0)?, conversation_id: row.get(1)?, summary: row.get(2)?, msg_range_start: row.get(3)?, msg_range_end: row.get(4)?, created_at: row.get(5)? })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
     /// 保存事实（带 FTS 索引同步 + 近似去重合并）：
     /// - 若与已有同类型事实高度相似（字符集相似度 > 0.62）→ 合并：累加 importance、
     ///   保留更长/更新的文本、更新访问信息，返回合并目标 id
@@ -578,6 +592,31 @@ impl Database {
             }
         }
         Ok(best.map(|(_, f)| f))
+    }
+
+    /// 列出事实（记忆管理用）：按类型过滤（空=全部），按 重要度/最近访问/创建时间 排序
+    pub fn list_facts(&self, fact_type: &str, limit: i64) -> Result<Vec<FactRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = if fact_type.is_empty() {
+            conn.prepare(
+                "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts ORDER BY importance DESC, COALESCE(last_accessed,0) DESC LIMIT ?1"
+            )
+        } else {
+            conn.prepare(
+                "SELECT id, conversation_id, fact, fact_type, importance, access_count, last_accessed, created_at FROM memory_facts WHERE fact_type=?1 ORDER BY importance DESC, COALESCE(last_accessed,0) DESC LIMIT ?2"
+            )
+        }.map_err(|e| e.to_string())?;
+        let row_map = |row: &rusqlite::Row| -> rusqlite::Result<FactRow> {
+            Ok(FactRow { id: row.get(0)?, conversation_id: row.get(1)?, fact: row.get(2)?, fact_type: row.get(3)?, importance: row.get(4)?, access_count: row.get(5)?, last_accessed: row.get(6)?, created_at: row.get(7)? })
+        };
+        let rows = if fact_type.is_empty() {
+            stmt.query_map(params![limit], row_map)
+        } else {
+            stmt.query_map(params![fact_type, limit], row_map)
+        }.map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
     }
 
     pub fn get_facts_by_type(&self, fact_type: &str, limit: i64) -> Result<Vec<FactRow>, String> {
@@ -1048,6 +1087,28 @@ mod tests {
         let (new4, _) = db.save_fact(&test_fact("f4", "用户是后端工程师", "preference", 6)).unwrap();
         assert!(new4);
         assert_eq!(db.get_facts_by_type("preference", 10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn list_facts_sorts_and_filters() {
+        let (dir, db) = tmp_db();
+        db.save_fact(&test_fact("f1", "用户喜欢番茄炒蛋", "preference", 9)).unwrap();
+        db.save_fact(&test_fact("f2", "项目用 React", "info", 4)).unwrap();
+        db.save_fact(&test_fact("f3", "决策采用微服务", "decision", 7)).unwrap();
+
+        // 全部：按重要度降序（preference 9 最前）
+        let all = db.list_facts("", 10).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].id, "f1", "重要度最高应排最前");
+
+        // 按类型过滤
+        let prefs = db.list_facts("preference", 10).unwrap();
+        assert_eq!(prefs.len(), 1);
+        assert_eq!(prefs[0].fact, "用户喜欢番茄炒蛋");
+        let info = db.list_facts("info", 10).unwrap();
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0].id, "f2");
         cleanup(&dir);
     }
 

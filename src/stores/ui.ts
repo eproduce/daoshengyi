@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-export type SettingsTab = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents";
+export type SettingsTab = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "agents" | "memory";
 
 // 全局 UI 意图状态：供系统菜单栏事件（main.ts 的 listen）与各组件共享。
 // 链路：菜单点击 → Rust on_menu_event → emit "menu://action" → main.ts 分发 → 写本 store → 组件响应。
