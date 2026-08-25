@@ -154,6 +154,14 @@ async function onContentClick(e: MouseEvent) {
     e.stopPropagation();
     const path = decodeURIComponent(link.getAttribute("data-path") || "");
     if (!path) return;
+    // 点击时二次校验：文件可能已被清理（临时截图），或路径被模型改写/编造。
+    // 存在才打开，避免触发 open_file 报「退出码非零」这类误导性错误。
+    let exists = false;
+    try { exists = await invoke<boolean>("file_exists", { path }); } catch { exists = false; }
+    if (!exists) {
+      alert(`文件不存在：${path}\n（可能是临时文件已被清理，或路径被改写——请以系统给出的真实保存路径为准）`);
+      return;
+    }
     try {
       await invoke("open_file", { path });
     } catch (err) {
