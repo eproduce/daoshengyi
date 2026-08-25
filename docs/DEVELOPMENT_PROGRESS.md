@@ -8,6 +8,13 @@
 
 ## 2026-08-25
 
+### ✅ 长期记忆 1.5 用户画像 + 2.1 意图扩展 + 3.1 记忆编辑 + 记忆库净化
+- **1.5 用户画像沉淀**：`memory.ts` 新增 `getUserProfile()`——聚合 preference 偏好 + 高重要度(≥7)身份/环境信息，形成结构化「用户画像」；`sendMessage` 每次对话稳定注入 volatileCtx（5 秒超时兜底）；`retrieveMemories` 改为只补重要度≥7 的偏好（避免与画像重复）；`MemoryPanel` 新增「用户画像」高亮区块（chip 展示，粉色调，标注"每次对话自动注入"）
+- **2.1 意图关键词扩展**：`retrieveMemories` 在 FTS 首轮无结果时，用 LLM 从问题提取 2-3 个核心检索词（`expandKeywords`）逐个重试检索——解决"模糊提问"（如"我上次说的那家公司"）召回差问题；仅空结果时触发不增加正常路径成本
+- **Phase 3.1 记忆编辑**：Rust 新增 `update_fact`（更新文本/类型/重要度 + 同步重建 FTS 索引）与 `update_fact_cmd` 命令；`MemoryPanel` 每条事实加「编辑」按钮 → 行内编辑表单（文本/类型下拉/重要度数字/保存/取消）；用 Pencil 图标
+- **记忆库净化**：删除历史遗留的过程性垃圾事实（"截图已保存到…""浏览器已导航…""查询今日金价""无法联网查询…"等 4 条），清理孤儿 FTS 行；75→71 条
+- **测试**：db.rs 新增 `update_fact_rebuilds_fts`（编辑后新词可检索），cargo test 15 项全通过；npm test 35 + vite build 通过
+
 ### ✅ 长期记忆 Phase 2.4：主动记忆工具（memory_save / memory_recall / memory_forget）
 - **动机**：让 Agent 在对话中**主动**保存/回忆/遗忘记忆，而不只是被动等对话结束提取——这是「越用越聪明」的闭环
 - **chat.ts**：新增 3 个内置工具（server 填 `app`）：

@@ -1433,6 +1433,12 @@ export const useChatStore = defineStore("chat", () => {
         } catch { /* 搜索暂不可用 */ }
         streamingContent.value = ""; // 清空占位，交由流式回复填充
       }
+      // 注入用户画像（跨会话沉淀的偏好/身份/环境，每次对话稳定带上）——5 秒超时兜底
+      const profileText = await Promise.race([
+        memory.getUserProfile(),
+        new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
+      ]);
+      if (profileText) volatileCtx.push(profileText);
       // 注入相关记忆（语义 + 关键词混合检索）——15 秒超时兜底，避免阻塞主对话
       const memText = await Promise.race([
         memory.retrieveMemories(text, config),

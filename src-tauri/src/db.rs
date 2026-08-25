@@ -713,6 +713,24 @@ impl Database {
         Ok(())
     }
 
+    /// 编辑事实（记忆管理）：更新文本/类型/重要度，同步重建 FTS 索引
+    pub fn update_fact(&self, id: &str, fact: &str, fact_type: &str, importance: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE memory_facts SET fact=?1, fact_type=?2, importance=?3 WHERE id=?4",
+            params![fact, fact_type, importance.clamp(1, 10), id],
+        ).map_err(|e| e.to_string())?;
+        // 同步重建 FTS 索引
+        if let Ok(rid) = conn.query_row("SELECT rowid FROM memory_facts WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
+            let _ = conn.execute("DELETE FROM memory_facts_fts WHERE rowid=?1", params![rid]);
+            let _ = conn.execute(
+                "INSERT INTO memory_facts_fts(rowid, fact_terms) VALUES (?1, ?2)",
+                params![rid, cjk_terms(fact)],
+            );
+        }
+        Ok(())
+    }
+
     /// 记忆维护（启动/每日调度）：衰减 + 遗忘 + FTS 清理。
     /// - 重要度随时间衰减（>45 天未访问且非 preference，importance 降 1，最低 1）
     /// - 遗忘：低价值（importance<=2）且 60 天未访问的非 preference 删除
@@ -1087,6 +1105,24 @@ mod tests {
         let (new4, _) = db.save_fact(&test_fact("f4", "用户是后端工程师", "preference", 6)).unwrap();
         assert!(new4);
         assert_eq!(db.get_facts_by_type("preference", 10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn update_fact_rebuilds_fts() {
+        let (dir, db) = tmp_db();
+        db.save_fact(&test_fact("f1", "用户喜欢简洁回答", "preference", 8)).unwrap();
+        // 编辑：改文本/类型/重要度
+        db.update_fact("f1", "用户喜欢极简的回答风格", "preference", 9).unwrap();
+
+        let all = db.list_facts("preference", 10).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].fact, "用户喜欢极简的回答风格");
+        assert_eq!(all[0].importance, 9);
+
+        // FTS 索引应已重建：新词"极简"能检索到
+        let r = db.search_facts("极简", 5).unwrap();
+        assert!(r.iter().any(|f| f.id == "f1"), "编辑后新词应可检索: {:?}", r.iter().map(|f| &f.fact).collect::<Vec<_>>());
         cleanup(&dir);
     }
 

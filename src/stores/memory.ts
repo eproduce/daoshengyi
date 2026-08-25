@@ -115,7 +115,38 @@ ${convText}
     } catch { return []; }
   }
 
-  // --- 检索相关记忆（混合：FTS5 全文 + 语义向量 + 偏好，按相关度×重要度×时效排序）---
+  // --- 用户画像：聚合 preference 偏好 + 高重要度身份/环境信息，形成跨会话「用户档案」---
+  // 每次对话稳定注入（不进相关记忆检索，属于"始终该知道的"用户画像）
+  async function getUserProfile(): Promise<string> {
+    try {
+      // 偏好（总是）+ 高重要度（>=7）的 info/decision（身份/职业/环境/重要决定）
+      const prefs = await invoke<FactRow[]>("get_preferences");
+      const high = await invoke<FactRow[]>("list_facts", { factType: "", limit: 50 });
+      const highImportant = high.filter(f => f.fact_type !== "preference" && f.importance >= 7);
+      const all = [...prefs, ...highImportant];
+      const seen = new Set<string>();
+      const unique = all.filter(f => {
+        if (seen.has(f.fact)) return false;
+        seen.add(f.fact);
+        return true;
+      });
+      if (unique.length === 0) return "";
+      const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
+      return "## 用户画像\n" + unique.map(f => `- ${f.fact} (${labels[f.fact_type] || f.fact_type})`).join("\n");
+    } catch { return ""; }
+  }
+
+  // --- 意图关键词扩展：FTS 检索为空时，用 LLM 从问题提取核心检索词重试 ---
+  async function expandKeywords(query: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<string[]> {
+    try {
+      const prompt = `根据用户的问题，提取 2-3 个最适合检索历史记忆的关键词（实体名词/主题词），用顿号分隔，只输出关键词不要其它。\n用户问题：${query}\n\n示例：问题"我上次说的那家公司叫什么" → 公司\n问题"还记得我偏好什么风格的代码吗" → 代码风格 偏好`;
+      const raw = await callLLM(config, prompt);
+      if (!raw) return [];
+      return raw.split(/[,，、\s]+/).map(s => s.trim()).filter(s => s.length >= 2).slice(0, 3);
+    } catch { return []; }
+  }
+
+  // --- 检索相关记忆（混合：FTS5 全文 + 语义向量 + 意图扩展 + 偏好，按相关度×重要度×时效排序）---
   async function retrieveMemories(query: string, config?: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
     try {
       const prefs = await invoke<FactRow[]>("get_preferences");
@@ -123,6 +154,18 @@ ${convText}
 
       // 1) FTS5 全文检索（后端 bm25×importance×recency 加权；中文 unigram，DeepSeek 下主力）
       facts = await invoke<FactRow[]>("search_facts", { query, limit: 6n });
+
+      // 1.5) 意图关键词扩展：首轮无结果时，LLM 提取核心词重试（提升"模糊提问"召回）
+      if (facts.length === 0 && config?.apiKey) {
+        const kws = await expandKeywords(query, config);
+        for (const kw of kws) {
+          const more = await invoke<FactRow[]>("search_facts", { query: kw, limit: 4n });
+          for (const f of more) {
+            if (!facts.some(x => x.fact === f.fact)) facts.push(f);
+          }
+          if (facts.length > 0) break;
+        }
+      }
 
       // 2) 语义向量补充（DeepSeek 无 embeddings 自动跳过，不产生结果）
       if (config?.apiKey) {
@@ -135,8 +178,8 @@ ${convText}
         }
       }
 
-      // 3) 合并偏好（总是注入，用户画像）
-      const all = [...prefs.filter(p => !facts.some(f => f.fact === p.fact)), ...facts];
+      // 3) 合并偏好（总是注入，用户画像；此处避免与 getUserProfile 重复，只补检索相关的）
+      const all = [...prefs.filter(p => p.importance >= 7 && !facts.some(f => f.fact === p.fact)), ...facts];
       const seen = new Set<string>();
       const unique = all.filter(f => {
         if (seen.has(f.fact)) return false;
@@ -147,11 +190,11 @@ ${convText}
 
       if (unique.length === 0) return "";
       const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
-      return "## 记忆\n" + unique.map(f => `- ${f.fact} (${labels[f.fact_type] || f.fact_type})`).join("\n");
+      return "## 相关记忆\n" + unique.map(f => `- ${f.fact} (${labels[f.fact_type] || f.fact_type})`).join("\n");
     } catch { return ""; }
   }
 
-  return { maybeSummarize, extractFacts, retrieveMemories };
+  return { maybeSummarize, extractFacts, retrieveMemories, getUserProfile };
 }
 
 // --- LLM 调用辅助 ---

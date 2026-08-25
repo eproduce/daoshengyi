@@ -95,7 +95,7 @@
 | 1.2 | 记忆衰减与遗忘调度 | ✅ | 新增 `maintain_facts`：>45 天未访问非 preference 的 importance 降 1（最低 1）；importance≤2 且 60 天未访问的删除；清理孤儿 FTS 行。lib.rs 后台线程启动即跑 + 每 6 小时检查；`prune_facts` 命令复用 |
 | 1.3 | FTS5 全文索引 | ✅ | `memory_facts_fts` FTS5 虚拟表（rowid 关联）；中文 unigram 分词（`cjk_terms`）+ 英文小写词；`search_facts` 改为 FTS5 bm25 × importance × recency 加权 + LIKE 兜底；`Database::new` 对旧库幂等回填索引；save/delete 同步维护 |
 | 1.4 | 记忆分层 | ⬜ | episodic（会话摘要）+ semantic（事实）双库明确；跨会话摘要汇总 |
-| 1.5 | 用户画像沉淀 | ⬜ | `preference` 型 fact 独立加权，跨会话维护「用户档案」（姓名/职业/偏好/环境） |
+| 1.5 | 用户画像沉淀 | ✅ | `getUserProfile()` 聚合 preference+高重要度身份/环境信息，每次对话稳定注入；MemoryPanel 用户画像高亮区块 |
 
 ### 3.3 Phase 2 — 检索与注入（Agent 侧，🟡）
 
@@ -103,7 +103,7 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| 2.1 | 混合检索 | 🟡 | FTS5 关键词已实现（unigram，Phase 1.3）；意图关键词扩展（LLM 生成检索词）、Ollama 本地 embedding 待做 |
+| 2.1 | 混合检索 | ✅ | FTS5 关键词（1.3）+ 意图关键词扩展（LLM 提取核心词，空结果时重试）；Ollama 本地 embedding 待做 |
 | 2.2 | 排序与剪裁 | 🟡 | search_facts 已按 bm25×importance×recency 加权（Phase 1）；注入条数/token 剪裁、来源标注待做 |
 | 2.3 | 写入策略优化 | ⬜ | 对话结束异步提取（已有）；触发优化：重要性门槛、失败静默、避免低价值事实堆积 |
 | 2.4 | 主动记忆工具 | ✅ | `memory_save` / `memory_recall` / `memory_forget` 内置工具（app）+ 提示词「长期记忆使用要点」区块；memory_save 自动走去重合并；memory_recall 走 FTS5 检索；memory_forget 按关键词删除 |
@@ -112,7 +112,7 @@
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 3.1 | 记忆管理面板 | 查看 / 搜索 / 编辑 / 删除事实与摘要；按类型 / 重要性 / 最近访问排序（设置新 tab 或独立面板） |
+| 3.1 | 记忆管理面板 | 🟡 | 已完成：查看/筛选/删除/编辑（update_fact）+ 用户画像区块 + 会话摘要 + 执行维护；待做：全文搜索框 |
 | 3.2 | 记忆配置 | 开关（启用记忆）、检索条数、遗忘阈值（AppSettings + 设置 tab） |
 | 3.3 | 记忆可视化 | 用户画像卡片、遗忘候选提示、记忆来源标注 |
 

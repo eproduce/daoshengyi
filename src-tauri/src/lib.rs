@@ -1966,6 +1966,12 @@ fn delete_fact_cmd(db: State<Database>, id: String) -> Result<(), String> {
     db.delete_fact(&id)
 }
 
+/// 编辑事实（记忆管理面板用）：更新文本/类型/重要度
+#[tauri::command]
+fn update_fact_cmd(db: State<Database>, id: String, fact: String, fact_type: String, importance: i64) -> Result<(), String> {
+    db.update_fact(&id, &fact, &fact_type, importance)
+}
+
 #[tauri::command]
 fn prune_facts(db: State<Database>) -> Result<String, String> {
     db.maintain_facts()
@@ -2588,6 +2594,7 @@ pub fn run() {
             list_models,
             touch_fact,
             delete_fact_cmd,
+            update_fact_cmd,
             prune_facts,
             set_fact_embedding,
             search_by_embedding,
