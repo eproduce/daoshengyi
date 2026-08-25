@@ -66,30 +66,38 @@ export function useMemorySystem() {
     return summaries;
   }
 
-  // --- 事实提取 ---
+  // --- 事实提取（带质量门槛：只存跨会话有用的关键事实，排除过程性/一次性信息）---
   async function extractFacts(convId: string, messages: ChatMessage[], config: { baseUrl: string; apiKey: string; model: string }): Promise<FactRow[]> {
     const convText = messages.slice(-10).map(m => `[${m.role}]: ${m.content}`).join("\n\n");
-    const prompt = `从以下对话片段中提取关键事实。返回 JSON 数组，每个事实包含 fact 和 type 字段。
+    const prompt = `从以下对话中提取值得长期记住的关键事实。返回 JSON 数组，每项含 fact、type、importance 字段。
 type: preference(用户偏好)/info(信息)/decision(决策)/todo(待办)
+importance: 重要度 1-10（用户偏好/个人信息/明确决定给 7-9；一般信息 4-6；低价值给 1-3）
+
+【提取标准】
+- 要提取：用户个人偏好、姓名/职业/所在地等身份信息、作出的决定、交代的待办事项、对未来的计划
+- 【不要提取】一次性的过程性/即时信息，例如：本次查询了什么、搜索结果具体数值、截图保存路径、访问了哪个网页、单次的天气/价格结果。这些会过期或对后续对话无价值，只会让记忆库膨胀。
 
 对话：
 ${convText}
 
-只返回 JSON 数组，不要其他内容。示例：[{"fact":"用户叫小明","type":"info"}]`;
+只返回 JSON 数组，不要其他内容。示例：[{"fact":"用户喜欢简洁的回答","type":"preference","importance":9}]`;
 
     const raw = await callLLM(config, prompt);
     if (!raw) return [];
 
     try {
       const jsonStr = raw.replace(/```json|```/g, "").trim();
-      const items = JSON.parse(jsonStr) as { fact: string; type: string }[];
+      const items = JSON.parse(jsonStr) as { fact: string; type: string; importance?: number }[];
       const facts: FactRow[] = [];
       for (const item of items) {
         if (!item.fact || item.fact.length < 3) continue;
+        // 重要度门槛：importance < 3 的低价值事实不存（避免膨胀）
+        const importance = Math.max(1, Math.min(10, item.importance ?? (item.type === "preference" ? 8 : 5)));
+        if (importance < 3) continue;
         const f: FactRow = {
           id: uuidv4(), conversation_id: convId, fact: item.fact,
           fact_type: item.type || "info",
-          importance: item.type === "preference" ? 8 : 5,
+          importance,
           access_count: 0, last_accessed: undefined, created_at: Date.now(),
         };
         // save_fact 后端做 FTS 索引 + 近似去重合并；返回 "saved:id" 或 "merged:目标id"

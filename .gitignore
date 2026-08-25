@@ -3,5 +3,13 @@ dist/
 target/
 .DS_Store
 *.log
+
+# 环境变量/密钥：禁止提交任何 API key 相关文件（key 运行时 AES 加密存应用数据目录）
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+secret.key
+
 src-tauri/ocr_tool
