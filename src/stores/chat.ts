@@ -137,7 +137,7 @@ function getMcpToolsPrompt(): string {
     "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、搜索、点击或操作页面时，**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
     "- 若浏览器工具不在上方工具列表（按需激活），直接用 `{\"server\":\"浏览器自动化\",\"tool\":\"puppeteer_navigate\",...}` 调用即可，系统会自动连接浏览器。\n" +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
-    "- **搜索最可靠：直接用 puppeteer_navigate 导航到带查询参数的 URL 一步到结果页**（如 `https://www.baidu.com/s?wd=今日金价`、`https://cn.bing.com/search?q=今日金价`）。**不要**在页面里填输入框+点按钮来搜索（百度等 SPA 页面直接设 value/点击常不触发跳转）。若已用表单提交但页面未跳转，立即改用 navigate 带查询参数重试。\n" +
+    "- **优先图形化操作（通用，适配任意站点/搜索引擎）**：搜索、输入用 `puppeteer_fill` 填输入框（正确触发输入事件）+ `puppeteer_click` 点提交按钮。若用 `puppeteer_evaluate` 设值，必须**同时触发 input/change 事件再提交**，否则框架收不到输入：如 `el.value='关键词'; el.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('form').requestSubmit();`。仅当页面确实无法图形化交互时，才兜底用带查询参数的 URL 直达（如 `https://www.baidu.com/s?wd=关键词`）。\n" +
     "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
     "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
     "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（默认 ~/Pictures/道生一截图/daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
