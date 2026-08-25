@@ -87,7 +87,15 @@ function getMcpToolsPrompt(): string {
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
-    "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。";
+    "\n- **memory_save** (app): 把用户明确告诉你的重要信息保存到长期记忆（跨会话生效，下次对话自动想起）。参数 {\"fact\": \"要记住的内容\", \"fact_type\": \"preference\" 偏好 | \"info\" 信息 | \"decision\" 决策 | \"todo\" 待办, \"importance\": 重要度 1-10}。**使用时机**：用户告知个人偏好（如「我喜欢简洁回答」）、重要个人信息（姓名/职业/所在地）、作出的决定、或叮嘱你要记住的待办事项时——主动调用记住，不要只放在本次回答里。\n" +
+    "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
+    "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
+    "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
+    "\n\n## 长期记忆使用要点\n" +
+    "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
+    "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
+    "- **遗忘**：用户要求删除某条记忆时调用 memory_forget。\n" +
+    "- 记忆跨会话自动注入：系统也会在每次对话前自动检索相关记忆注入上下文，无需你手动调用；memory_recall 用于更精确的主动查证。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -465,6 +473,52 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!Array.isArray(res)) return `（${path} 不是目录）`;
       return `目录 ${path} 内容（${res.length} 项）：\n` +
         res.map(r => (r.dir ? `📁 ${r.name}/` : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`)).join("\n");
+    }
+    case "memory_save": {
+      // 主动记忆：Agent 记住用户明确给出的重要信息/偏好/决策/待办（跨会话生效）
+      const fact = String(args.fact || args.content || "").trim();
+      if (!fact) throw new Error("memory_save 需要 fact 参数（要记住的内容）");
+      const factType = String(args.fact_type || args.type || "info").trim();
+      const importance = Math.max(1, Math.min(10, Number(args.importance ?? 5) || 5));
+      const row = {
+        id: uuidv4(),
+        conversation_id: null,
+        fact,
+        fact_type: factType,
+        importance,
+        access_count: 0,
+        last_accessed: null,
+        created_at: Date.now(),
+      };
+      const res = await invoke<string>("save_fact", { fact: row });
+      return res.startsWith("merged:")
+        ? `✅ 已把这条信息并入已有记忆（${factType}，重要度 ${importance}）。以后跨会话对话我会记得。`
+        : `✅ 已记住：${fact}（${factType}，重要度 ${importance}）。以后跨会话对话我会记得。`;
+    }
+    case "memory_recall": {
+      // 主动回忆：按关键词检索长期记忆（跨会话），供 Agent 需要时查证历史事实
+      const query = String(args.query || args.q || "").trim();
+      if (!query) throw new Error("memory_recall 需要 query 参数（要回忆的关键词）");
+      const limit = Math.max(1, Math.min(20, Number(args.limit ?? 5) || 5));
+      const facts = await invoke<{ id: string; fact: string; fact_type: string; importance: number; access_count: number }[]>("search_facts", { query, limit });
+      if (!facts.length) return "（未找到相关记忆）";
+      const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
+      return "相关记忆：\n" + facts.map((f, i) =>
+        `${i + 1}. [${labels[f.fact_type] || f.fact_type}] ${f.fact}（重要度 ${f.importance}）`
+      ).join("\n");
+    }
+    case "memory_forget": {
+      // 主动遗忘：用户要求删除某条记忆时，按内容关键词检索并删除
+      const query = String(args.query || args.fact || "").trim();
+      if (!query) throw new Error("memory_forget 需要 query 参数（要遗忘的记忆关键词）");
+      const facts = await invoke<{ id: string; fact: string; fact_type: string }[]>("search_facts", { query, limit: 5 });
+      if (!facts.length) return "（未找到需要遗忘的相关记忆）";
+      const deleted: string[] = [];
+      for (const f of facts) {
+        await invoke("delete_fact_cmd", { id: f.id }).catch(() => {});
+        deleted.push(f.fact);
+      }
+      return `✅ 已遗忘 ${deleted.length} 条记忆：\n` + deleted.map((d, i) => `${i + 1}. ${d}`).join("\n");
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);

@@ -99,12 +99,14 @@
 
 ### 3.3 Phase 2 — 检索与注入（Agent 侧，🟡）
 
-| # | 任务 | 说明 |
-|---|------|------|
-| 2.1 | 混合检索 | FTS5 关键词 + 意图关键词扩展（LLM 生成检索词）+ 向量（若 Ollama 本地 embedding 可用则启用） |
-| 2.2 | 排序与剪裁 | 按 relevance × importance × recency 加权排序；限制注入条数 / token；标注来源与可信度 |
-| 2.3 | 写入策略优化 | 对话结束异步提取（已有）；触发优化：非重复、重要性门槛、失败静默 |
-| 2.4 | 主动记忆工具 | 内置 `memory_save` / `memory_recall` / `memory_forget` 工具，Agent 主动读写记忆 |
+> **状态：2.1 部分（FTS5 混合检索）、2.2 部分（加权排序）、2.4 已完成（2026-08-25）；2.3 待做**
+
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| 2.1 | 混合检索 | 🟡 | FTS5 关键词已实现（unigram，Phase 1.3）；意图关键词扩展（LLM 生成检索词）、Ollama 本地 embedding 待做 |
+| 2.2 | 排序与剪裁 | 🟡 | search_facts 已按 bm25×importance×recency 加权（Phase 1）；注入条数/token 剪裁、来源标注待做 |
+| 2.3 | 写入策略优化 | ⬜ | 对话结束异步提取（已有）；触发优化：重要性门槛、失败静默、避免低价值事实堆积 |
+| 2.4 | 主动记忆工具 | ✅ | `memory_save` / `memory_recall` / `memory_forget` 内置工具（app）+ 提示词「长期记忆使用要点」区块；memory_save 自动走去重合并；memory_recall 走 FTS5 检索；memory_forget 按关键词删除 |
 
 ### 3.4 Phase 3 — 记忆 UI 与管理（🔵）
 
