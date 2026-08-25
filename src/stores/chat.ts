@@ -136,7 +136,7 @@ function getMcpToolsPrompt(): string {
     "\n## 浏览器自动化使用要点\n" +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
-    "- puppeteer_screenshot 截图仅用于视觉确认；若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
+    "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
     "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
     "\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>" +
     "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。";
@@ -217,6 +217,17 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
     (args as Record<string, unknown>).waitUntil = "networkidle2";
   }
+  // puppeteer_screenshot 的 server 端会用 width??800 / height??600 重置页面视口，
+  // 导致窗口打开时占满、一截图就缩回 800x600（页面变小、四周留白）。
+  // 模型未显式指定大小时，补齐与浏览器窗口一致的视口，保持页面占满窗口。
+  if (tool === "puppeteer_screenshot" && args && typeof args === "object") {
+    const a = args as Record<string, unknown>;
+    if (a.width === undefined || a.height === undefined) {
+      const vp = puppeteerViewport();
+      if (a.width === undefined) a.width = vp.width;
+      if (a.height === undefined) a.height = vp.height;
+    }
+  }
   const result = await invoke<{content:{type:string;text?:string;data?:string}[];isError?:boolean}>("mcp_call_tool", {
     server: effectiveServer, toolName: tool, arguments: args,
   });
@@ -237,6 +248,22 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
 /// 工具结果回填到上下文前截断：防止超大结果（如 directory_tree 列整个目录树、
 /// 大文件全文）撑爆模型上下文（如 DeepSeek 1M token 上限）。
 /// 超长保留开头并明确提示模型已截断，可缩小范围重查。
+/// 读取 puppeteer 浏览器配置的页面视口（PUPPETEER_LAUNCH_OPTIONS.defaultViewport），
+/// 用于截图时保持页面视口与窗口一致；读不到时回退 1440x900。
+function puppeteerViewport(): { width: number; height: number } {
+  try {
+    const srv = useMcpStore().servers.find(s => s.env?.PUPPETEER_LAUNCH_OPTIONS);
+    const raw = srv?.env?.PUPPETEER_LAUNCH_OPTIONS;
+    if (raw) {
+      const opts = JSON.parse(raw) as { defaultViewport?: { width?: number; height?: number } };
+      const w = opts.defaultViewport?.width;
+      const h = opts.defaultViewport?.height;
+      if (w && h) return { width: w, height: h };
+    }
+  } catch { /* 忽略 */ }
+  return { width: 1440, height: 900 };
+}
+
 /// 判定一段正文是否为「空洞的过程声明」——模型口头承诺要做某事但未执行、也未给出实质内容，
 /// 如「搜索与问题无关，我直接访问官网获取办事指南」。用于工具循环/收尾轮判定：
 /// 正文空洞时强制模型真正调用工具或给出完整答案，避免「只有工具卡片 + 一句意图声明」的断头回复。
