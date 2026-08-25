@@ -3,11 +3,10 @@ import { ref, computed, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore } from "@/stores/mcp";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
-import { getSettings, updateSettings } from "@/api/appSettings";
-import { Puzzle, Globe, Trash2, RefreshCw, Folder, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Search, Circle } from "lucide-vue-next";
+import { Puzzle, Globe, Trash2, RefreshCw, Folder, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Circle } from "lucide-vue-next";
 
 // mcp-catalog 的 icon 字段存 lucide 图标名，这里映射为组件动态渲染
-const mcpIcons: Record<string, Component> = { Folder, Globe, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Search };
+const mcpIcons: Record<string, Component> = { Folder, Globe, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical };
 
 const store = useMcpStore();
 const activeTab = ref<"servers" | "market">("servers");
@@ -52,21 +51,7 @@ function isInstalled(item: { name: string }) {
 
 function installPlugin(item: McpCatalogItem) {
   if (isInstalled(item)) return;
-  let env = { ...(item.env ?? {}) };
-  // Brave 搜索：安装时配置 API Key（可选）。填入后同时写入全局 braveApiKey（内置
-  // web_search 工具优先走 Brave API）与该插件的 env（第三方 MCP 用 BRAVE_API_KEY）。
-  // 留空则跳过——内置搜索会走必应中国等国内兜底，不影响联网搜索。
-  if (item.id === "brave-search") {
-    const existing = getSettings().braveApiKey || "";
-    const key = window.prompt(
-      "🔍 配置 Brave 搜索 API Key（可选，免费 2000 次/月）\n\n留空跳过（自动用必应中国等国内搜索源）；获取：brave.com/search/api → 注册 → Free plan → 创建 Key。",
-      existing
-    );
-    if (key !== null && key.trim()) {
-      updateSettings({ braveApiKey: key.trim() });
-      env = { ...env, BRAVE_API_KEY: key.trim() };
-    }
-  }
+  const env = { ...(item.env ?? {}) };
   store.add({ name: item.name, command: item.command, args: item.args, env, enabled: true });
   activeTab.value = "servers";
   // agent 自动控制：添加后自动连接该服务器

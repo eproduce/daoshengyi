@@ -1963,8 +1963,8 @@ fn search_by_embedding(db: State<Database>, embedding: Vec<f32>, limit: i64) -> 
 }
 
 #[tauri::command]
-async fn web_search(query: String, brave_key: String) -> Result<Vec<search::SearchResult>, String> {
-    search::search_web(&query, &brave_key).await
+async fn web_search(query: String) -> Result<Vec<search::SearchResult>, String> {
+    search::search_web(&query).await
 }
 
 /// 主动推送消息到 IM 群机器人（飞书 / 企业微信）。只发不收，无需公网、无代理。

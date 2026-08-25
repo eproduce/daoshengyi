@@ -124,16 +124,6 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     args: "-y @modelcontextprotocol/server-everything",
     tags: ["示例", "教学"],
   },
-  {
-    id: "brave-search",
-    name: "Brave 搜索",
-    icon: "Search",
-    description: "Brave Search 联网搜索（安装时配置 API Key）",
-    category: "搜索",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-brave-search",
-    tags: ["搜索", "API"],
-  },
 ];
 
 /// 市场分类（按顺序展示）

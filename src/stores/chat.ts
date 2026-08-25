@@ -80,14 +80,13 @@ function getMcpToolsPrompt(): string {
     toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
     "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {\"url\": \"完整网址\"}\n" +
-    "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}\n" +
+    "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
     "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。" +
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
-    "\n- **set_brave_api_key** (app): 保存用户提供的 Brave Search API Key（联网搜索更稳定）。仅当用户在对话中明确给出 key 时调用。参数 {\"key\": \"用户给的完整 Key\"}。" +
     "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
@@ -360,17 +359,23 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "web_search": {
       const query = String(args.query || "");
       if (!query) throw new Error("web_search 需要 query 参数");
-      const results = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", { query, braveKey: getSettings().braveApiKey || "" });
+      const results = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", { query });
       if (!results.length) return "（搜索无结果，请在回复中明确告知用户未找到可靠信息，不要编造）";
-      return "以下是搜索结果，请整理成清晰的中文回答后再回复用户（先说明找到几条，再逐条列要点+来源，不要原样粘贴）。**引用来源时逐字原样复制「链接: 」后的完整 URL，禁止截断路径/删改扩展名/自行拼接或编造链接**：\n\n" +
-        results.map((r, i) => `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}`).join("\n\n");
-    }
-    case "set_brave_api_key": {
-      // 让 Agent 也能帮用户配置 Brave 搜索 Key（用户把 Key 发给它后，它代填保存）
-      const key = String(args.key || args.apiKey || "").trim();
-      if (!key) throw new Error("set_brave_api_key 需要 key 参数（用户在对话中提供的 Brave Search API Key）");
-      updateSettings({ braveApiKey: key }); // 同步更新内存缓存 + debounce 写盘；不 reload 避免读到旧值覆盖
-      return `已保存 Brave Search API Key（${key.slice(0, 6)}…${key.slice(-4)}）。后续联网搜索将优先使用 Brave API。`;
+      // 搜索引擎摘要常被截断、不含具体信息 → 对最相关的前 2 个结果自动抓取正文片段，
+      // 让模型能基于具体内容回答，而不是只罗列链接让用户自己点开。抓取失败/正文过短则跳过。
+      const enriched = await Promise.all(results.slice(0, 2).map(async (r) => {
+        try {
+          const res = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url: r.url });
+          const text = (res.text || "").replace(/\s+/g, " ").trim();
+          if (text.length < 150) return r; // 正文过少（动态渲染/反爬），跳过
+          return { ...r, body: text.slice(0, 600) };
+        } catch { return r; }
+      }));
+      return "以下是搜索结果（对最相关的前几条已自动抓取正文片段，可直接引用其中具体信息作答）。" +
+        "**若现有信息仍不足以回答用户问题，对未抓取或信息不足的链接，必须继续用 fetch_page 抓取正文获取具体信息后再作答，严禁只罗列链接让用户自己点开**。" +
+        "请整理成清晰的中文回答（先说明找到几条，再逐条列要点+来源，不要原样粘贴）。" +
+        "**引用来源时逐字原样复制「链接: 」后的完整 URL，禁止截断路径/删改扩展名/自行拼接或编造链接**：\n\n" +
+        enriched.map((r, i) => `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}${r.body ? `\n    正文: ${r.body}` : ""}`).join("\n\n");
     }
     case "send_im": {
       // 主动推送消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）
@@ -1357,7 +1362,7 @@ export const useChatStore = defineStore("chat", () => {
         const autoQuery = extractSearchKeywords(text.trim());
         streamingContent.value = `🌐 正在联网搜索：${autoQuery.slice(0, 24)}...`;
         try {
-          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: autoQuery, braveKey: getSettings().braveApiKey || "" });
+          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: autoQuery });
           if (results.length > 0) {
             volatileCtx.push(formatSearchResults(autoQuery, results));
             // 搜索结果做成可见卡片（进 toolChain，随最终答案一起展示在气泡里）

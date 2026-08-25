@@ -30,8 +30,6 @@ export interface AppSettingsPayload {
   approvalMode: "manual" | "smart" | "yolo";
   /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
   auxiliaryProfileId: string;
-  /// Brave Search API Key（联网搜索优先走 Brave API；全局共用，Rust 端加密落盘）
-  braveApiKey: string;
   /// 飞书群机器人 Webhook（主动推送用）
   feishuWebhook: string;
   /// 企业微信群机器人 Webhook（主动推送用）
@@ -51,7 +49,6 @@ let cache: AppSettingsPayload = {
   yoloMode: false,
   approvalMode: "manual",
   auxiliaryProfileId: "",
-  braveApiKey: "",
   feishuWebhook: "",
   wecomWebhook: "",
   dingtalkWebhook: "",

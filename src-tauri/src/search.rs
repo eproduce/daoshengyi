@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
@@ -7,42 +7,283 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
-pub async fn search_web(query: &str, brave_key: &str) -> Result<Vec<SearchResult>, String> {
-    // 优先 Brave Search API（免费 2000 次/月，全球可用）
-    if !brave_key.is_empty() {
-        if let Ok(r) = search_brave(query, brave_key).await {
-            if !r.is_empty() { return Ok(r); }
+pub async fn search_web(query: &str) -> Result<Vec<SearchResult>, String> {
+    // 多源综合：百度 + 必应 + 360 + 搜狗 **并行** 抓取（全为国内可直连），
+    // 合并去重后返回。单源可能被反爬/返回空/质量差，综合多源提升覆盖率与准确率。
+    let baidu_fut = async { search_baidu(query).await.unwrap_or_default() };
+    let bing_fut = async { search_bing(query).await.unwrap_or_default() };
+    let so360_fut = async { search_360(query).await.unwrap_or_default() };
+    let sogou_fut = async { search_sogou(query).await.unwrap_or_default() };
+    let (baidu, bing, so360, sogou) = futures::join!(baidu_fut, bing_fut, so360_fut, sogou_fut);
+
+    // 合并去重（按 域名+路径 去重，百度优先、必应/360/搜狗补充），上限 20 条
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+    for r in baidu.into_iter().chain(bing.into_iter()).chain(so360.into_iter()).chain(sogou.into_iter()) {
+        let key = dedup_key(&r.url);
+        if seen.insert(key) {
+            merged.push(r);
+            if merged.len() >= 20 { break; }
         }
     }
-    // 回退 必应 HTML（有时被反爬返回 0 条）
-    if let Ok(r) = search_bing(query).await {
-        if !r.is_empty() { return Ok(r); }
-    }
-    // 再回退 DuckDuckGo HTML（无鉴权、无质询，对中文/企业查询稳定）
+    if !merged.is_empty() { return Ok(merged); }
+    // 全部无结果再兜底 DuckDuckGo HTML（境外，国内直连可能不稳）
     search_duckduckgo(query).await
 }
 
-/// Brave Search API
-async fn search_brave(query: &str, key: &str) -> Result<Vec<SearchResult>, String> {
-    let url = format!("https://api.search.brave.com/res/v1/web/search?q={}&count=8&search_lang=zh", urlencoding(query));
+/// 去重键：去掉协议/www 前缀与查询串/片段，按 域名+路径 归并
+fn dedup_key(url: &str) -> String {
+    let no_query = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+    no_query
+        .strip_prefix("https://").or_else(|| no_query.strip_prefix("http://"))
+        .unwrap_or(no_query)
+        .trim_start_matches("www.")
+        .to_string()
+}
+
+/// 百度 HTML 搜索（国内直连稳定、中文覆盖率最高）。
+/// 百度新版结果块 class="result c-container xpath-log new-pmd"，真实 URL 在
+/// mu="..." 属性里（标题 <a> 的 href 是 baidu.com/link? 跳转，不可直接用），
+/// 摘要藏在结果块内 <!--s-data:{"summaryData":...}--> JSON 注释中。
+/// 注意：百度对高频/自动化访问偶发返回「安全验证」页（极短 HTML），需检测跳过。
+async fn search_baidu(query: &str) -> Result<Vec<SearchResult>, String> {
+    let url = format!("https://www.baidu.com/s?wd={}&rn=10", urlencoding(query));
     let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .cookie_store(true)
         .timeout(std::time::Duration::from_secs(8))
         .build().map_err(|e| format!("err:{}", e))?;
 
-    let data: BraveResponse = client.get(&url)
-        .header("Accept", "application/json")
-        .header("Accept-Encoding", "gzip")
-        .header("X-Subscription-Token", key)
-        .send().await.map_err(|e| format!("err:{}", e))?
-        .json().await.map_err(|e| format!("err:{}", e))?;
+    let html = match client.get(&url)
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "https://www.baidu.com/")
+        .send().await
+    {
+        Ok(r) => match r.text().await { Ok(t) => t, Err(e) => return Err(format!("百度读取失败: {}", e)) },
+        Err(e) => return Err(format!("百度连接失败: {}", e)),
+    };
 
-    let results: Vec<SearchResult> = data.web.results.iter().map(|r| SearchResult {
-        title: r.title.clone(),
-        url: r.url.clone(),
-        snippet: r.description.clone(),
-    }).collect();
-    eprintln!("[Brave] {} results", results.len());
-    Ok(results)
+    // 安全验证页 / 无结果标记
+    if html.len() < 3000 || html.contains("百度安全验证") || html.contains("wappass") || html.contains("请开启javascript") {
+        eprintln!("[Baidu] 安全验证或无结果（{} 字节）", html.len());
+        return Ok(Vec::new());
+    }
+    let results = parse_baidu(&html);
+    if !results.is_empty() {
+        eprintln!("[Baidu] {} results", results.len());
+        return Ok(results);
+    }
+    eprintln!("[Baidu] 解析无结果");
+    Ok(Vec::new())
+}
+
+/// 解析百度结果页：按结果块 class 分段，提取 mu= 真实 URL、<h3> 标题、s-data 摘要
+fn parse_baidu(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while results.len() < 10 {
+        let start = match html[pos..].find("class=\"result c-container") {
+            Some(i) => pos + i, None => break,
+        };
+        // 结果块结束：下一个 "class=\"result " 或 8KB 上限（块内可能嵌套 div）
+        let end = match html[start + 5..].find("class=\"result ") {
+            Some(i) => start + 5 + i, None => (start + 8000).min(html.len()),
+        };
+        let block = &html[start..end];
+
+        let title = extract_baidu_title(block);
+        let url = extract_baidu_mu(block);
+        if title.is_empty() || url.is_empty() {
+            pos = end + 5; continue;
+        }
+        let snippet = extract_baidu_summary(block);
+        results.push(SearchResult {
+            title,
+            url,
+            snippet: snippet.chars().take(300).collect(),
+        });
+        pos = end + 5;
+    }
+    results
+}
+
+/// 百度标题：结果块内第一个 <h3 ...>...</h3>（strip HTML）
+fn extract_baidu_title(block: &str) -> String {
+    extract_tag(block, "<h3", "</h3>")
+}
+
+/// 百度真实 URL：结果块内 mu="http..." 属性（跳过百度站内跳转/推荐/广告）
+fn extract_baidu_mu(block: &str) -> String {
+    let mut search_from = 0;
+    while let Some(i) = block[search_from..].find("mu=\"") {
+        let s = search_from + i + 4;
+        let e = match block[s..].find('"') { Some(j) => s + j, None => break };
+        let url = &block[s..e];
+        search_from = e + 1;
+        if !url.starts_with("http") { continue; }
+        // 过滤百度站内跳转/推荐/广告/登录等
+        if url.contains("baidu.com/link") || url.contains("recommend_list") || url.contains("nourl.ubs")
+            || url.contains("top.baidu.com") || url.contains("aiqicha.baidu.com")
+            || url.contains("passport.baidu.com") || url.contains("baidu.com/s?") {
+            continue;
+        }
+        return url.to_string();
+    }
+    String::new()
+}
+
+/// 百度摘要：结果块内 <!--s-data:{...}--> JSON 的 summaryData.generalLines[].data[].text
+fn extract_baidu_summary(block: &str) -> String {
+    let sd = match block.find("<!--s-data:") { Some(i) => i + 11, None => return String::new() };
+    let ed = match block[sd..].find("-->") { Some(i) => sd + i, None => return String::new() };
+    let json_str = &block[sd..ed];
+    // HTML 实体 → 普通字符再解析 JSON
+    let json_clean = json_str
+        .replace("&quot;", "\"").replace("&amp;", "&")
+        .replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">");
+    let v: serde_json::Value = match serde_json::from_str(&json_clean) { Ok(v) => v, Err(_) => return String::new() };
+    let mut out = String::new();
+    if let Some(lines) = v.pointer("/summaryData/generalLines").and_then(|x| x.as_array()) {
+        for line in lines {
+            if let Some(datas) = line.get("data").and_then(|x| x.as_array()) {
+                for d in datas {
+                    if let Some(t) = d.get("text").and_then(|x| x.as_str()) {
+                        if !out.is_empty() { out.push(' '); }
+                        out.push_str(&strip_html(t));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 360 搜索（so.com）HTML 搜索（国内直连稳定、中文覆盖率较高）。
+/// 结果块 class="res-list"，真实 URL 在 <a data-mdurl="真实URL"> 属性（href 是
+/// so.com/link?m= 跳转，不可直接用），标题在 <h3 class="res-title">，摘要 <p class="res-desc">。
+async fn search_360(query: &str) -> Result<Vec<SearchResult>, String> {
+    let url = format!("https://www.so.com/s?q={}", urlencoding(query));
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .cookie_store(true)
+        .timeout(std::time::Duration::from_secs(8))
+        .build().map_err(|e| format!("err:{}", e))?;
+
+    let html = match client.get(&url)
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "https://www.so.com/")
+        .send().await
+    {
+        Ok(r) => match r.text().await { Ok(t) => t, Err(e) => return Err(format!("360 读取失败: {}", e)) },
+        Err(e) => return Err(format!("360 连接失败: {}", e)),
+    };
+
+    // 反爬判定：仅命中明确的反爬特征才跳过；只要页面含 res-list 结果标记就继续解析
+    let anti_spider = ["antispider", "安全验证", "请输入验证码", "captcha", "访问过于频繁", "wappass"];
+    if !html.contains("res-list") && (html.len() < 3000 || anti_spider.iter().any(|k| html.contains(k))) {
+        eprintln!("[360] 安全验证或无结果（{} 字节）", html.len());
+        return Ok(Vec::new());
+    }
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while results.len() < 10 {
+        let start = match html[pos..].find("class=\"res-list\"") {
+            Some(i) => pos + i, None => break,
+        };
+        let end = match html[start + 12..].find("class=\"res-list\"") {
+            Some(i) => start + 12 + i, None => (start + 3000).min(html.len()),
+        };
+        let block = &html[start..end];
+
+        let url = extract_attr(block, "data-mdurl=\"", "\"");
+        if url.is_empty() || url.contains("so.com/link") {
+            pos = end + 12; continue;
+        }
+        let title = extract_360_title(block);
+        let snippet = extract_360_desc(block);
+        if title.is_empty() { pos = end + 12; continue; }
+        results.push(SearchResult { title, url, snippet: snippet.chars().take(300).collect() });
+        pos = end + 12;
+    }
+    if !results.is_empty() {
+        eprintln!("[360] {} results", results.len());
+        return Ok(results);
+    }
+    eprintln!("[360] 解析无结果");
+    Ok(Vec::new())
+}
+
+/// 360 标题：<h3 class="res-title"> 内文本
+fn extract_360_title(block: &str) -> String {
+    extract_tag(block, "<h3", "</h3>")
+}
+
+/// 360 摘要：<p class="res-desc"> 内文本
+fn extract_360_desc(block: &str) -> String {
+    extract_tag(block, "<p class=\"res-desc\"", "</p>")
+}
+
+/// 搜狗 HTML 搜索（国内直连稳定、中文覆盖率较高）。
+/// 结果块：企业卡片 class="vrwrap"（真实 URL 直接 href）+ 普通结果 class="rb"
+/// （标题 <h3 class="pt">，链接是 /link?url= 跳转，需补全域名）。
+async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
+    let url = format!("https://www.sogou.com/web?query={}", urlencoding(query));
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .cookie_store(true)
+        .timeout(std::time::Duration::from_secs(8))
+        .build().map_err(|e| format!("err:{}", e))?;
+
+    let html = match client.get(&url)
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "https://www.sogou.com/")
+        .send().await
+    {
+        Ok(r) => match r.text().await { Ok(t) => t, Err(e) => return Err(format!("搜狗读取失败: {}", e)) },
+        Err(e) => return Err(format!("搜狗连接失败: {}", e)),
+    };
+
+    if html.len() < 3000 || html.contains("antispider") || html.contains("请输入验证码") {
+        eprintln!("[Sogou] 安全验证或无结果（{} 字节）", html.len());
+        return Ok(Vec::new());
+    }
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while results.len() < 10 {
+        let start = match html[pos..].find("class=\"rb\"") {
+            Some(i) => pos + i, None => break,
+        };
+        let end = match html[start + 5..].find("class=\"rb\"") {
+            Some(i) => start + 5 + i, None => (start + 2500).min(html.len()),
+        };
+        let block = &html[start..end];
+        let title = extract_sogou_title(block);
+        if title.is_empty() { pos = end + 5; continue; }
+        // 链接可能是相对路径 /link?url=...，补全搜狗域名
+        let mut href = extract_attr(block, "href=\"", "\"");
+        if href.starts_with('/') { href = format!("https://www.sogou.com{}", href); }
+        let snippet = extract_sogou_summary(block);
+        if !href.is_empty() && href.starts_with("http") {
+            results.push(SearchResult { title, url: href, snippet: snippet.chars().take(300).collect() });
+        }
+        pos = end + 5;
+    }
+    if !results.is_empty() {
+        eprintln!("[Sogou] {} results", results.len());
+        return Ok(results);
+    }
+    eprintln!("[Sogou] 解析无结果");
+    Ok(Vec::new())
+}
+
+/// 搜狗标题：<h3 class="pt"> 内 <a> 文本
+fn extract_sogou_title(block: &str) -> String {
+    extract_tag(block, "<h3", "</h3>")
+}
+
+/// 搜狗摘要：<div class="ft"> 内文本
+fn extract_sogou_summary(block: &str) -> String {
+    extract_tag(block, "<div class=\"ft\"", "</div>")
 }
 
 /// 必应 HTML 搜索（Bing DOM 改版后结果块为 <li class="b_algo">，标题 <h2><a>）。
@@ -223,13 +464,6 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-#[derive(Deserialize)]
-struct BraveResponse { web: BraveWeb }
-#[derive(Deserialize)]
-struct BraveWeb { results: Vec<BraveResult> }
-#[derive(Deserialize)]
-struct BraveResult { title: String, url: String, description: String }
-
 fn extract_tag(html: &str, open: &str, close: &str) -> String {
     let start = match html.find(open) {
         Some(i) => match html[i + open.len()..].find('>') {
@@ -310,5 +544,71 @@ mod tests {
         assert!(!r.is_empty(), "Bing 无结果");
         assert!(r[0].title.len() > 0 && r[0].url.starts_with("http"), "结果格式异常: {:?}", r[0]);
         eprintln!("Bing 首条: {} — {}", r[0].title, r[0].url);
+    }
+
+    /// 真实网络端到端验证百度解析（手动：cargo test -- --ignored test_baidu_live）
+    #[tokio::test]
+    #[ignore]
+    async fn test_baidu_live() {
+        let r = search_baidu("华为技术有限公司").await.expect("百度请求失败");
+        assert!(!r.is_empty(), "百度无结果");
+        assert!(r[0].title.len() > 0 && r[0].url.starts_with("http"), "结果格式异常: {:?}", r[0]);
+        eprintln!("百度首条: {} — {}", r[0].title, r[0].url);
+    }
+
+    /// 真实网络端到端验证多源综合（手动：cargo test -- --ignored test_web_live）
+    #[tokio::test]
+    #[ignore]
+    async fn test_web_live() {
+        let r = search_web("华为技术有限公司").await.expect("综合搜索失败");
+        assert!(!r.is_empty(), "综合搜索无结果");
+        // 综合应包含百度/必应/360/搜狗多源结果
+        eprintln!("综合搜索 {} 条，前 5 条:", r.len());
+        for x in r.iter().take(5) { eprintln!("  {} — {}", x.title, x.url); }
+    }
+
+    /// 真实网络端到端验证 360 解析（手动：cargo test -- --ignored test_360_live）
+    #[tokio::test]
+    #[ignore]
+    async fn test_360_live() {
+        let r = search_360("华为技术有限公司").await.expect("360 请求失败");
+        assert!(!r.is_empty(), "360 无结果");
+        assert!(r[0].title.len() > 0 && r[0].url.starts_with("http"), "结果格式异常: {:?}", r[0]);
+        eprintln!("360 首条: {} — {}", r[0].title, r[0].url);
+    }
+
+    /// 真实网络端到端验证搜狗解析（手动：cargo test -- --ignored test_sogou_live）
+    #[tokio::test]
+    #[ignore]
+    async fn test_sogou_live() {
+        let r = search_sogou("华为技术有限公司").await.expect("搜狗请求失败");
+        assert!(!r.is_empty(), "搜狗无结果");
+        assert!(r[0].title.len() > 0 && r[0].url.starts_with("http"), "结果格式异常: {:?}", r[0]);
+        eprintln!("搜狗首条: {} — {}", r[0].title, r[0].url);
+    }
+
+    #[test]
+    fn test_baidu_parser_synthetic() {
+        // 构造一段贴近百度新版结构的 HTML：mu= 真实 URL + h3 标题 + s-data 摘要
+        let html = r#"<div class="result c-container xpath-log new-pmd" mu="https://www.huawei.com/cn/" data-op="{}">
+            <h3 class="c-title t"><a href="http://www.baidu.com/link?url=abc">华为 - 构建万物互联的智能世界</a></h3>
+            <!--s-data:{"summaryData":{"generalLines":[{"data":[{"text":"华为创立于1987年，是<em>全球领先</em>的ICT企业"}]}]}}-->
+        </div>
+        <div class="result c-container xpath-log new-pmd" mu="http://www.baidu.com/link?url=jump">
+            <h3 class="c-title t"><a href="http://www.baidu.com/link?url=jump">跳转站内被过滤</a></h3>
+        </div>"#;
+        let r = parse_baidu(html);
+        assert_eq!(r.len(), 1, "应只保留真实 URL 结果，跳过站内跳转");
+        assert_eq!(r[0].url, "https://www.huawei.com/cn/");
+        assert_eq!(r[0].title, "华为 - 构建万物互联的智能世界");
+        assert!(r[0].snippet.contains("华为创立于1987年"), "摘要应来自 s-data: {}", r[0].snippet);
+    }
+
+    #[test]
+    fn test_dedup_key() {
+        assert_eq!(dedup_key("https://www.huawei.com/cn/?a=1"), "huawei.com/cn");
+        assert_eq!(dedup_key("http://huawei.com/cn/"), "huawei.com/cn");
+        assert_eq!(dedup_key("https://example.com/path#frag"), "example.com/path");
+        assert_eq!(dedup_key("https://example.com/path"), "example.com/path");
     }
 }

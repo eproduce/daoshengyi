@@ -40,7 +40,7 @@ fn tools_list() -> Value {
         ),
         tool(
             "web_search",
-            "联网搜索（Brave→Bing→DuckDuckGo 多源回退），返回相关网页标题/链接/摘要。参数：query 搜索关键词。",
+            "联网搜索（百度+必应+360+搜狗 多源综合），返回相关网页标题/链接/摘要。参数：query 搜索关键词。",
             json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
         ),
         tool(
@@ -115,7 +115,7 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
             if query.trim().is_empty() {
                 return Err(err(-32602, "web_search 需要 query 参数"));
             }
-            match crate::search::search_web(&query, "").await {
+            match crate::search::search_web(&query).await {
                 Ok(results) if !results.is_empty() => {
                     let lines: Vec<String> = results.iter().enumerate().map(|(i, r)| {
                         format!("{}. {} — {}\n   {}", i + 1, if r.title.is_empty() { r.url.clone() } else { r.title.clone() }, r.url, r.snippet)
