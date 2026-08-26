@@ -15,6 +15,7 @@ import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolC
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
+import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -282,6 +283,10 @@ class BrowserNotNavigatedError extends Error {
 }
 
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+  // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
+  if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
+    return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
+  }
   // 内置工具（应用自带，无需 MCP 服务器）
   if (server === "app" || server === "builtin") {
     return callBuiltinTool(tool, args);
@@ -489,6 +494,18 @@ function extractSearchKeywords(text: string): string {
   return cleaned || text.trim().slice(0, 12);
 }
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
+  // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
+  if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
+    return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
+  }
+  // P-A7 权限矩阵：路径白名单——配置了 allowedPaths 时，文件/命令类工具只能访问白名单目录
+  const allowedPaths = getSettings().allowedPaths ?? [];
+  if (allowedPaths.length > 0) {
+    const p = pathArgOf(args);
+    if (p && !isPathAllowed(p, allowedPaths)) {
+      return `⛔ 路径「${p}」不在权限白名单内（允许：${allowedPaths.join("、")}）。请使用白名单内的路径。`;
+    }
+  }
   switch (tool) {
     case "fetch_page": {
       const url = String(args.url || "");

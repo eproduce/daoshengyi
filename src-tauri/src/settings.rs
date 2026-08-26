@@ -68,6 +68,12 @@ pub struct AppSettings {
     /// 钉钉群机器人加签密钥（SEC 开头，可选；安全设置选「加签」时必填）
     #[serde(default)]
     pub dingtalk_secret: String,
+    /// P-A7 权限矩阵：被禁用的工具名列表（前端 callMcpTool / callBuiltinTool 拦截）
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+    /// P-A7 权限矩阵：路径白名单（Agent 文件/命令类工具只能访问这些目录；空=不限制，写操作仍限主目录）
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
 }
 
 fn default_approval_mode() -> String {
@@ -89,6 +95,8 @@ impl Default for AppSettings {
             wecom_webhook: String::new(),
             dingtalk_webhook: String::new(),
             dingtalk_secret: String::new(),
+            disabled_tools: Vec::new(),
+            allowed_paths: Vec::new(),
         }
     }
 }
@@ -283,6 +291,8 @@ mod tests {
             wecom_webhook: String::new(),
             dingtalk_webhook: String::new(),
             dingtalk_secret: String::new(),
+            disabled_tools: Vec::new(),
+            allowed_paths: Vec::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -315,6 +325,8 @@ mod tests {
             wecom_webhook: String::new(),
             dingtalk_webhook: String::new(),
             dingtalk_secret: String::new(),
+            disabled_tools: Vec::new(),
+            allowed_paths: Vec::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

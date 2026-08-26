@@ -5,6 +5,7 @@ import { withBrowserLock, browserLockIdle } from "../src/utils/browser-lock.ts";
 import { BUILTIN_TOOLS, BUILTIN_TOOL_NAMES, validBuiltinTools } from "../src/data/builtin-tools.ts";
 import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from "../src/data/roles-catalog.ts";
 import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
+import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissions.ts";
 
 let pass = 0;
 let fail = 0;
@@ -174,6 +175,20 @@ console.log("\n== P-A6 本地 embedding 提供方判定 ==");
   assert(embeddingSource("") === "none", "空 baseUrl → none");
   assert(isOllamaBase("http://localhost:11434/v1") === true, "isOllamaBase 命中本地 Ollama");
   assert(isOllamaBase("https://api.deepseek.com") === false, "isOllamaBase 排除 DeepSeek（字面 Ollama 才认）");
+}
+
+console.log("\n== P-A7 权限矩阵（工具开关 + 路径白名单） ==");
+{
+  assert(isToolDisabled("write_file", ["write_file", "delete_file"]) === true, "禁用工具命中");
+  assert(isToolDisabled("git", ["write_file"]) === false, "未禁用工具放行");
+  assert(isToolDisabled("web_search", [" "]) === false, "空白配置不拦截");
+  assert(isPathAllowed("/Users/x/op/a.ts", []) === true, "未配置白名单 → 放行");
+  assert(isPathAllowed("/Users/x/op/a.ts", ["/Users/x/op"]) === true, "白名单前缀命中");
+  assert(isPathAllowed("/Users/x/op/sub/a.ts", ["/Users/x/op"]) === true, "白名单子目录命中");
+  assert(isPathAllowed("/Users/x/other/a.ts", ["/Users/x/op"]) === false, "白名单外路径拦截");
+  assert(isPathAllowed("~/Pictures/shot.png", ["~/Pictures"]) === true, "~ 前缀命中");
+  assert(pathArgOf({ cwd: "/a" }) === "/a", "pathArgOf 取 cwd");
+  assert(pathArgOf({ url: "https://x" }) === "", "pathArgOf 无路径参数返回空");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

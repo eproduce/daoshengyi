@@ -154,21 +154,79 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
-/// 展开用户路径（~/ → $HOME/）并校验必须在用户主目录内。
+/// 展开用户路径（~/ → $HOME/），要求绝对路径或 ~/ 开头，不校验主目录边界。
+fn expand_user_path(path: &str) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
+    if let Some(rest) = path.strip_prefix("~/") {
+        Ok(format!("{}/{}", home, rest))
+    } else if path.starts_with('/') {
+        Ok(path.to_string())
+    } else {
+        Err("文件路径必须是绝对路径或以 ~/ 开头".into())
+    }
+}
+
+/// 展开用户路径并校验必须在用户主目录内。
 /// 供内置文件工具（write_file_agent / apply_edits / delete_file_agent）复用安全边界。
 fn sanitize_home_path(path: &str) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
-    // 展开 ~/ 为 $HOME/，其余必须是绝对路径
-    let expanded = if let Some(rest) = path.strip_prefix("~/") {
-        format!("{}/{}", home, rest)
-    } else if path.starts_with('/') {
-        path.to_string()
-    } else {
-        return Err("文件路径必须是绝对路径或以 ~/ 开头".into());
-    };
+    let expanded = expand_user_path(path)?;
     // 仅允许操作主目录内，避免越权写系统目录
     if !expanded.starts_with(&format!("{}/", home)) {
         return Err(format!("仅允许操作用户主目录（{}）内的文件", home));
+    }
+    Ok(expanded)
+}
+
+// --- P-A8 沙箱：文件路径白名单（三层沙箱之「文件层」） ---
+/// 路径是否位于任一白名单目录内（纯函数，可测试）。
+/// 用组件级匹配（Path::starts_with），避免字符串前缀把 /a/op2 误判进 /a/op。
+fn path_within_any(path: &std::path::Path, dirs: &[std::path::PathBuf]) -> bool {
+    dirs.iter().any(|d| path == d || path.starts_with(d))
+}
+
+/// 解析配置的路径白名单：去空、展开 ~ 前缀为绝对路径（纯函数，可测试）。
+fn parse_allowed_paths(list: &[String]) -> Vec<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    list.iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            if let Some(rest) = p.strip_prefix("~/") {
+                std::path::PathBuf::from(format!("{}/{}", home, rest))
+            } else {
+                std::path::PathBuf::from(p)
+            }
+        })
+        .collect()
+}
+
+/// 从设置读取路径白名单（P-A7/P-A8 共用配置）；未配置返回空 = 不限制。
+fn sandbox_allowed_paths(db: &Database) -> Vec<std::path::PathBuf> {
+    let raw: Vec<String> = db
+        .get_setting(SETTINGS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str::<settings::AppSettings>(&v).ok())
+        .map(|s| s.allowed_paths)
+        .unwrap_or_default();
+    parse_allowed_paths(&raw)
+}
+
+/// 文件路径沙箱校验：展开 ~ 后，若配置了白名单则必须位于白名单内。
+/// 未配置白名单时回退主目录边界（与 sanitize_home_path 一致）。
+fn sandbox_file_path(db: &Database, path: &str) -> Result<String, String> {
+    let allowed = sandbox_allowed_paths(db);
+    if allowed.is_empty() {
+        return sanitize_home_path(path);
+    }
+    let expanded = expand_user_path(path)?;
+    let p = std::path::Path::new(&expanded);
+    if !path_within_any(p, &allowed) {
+        return Err(format!(
+            "路径不在沙箱白名单内（允许：{:?}），拒绝访问",
+            allowed
+        ));
     }
     Ok(expanded)
 }
@@ -178,8 +236,9 @@ fn sanitize_home_path(path: &str) -> Result<String, String> {
 /// （防止模型在最终回复中改写/编造文件路径，导致前端文件链接点击后打不开）。
 /// 安全边界：仅允许写入当前用户主目录（$HOME）下的文件。
 #[tauri::command]
-fn write_file_agent(path: String, content: String) -> Result<String, String> {
-    let expanded = sanitize_home_path(&path)?;
+fn write_file_agent(db: State<Database>, path: String, content: String) -> Result<String, String> {
+    // P-A8 沙箱：主目录边界 + 路径白名单（配置时收紧）
+    let expanded = sandbox_file_path(db.inner(), &path)?;
     // 创建父目录（如 ~/Desktop、~/Documents 等）
     if let Some(parent) = std::path::Path::new(&expanded).parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -810,7 +869,15 @@ struct CommandOutput {
 
 /// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）；传入目录时返回内容列表（ls 风格）
 #[tauri::command]
-fn read_file(path: String) -> Result<String, String> {
+fn read_file(db: State<Database>, path: String) -> Result<String, String> {
+    // P-A8 沙箱：配置了路径白名单时，读取仅限白名单内目录（未配置则保持原行为，可读任意绝对路径）
+    let allowed = sandbox_allowed_paths(db.inner());
+    if !allowed.is_empty() {
+        let expanded = expand_user_path(&path)?;
+        if !path_within_any(std::path::Path::new(&expanded), &allowed) {
+            return Err(format!("路径不在沙箱白名单内，拒绝读取：{}", path));
+        }
+    }
     let p = std::path::Path::new(&path);
     if p.is_dir() {
         let mut entries: Vec<(String, bool, u64)> = Vec::new();
@@ -3417,9 +3484,30 @@ pub fn run() {
 mod tests {
     use super::{
         apply_edits, delete_file_agent, detect_test_framework, diff_lines, embed_model_installed,
-        extract_redirected_files, format_unified_diff, nth_occurrence, parse_embed_response,
-        run_shell_command, validate_git_operation, EditOp,
+        extract_redirected_files, format_unified_diff, nth_occurrence, parse_allowed_paths,
+        parse_embed_response, path_within_any, run_shell_command, validate_git_operation, EditOp,
     };
+
+    // P-A8 沙箱：路径白名单（组件级匹配，防前缀误判）+ 白名单解析
+    #[test]
+    fn path_within_any_matches_prefix_only() {
+        use std::path::{Path, PathBuf};
+        let dirs = [PathBuf::from("/Users/x/op")];
+        assert!(path_within_any(Path::new("/Users/x/op"), &dirs), "等于白名单目录");
+        assert!(path_within_any(Path::new("/Users/x/op/src/a.ts"), &dirs), "白名单子路径");
+        assert!(!path_within_any(Path::new("/Users/x/op2/a.ts"), &dirs), "前缀相似但不同目录不误判");
+        assert!(!path_within_any(Path::new("/Users/x"), &dirs), "父目录不命中");
+        assert!(!path_within_any(Path::new("/a/b"), &[]), "空白名单无目录可匹配（调用方先判空再调用）");
+    }
+
+    #[test]
+    fn parse_allowed_paths_expands_tilde() {
+        let home = std::env::var("HOME").unwrap();
+        let parsed = parse_allowed_paths(&["/Users/x/op".into(), "~/Pictures".into(), "  ".into()]);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], std::path::PathBuf::from("/Users/x/op"));
+        assert_eq!(parsed[1], std::path::PathBuf::from(format!("{}/Pictures", home)));
+    }
 
     // P-A6 本地语义 embedding：模型检测 + 响应解析（纯函数）
     #[test]

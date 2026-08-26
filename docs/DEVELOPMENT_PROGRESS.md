@@ -154,6 +154,22 @@
 - **踩坑**：reqwest `resp.status()` 在 `resp.text().await`（self 移动）后不可用 → 先 `let code = resp.status();` 再取 body
 - **验证**：npm test 62 + vite build + cargo test --lib 38 + get_errors 全部通过
 - **后续**：P-A7 权限矩阵（工具级开关/路径白名单/会话级权限记忆）+ P-A8 沙箱（文件/网络/命令三层白名单）
+
+### ✅ 编程代理 P-A7 权限矩阵 + P-A8 沙箱
+- **P-A7 权限矩阵（工具级 + 路径白名单）**：
+  - `settings.rs` AppSettings 加 `disabled_tools` / `allowed_paths`（serde default 向后兼容；Default + 2 处测试字面量同步）+ `appSettings.ts` 加 `disabledTools` / `allowedPaths`
+  - 新建 `src/utils/permissions.ts` 纯函数：`isToolDisabled`（精确名匹配，忽略空白）、`isPathAllowed`（字符串前缀 `dir + "/"` 匹配防 `/op2` 误判，支持 `~`）、`pathArgOf`（取 path/cwd/dir/root）
+  - 拦截双入口：`callMcpTool` 顶部禁用工具拦截（覆盖内置 + MCP）；`callBuiltinTool` 顶部禁用工具 + 路径白名单拦截（配置了 allowedPaths 时文件/命令类工具只访问白名单目录，返回「⛔ 路径不在权限白名单内」）
+  - 设置新增「权限」tab（Shield 图标）：禁用工具 textarea + 路径白名单 textarea，@change 即时保存（每行一个）
+- **P-A8 沙箱（文件层白名单，三层沙箱之文件层）**：
+  - 纯函数 `path_within_any`（**组件级匹配 `Path::starts_with`**，防 `/a/op2` 误判进 `/a/op`）+ `parse_allowed_paths`（~ 展开为绝对路径）
+  - `expand_user_path`（只展开 ~ 不查主目录）+ `sanitize_home_path` 重构复用
+  - `sandbox_allowed_paths(db)` 从设置读白名单 + `sandbox_file_path(db, path)`（配置白名单时必须在白名单内；未配置回退主目录边界）
+  - `read_file` / `write_file_agent` 加 `db: State<Database>` 应用白名单（read 未配置白名单保持原行为可读任意绝对路径；write 始终主目录边界 + 白名单收紧）；命令层 `DANGEROUS_PATTERNS`（已有）+ P-A7 前端门禁兜底
+- **自测（加强）**：前端新增 10 项（isToolDisabled 命中/放行/空白、isPathAllowed 未配置放行/前缀/子目录/外路径拦截/~/pathArgOf）→ npm test 72；Rust 新增 2 项（path_within_any 组件级匹配防前缀误判、parse_allowed_paths ~ 展开）→ cargo test --lib 40 全过
+- **踩坑**：①`path_within_any` 空白名单返回 false（调用方先判空再调用），测试断言别写成「空=放行」；②read_file 未配置白名单时**不能**回退到主目录边界（会破坏 /read 读工作区外文件的原行为），只有配置白名单才收紧
+- **验证**：npm test 72 + vite build + cargo test --lib 40 + get_errors 全部通过
+- **后续**：P-A9 记忆复习（定期 LLM 回顾记忆仓库合并过时/矛盾事实）→ 其余远期（P-A10 插件生态 / P-A11 跨设备同步 / P-A12 多模型路由）
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

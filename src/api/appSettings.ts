@@ -38,6 +38,10 @@ export interface AppSettingsPayload {
   dingtalkWebhook: string;
   /// 钉钉群机器人加签密钥（SEC 开头，可选）
   dingtalkSecret: string;
+  /// P-A7 权限矩阵：被禁用的工具名列表（callMcpTool/callBuiltinTool 拦截）
+  disabledTools: string[];
+  /// P-A7 权限矩阵：路径白名单（Agent 文件/命令类工具只能访问这些目录；空 = 不限制）
+  allowedPaths: string[];
 }
 
 let cache: AppSettingsPayload = {
@@ -53,6 +57,8 @@ let cache: AppSettingsPayload = {
   wecomWebhook: "",
   dingtalkWebhook: "",
   dingtalkSecret: "",
+  disabledTools: [],
+  allowedPaths: [],
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

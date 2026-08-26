@@ -12,16 +12,16 @@ import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield } from "lucide-vue-next";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" }>();
+const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions" }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory">("api");
+const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions">("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -155,6 +155,16 @@ function savePushWebhooks() {
   });
 }
 
+// P-A7 权限矩阵：禁用工具 + 路径白名单（每行一个，@change 即时保存）
+const disabledTools = ref((getSettings().disabledTools ?? []).join("\n"));
+const allowedPaths = ref((getSettings().allowedPaths ?? []).join("\n"));
+function savePermissions() {
+  updateSettings({
+    disabledTools: disabledTools.value.split("\n").map((s) => s.trim()).filter(Boolean),
+    allowedPaths: allowedPaths.value.split("\n").map((s) => s.trim()).filter(Boolean),
+  });
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -221,6 +231,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断</button>
           <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务</button>
           <button :class="['settings-tab', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'"><span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆</button>
+          <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
           <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
         </nav>
 
@@ -481,6 +492,32 @@ function handleDelete() {
 
       <!-- 长期记忆 -->
       <div v-show="activeTab === 'memory'"><MemoryPanel /></div>
+
+      <!-- P-A7 权限矩阵：工具级开关 + 路径白名单 -->
+      <div v-show="activeTab === 'permissions'">
+        <h3><Shield :size="17" /> 权限矩阵</h3>
+        <p class="ollama-desc">工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent 的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。</p>
+        <div class="form-group">
+          <label>禁用工具（每行一个工具名）</label>
+          <textarea
+            v-model="disabledTools"
+            rows="5"
+            placeholder="如：write_file&#10;subagent_delegate&#10;puppeteer_screenshot"
+            @change="savePermissions"
+          ></textarea>
+          <span class="form-hint">在此列出的工具会被直接拦截（提示「已在权限矩阵中禁用」）。常见用途：禁用 write_file/delete_file 防止 Agent 改文件、禁用浏览器工具防止弹窗。</span>
+        </div>
+        <div class="form-group">
+          <label>路径白名单（每行一个目录）</label>
+          <textarea
+            v-model="allowedPaths"
+            rows="5"
+            placeholder="如：/Users/wanghuan/op&#10;~/Pictures"
+            @change="savePermissions"
+          ></textarea>
+          <span class="form-hint">配置后 Agent 的 list_dir / 文件编辑 / git / 测试 / 项目分析等工具只能访问这些目录；留空 = 不限制。</span>
+        </div>
+      </div>
 
       <!-- 主动推送（飞书 / 企业微信群机器人） -->
       <div v-show="activeTab === 'push'">
