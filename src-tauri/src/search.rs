@@ -761,5 +761,5 @@ mod tests {
             eprintln!("  [{}] {}", x.title.chars().take(40).collect::<String>(), x.url.chars().take(55).collect::<String>());
         }
     }
-
 }
+
