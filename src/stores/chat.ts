@@ -12,6 +12,7 @@ import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText, type ToolCall } from "@/utils/tool-call";
+import { withBrowserLock } from "@/utils/browser-lock";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -21,14 +22,25 @@ async function dbg(msg: string): Promise<void> {
 
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
+let mcpToolsRefreshing: Promise<void> | null = null;
 export async function refreshMcpTools() {
+  // 单飞（single-flight）：并发调用只执行一次、共享同一结果。并行子代理/主代理
+  // 可能同时触发刷新，避免两次 refresh 交错清空 mcpToolsCache 导致读到空缓存。
+  if (mcpToolsRefreshing) return mcpToolsRefreshing;
+  mcpToolsRefreshing = (async () => {
+    try {
+      const servers = await invoke<[string, {name:string;description:string;inputSchema?:Record<string,unknown>}[]][]>("mcp_list_tools");
+      mcpToolsCache = [];
+      for (const [server, tools] of servers) {
+        for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description, inputSchema: t.inputSchema });
+      }
+    } catch { mcpToolsCache = []; }
+  })();
   try {
-    const servers = await invoke<[string, {name:string;description:string;inputSchema?:Record<string,unknown>}[]][]>("mcp_list_tools");
-    mcpToolsCache = [];
-    for (const [server, tools] of servers) {
-      for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description, inputSchema: t.inputSchema });
-    }
-  } catch { mcpToolsCache = []; }
+    await mcpToolsRefreshing;
+  } finally {
+    mcpToolsRefreshing = null;
+  }
 }
 /// 列出已启用但未连接的 MCP 服务器（如浏览器自动化），提示模型按需激活。
 /// 浏览器等重服务器不会在日常对话中自动连接/弹窗，只有模型明确需要时才激活。
@@ -124,7 +136,8 @@ function getMcpToolsPrompt(): string {
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
-    "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。" +
+    "- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\", \"allow_tools\": true}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。" +
+    "\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {\"tasks\": [{\"goal\": \"子任务1\", \"context\": \"可选\", \"allow_tools\": true}, ...], \"concurrency\": 可选并发数（默认最多 4）}。**使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。" +
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**" +
     "\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {\"path\": \"文件绝对路径\", \"old_text\": \"要替换的原文（须与文件内容完全一致）\", \"new_text\": \"新文本（可为空=删除该段）\", \"occurrence\": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。" +
@@ -247,6 +260,15 @@ async function closeBrowserIfOpen(): Promise<void> {
 /// 本次消息会话内是否已用 puppeteer_navigate 打开过网页（拦截未导航就 fill/click）。
 /// 每次新消息重置（上一任务的浏览器已断开）。
 let browserNavigated = false;
+/// 浏览器尚未导航就执行页面操作（fill/click/…）时抛出的错误——在浏览器串行锁内判定，
+/// 由 callMcpTool 捕获转成友好提示返回（保持原有行为，只是把判定移进锁内，以正确看到
+/// 队列中前一个 navigate 执行后的真实状态，避免并行子代理时误判「未打开网页」）。
+class BrowserNotNavigatedError extends Error {
+  constructor() {
+    super("尚未打开网页");
+    this.name = "BrowserNotNavigatedError";
+  }
+}
 
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
   // 内置工具（应用自带，无需 MCP 服务器）
@@ -301,38 +323,63 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // LLM 填的 server 名可能与实际配置不一致（省略/偏差），映射到已连接服务器
   const knownServers = new Set(mcpToolsCache.map((t) => t.server));
   const effectiveServer = knownServers.has(server) ? server : (mcpToolsCache[0]?.server ?? server);
-  // 增强浏览器自动化：navigate 时若模型未指定 waitUntil，默认等待网络空闲，
-  // 确保 JS 动态渲染完成，避免紧跟的 screenshot 截到空白页面。
-  if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
-    (args as Record<string, unknown>).waitUntil = "networkidle2";
-  }
-  // 拦截 puppeteer 页面操作：必须先 navigate 打开过网页，否则无从输入/点击/截图。
-  // 防止 agent 跳过导航就直接 fill/click（页面都没打开谈何操作）。
-  if (/^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) && !browserNavigated) {
-    return "⚠️ 尚未打开任何网页，无法执行该操作。请先用 **puppeteer_navigate** 打开目标页面（如 `https://www.baidu.com`），确认页面加载后再输入/点击/提取。";
-  }
-  if (tool === "puppeteer_navigate") {
-    browserNavigated = true;
-  }
-  // puppeteer_screenshot 拦截：①用户/模型可通过 path / savePath 指定保存位置
-  // （自定义参数，剥掉不传给 server）；②server 端会用 width??800/height??600
-  // 重置页面视口，模型未显式指定大小时补齐与浏览器窗口一致的视口，保持页面占满窗口。
+
+  // 浏览器操作（puppeteer_*）全部串行执行（P-M2 并行子代理安全）：
+  // server-puppeteer 是单一浏览器实例，并行子代理/主代理并发 navigate/fill/click
+  // 会互相干扰（两个导航竞争、browserNavigated 标记被并发读写）。用 withBrowserLock
+  // 串行队列保证同一时刻只有一个浏览器操作；非浏览器工具（fetch_page、文件系统、
+  // git/编辑等）不受影响、可并行。导航判定也移进锁内：能看到队列中前一个 navigate
+  // 执行后的真实状态，避免并行时误判「未打开网页」。
+  const isPuppeteer = /^puppeteer_/i.test(tool);
   let screenshotUserPath: string | null = null;
-  if (tool === "puppeteer_screenshot" && args && typeof args === "object") {
-    const a = args as Record<string, unknown>;
-    const sp = a.path ?? a.savePath;
-    if (typeof sp === "string" && sp.trim()) screenshotUserPath = sp.trim();
-    delete a.path;
-    delete a.savePath;
-    if (a.width === undefined || a.height === undefined) {
-      const vp = puppeteerViewport();
-      if (a.width === undefined) a.width = vp.width;
-      if (a.height === undefined) a.height = vp.height;
+  const execute = async (): Promise<{content:{type:string;text?:string;data?:string}[];isError?:boolean}> => {
+    if (isPuppeteer) {
+      // 增强浏览器自动化：navigate 时若模型未指定 waitUntil，默认等待网络空闲，
+      // 确保 JS 动态渲染完成，避免紧跟的 screenshot 截到空白页面。
+      if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
+        (args as Record<string, unknown>).waitUntil = "networkidle2";
+      }
+      // 拦截 puppeteer 页面操作：必须先 navigate 打开过网页，否则无从输入/点击/截图。
+      // 防止 agent 跳过导航就直接 fill/click（页面都没打开谈何操作）。
+      if (/^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) && !browserNavigated) {
+        throw new BrowserNotNavigatedError();
+      }
+      if (tool === "puppeteer_navigate") {
+        browserNavigated = true;
+      }
+      // puppeteer_screenshot 拦截：①用户/模型可通过 path / savePath 指定保存位置
+      // （自定义参数，剥掉不传给 server）；②server 端会用 width??800/height??600
+      // 重置页面视口，模型未显式指定大小时补齐与浏览器窗口一致的视口，保持页面占满窗口。
+      if (tool === "puppeteer_screenshot" && args && typeof args === "object") {
+        const a = args as Record<string, unknown>;
+        const sp = a.path ?? a.savePath;
+        if (typeof sp === "string" && sp.trim()) screenshotUserPath = sp.trim();
+        delete a.path;
+        delete a.savePath;
+        if (a.width === undefined || a.height === undefined) {
+          const vp = puppeteerViewport();
+          if (a.width === undefined) a.width = vp.width;
+          if (a.height === undefined) a.height = vp.height;
+        }
+      }
     }
+    return invoke<{content:{type:string;text?:string;data?:string}[];isError?:boolean}>("mcp_call_tool", {
+      server: effectiveServer, toolName: tool, arguments: args,
+    });
+  };
+  let result: {content:{type:string;text?:string;data?:string}[];isError?:boolean};
+  if (isPuppeteer) {
+    try {
+      result = await withBrowserLock(execute);
+    } catch (e) {
+      if (e instanceof BrowserNotNavigatedError) {
+        return "⚠️ 尚未打开任何网页，无法执行该操作。请先用 **puppeteer_navigate** 打开目标页面（如 `https://www.baidu.com`），确认页面加载后再输入/点击/提取。";
+      }
+      throw e;
+    }
+  } else {
+    result = await execute();
   }
-  const result = await invoke<{content:{type:string;text?:string;data?:string}[];isError?:boolean}>("mcp_call_tool", {
-    server: effectiveServer, toolName: tool, arguments: args,
-  });
   const text = result.content.map(c => c.text || "").join("\n");
   // 若返回了图片数据（如 puppeteer_screenshot 截图），保存到临时文件，
   // 并提示大模型可用 describe_image / ocr_image 分析该截图
@@ -514,12 +561,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
       // 登记子代理记录（可视化面板实时显示）
       const rec = store.spawnSubagent(goal);
-      const sys =
-        "你是道生一的子代理，负责独立完成一个子任务。" +
-        (context ? `\n补充上下文：${context}` : "") +
-        (allowTools
-          ? "\n\n**你可以调用内置工具（git / 文件编辑 replace_string/insert_string/create_file / 跑测试 run_tests / 搜索 web_search / 记忆 memory_recall 等）来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息明确说明无法获取。\n\n" + getMcpToolsPrompt()
-          : "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。");
+      const sys = buildSubagentSysPrompt(context, allowTools);
       let finalText = "";
       try {
         finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, { allowTools });
@@ -536,6 +578,66 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 子代理若也返回工具调用 JSON，则剥离展示
       const visible = finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）";
       return `【子代理结论】\n${visible}`;
+    }
+    case "subagent_parallel": {
+      // P-M2：并行子代理——多个 runSubagentLoop 并发执行（信号量并发池，等价 Promise.all）。
+      // 主代理把任务分解为多个相互独立的子任务后并行收集结果；每个子任务登记独立的
+      // SubagentRecord（可视化面板同时显示各子代理进度）。并发浏览器操作由 withBrowserLock
+      // 自动串行，避免单一浏览器实例互相干扰。
+      const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
+      const tasks: { idx: number; goal: string; context: string; allowTools: boolean }[] = rawTasks
+        .map((t, i) => {
+          const o = (t ?? {}) as Record<string, unknown>;
+          return {
+            idx: i,
+            goal: String(o.goal ?? o.task ?? "").trim(),
+            context: String(o.context ?? ""),
+            allowTools: o.allow_tools !== false,
+          };
+        })
+        .filter((t) => t.goal);
+      if (!tasks.length) {
+        throw new Error("subagent_parallel 需要 tasks 参数（子任务数组 [{goal, context?, allow_tools?}]，至少 1 项）");
+      }
+      const concurrency = Math.max(1, Math.min(4, Number(args.concurrency ?? tasks.length) || tasks.length));
+      const { useChatStore } = await import("./chat");
+      const store = useChatStore();
+      const config = store.getAuxConfig();
+      if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再并行委派子代理");
+
+      // 信号量并发池：最多 concurrency 个 worker 从共享任务队列取任务并行执行
+      const results: { idx: number; ok: boolean; goal: string; text: string }[] = [];
+      let cursor = 0;
+      const workerCount = Math.min(concurrency, tasks.length);
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (cursor < tasks.length) {
+          const task = tasks[cursor++];
+          const rec = store.spawnSubagent(task.goal);
+          const sys = buildSubagentSysPrompt(task.context, task.allowTools);
+          try {
+            const text = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), task.goal, { allowTools: task.allowTools });
+            store.completeSubagent(rec.id, text);
+            results.push({ idx: task.idx, ok: true, goal: task.goal, text });
+          } catch (e) {
+            if (e instanceof AgentStoppedError) {
+              store.failSubagent(rec.id, "已由用户停止");
+              results.push({ idx: task.idx, ok: false, goal: task.goal, text: "（子代理已由用户停止）" });
+            } else {
+              const msg = e instanceof Error ? e.message : String(e);
+              store.failSubagent(rec.id, msg);
+              results.push({ idx: task.idx, ok: false, goal: task.goal, text: `（子代理失败: ${msg}）` });
+            }
+          }
+        }
+      });
+      await Promise.all(workers);
+
+      // 按原始任务顺序汇总（不依赖完成顺序，输出稳定）
+      results.sort((a, b) => a.idx - b.idx);
+      const body = results
+        .map((r, i) => `## 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`)
+        .join("\n\n---\n\n");
+      return `【并行子代理汇总】共 ${results.length} 个子代理（并发 ${workerCount}）\n\n${body}`;
     }
     case "pdf_read": {
       const path = String(args.path || "");
@@ -812,6 +914,19 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
     }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), CHAT_ONCE_TIMEOUT_MS)),
   ]);
+}
+
+/// 构造子代理系统提示（P-M1 起子代理可调内置工具；allowTools=false 则纯对话）。
+function buildSubagentSysPrompt(context: string, allowTools: boolean): string {
+  const base = "你是道生一的子代理，负责独立完成一个子任务。" + (context ? `\n补充上下文：${context}` : "");
+  if (!allowTools) {
+    return base + "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
+  }
+  return (
+    base +
+    "\n\n**你可以调用内置工具（git / 文件编辑 replace_string/insert_string/create_file / 跑测试 run_tests / 搜索 web_search / 记忆 memory_recall 等）来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。\n\n" +
+    getMcpToolsPrompt()
+  );
 }
 
 /// P-M1：子代理带工具循环。子代理不仅能对话，还能调内置工具（git/编辑/测试/搜索/记忆），

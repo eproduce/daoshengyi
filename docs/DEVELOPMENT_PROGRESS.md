@@ -114,6 +114,20 @@
 - **验证**：npx vite build + npm test 35 + cargo check + get_errors 全部通过
 - **经验**：①「一次性启动引导」类 UI 状态必须对数据源做响应式监听，否则异步操作完成后 UI 不更新；②二进制检测候选路径要覆盖官方安装器的默认位置（`/Applications` 与 `~/Applications` 都要）
 
+### ✅ 编程代理 P-M2 并行子代理（多个 runSubagentLoop 并发 + 共享状态竞争处理）
+- **背景**：P-M1 子代理带工具之后，多个子任务只能逐个委派；P-M2 让主代理把任务分解为多个**相互独立**的子任务后**并行**收集结果，大幅节省时间
+- **前端（src/stores/chat.ts）**：
+  - 新增内置工具 `subagent_parallel`（app）：参数 `{tasks: [{goal, context?, allow_tools?}], concurrency?}`——信号量并发池（默认最多 4 worker 并行，等价 Promise.all）；每个子任务登记独立 `SubagentRecord`（SubagentPanel 可视化面板同时显示各子代理 running/completed/failed 进度）；结果按原始任务顺序汇总「## 子任务 N」返回（排序不依赖完成顺序，输出稳定）；单个失败不拖垮其它（捕获记录「（子代理失败: msg）」）
+  - 抽取 `buildSubagentSysPrompt(context, allowTools)`：`subagent_delegate` 与 `subagent_parallel` 复用同一子代理系统提示（避免两处文案漂移）
+  - 系统提示词：内置工具列表加 `subagent_parallel` 描述（使用时机=任务可拆分为相互独立子任务；注意：①子任务必须真正独立否则不要并行②浏览器单一实例、多任务操作浏览器会被自动串行化、需操作不同网页建议主代理串行③子代理不应继续递归并行委派）；`subagent_delegate` 描述改为「单个子任务 + 有多个独立任务用 subagent_parallel」
+- **共享状态竞争处理（P-M2 核心，用户点名）**：
+  - **浏览器串行锁**：新建 `src/utils/browser-lock.ts` 导出 `withBrowserLock(fn)`（Promise 链式互斥锁，FIFO、失败 finally 释放不锁死）+ `browserLockIdle()` 测试辅助；`callMcpTool` 中所有 `puppeteer_*` 调用经 `withBrowserLock` 排队执行——server-puppeteer 是**单一浏览器实例**，并行子代理并发 navigate/fill/click 会互相干扰（两个导航竞争、`browserNavigated` 标记并发读写）；非浏览器工具（fetch_page/文件系统/git 等）不受影响、可并行
+  - **导航判定移进锁内**：`browserNavigated` 守卫原在 invoke 前同步判定，并行时队列中前一个 navigate 尚未执行 → 后一个 fill 会误判「未打开网页」；改为在锁内执行时判定（抛 `BrowserNotNavigatedError` 由 callMcpTool 捕获转友好提示），能看到前一个 navigate 的真实结果
+  - **`refreshMcpTools` 单飞（single-flight）**：并发调用只执行一次、共享同一结果，避免并行子代理/主代理同时刷新时交错清空 `mcpToolsCache` 导致读到空缓存
+- **测试（scripts/test-templates-tools.mts）**：新增 `withBrowserLock` 3 项（并发严格 FIFO 串行 / 前一个失败队列继续不锁死 / 三操作保持顺序）→ npm test 38 项通过
+- **验证**：npm test 38 + vite build + get_errors 全部通过
+- **后续**：P-M3 角色分工（规划者/执行者/验证者/评审者角色模板 + 工具集约束）→ P-M4 主代理汇总仲裁 → P-A6 本地语义 embedding
+
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

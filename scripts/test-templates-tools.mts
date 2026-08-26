@@ -1,6 +1,7 @@
 // 临时测试：提示词模板数据 + ReAct 工具调用解析
 import { PROMPT_TEMPLATES } from "../src/data/prompt-templates.ts";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText } from "../src/utils/tool-call.ts";
+import { withBrowserLock, browserLockIdle } from "../src/utils/browser-lock.ts";
 
 let pass = 0;
 let fail = 0;
@@ -93,6 +94,34 @@ assert(!dsmlBare.includes('list_directory'), 'stripToolJson 剥离 DSML 裸 JSON
 
 const treeResult = formatToolResultPreview('directory_tree', '📁 op/\n├── app\n│   └── src\n└── docs');
 assert(treeResult.includes('├── app') && treeResult.includes('└── docs'), 'directory_tree 预览保留树状结构');
+
+// 浏览器串行锁（P-M2 并行子代理安全）：并发 puppeteer 操作必须严格 FIFO 串行，
+// 且前一个失败不能锁死队列（finally 释放）
+console.log("\n== withBrowserLock 浏览器串行锁 ==");
+{
+  const order: string[] = [];
+  await Promise.all([
+    withBrowserLock(async () => { order.push("a-start"); await new Promise(r => setTimeout(r, 30)); order.push("a-end"); }),
+    withBrowserLock(async () => { order.push("b-start"); order.push("b-end"); }),
+  ]);
+  assert(order.join(",") === "a-start,a-end,b-start,b-end", "并发操作严格串行（FIFO）", order.join(","));
+
+  const order2: string[] = [];
+  const p1 = withBrowserLock(async () => { order2.push("x"); throw new Error("boom"); });
+  const p2 = withBrowserLock(async () => { order2.push("y"); });
+  await Promise.allSettled([p1, p2]);
+  assert(order2.join(",") === "x,y", "前一个失败后队列继续（不锁死）", order2.join(","));
+
+  // 三个并发：保持插入顺序
+  const order3: string[] = [];
+  await Promise.all([
+    withBrowserLock(async () => { order3.push("1"); await new Promise(r => setTimeout(r, 10)); }),
+    withBrowserLock(async () => { order3.push("2"); await new Promise(r => setTimeout(r, 5)); }),
+    withBrowserLock(async () => { order3.push("3"); }),
+  ]);
+  assert(order3.join(",") === "1,2,3", "三操作保持队列顺序", order3.join(","));
+  await browserLockIdle();
+}
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
