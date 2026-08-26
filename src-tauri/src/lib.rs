@@ -3379,6 +3379,58 @@ pub fn run() {
                 });
             }
 
+            // 系统托盘（Phase 5）：常驻菜单栏图标，左键显示/隐藏主窗口，右键菜单可新建对话/退出。
+            // 复用「menu://action」事件通道：前端 main.ts 已有 new-chat 分发，无需新增前端监听。
+            {
+                let tray_menu = tauri::menu::Menu::with_items(
+                    app,
+                    &[
+                        &tauri::menu::MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?,
+                        &tauri::menu::MenuItem::with_id(app, "tray-new-chat", "新建对话", true, None::<&str>)?,
+                        &tauri::menu::PredefinedMenuItem::separator(app)?,
+                        &tauri::menu::PredefinedMenuItem::quit(app, Some("退出道生一"))?,
+                    ],
+                )?;
+                let _tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
+                    .icon(app.default_window_icon().cloned().ok_or("窗口图标缺失")?)
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .tooltip("道生一 - AI Agent")
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "tray-new-chat" => {
+                            let _ = app.emit("menu://action", "new-chat");
+                        }
+                        "tray-show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.unminimize();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        // 左键单击：切换主窗口显示/隐藏（再点托盘图标唤回）
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(win) = app.get_webview_window("main") {
+                                if win.is_visible().unwrap_or(true) {
+                                    let _ = win.hide();
+                                } else {
+                                    let _ = win.show();
+                                    let _ = win.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
+
             // devtools 默认不自动打开；需要调试时用环境变量开启：
             //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
             #[cfg(debug_assertions)]
