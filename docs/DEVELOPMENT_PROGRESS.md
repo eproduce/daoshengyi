@@ -2,9 +2,20 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-08-25**
+> **最后更新：2026-08-27**
 
 ---
+
+## 2026-08-27
+
+### ✅ 长期记忆 §3 补全 + Phase 3 知识库 RAG + Phase 5 系统托盘 + 可视化工作流
+- **长期记忆 §3 补全（2.2/3.2/3.3）**：新建 `src/utils/memory-format.ts` 纯函数——`formatMemoriesBlock`（**来源标注**：类型/重要度/相对时间 + **1200 字符注入剪裁**并提示截断）、`pickForgetCandidates`（重要度≤2 + 30 天未访问 + 非偏好 = **遗忘候选**）、`relTime`/`factTypeLabel`；`memory.ts retrieveMemories` 接入 memoryEnabled 开关 + memoryRecallLimit 检索条数（settings.rs/appSettings 加字段）+ 剪裁；`MemoryPanel` 加「记忆配置」行（启用开关 + 检索条数）+「遗忘候选」区块（可删除）。**踩坑**：P-A9 曾误删 BookOpen/History 图标导入——vue-tsc/vite build 都不报（模板引用不检），**运行时才崩**；改 .vue 导入后必须核对模板引用
+- **Phase 3 知识库 RAG**：db.rs 加 `kb_chunks`/`kb_chunks_fts` 表 + `kb_clear`/`kb_add_chunk`/`kb_search`/`kb_list`/`kb_delete`（FTS5 unigram 复用 cjk_terms）；lib.rs 命令 `kb_index`（**`chunk_text` 800 字符分块**、md/txt/代码/PDF、P-A8 沙箱白名单、重建式）/`kb_search`/`kb_list`/`kb_delete`；前端内置工具 `kb_index`/`kb_search`/`kb_list` + BUILTIN_TOOLS 描述。**踩坑**：KbChunk/KbInfo 结构体必须在 db.rs **模块级**（不能放 impl 块内）；`kb_index` 内 base64 需 `use base64::Engine as _`
+- **Phase 5 系统托盘**：Cargo 开 `tray-icon` feature；`TrayIconBuilder`——**macOS 模板图**（gen-icons.cjs 生成纯黑 `tray-icon.png` + `.icon_as_template(true)` 自动适配深/浅菜单栏，不能用彩色 app 图标会带色块）；左键切换窗口、右键菜单（显示/新建对话/退出）；复用 `menu://action` 事件通道。**踩坑**：`tray.app_handle()` 返回 `&AppHandle` 非 Option
+- **Phase 3 可视化工作流编辑器**：依赖 `@vue-flow/core@1.48`；`src/utils/workflow-engine.ts` 纯 DAG 引擎——`topoSort`（拓扑序 + 环检测）/`renderTemplate`（`{{id}}` 占位替换）/`executeWorkflow`（text/llm/tool/end 节点，LLM/工具调用经 `WorkflowRuntime` 注入可测、外部输入 `{{user}}`）；`WorkflowDialog.vue`——Vue Flow 画布 + 节点面板（文本/LLM/工具/结束）+ 点击配置（LLM 提示词/模型、工具名+参数 JSON、文本内容）+ 运行（LLM 走 chat_once、工具走 callMcpTool）+ 运行日志/终端输出 + 导入/导出 JSON；入口=工具菜单「可视化工作流」（ui.workflowOpen）。**踩坑**：①vue-flow 1.x `Node`/`Edge` 泛型极深触发 **TS2589 深度实例化**——内部 ref 用 `any[]` 承载；②模板内字面 `{{...}}` 会被 Vue 当插值/字符串引号混用报「Unterminated string constant」——用 HTML 实体 `&#123;&#123;` 表示字面占位符
+- **自测（加强）**：前端新增 13 项（记忆格式化/遗忘候选 5 + 工作流引擎 8）→ **npm test 97**；Rust 新增 4 项（chunk_text 3 + kb 1）→ **cargo test --lib 44**；vue-tsc + vite build + cargo check 全过
+- **经验**：①vue-flow 等重度泛型库在 ref 上做 `.find/.filter` 易触发深度实例化，用 `any[]` 承载最省事；②模板里要展示字面双花括号占位符用 HTML 实体；③`chunk_text` 两行合计不超 size 会合并成一块——测断行要用合计超 size 的场景
+- **待做**：知识库语义向量检索（Ollama 分块 embedding）；工作流条件分支/代码节点、工作流市场；全局快捷键（需插件依赖）
 
 ## 2026-08-26
 

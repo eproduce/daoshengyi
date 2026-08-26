@@ -175,8 +175,8 @@
 |---|------|------|
 | 知识库 RAG（Phase 3 部分） | ✅ | `kb_chunks` 表 + `kb_chunks_fts`（FTS5 unigram）；Rust `kb_index`（扫描 md/txt/代码/PDF，`chunk_text` 分块 800 字符、P-A8 沙箱白名单、重建式）、`kb_search`（FTS5 关键词）、`kb_list`/`kb_delete`；前端内置工具 `kb_index`/`kb_search`/`kb_list` + 提示词。待做：Ollama 分块语义向量检索（复用 `ollama_embed`） |
 | 系统托盘（Phase 5 部分） | ✅ | Cargo 开 `tray-icon` feature；`TrayIconBuilder`（**macOS 模板图 `tray-icon.png` + `icon_as_template`** 自动适配深浅菜单栏；左键切换窗口、菜单新建对话/退出） |
+| 可视化工作流编辑器（Phase 3） | ✅ | 依赖 `@vue-flow/core`；`workflow-engine.ts` 纯 DAG 引擎（topoSort 环检测 / renderTemplate `{{id}}` 占位 / executeWorkflow：text/llm/tool/end 节点，runtime 注入可测）；`WorkflowDialog.vue`（画布 + 节点面板 + 配置编辑 + 运行（LLM 走 chat_once / 工具走 callMcpTool）+ 日志/输出 + 导入导出 JSON）；入口=工具菜单「可视化工作流」。待做：条件分支/代码节点、工作流市场 |
 | 全局快捷键（Phase 5） | ⬜ | 需 `@tauri-apps/plugin-global-shortcut` 依赖 + 能力授权 |
-| 可视化工作流编辑器（Phase 3） | ⬜ | 需 `@vue-flow/core` 依赖 + 工作流 DAG 引擎（LLM/工具/条件/代码节点） |
 
 ---
 
