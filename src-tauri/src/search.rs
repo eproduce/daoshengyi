@@ -8,27 +8,89 @@ pub struct SearchResult {
 }
 
 pub async fn search_web(query: &str) -> Result<Vec<SearchResult>, String> {
-    // 多源综合：百度 + 必应 + 360 + 搜狗 **并行** 抓取（全为国内可直连），
-    // 合并去重后返回。单源可能被反爬/返回空/质量差，综合多源提升覆盖率与准确率。
+    // 多源综合：百度 + 必应 + 360 + 搜狗 **并行** 抓取（全为国内可直连）。
+    // 单源可能被反爬/返回空/质量差；更重要的是避免「单一源填满」——当某源被反爬
+    // 或对查询解析失败时，其余源照常补上；且单源占比受限，防止无关结果刷屏。
     let baidu_fut = async { search_baidu(query).await.unwrap_or_default() };
     let bing_fut = async { search_bing(query).await.unwrap_or_default() };
     let so360_fut = async { search_360(query).await.unwrap_or_default() };
     let sogou_fut = async { search_sogou(query).await.unwrap_or_default() };
     let (baidu, bing, so360, sogou) = futures::join!(baidu_fut, bing_fut, so360_fut, sogou_fut);
 
-    // 合并去重（按 域名+路径 去重，百度优先、必应/360/搜狗补充），上限 20 条
+    // 各源取前 N 条后合并去重（限制单一源占比：每源最多 5 条，总上限 15 条）
+    let sources = [baidu, bing, so360, sogou];
     let mut seen = std::collections::HashSet::new();
     let mut merged = Vec::new();
-    for r in baidu.into_iter().chain(bing.into_iter()).chain(so360.into_iter()).chain(sogou.into_iter()) {
-        let key = dedup_key(&r.url);
-        if seen.insert(key) {
-            merged.push(r);
-            if merged.len() >= 20 { break; }
+    for src in sources.iter() {
+        let mut src_added = 0;
+        for r in src {
+            if src_added >= 5 { break; }
+            let key = dedup_key(&r.url);
+            if seen.insert(key) {
+                merged.push(r.clone());
+                src_added += 1;
+                if merged.len() >= 15 { break; }
+            }
         }
+        if merged.len() >= 15 { break; }
+    }
+    // 相关性过滤：剔除与查询词完全无共现词的结果（防止某源无关结果刷屏，
+    // 如中文问题返回英文股票页）。
+    if merged.len() >= 3 {
+        let kept = filter_relevant(query, &merged);
+        // 若过滤后仍有结果则用过滤后的，否则保留原结果（宁缺毋滥时也尽量给）
+        if !kept.is_empty() { return Ok(kept); }
+        return Ok(merged);
     }
     if !merged.is_empty() { return Ok(merged); }
     // 全部无结果再兜底 DuckDuckGo HTML（境外，国内直连可能不稳）
     search_duckduckgo(query).await
+}
+
+/// 相关性过滤（纯函数，可测试）：剔除与查询词无共现的结果，以及明显的低质噪声。
+/// 查询中文按字切（"人工智能"→"人 工 智 能"），英文按词。
+/// 过滤规则：
+/// - 结果文本需命中查询词（任一查询字/词）；英文大小写不敏感
+/// - 剔除明显无关的低质结果（单字词典释义 / 股票行情 / 论坛提问等噪声特征）
+fn filter_relevant(query: &str, results: &[SearchResult]) -> Vec<SearchResult> {
+    let query_terms: Vec<String> = cjk_terms(query).split_whitespace().map(|s| s.to_string()).collect();
+    if query_terms.is_empty() { return Vec::new(); }
+    // 低质噪声特征：单字/词典释义、股票行情、无意义问答
+    let noise_patterns = [
+        "的意思", "怎么读", "读音", "组成一个字", "拼音", "近义词", "反义词", "造句",
+        "stock", "quote", "share price", "stock price", "finance.yahoo", "google finance",
+        "ask-", "zhidao.baidu.com/question/",
+    ];
+    results
+        .iter()
+        .filter(|r| {
+            let text = format!("{} {}", r.title, r.snippet).to_lowercase();
+            // 命中任一查询词
+            let has_query = query_terms.iter().any(|t| text.contains(&t.to_lowercase()));
+            if !has_query { return false; }
+            // 剔除噪声（标题命中即排除）
+            let title_low = r.title.to_lowercase();
+            !noise_patterns.iter().any(|n| title_low.contains(n))
+        })
+        .cloned()
+        .collect()
+}
+
+/// 查询词切分（相关性过滤用）：中文按字切（FTS 同款 unigram），英文按空白词小写
+fn cjk_terms(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_ascii = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            if prev_ascii { out.push(c); }
+            else { out.push(' '); out.push(c.to_ascii_lowercase()); prev_ascii = true; }
+        } else if c.is_whitespace() {
+            prev_ascii = false;
+        } else {
+            out.push(' '); out.push(c); prev_ascii = false;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// 去重键：去掉协议/www 前缀与查询串/片段，按 域名+路径 归并
@@ -248,7 +310,9 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
         return Ok(Vec::new());
     }
     let mut results = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
     let mut pos = 0;
+    // 先解析普通结果 rb，再补垂直/卡片结果 vr-title（整句查询搜狗常返回 vr 卡片而非 rb）
     while results.len() < 10 {
         let start = match html[pos..].find("class=\"rb\"") {
             Some(i) => pos + i, None => break,
@@ -258,15 +322,35 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
         };
         let block = &html[start..end];
         let title = extract_sogou_title(block);
-        if title.is_empty() { pos = end + 5; continue; }
-        // 链接可能是相对路径 /link?url=...，补全搜狗域名
-        let mut href = extract_attr(block, "href=\"", "\"");
-        if href.starts_with('/') { href = format!("https://www.sogou.com{}", href); }
-        let snippet = extract_sogou_summary(block);
-        if !href.is_empty() && href.starts_with("http") {
-            results.push(SearchResult { title, url: href, snippet: snippet.chars().take(300).collect() });
+        if !title.is_empty() {
+            // 链接可能是相对路径 /link?url=...，补全搜狗域名
+            let mut href = extract_attr(block, "href=\"", "\"");
+            if href.starts_with('/') { href = format!("https://www.sogou.com{}", href); }
+            let snippet = extract_sogou_summary(block);
+            if href.starts_with("http") && seen_urls.insert(href.clone()) {
+                results.push(SearchResult { title, url: href, snippet: snippet.chars().take(300).collect() });
+            }
         }
         pos = end + 5;
+    }
+    // 补充 vr-title 卡片（标题在 <h3 class="vr-title"> 内的 <a> 中，链接可能是相对路径）
+    if results.len() < 6 {
+        let mut pos2 = 0;
+        while results.len() < 10 {
+            let start = match html[pos2..].find("class=\"vr-title") {
+                Some(i) => pos2 + i, None => break,
+            };
+            let end = (start + 1000).min(html.len());
+            let block = &html[start..end];
+            // 提取 <a ...>...</a> 内的标题文本
+            let title = extract_vr_title(block);
+            let mut href = extract_attr(block, "href=\"", "\"");
+            if href.starts_with('/') { href = format!("https://www.sogou.com{}", href); }
+            if !title.is_empty() && href.starts_with("http") && seen_urls.insert(href.clone()) {
+                results.push(SearchResult { title, url: href, snippet: String::new() });
+            }
+            pos2 = end;
+        }
     }
     if !results.is_empty() {
         eprintln!("[Sogou] {} results", results.len());
@@ -279,6 +363,21 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
 /// 搜狗标题：<h3 class="pt"> 内 <a> 文本
 fn extract_sogou_title(block: &str) -> String {
     extract_tag(block, "<h3", "</h3>")
+}
+
+/// 搜狗 vr 卡片标题：<h3 class="vr-title"> 内第一个 <a> 的文本（排除 style 等噪声）
+fn extract_vr_title(block: &str) -> String {
+    // 在 h3 范围内找 <a ...>，取其闭合前文本
+    let h3_start = match block.find("class=\"vr-title") { Some(i) => i, None => return String::new() };
+    let seg = &block[h3_start..];
+    let a_start = match seg.find("<a") { Some(i) => i, None => return String::new() };
+    let a_gt = match seg[a_start..].find('>') { Some(i) => a_start + i + 1, None => return String::new() };
+    let a_end = match seg[a_gt..].find("</a>") { Some(i) => a_gt + i, None => return String::new() };
+    let raw = &seg[a_gt..a_end];
+    // 只取可见文本（去标签、去注释）
+    let clean = strip_html(raw);
+    let clean = clean.replace("<!--red_beg-->", "").replace("<!--red_end-->", "");
+    clean.trim().to_string()
 }
 
 /// 搜狗摘要：<div class="ft"> 内文本
@@ -611,4 +710,56 @@ mod tests {
         assert_eq!(dedup_key("https://example.com/path#frag"), "example.com/path");
         assert_eq!(dedup_key("https://example.com/path"), "example.com/path");
     }
+
+    #[test]
+    fn test_filter_relevant_keeps_matching_drops_unrelated() {
+        let results = vec![
+            SearchResult { title: "什么是人工神经网络 - 知乎".into(), url: "https://zhihu.com/a".into(), snippet: "人工神经网络由大量神经元组成".into() },
+            SearchResult { title: "Microsoft Corporation (MSFT) Stock".into(), url: "https://finance.yahoo.com/quote/MSFT".into(), snippet: "stock price news".into() },
+            SearchResult { title: "深度学习与神经网络入门".into(), url: "https://example.com/b".into(), snippet: "神经网络是深度学习的基础".into() },
+        ];
+        // 查询"人工智能神经网络"→ 字切后应保留含"神/经/网/络"的，剔除纯英文 MSFT
+        let kept = filter_relevant("人工智能神经网络", &results);
+        assert_eq!(kept.len(), 2, "应剔除无关的 MSFT 股票结果，保留中文相关结果: {:?}", kept.iter().map(|r| &r.title).collect::<Vec<_>>());
+        assert!(kept.iter().any(|r| r.url.contains("zhihu")), "应保留知乎结果");
+        assert!(!kept.iter().any(|r| r.url.contains("yahoo")), "应剔除 MSFT");
+    }
+
+    #[test]
+    fn test_filter_relevant_english_case_insensitive() {
+        let results = vec![
+            SearchResult { title: "DeepSeek V4 model".into(), url: "https://x.com".into(), snippet: "deepseek".into() },
+            SearchResult { title: "无关内容".into(), url: "https://y.com".into(), snippet: "xxx".into() },
+        ];
+        let kept = filter_relevant("DeepSeek", &results);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].url, "https://x.com");
+    }
+
+    #[test]
+    fn test_filter_relevant_removes_noise() {
+        let results = vec![
+            // 命中查询但属词典释义噪声 → 应剔除
+            SearchResult { title: "人工的意思_人工的解释".into(), url: "https://hanyu.com".into(), snippet: "人工 的意思".into() },
+            // 命中查询的真实结果 → 应保留
+            SearchResult { title: "人工神经网络入门教程".into(), url: "https://real.com".into(), snippet: "人工神经网络".into() },
+            // 股票噪声 → 应剔除
+            SearchResult { title: "Microsoft (MSFT) stock quote".into(), url: "https://finance.yahoo.com/quote/MSFT".into(), snippet: "microsoft stock price".into() },
+        ];
+        let kept = filter_relevant("人工神经网络", &results);
+        assert_eq!(kept.len(), 1, "应只保留真实结果，剔除词典释义和股票噪声: {:?}", kept.iter().map(|r| &r.title).collect::<Vec<_>>());
+        assert_eq!(kept[0].url, "https://real.com");
+    }
+
+    /// 诊断：清洗后关键词的搜索结果相关性（手动：cargo test search::tests::diag_ai_search -- --ignored --nocapture）
+    #[tokio::test]
+    #[ignore]
+    async fn diag_ai_search() {
+        let r = search_web("人工智能神经网络").await.expect("搜索失败");
+        eprintln!("=== 查询'人工智能神经网络' 综合 {} 条 ===", r.len());
+        for x in r.iter().take(10) {
+            eprintln!("  [{}] {}", x.title.chars().take(40).collect::<String>(), x.url.chars().take(55).collect::<String>());
+        }
+    }
+
 }

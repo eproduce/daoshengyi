@@ -8,6 +8,19 @@
 
 ## 2026-08-26
 
+### ✅ 联网搜索无关结果修复（三层根因：关键词清洗 / 单源填满 / 相关性过滤）
+- **用户报告**：搜索"说说什么是人工智能神经网络"返回 11 条全是微软股票（MSFT）等完全无关内容
+- **根因链（三层叠加）**：
+  1. **关键词清洗 bug（主因）**：`extractSearchKeywords("说说什么是人工智能神经网络")` 返回**完整整句**——疑问词正则是"是什么"（X 是什么），用户是"**什么是**X"方向反了没匹配；"说说/介绍一下"等请求动词没清。整句含疑问词传给搜索引擎，质量天然差
+  2. **单源填满**：综合搜索 `search_web` 原实现 4 源无限制合并，当百度反爬（实测 1488 字节验证页）、搜狗对整句返回 0 个 rb 块时，**Bing 一家结果填满 20 条**——Bing 对中文整句返回英文无关（MSFT 股票）
+  3. **无相关性过滤**：任何来源的无关结果都会被原样返回
+- **修复**：
+  - `extractSearchKeywords` 重写：补"什么是/说说/讲讲/介绍一下/是做什么的/干什么的/干嘛的/的最新"等 30+ 词；截断 12 字；清洗后为空回退前 12 字。实测："说说什么是人工智能神经网络"→"人工智能神经网络"、"华为技术有限公司是做什么的"→"华为技术有限公司"
+  - `search_web` 多源合并改**每源最多 5 条、总上限 15 条**（防单源填满）+ **`filter_relevant` 相关性过滤**（纯函数）：剔除与查询词无共现的结果 + 低质噪声（词典释义"的意思/怎么读/拼音/造句"、股票行情 stock/quote、问答链接）
+  - `search_sogou` 增强：整句查询搜狗返回 vr-title 卡片而非 rb 块 → 新增 `extract_vr_title`（提取 h3.vr-title 内 <a> 文本，修复原来把整个 block 当标题的 bug）
+- **验证**：问题场景"人工智能神经网络"从"12 条含 MSFT 股票+4 条'人工'单字释义"→"6 条高质量相关结果"（MBA智库/搜狐科普/知乎入门/微信简史）；cargo test 24 项（search 8 项含 3 个 filter_relevant 测试）+ npm test 35 通过
+- **经验**：①搜索引擎对高频请求 IP 级限流是常态（诊断时多次 curl 被限），低频真实使用正常；②"单源结果填满"是多源综合的隐藏陷阱，必须限制单源占比；③中文查询词清洗要同时覆盖"是什么/什么是"两种语序 + 口语请求动词
+
 ### ✅ 编程代理 P-A2 验证循环 + P-A3 代码库理解（analyze_project）
 - **P-A2 验证循环**：Rust `run_tests(cwd, command?, args?, timeout)` 命令——自动检测项目测试框架（`detect_test_framework` 纯函数：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest，可显式 command 覆盖）；tokio 子进程 + 超时(默认 300s) + 审计，返回结构化 `TestOutput`（framework/command/stdout/stderr/exit_code/timed_out）。前端 `run_tests` 内置工具：返回「【测试结果】框架/命令/✅通过❌失败 + 失败项/错误摘要(正则提取 FAILED/error/panicked 前 15 行)」；系统提示词加「验证循环」门禁：改代码必跑测试、失败必修复再跑直到通过
 - **P-A3 代码库理解**：Rust `analyze_project(root)` 命令——技术栈识别（Cargo.toml→Rust、package.json→TS/JS、pyproject→Python、go.mod→Go、vite.config/App.vue→Vue）、manifest 信息（Cargo 包名/npm 包名+scripts）、源码按扩展名统计（跳过 node_modules/.git/target/dist/build 等）、顶层结构（限制 60 项）；返回结构化 `ProjectAnalysis`。前端 `analyze_project` 工具：返回「【项目分析】技术栈/包信息/源码文件数/顶层结构」；提示词引导分析项目前先调用建立认知
