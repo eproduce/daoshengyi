@@ -1463,10 +1463,12 @@ export const useChatStore = defineStore("chat", () => {
     // 命令执行期间防止系统休眠（长任务可能超 30 秒）
     await setPreventSleep(true);
     try {
+      // 整条命令交给后端 shell（/bin/sh -c）执行，支持 ~ 展开/管道/&& 等 shell 语法；
+      // parseCommandLine 只用于判空与展示，不再拆分传参（拆分会丢失引号与 shell 语义）
       const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>(
         "execute_command", {
-          command,
-          args,
+          command: cmdStr,
+          args: [] as string[],
           cwd: getSettings().workspace || null,
           timeoutSecs: 30,
         },

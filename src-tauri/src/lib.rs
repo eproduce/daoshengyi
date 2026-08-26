@@ -1982,7 +1982,10 @@ async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Resul
     Ok(())
 }
 
-/// 执行终端命令（一次性返回输出，默认 60 秒超时）
+/// 执行终端命令（一次性返回输出，默认 60 秒超时）。
+/// 通过 /bin/sh -c 执行**整条命令**：支持管道/重定向/~ 展开/&& 等 shell 语法（此前
+/// 直接 Command::new 执行第一个词，`~` 不展开、管道不生效、非可执行文件报启动错误）。
+/// 用进程组（process_group(0)）便于超时/取消时连同子进程一起终止，避免 sleep 等残留。
 #[tauri::command]
 async fn execute_command(
     db: State<'_, Database>,
@@ -1991,21 +1994,56 @@ async fn execute_command(
     cwd: Option<String>,
     timeout_secs: Option<u64>,
 ) -> Result<CommandOutput, String> {
+    let start = std::time::Instant::now();
+    // command 视为整条命令行（前端 /run 传整条、args 为空）；兼容旧调用（args 非空则追加）
+    let full_cmd = if args.is_empty() {
+        command.clone()
+    } else {
+        format!("{} {}", command, args.join(" "))
+    };
+    let audit_args = full_cmd.clone();
+    let out = run_shell_command(&full_cmd, cwd.as_deref(), timeout_secs).await;
+    let duration = start.elapsed().as_millis() as i64;
+    match &out {
+        Ok(CommandOutput { exit_code, stdout, stderr, timed_out: _ }) => {
+            let _ = db.log_tool_call(
+                "command",
+                &audit_args,
+                &format!("exit={} out={} err={}", exit_code, stdout, stderr),
+                *exit_code != 0,
+                duration,
+            );
+        }
+        Err(e) => {
+            let _ = db.log_tool_call("command", &audit_args, &format!("启动失败: {}", e), true, duration);
+        }
+    }
+    out
+}
+
+/// 通过 /bin/sh -c 执行整条 shell 命令，返回结构化输出。
+/// 独立成函数便于单元测试（不依赖 Tauri State）；进程组保证超时能杀干净子进程。
+async fn run_shell_command(
+    full_cmd: &str,
+    cwd: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> Result<CommandOutput, String> {
     use tokio::io::AsyncReadExt;
 
-    let start = std::time::Instant::now();
-    let audit_args = format!("{} {}", command, args.join(" "));
-
-    let mut cmd = tokio::process::Command::new(&command);
-    cmd.args(&args);
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(full_cmd);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
+    // 新进程组：超时/drop 时能 kill 整个进程组（含 sh 派生的子进程）
+    #[cfg(unix)]
+    cmd.process_group(0);
     if let Some(dir) = cwd {
-        cmd.current_dir(&dir);
+        cmd.current_dir(dir);
     }
 
     let mut child = cmd.spawn().map_err(|e| format!("启动命令失败: {}", e))?;
+    let pid = child.id().unwrap_or(0) as i32; // process_group(0) 后 pgid == pid，可 kill(-pid) 杀整个组
     let mut stdout_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
     let mut stderr_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
 
@@ -2024,35 +2062,25 @@ async fn execute_command(
     })
     .await;
 
-    let duration = start.elapsed().as_millis() as i64;
-
     match result {
         Ok((_, _, status_res, out_buf, err_buf)) => {
             let status = status_res.map_err(|e| format!("等待命令失败: {}", e))?;
-            let stdout = String::from_utf8_lossy(&out_buf).to_string();
-            let stderr = String::from_utf8_lossy(&err_buf).to_string();
-            let exit_code = status.code().unwrap_or(-1);
-            let _ = db.log_tool_call(
-                "command",
-                &audit_args,
-                &format!("exit={} out={} err={}", exit_code, stdout, stderr),
-                exit_code != 0,
-                duration,
-            );
             Ok(CommandOutput {
-                stdout,
-                stderr,
-                exit_code,
+                stdout: String::from_utf8_lossy(&out_buf).to_string(),
+                stderr: String::from_utf8_lossy(&err_buf).to_string(),
+                exit_code: status.code().unwrap_or(-1),
                 timed_out: false,
             })
         }
         Err(_) => {
-            // 超时：child 因 kill_on_drop 被自动终止
-            let msg = format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60));
-            let _ = db.log_tool_call("command", &audit_args, &msg, true, duration);
+            // 超时：kill 整个进程组（sh 及其子进程）；kill_on_drop 只杀 sh 会残留 sleep 等子进程
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
             Ok(CommandOutput {
                 stdout: String::new(),
-                stderr: msg,
+                stderr: format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60)),
                 exit_code: -1,
                 timed_out: true,
             })
@@ -3221,7 +3249,7 @@ pub fn run() {
 mod tests {
     use super::{
         apply_edits, delete_file_agent, detect_test_framework, diff_lines, format_unified_diff,
-        nth_occurrence, validate_git_operation, EditOp,
+        nth_occurrence, run_shell_command, validate_git_operation, EditOp,
     };
 
     /// 在真实 HOME 下建独立临时目录（apply_edits 要求主目录内路径）。
@@ -3405,6 +3433,46 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_shell_supports_tilde_expansion_and_pipe() {
+        // ~ 展开为 HOME
+        let out = run_shell_command("echo ~", None, Some(10)).await.unwrap();
+        assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            assert_eq!(out.stdout.trim(), home, "~ 应展开为 HOME，实际: {}", out.stdout);
+        }
+        // 管道
+        let out2 = run_shell_command("echo abc | tr a-z A-Z", None, Some(10)).await.unwrap();
+        assert_eq!(out2.exit_code, 0, "stderr: {}", out2.stderr);
+        assert_eq!(out2.stdout.trim(), "ABC", "管道应生效: {}", out2.stdout);
+        // shell 内建 + &&
+        let out3 = run_shell_command("cd /tmp && pwd", None, Some(10)).await.unwrap();
+        assert_eq!(out3.exit_code, 0, "stderr: {}", out3.stderr);
+        assert!(out3.stdout.contains("/tmp"), "cd && pwd 应生效: {}", out3.stdout);
+    }
+
+    #[tokio::test]
+    async fn run_shell_timeout_kills_process_group() {
+        let start = std::time::Instant::now();
+        let out = run_shell_command("sleep 30", None, Some(2)).await.unwrap();
+        assert!(out.timed_out, "应标记超时");
+        assert!(out.stderr.contains("超时"), "stderr: {}", out.stderr);
+        assert!(start.elapsed().as_secs() < 15, "应在 2s 超时终止而非等 30s（进程组被杀）");
+    }
+
+    #[tokio::test]
+    async fn run_shell_unknown_command_reports_exit_127() {
+        // 非可执行命令（如 list）：走 shell 后是「command not found」（exit 127）而非启动失败
+        let out = run_shell_command("list", None, Some(5)).await.unwrap();
+        assert_eq!(out.exit_code, 127, "list 应报 command not found: {}", out.stderr);
+        assert!(
+            out.stderr.contains("not found") || out.stderr.contains("未找到"),
+            "stderr 应提示找不到命令: {}",
+            out.stderr
+        );
     }
 
     #[test]
