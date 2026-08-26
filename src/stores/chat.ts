@@ -1438,7 +1438,10 @@ export const useChatStore = defineStore("chat", () => {
     return `❌ 执行失败（退出码 ${code}${map[code] ? `：${map[code]}` : ""}）`;
   }
 
-  async function runCommand(cmdStr: string) {
+  async function runCommand(raw: string) {
+    // 输入法容错：全角波浪号 ～（U+FF5E）→ 半角 ~（U+007E）——shell 只认半角 ~ 做 HOME 展开，
+    // 中文输入法下输入 ~ 常被转成全角 ～ 导致 `～/l.txt` 找不到。这里统一归一化后再执行与展示。
+    const cmdStr = raw.replace(/～/g, "~");
     const { command, args } = parseCommandLine(cmdStr);
     if (!command) return;
 
