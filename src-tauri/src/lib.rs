@@ -3026,7 +3026,6 @@ fn build_app_menu<R: tauri::Runtime>(
         &MenuItem::with_id(app, "open-stats", "用量统计", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-agents", "编码 Agent 委派", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-memory", "长期记忆", true, None::<&str>)?,
     ])?;
 
@@ -3045,7 +3044,7 @@ pub fn run() {
                 "about", "settings", "new-chat", "export-md",
                 "toggle-sidebar", "toggle-theme",
                 "open-skills", "open-mcp", "open-ollama",
-                "open-stats", "open-tasks", "open-health", "open-agents",
+                "open-stats", "open-tasks", "open-health",
                 "open-memory",
             ];
             if ACTIONS.contains(&id) {

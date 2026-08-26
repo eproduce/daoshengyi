@@ -43,7 +43,6 @@ listen<string>("menu://action", (e) => {
     case "open-stats": ui.openSettings("stats"); break;
     case "open-tasks": ui.openSettings("tasks"); break;
     case "open-health": ui.openSettings("health"); break;
-    case "open-agents": ui.openSettings("agents"); break;
     case "open-memory": ui.openSettings("memory"); break;
   }
 }).catch(() => {});

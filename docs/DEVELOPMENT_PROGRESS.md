@@ -36,6 +36,16 @@
 - **踩坑**：模块级 callBuiltinTool 内调用 `useChatStore()` 取 store 实例需在函数体内（运行时 pinia 已激活），不能在模块顶层调用
 - **后续**：P-A6 本地语义 embedding 为下一优先级
 
+### ✅ 外部编码 Agent 降级 + 多 agent 协作路线确立（2026-08-26 架构决策）
+- **背景决策**：道生一已具备内置编码能力（P-A1~P-A5），外部编码 Agent（Claude Code/Codex）委派是过渡方案；终局为**零外部编码依赖、多 agent 协作内置化**
+- **退役路线（写入 ROADMAP §4.5）**：阶段一（当前）外部委派降级为隐藏兜底 → 阶段二内置多 agent 协作（子代理带工具/并行/角色分工/主代理仲裁）→ 阶段三多 agent 成熟后彻底移除外部委派代码
+- **第一步落地**：
+  - `SettingsDialog.vue` 移除「编码 Agent」tab（import/tab 按钮/面板/类型）；`ui.ts` SettingsTab 去 agents；`main.ts` 菜单分发去 open-agents；Rust 菜单去「编码 Agent 委派」菜单项；**删除 `CodingAgents.vue` 组件**
+  - 委派能力保留为**内置工具 `delegate_coding_agent`**（前端 callBuiltinTool 分支调 Rust `delegate_coding_agent` 命令，支持 agent_id/task/cwd/mode/max_turns/resume_session，返回退出码/耗时/token/输出）；提示词标注「外部兜底，慎用，仅当内置编码能力不足且用户明确要求时调用」
+  - Rust 命令 `check_coding_agents` / `delegate_coding_agent` 保留（阶段三再彻底移除）
+- **多 agent 协作计划（写入 DEVELOPMENT_PLAN §3.8，P-M1~P-M4）**：P-M1 子代理带工具（复用 sendMessage 工具循环）→ P-M2 并行子代理（Promise.all / futures join）→ P-M3 角色分工（规划/执行/验证/评审模板）→ P-M4 主代理汇总仲裁（orchestrator-subagent 树 + 监视面板）；建议推进顺序 P-A6 → P-M1~P-M4 → P-A7/P-A8
+- **验证**：cargo check 通过（菜单移除）；npm test 35 + vite build 通过；全工作区 grep 确认无 CodingAgents/agents tab 残留（仅文档记录）
+
 ### ✅ 联网搜索无关结果修复（三层根因：关键词清洗 / 单源填满 / 相关性过滤）
 - **用户报告**：搜索"说说什么是人工智能神经网络"返回 11 条全是微软股票（MSFT）等完全无关内容
 - **根因链（三层叠加）**：
