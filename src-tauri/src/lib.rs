@@ -1183,6 +1183,8 @@ fn ollama_bin() -> Option<PathBuf> {
         PathBuf::from("/usr/bin/ollama"),
         PathBuf::from("/usr/local/opt/ollama/bin/ollama"),
         PathBuf::from("/opt/homebrew/opt/ollama/bin/ollama"),
+        // 官方 Ollama.app 安装器默认装在系统 /Applications（非 ~/Applications）
+        PathBuf::from("/Applications/Ollama.app/Contents/Resources/ollama"),
         ollama_user_bin(),
     ];
     if let Some(p) = candidates.iter().find(|p| p.exists()) {

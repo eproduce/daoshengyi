@@ -36,9 +36,9 @@ watch(() => ui.exportCounter, () => {
   const id = chatStore.activeConversationId;
   if (id) chatStore.downloadExport(id, "md");
 });
-async function checkOllamaOnStart() {
-  // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
-  await ollamaStore.init();
+// 根据当前 Ollama 状态计算聊天窗口引导横幅。抽取为独立函数，供启动时与
+// 状态变化（含一键部署完成）时实时重算——修复「部署完成后横幅仍残留」。
+function evaluateOllamaBanner() {
   const s = ollamaStore.status;
   const hw = ollamaStore.hw;
   ollamaBanner.value = false;
@@ -54,6 +54,21 @@ async function checkOllamaOnStart() {
     ollamaBanner.value = true; // recommended / warning 都允许本地部署
   }
 }
+async function checkOllamaOnStart() {
+  // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
+  await ollamaStore.init();
+  evaluateOllamaBanner();
+}
+// 实时跟随 Ollama 状态：部署中隐藏横幅；状态/硬件变化（含一键部署完成后
+// store.deploy 内 refreshStatus 更新 status）自动重算，无需重启应用。
+watch([() => ollamaStore.busy, () => ollamaStore.status, () => ollamaStore.hw], () => {
+  if (ollamaStore.busy) {
+    ollamaBanner.value = false;
+    ollamaNotRecBanner.value = false;
+    return;
+  }
+  evaluateOllamaBanner();
+});
 const messagesContainer = ref<HTMLDivElement>();
 
 function scrollToBottom() {

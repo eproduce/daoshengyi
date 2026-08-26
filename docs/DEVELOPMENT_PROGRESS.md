@@ -103,6 +103,17 @@
 - **验证**：cargo test 21 项（lib 新增 2 个 detect_test_framework 测试 + 3 个 git 校验）；npm test 35 + vite build 通过；analyze_project 对项目自身验证正确（技术栈 TS+Vue、源码 23 ts/16 vue）
 - 踩坑：①追加测试时原 tests 模块已以 `}` 结尾，再 cat >> 会多一个 `}` 编译错——追加前先确认模块闭合；②`detect_test_framework` 检查顺序 package.json 优先，测试里同时写 package.json+Cargo.toml 会返回 npm 而非 cargo，须先删 package.json 再测 Cargo；③`&[String]` 参数传 `&["str"]` 字面量 E0308，需 to_string()
 
+### ✅ 修复：Ollama 部署完成后聊天窗口仍提示未就绪/未安装
+- **用户报告**：一键部署 Ollama 完成后，聊天窗口顶部横幅仍提示「未就绪 / 一键部署」，设置页「本地模型」tab 可能仍显示「未安装」
+- **根因（两层）**：
+  1. **横幅只在启动时算一次**：`App.vue checkOllamaOnStart()` 只在 `onMounted` 调用；`ollamaStore.deploy()` 完成后虽调用 `refreshStatus()` 更新了 store.status，但 App.vue 没有监听状态变化 → 部署成功横幅不消失，必须重启应用才恢复
+  2. **检测漏掉官方安装器路径**：`ollama_bin()` 候选路径缺 `/Applications/Ollama.app/Contents/Resources/ollama`（官方 .dmg 安装器默认装在系统 `/Applications`，代码只查了 `~/Applications` 与 brew 路径）→ 手动安装的官方 Ollama 被误判「未安装」
+- **修复**：
+  - `App.vue`：横幅判定抽取为 `evaluateOllamaBanner()`（幂等纯计算）；新增 `watch([ollamaStore.busy, ollamaStore.status, ollamaStore.hw])`——部署中隐藏横幅，状态/硬件变化（含一键部署完成后 store 内 refreshStatus 更新）自动重算，无需重启
+  - `lib.rs ollama_bin()`：候选路径新增 `/Applications/Ollama.app/Contents/Resources/ollama`（置于 `ollama_user_bin()` 之前）
+- **验证**：npx vite build + npm test 35 + cargo check + get_errors 全部通过
+- **经验**：①「一次性启动引导」类 UI 状态必须对数据源做响应式监听，否则异步操作完成后 UI 不更新；②二进制检测候选路径要覆盖官方安装器的默认位置（`/Applications` 与 `~/Applications` 都要）
+
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成
