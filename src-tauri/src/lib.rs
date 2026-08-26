@@ -3392,7 +3392,10 @@ pub fn run() {
                     ],
                 )?;
                 let _tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
-                    .icon(app.default_window_icon().cloned().ok_or("窗口图标缺失")?)
+                    // macOS 菜单栏用模板图（纯黑+透明，icon_as_template 让系统自动
+                    // 适配深/浅色菜单栏；不能用彩色 app 图标——会带背景色块）
+                    .icon(tauri::include_image!("icons/tray-icon.png"))
+                    .icon_as_template(true)
                     .menu(&tray_menu)
                     .show_menu_on_left_click(false)
                     .tooltip("道生一 - AI Agent")

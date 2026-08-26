@@ -60,6 +60,18 @@ async function main() {
   execSync(`rm -rf "${iconset}"`);
   console.log("  icon.icns ✅");
 
+  // 托盘图标（macOS 菜单栏模板图：纯黑图形 + 透明背景，icon_as_template 让系统
+  // 自动适配深/浅色菜单栏——固定白底在深色菜单栏下会变成白块，模板图才是正确做法）
+  console.log("\n生成托盘图标（macOS 模板图）...");
+  const traySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+    <!-- 道（点） -->
+    <circle cx="32" cy="20" r="5" fill="#000000"/>
+    <!-- 一（横条） -->
+    <rect x="13" y="37" width="38" height="6" rx="3" fill="#000000"/>
+  </svg>`;
+  await sharp(Buffer.from(traySvg)).resize(32, 32).png().toFile(path.join(ICONS_DIR, "tray-icon.png"));
+  console.log("  tray-icon.png (32x32 模板图) ✅");
+
   console.log("\n全部完成！");
 }
 
