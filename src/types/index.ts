@@ -65,6 +65,20 @@ export interface ChatTool {
   error?: string;
 }
 
+/// 任务计划步骤状态（P-A5 Plan 模式）
+export type PlanStepStatus = "pending" | "doing" | "done" | "failed";
+export interface PlanStep {
+  text: string;
+  status: PlanStepStatus;
+}
+/// 任务计划：复杂任务自动分解的可视化进度（Plan→Act→Observe→修正）
+export interface TaskPlan {
+  id: string;
+  title: string;
+  steps: PlanStep[];
+  createdAt: number;
+}
+
 /// 对话会话
 export interface Conversation {
   id: string;

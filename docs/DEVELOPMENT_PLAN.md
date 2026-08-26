@@ -143,7 +143,7 @@
 | P-A2 | **验证循环** | ✅ | 🟢 | `/run`（已有） | `run_tests` 命令（自动检测 package.json→npm test / Cargo.toml→cargo test / pyproject→pytest，可显式覆盖）+ 前端 `run_tests` 工具返回结构化结果（框架/命令/通过或失败/失败项摘要）；提示词「验证循环」门禁：改代码必跑测试、失败必修复直至通过 |
 | P-A3 | **代码库索引/理解** | 🟡 | 🟢 | list_dir（已有） | ✅ 已做：`analyze_project` 命令（技术栈识别 Rust/TS/Python/Vue、manifest 包名+scripts、源码按扩展名统计、顶层结构跳过 node_modules/.git/target）+ 前端工具；⬜ 待做：语义索引/「自然语言找代码」/符号跳转 |
 | P-A4 | **多文件编辑 + diff** | ✅ | 🟢 | P-A3 | `apply_edits` 命令（replace/insert/delete 三原语 + occurrence 定位 + 主目录安全边界）+ 行级 LCS **unified diff** 返回（@@ 头 + 3 行上下文）；前端内置工具 replace_string / insert_string / create_file / delete_file（精确编辑、避免整文件覆盖误伤，`create_file` 防误覆盖、`delete_file_agent` 仅删主目录文件）；diff 在工具结果卡片展示、提示词要求编辑后回复说明改动；跨文件重构 = 对多文件连续精确编辑。待做：应用内 diff「确认后应用」UI（并入 P-A7 权限矩阵审批） |
-| P-A5 | **任务规划增强（Plan 模式）** | ⬜ | 🟡 | 无 | 复杂任务自动分解为子任务 todo list；子任务进度追踪 + 失败重试；与 ReAct 循环结合 Plan→Act→Observe→修正 |
+| P-A5 | **任务规划增强（Plan 模式）** | ✅ | 🟢 | 无 | 内置 `plan_task`（创建/替换计划：标题+有序子步骤）+ `plan_update`（逐步标记 doing/done/failed）；对话区顶部实时进度卡片（进度条+步骤状态徽标+完成计数，可手动关闭）；与工具循环结合 Plan→Act→Observe→修正（提示词「任务规划规范」引导复杂任务先分解、逐步更新、全部完成后再给最终答案）；新对话自动清空计划。简单任务不触发 |
 | P-A6 | **本地语义 embedding** | ⬜ | 🟡 | 记忆（已有） | 接入 Ollama 本地 embedding（`nomic-embed-text`）或 ONNX 轻量中文模型；补记忆/代码语义检索短板 |
 | P-A7 | **权限矩阵（工具级）** | ⬜ | 🟡 | approval_mode（已有） | 每个 MCP/内置工具可独立开关；路径白名单；会话级权限记忆 |
 | P-A8 | **沙箱** | ⬜ | 🟡 | 无 | 文件/网络/命令三层白名单沙箱（当前只有危险命令拦截） |

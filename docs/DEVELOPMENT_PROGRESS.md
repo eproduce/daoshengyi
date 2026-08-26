@@ -24,6 +24,18 @@
 - 踩坑：①unified diff context 行是 `" "+text`、删除/新增行是 `-text`/`+text`（**无中间空格**），测试断言 context 行用 ` line2`、删除行用 `-line4`；②`delete "hello"` 不含换行时删完会留空行，断言按"剩 N 处出现"而非精确内容；③追加测试到已闭合 tests 模块需先确认模块结尾
 - **后续**：P-A5 任务规划增强（Plan 模式）为下一优先级；应用内 diff「确认后应用」UI 并入 P-A7 权限矩阵
 
+### ✅ 编程代理 P-A5 任务规划增强（Plan 模式：plan_task/plan_update + 进度卡片）
+- **背景**：P-A4 之后，编程 Agent 对复杂任务缺乏「先规划、可视进度、逐步推进」能力
+- **前端（src/stores/chat.ts + src/components/TaskPlanCard.vue）**：
+  - `types/index.ts` 新增 `PlanStepStatus`/`PlanStep`/`TaskPlan` 类型
+  - chat store 新增 `taskPlan` ref + `setTaskPlan()`（跨轮/跨消息保留），`clearCurrentConversation` 清空（新对话重置）
+  - 内置工具 `plan_task`（app）：`{title, steps[]}` 创建/替换任务计划 → 返回计划清单 + 执行规范；`plan_update`（app）：`{step(1-based), status}` 更新步骤状态（pending/doing/done/failed）→ 返回进度「N/M 完成」；均用 `useChatStore()` 更新 store（模块级函数内取 store 实例，工具循环时 pinia 已激活）
+  - `TaskPlanCard.vue`：对话区顶部进度卡片——标题 + 计数（N/M 或「✅ 全部完成」）+ 渐变进度条 + 每步图标（pending 圆圈/doing 旋转 Loader2/done 对勾/failed 红叉）+ 状态徽标 + 手动关闭按钮；lucide 线性图标、主题变量适配深浅色
+  - 系统提示词：内置工具加 plan_task/plan_update 描述 + 「任务规划规范」区块——复杂任务（多步骤/多文件/多研究）先 plan_task 分解、逐步 plan_update 更新（Plan→Act→Observe→修正）、全部 done 后给完整最终答案、简单任务不用
+- **验证**：npm test 35 + vite build 通过；get_errors 无报错；dev HMR 正常加载（App.vue 8:45 hmr update，日志 EPIPE 为管道噪音非应用错误）
+- **踩坑**：模块级 callBuiltinTool 内调用 `useChatStore()` 取 store 实例需在函数体内（运行时 pinia 已激活），不能在模块顶层调用
+- **后续**：P-A6 本地语义 embedding 为下一优先级
+
 ### ✅ 联网搜索无关结果修复（三层根因：关键词清洗 / 单源填满 / 相关性过滤）
 - **用户报告**：搜索"说说什么是人工智能神经网络"返回 11 条全是微软股票（MSFT）等完全无关内容
 - **根因链（三层叠加）**：

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch, reactive } from "vue";
-import type { Conversation, ChatMessage, ChatTool, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole } from "@/types";
+import type { Conversation, ChatMessage, ChatTool, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole, PlanStepStatus, TaskPlan } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
 import { getPersona } from "@/data/personas-catalog";
@@ -102,6 +102,8 @@ function getMcpToolsPrompt(): string {
     "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
     "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
     "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
+    "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
+    "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
     "\n\n## 长期记忆使用要点\n" +
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
@@ -125,6 +127,14 @@ function getMcpToolsPrompt(): string {
     "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。\n" +
     "6. **来源链接必须原样完整复制**：引用来源时，必须逐字原样复制搜索结果/工具返回中给出的**完整 URL**（如 `链接: https://...` 冒号后的整个地址），**禁止**截断路径、删改扩展名（如 `.shtml`/`.html`/`.pdf`）、缩写域名、自行拼接或凭空编造链接；每条引用的链接都必须是可直接打开访问的完整网址。\n" +
     "7. **禁止『口头承诺』式回复**：不要只写『我将访问 XX 官网获取信息』『接下来我去查询』『搜索与问题无关，我直接…』这类过程声明就结束回复——以过程声明代替实际内容 = 未完成任务。要么**立即输出工具调用**（web_search / fetch_page）真正获取数据，要么**直接给出基于已有信息的完整、结构化答案**（结论 / 步骤 / 要点）。";
+  // 任务规划规范：复杂任务先分解、逐步推进并更新进度（P-A5 Plan 模式）
+  const planRule =
+    "\n\n## 任务规划规范（复杂任务时）\n" +
+    "- 用户下达**多步骤复杂任务**（如多文件修改、多步骤研究、需多轮验证的编程任务）时：**先调用 plan_task 把任务分解为有序子步骤**，让用户在进度卡片看到完整计划。\n" +
+    "- 执行过程中**逐步更新进度**：开始某步前 plan_update 标记 doing，完成后标记 done，某步失败标记 failed 并说明原因、调整计划后继续（Plan→Act→Observe→修正）。\n" +
+    "- 每一步的实际工作（搜索/读文件/编辑/验证）照常调用对应工具完成，plan 工具只负责**进度可视化**，不要用 plan 工具代替实际工作。\n" +
+    "- **全部步骤 done 后**，在正文给出完整、结构化、可执行的最终回答（结论 / 具体改动 / 结果 / 下一步建议）。\n" +
+    "- 简单任务（1-2 步）不要使用 plan 工具，避免冗余。";
   // 文件编辑规范：修改已有文件优先精确编辑（replace_string/insert_string），返回 diff 需展示
   const editRule =
     "\n\n## 文件编辑规范（编程/改文件时）\n" +
@@ -145,11 +155,11 @@ function getMcpToolsPrompt(): string {
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + searchFormat + editRule + fileRule + pending +
+    return builtin + realtime + searchFormat + planRule + editRule + fileRule + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin + realtime + searchFormat + editRule + fileRule +
+  return builtin + realtime + searchFormat + planRule + editRule + fileRule +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -542,6 +552,47 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("delete_file 需要 path 参数");
       return await invoke<string>("delete_file_agent", { path });
     }
+    case "plan_task": {
+      // P-A5 Plan 模式：创建/替换当前任务计划（对话区顶部进度卡片实时更新）
+      const chat = useChatStore();
+      const title = String(args.title || args.task || "任务计划");
+      const rawSteps = Array.isArray(args.steps) ? args.steps.map((s) => String(s)) : [];
+      if (!rawSteps.length) throw new Error("plan_task 需要 steps 参数（子任务字符串数组，至少 1 项）");
+      const plan: TaskPlan = {
+        id: uuidv4(),
+        title,
+        steps: rawSteps.map((t) => ({ text: t, status: "pending" as const })),
+        createdAt: Date.now(),
+      };
+      chat.setTaskPlan(plan);
+      return (
+        "✅ 已创建任务计划「" + title + "」，进度卡片已显示，共 " + plan.steps.length + " 步：\n" +
+        plan.steps.map((s, i) => `${i + 1}. [待办] ${s.text}`).join("\n") +
+        "\n执行规范：每步开始前用 plan_update 标记 doing，完成后标记 done，失败标记 failed（可调整计划）；全部步骤完成后在正文给出完整最终回答。"
+      );
+    }
+    case "plan_update": {
+      // P-A5 Plan 模式：更新某一步骤的进度状态（doing/done/failed）
+      const chat = useChatStore();
+      const plan = chat.taskPlan;
+      if (!plan) throw new Error("plan_update 需要先创建任务计划（先调用 plan_task）");
+      const stepIdx = Math.max(0, (Number(args.step ?? args.index ?? 0) || 1) - 1);
+      const status = String(args.status || "done");
+      if (!plan.steps[stepIdx]) {
+        throw new Error(`plan_update 步骤序号超出范围（当前共 ${plan.steps.length} 步）`);
+      }
+      if (!["pending", "doing", "done", "failed"].includes(status)) {
+        throw new Error("plan_update 的 status 必须是 pending/doing/done/failed");
+      }
+      plan.steps[stepIdx].status = status as PlanStepStatus;
+      chat.setTaskPlan({ ...plan }); // 触发响应式更新
+      const done = plan.steps.filter((s) => s.status === "done").length;
+      const label: Record<string, string> = { pending: "待办", doing: "进行中", done: "已完成", failed: "失败" };
+      return (
+        `📋 计划进度更新：步骤 ${stepIdx + 1}「${plan.steps[stepIdx].text.slice(0, 30)}」→ ${label[status] || status}` +
+        `（${done}/${plan.steps.length} 完成）`
+      );
+    }
     case "list_dir": {
       const path = String(args.path || "");
       if (!path) throw new Error("list_dir 需要 path 参数");
@@ -790,6 +841,12 @@ export const useChatStore = defineStore("chat", () => {
   const isStreaming = ref(false);
   const streamingContent = ref("");
   const streamingReasoning = ref("");
+
+  // 任务计划（P-A5 Plan 模式）：复杂任务分解的实时进度，plan_task 创建、plan_update 更新
+  const taskPlan = ref<TaskPlan | null>(null);
+  function setTaskPlan(plan: TaskPlan | null) {
+    taskPlan.value = plan;
+  }
 
   // 缓存命中统计（DeepSeek usage.prompt_cache_hit/miss_tokens）
   const cacheHitTotal = ref(0);
@@ -1942,6 +1999,7 @@ export const useChatStore = defineStore("chat", () => {
       conv.messages = [];
       conv.updatedAt = Date.now();
     }
+    taskPlan.value = null; // 新对话清空任务计划
   }
 
   // 重试：移除最后一条 AI 回复，重新发送上一条用户消息
@@ -2057,6 +2115,8 @@ export const useChatStore = defineStore("chat", () => {
     clearFinishedSubagents,
     clearCurrentConversation,
     retryLast,
+    taskPlan,
+    setTaskPlan,
     copyToClipboard,
     downloadExport,
     searchConversations,

@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted } from "vue";
 import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
+import TaskPlanCard from "./components/TaskPlanCard.vue";
 import SubagentPanel from "./components/SubagentPanel.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -202,6 +203,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
           <!-- 消息列表 -->
           <template v-if="chatStore.activeConversation">
+            <TaskPlanCard />
             <ChatMessage
               v-for="msg in chatStore.activeConversation.messages"
               :key="msg.id"
