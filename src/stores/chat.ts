@@ -13,6 +13,8 @@ import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText, type ToolCall } from "@/utils/tool-call";
 import { withBrowserLock } from "@/utils/browser-lock";
+import { BUILTIN_TOOLS } from "@/data/builtin-tools";
+import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -136,8 +138,8 @@ function getMcpToolsPrompt(): string {
     "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n" +
     "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
-    "- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\", \"allow_tools\": true}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。" +
-    "\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {\"tasks\": [{\"goal\": \"子任务1\", \"context\": \"可选\", \"allow_tools\": true}, ...], \"concurrency\": 可选并发数（默认最多 4）}。**使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。" +
+    "- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\", \"allow_tools\": true, \"role\": \"可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）\"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。" +
+    "\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {\"tasks\": [{\"goal\": \"子任务1\", \"context\": \"可选\", \"allow_tools\": true, \"role\": \"可选角色\"}, ...], \"concurrency\": 可选并发数（默认最多 4）, \"synth\": 可选，true 时并行完成后用评审角色汇总仲裁}. **使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。" +
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**" +
     "\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {\"path\": \"文件绝对路径\", \"old_text\": \"要替换的原文（须与文件内容完全一致）\", \"new_text\": \"新文本（可为空=删除该段）\", \"occurrence\": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。" +
@@ -190,6 +192,15 @@ function getMcpToolsPrompt(): string {
     "- 每一步的实际工作（搜索/读文件/编辑/验证）照常调用对应工具完成，plan 工具只负责**进度可视化**，不要用 plan 工具代替实际工作。\n" +
     "- **全部步骤 done 后**，在正文给出完整、结构化、可执行的最终回答（结论 / 具体改动 / 结果 / 下一步建议）。\n" +
     "- 简单任务（1-2 步）不要使用 plan 工具，避免冗余。";
+  // P-M4：多子代理结果冲突时必须仲裁而非任取其一
+  const orchestrateRule =
+    "\n\n## 多子代理结果仲裁规范\n" +
+    "当你使用 subagent_parallel（含 synth=true）或多个子代理得到的结果**互相冲突**时，不要任取一个或含糊带过：\n" +
+    "1. **明确指出冲突点**（哪些结论、来自哪个子任务）；\n" +
+    "2. **评估依据**：对比各方的证据/来源/可信度（谁有实测/官方来源，谁只是推断）；\n" +
+    "3. **给出判定**：采纳哪方、或说明信息不足无法判定并建议核实途径；\n" +
+    "4. **统一呈现**：把各子任务要点整合成一份自洽的最终回答（结论 / 要点 / 遗留问题）。\n" +
+    "若已用 synth=true 拿到仲裁结论，直接采用并呈现，可补充你的补充判断。";
   // 文件编辑规范：修改已有文件优先精确编辑（replace_string/insert_string），返回 diff 需展示
   const editRule =
     "\n\n## 文件编辑规范（编程/改文件时）\n" +
@@ -210,11 +221,11 @@ function getMcpToolsPrompt(): string {
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + searchFormat + planRule + editRule + fileRule + pending +
+    return builtin + realtime + searchFormat + planRule + orchestrateRule + editRule + fileRule + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin + realtime + searchFormat + planRule + editRule + fileRule +
+  return builtin + realtime + searchFormat + planRule + orchestrateRule + editRule + fileRule +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -554,17 +565,26 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const context = String(args.context || "");
       // P-M1：子代理默认可调用内置工具（allow_tools=false 可关，纯对话子代理）
       const allowTools = args.allow_tools !== false;
+      // P-M3：可选角色（planner/executor/verifier/reviewer/researcher）→ 角色提示 + 工具集约束
+      const roleId = args.role ? String(args.role) : undefined;
+      if (roleId && !getRoleById(roleId)) {
+        throw new Error(`未知角色: ${roleId}（可选 planner/executor/verifier/reviewer/researcher）`);
+      }
+      const allowedTools = roleId ? roleAllowedToolNames(roleId) : undefined;
       // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑工具循环
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
       const config = store.getAuxConfig();
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
-      // 登记子代理记录（可视化面板实时显示）
-      const rec = store.spawnSubagent(goal);
-      const sys = buildSubagentSysPrompt(context, allowTools);
+      // 登记子代理记录（可视化面板实时显示；带角色则前缀标注）
+      const rec = store.spawnSubagent(`${roleId ? `[${getRoleById(roleId)!.name}] ` : ""}${goal}`);
+      const sys = buildSubagentSysPrompt(context, allowTools, roleId);
       let finalText = "";
       try {
-        finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, { allowTools });
+        finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, {
+          allowTools,
+          ...(allowedTools ? { allowedTools } : {}),
+        });
         store.completeSubagent(rec.id, finalText);
       } catch (e) {
         if (e instanceof AgentStoppedError) {
@@ -584,20 +604,28 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 主代理把任务分解为多个相互独立的子任务后并行收集结果；每个子任务登记独立的
       // SubagentRecord（可视化面板同时显示各子代理进度）。并发浏览器操作由 withBrowserLock
       // 自动串行，避免单一浏览器实例互相干扰。
+      // P-M3：每个任务可指定 role（角色提示 + 工具集约束）；P-M4：synth=true 时并行完成后
+      // 用评审角色做汇总仲裁（冲突消解/交叉验证/统一呈现）。
       const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
-      const tasks: { idx: number; goal: string; context: string; allowTools: boolean }[] = rawTasks
+      const tasks: { idx: number; goal: string; context: string; allowTools: boolean; role?: string; allowedTools?: string[] }[] = rawTasks
         .map((t, i) => {
           const o = (t ?? {}) as Record<string, unknown>;
+          const role = o.role ? String(o.role) : undefined;
+          if (role && !getRoleById(role)) {
+            throw new Error(`未知角色: ${role}（可选 planner/executor/verifier/reviewer/researcher）`);
+          }
           return {
             idx: i,
             goal: String(o.goal ?? o.task ?? "").trim(),
             context: String(o.context ?? ""),
             allowTools: o.allow_tools !== false,
+            role,
+            ...(role ? { allowedTools: roleAllowedToolNames(role) } : {}),
           };
         })
         .filter((t) => t.goal);
       if (!tasks.length) {
-        throw new Error("subagent_parallel 需要 tasks 参数（子任务数组 [{goal, context?, allow_tools?}]，至少 1 项）");
+        throw new Error("subagent_parallel 需要 tasks 参数（子任务数组 [{goal, context?, allow_tools?, role?}]，至少 1 项）");
       }
       const concurrency = Math.max(1, Math.min(4, Number(args.concurrency ?? tasks.length) || tasks.length));
       const { useChatStore } = await import("./chat");
@@ -612,10 +640,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const workers = Array.from({ length: workerCount }, async () => {
         while (cursor < tasks.length) {
           const task = tasks[cursor++];
-          const rec = store.spawnSubagent(task.goal);
-          const sys = buildSubagentSysPrompt(task.context, task.allowTools);
+          const rec = store.spawnSubagent(`${task.role ? `[${getRoleById(task.role)!.name}] ` : ""}${task.goal}`);
+          const sys = buildSubagentSysPrompt(task.context, task.allowTools, task.role);
           try {
-            const text = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), task.goal, { allowTools: task.allowTools });
+            const text = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), task.goal, {
+              allowTools: task.allowTools,
+              ...(task.allowedTools ? { allowedTools: task.allowedTools } : {}),
+            });
             store.completeSubagent(rec.id, text);
             results.push({ idx: task.idx, ok: true, goal: task.goal, text });
           } catch (e) {
@@ -632,12 +663,47 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       });
       await Promise.all(workers);
 
+      // P-M4：synth=true → 用评审角色把各子任务结果做汇总仲裁（冲突消解、交叉验证、统一呈现）
+      if (args.synth === true) {
+        const synthRec = store.spawnSubagent("汇总仲裁各子任务结果");
+        try {
+          const sorted = [...results].sort((a, b) => a.idx - b.idx);
+          const findings = sorted
+            .map((r, i) => `### 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`)
+            .join("\n\n");
+          // 评审角色提示（含角色指令 + 允许工具列表）作为仲裁者基础系统提示，
+          // 与 allowedTools 执行侧约束配套（提示词展示 + 执行兜底双保险）
+          const sys = buildSubagentSysPrompt("", true, "reviewer");
+          const synthPrompt =
+            withCurrentDate(
+              "你是道生一的**汇总仲裁者**，负责把多个子代理的结果整合成一份统一、自洽的最终结论。\n" +
+              "要求：\n" +
+              "1. **汇总**：归纳各子任务要点，去重、归类；\n" +
+              "2. **冲突消解**：不同子任务结论冲突时，明确指出冲突点、评估各方证据/可信度、给出你的判定与理由；\n" +
+              "3. **交叉验证**：相互印证的信息标注为一致，互相矛盾的信息说明取舍依据；\n" +
+              "4. **统一呈现**：结构化输出——最终结论 / 要点 / 遗留问题 / 建议。"
+            ) +
+            "\n\n---\n\n" +
+            sys +
+            `\n\n以下是各子任务的结果（可能相互独立或冲突）：\n\n${findings}\n\n请给出汇总仲裁结论。`;
+          const synthText = await runSubagentLoop(config, withMathRule(synthPrompt), "汇总仲裁", {
+            allowTools: true,
+            maxRounds: 6,
+            allowedTools: roleAllowedToolNames("reviewer"),
+          });
+          store.completeSubagent(synthRec.id, synthText);
+          const visible = synthText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（仲裁未返回内容）";
+          return `【并行子代理汇总仲裁】\n${visible}`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          store.failSubagent(synthRec.id, msg);
+          // 仲裁失败回退普通汇总
+          return formatParallelResults(results, workerCount) + `\n\n> ⚠️ 汇总仲裁失败（${msg}），以上为原始汇总。`;
+        }
+      }
+
       // 按原始任务顺序汇总（不依赖完成顺序，输出稳定）
-      results.sort((a, b) => a.idx - b.idx);
-      const body = results
-        .map((r, i) => `## 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`)
-        .join("\n\n---\n\n");
-      return `【并行子代理汇总】共 ${results.length} 个子代理（并发 ${workerCount}）\n\n${body}`;
+      return formatParallelResults(results, workerCount);
     }
     case "pdf_read": {
       const path = String(args.path || "");
@@ -916,16 +982,57 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
   ]);
 }
 
-/// 构造子代理系统提示（P-M1 起子代理可调内置工具；allowTools=false 则纯对话）。
-function buildSubagentSysPrompt(context: string, allowTools: boolean): string {
+/// P-M4：把并行子代理结果按原始顺序格式化成汇总文本（纯函数，可测试）。
+function formatParallelResults(
+  results: { idx: number; ok: boolean; goal: string; text: string }[],
+  workerCount?: number,
+): string {
+  const sorted = [...results].sort((a, b) => a.idx - b.idx);
+  const body = sorted
+    .map((r, i) => `## 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`)
+    .join("\n\n---\n\n");
+  return `【并行子代理汇总】共 ${sorted.length} 个子代理${workerCount ? `（并发 ${workerCount}）` : ""}\n\n${body}`;
+}
+
+/// P-M3 角色工具提示：只展示角色允许的内置工具（不注入 MCP/浏览器/文件系统大段），
+/// 提示词侧过滤 + runSubagentLoop 的 allowedTools 执行侧强制约束（双保险）。
+function getRoleToolsPrompt(allowed: string[]): string {
+  const allowSet = new Set(allowed);
+  const lines = BUILTIN_TOOLS.filter((t) => allowSet.has(t.name))
+    .map((t) => `- **${t.name}** (app): ${t.desc}`)
+    .join("\n");
+  return (
+    "\n\n## 回答完整输出要求\n" +
+    "无论你的思考（reasoning）过程多么详细，**最终答案必须完整、详细地呈现在回复正文中**：用结构化 Markdown（标题/列表/表格）给出完整的结论、分析与要点，不要只给一句简短结论。\n" +
+    "\n## 工具调用唯一格式（极重要）\n" +
+    "需要调用工具时，**唯一方式**是在回复正文中输出工具调用标记：\n" +
+    "<tool_call>{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}</tool_call>\n" +
+    "- **绝对禁止**写「### 🔧 调用工具」等卡片文本假装已调用工具——那只是文本，不会执行。\n" +
+    "- 工具调用必须成对包含开/闭标记，JSON 必须是合法对象且含 tool 与 arguments；系统会自动执行并把**真实结果**回填给你。\n" +
+    "\n## 你被允许使用的内置工具（server 填 `app`）\n" +
+    (lines || "- （本角色暂无可用工具，请直接基于推理给出结论，不要调用其它工具）") +
+    "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>"
+  );
+}
+
+/// 构造子代理系统提示（P-M1 起子代理可调内置工具；allowTools=false 则纯对话；
+/// P-M3 起支持角色 roleId → 角色指令 + 按角色过滤工具列表）。
+function buildSubagentSysPrompt(context: string, allowTools: boolean, roleId?: string): string {
   const base = "你是道生一的子代理，负责独立完成一个子任务。" + (context ? `\n补充上下文：${context}` : "");
   if (!allowTools) {
     return base + "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
   }
+  // P-M3 角色：注入角色定位/指令，并只展示该角色允许的工具（提示词侧约束）
+  const role = roleId ? getRoleById(roleId) : undefined;
+  const rolePart = role
+    ? `\n\n## 你的角色：${role.emoji} ${role.name}（${role.desc}）\n${role.sysPrompt}`
+    : "";
+  const toolsPrompt = role ? getRoleToolsPrompt(role.tools) : getMcpToolsPrompt();
   return (
     base +
-    "\n\n**你可以调用内置工具（git / 文件编辑 replace_string/insert_string/create_file / 跑测试 run_tests / 搜索 web_search / 记忆 memory_recall 等）来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。\n\n" +
-    getMcpToolsPrompt()
+    rolePart +
+    "\n\n**你可以调用内置工具来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。\n\n" +
+    toolsPrompt
   );
 }
 
@@ -937,10 +1044,12 @@ async function runSubagentLoop(
   config: ApiConfig,
   sysPrompt: string,
   goal: string,
-  opts: { allowTools?: boolean; maxRounds?: number } = {},
+  opts: { allowTools?: boolean; maxRounds?: number; allowedTools?: string[] } = {},
 ): Promise<string> {
   const allowTools = opts.allowTools !== false;
   const maxRounds = opts.maxRounds || 8;
+  // P-M3 角色工具集强制约束：非空时只允许调用这些工具（提示词过滤只是引导，这里是兜底）
+  const allowed = opts.allowedTools && opts.allowedTools.length ? new Set(opts.allowedTools) : null;
   const msgs: { role: string; content: string }[] = [
     { role: "system", content: sysPrompt },
     { role: "user", content: `子任务：${goal}` },
@@ -964,6 +1073,14 @@ async function runSubagentLoop(
         role: "assistant",
         content: stripToolJson(content).trim() || `（调用工具 ${tc.tool}）`,
       });
+      // P-M3 角色工具集约束：不允许的工具不执行，回填提示让子代理改用允许工具
+      if (allowed && !allowed.has(tc.tool)) {
+        msgs.push({
+          role: "user",
+          content: `<tool_result>\n⚠️ 你当前角色不允许调用工具「${tc.tool}」。本角色允许的工具：${opts.allowedTools!.join("、")}。请改用允许的工具继续，或基于已有信息直接给出结论。\n</tool_result>`,
+        });
+        continue;
+      }
       if (stopRequested) throw new AgentStoppedError(); // 执行工具前
       let result: string;
       try {

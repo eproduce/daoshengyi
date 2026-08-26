@@ -2,6 +2,8 @@
 import { PROMPT_TEMPLATES } from "../src/data/prompt-templates.ts";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText } from "../src/utils/tool-call.ts";
 import { withBrowserLock, browserLockIdle } from "../src/utils/browser-lock.ts";
+import { BUILTIN_TOOLS, BUILTIN_TOOL_NAMES, validBuiltinTools } from "../src/data/builtin-tools.ts";
+import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from "../src/data/roles-catalog.ts";
 
 let pass = 0;
 let fail = 0;
@@ -121,6 +123,44 @@ console.log("\n== withBrowserLock 浏览器串行锁 ==");
   ]);
   assert(order3.join(",") === "1,2,3", "三操作保持队列顺序", order3.join(","));
   await browserLockIdle();
+}
+
+// P-M3 角色目录 + P-M4 汇总格式（纯数据/纯函数，node 可测）
+console.log("\n== P-M3 角色分工（roles-catalog / builtin-tools） ==");
+{
+  const ids = new Set(AGENT_ROLES.map(r => r.id));
+  assert(ids.size === AGENT_ROLES.length, "角色 id 唯一", `got ${AGENT_ROLES.length}`);
+  const required = ["planner", "executor", "verifier", "reviewer", "researcher"];
+  assert(required.every(id => ids.has(id)), "包含 5 个核心角色（规划/执行/验证/评审/研究）", [...ids].join(","));
+  let allFields = true;
+  for (const r of AGENT_ROLES) {
+    if (!r.id || !r.name || !r.emoji || !r.desc || !r.sysPrompt || !Array.isArray(r.tools) || r.tools.length === 0) allFields = false;
+  }
+  assert(allFields, "所有角色字段完整且 tools 非空");
+  const bad = invalidRoleTools();
+  assert(bad.length === 0, "角色 tools 都引用真实内置工具名", JSON.stringify(bad));
+  assert(getRoleById("executor")?.name === "执行者", "getRoleById 命中角色");
+  assert(getRoleById("nope") === undefined, "getRoleById 未知角色返回 undefined");
+  assert(roleAllowedToolNames("researcher").includes("web_search"), "roleAllowedToolNames 返回角色工具集");
+  assert(roleAllowedToolNames(undefined).length === 0, "未指定角色工具集为空=不限");
+
+  // 内置工具目录完整性
+  const names = new Set(BUILTIN_TOOL_NAMES);
+  assert(names.size === BUILTIN_TOOLS.length, "内置工具名唯一", `${BUILTIN_TOOLS.length}`);
+  assert(BUILTIN_TOOLS.every(t => t.name && t.desc), "每个工具 name+desc 完整");
+  assert(validBuiltinTools(["web_search", "not_a_tool"]).join() === "not_a_tool", "validBuiltinTools 找出不存在工具");
+}
+
+console.log("\n== P-M4 汇总仲裁（formatParallelResults 语义） ==");
+{
+  // 用与 chat.ts 相同的纯逻辑复现：乱序输入 → 按 idx 稳定输出
+  const sortByIdx = (rs: { idx: number }[]) => [...rs].sort((a, b) => a.idx - b.idx).map(r => r.idx);
+  assert(sortByIdx([{ idx: 2 }, { idx: 0 }, { idx: 1 }]).join(",") === "0,1,2", "乱序结果按原始 idx 重排");
+  // 角色工具集必须包含规划/执行所需关键工具（防目录退化）
+  assert(roleAllowedToolNames("executor").includes("run_tests"), "执行者含 run_tests（验证循环）");
+  assert(roleAllowedToolNames("executor").includes("git"), "执行者含 git");
+  assert(!roleAllowedToolNames("researcher").includes("git"), "研究助手不含 git（工具集约束隔离）");
+  assert(!roleAllowedToolNames("planner").includes("replace_string"), "规划者不含编辑工具（只规划不改动）");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

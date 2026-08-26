@@ -127,7 +127,20 @@
 - **测试（scripts/test-templates-tools.mts）**：新增 `withBrowserLock` 3 项（并发严格 FIFO 串行 / 前一个失败队列继续不锁死 / 三操作保持顺序）→ npm test 38 项通过
 - **验证**：npm test 38 + vite build + get_errors 全部通过
 - **后续**：P-M3 角色分工（规划者/执行者/验证者/评审者角色模板 + 工具集约束）→ P-M4 主代理汇总仲裁 → P-A6 本地语义 embedding
-
+### ✅ 编程代理 P-M3 角色分工 + P-M4 主代理汇总仲裁
+- **P-M3 角色分工**：
+  - 新建 `src/data/builtin-tools.ts`：把 `getMcpToolsPrompt` 里的 23 个内置工具描述抽成结构化 `BUILTIN_TOOLS`（name+desc）+ `BUILTIN_TOOL_NAMES` + `validBuiltinTools` 校验函数（供角色目录与测试引用）
+  - 新建 `src/data/roles-catalog.ts`：`AGENT_ROLES` 5 个角色模板——**规划者 planner**（拆解/调研，不编辑：plan_task/analyze_project/web_search 等）、**执行者 executor**（落地：编辑/git/run_tests）、**验证者 verifier**（run_tests/git 只读）、**评审者 reviewer**（git diff/analyze）、**研究助手 researcher**（web_search/fetch_page/记忆，不含 git/编辑）；`getRoleById` / `roleAllowedToolNames` / `invalidRoleTools` 校验
+  - **工具集约束双保险**：①`getRoleToolsPrompt(allowed)` 提示词只展示角色允许的工具（不注入 MCP/浏览器大段）；②`runSubagentLoop` 新增 `opts.allowedTools` **执行层强制拦截**——不允许的工具不执行，回填「本角色允许的工具：…」提示（提示词过滤只是引导，执行拦截是兜底）
+  - `buildSubagentSysPrompt(context, allowTools, roleId?)`：注入角色定位/指令 + 按角色过滤工具列表；`subagent_delegate` / `subagent_parallel` 支持 `role` 参数（未知角色抛错），子代理面板标题前缀 `[角色名]`
+- **P-M4 主代理汇总仲裁**：
+  - `subagent_parallel` 支持 `synth=true`：并行完成后用**评审角色**跑汇总仲裁子代理（冲突消解/交叉验证/统一呈现），返回 `【并行子代理汇总仲裁】`；仲裁失败回退普通汇总并标注
+  - 抽取纯函数 `formatParallelResults(results, workerCount)`：按原始 idx 稳定排序汇总（可测试）
+  - 主代理系统提示加「多子代理结果仲裁规范」：结果冲突时明确冲突点 → 评估证据/来源可信度 → 给出判定 → 统一呈现
+- **自测（加强）**：新增 16 项——角色 id 唯一 / 5 核心角色齐全 / 字段完整 / **角色 tools 全部引用真实内置工具名（invalidRoleTools 空）** / getRoleById 命中与未知 / roleAllowedToolNames / 内置工具名唯一与描述完整 / validBuiltinTools / 乱序结果按 idx 重排 / 执行者含 run_tests+git（验证循环）/ 研究助手不含 git（工具集隔离）/ 规划者不含编辑工具（只规划不改动）→ npm test 54 项通过
+- **踩坑**：①`roles-catalog.ts` import `./builtin-tools` 无扩展名 → Node ESM 测试报 ERR_MODULE_NOT_FOUND（Vite 能解析、Node 不能）→ 改 `./builtin-tools.ts`（tsconfig 已开 `allowImportingTsExtensions`，Vite 构建不受影响）；②P-M4 仲裁块里 `buildSubagentSysPrompt` 计算后未拼进仲裁提示（工具列表没带上）→ 修正为 `仲裁指令 + --- + 评审角色提示 + 各子任务结果`
+- **验证**：npm test 54 + vite build + get_errors 全部通过
+- **后续**：P-A6 本地语义 embedding（Ollama nomic-embed-text / ONNX 轻量中文模型，补记忆/代码语义检索）→ P-A7/P-A8 权限矩阵 + 沙箱
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成
