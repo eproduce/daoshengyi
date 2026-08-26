@@ -1479,7 +1479,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       // 整条命令交给后端 shell（/bin/sh -c）执行，支持 ~ 展开/管道/&& 等 shell 语法；
       // parseCommandLine 只用于判空与展示，不再拆分传参（拆分会丢失引号与 shell 语义）
-      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>(
+      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean; created_files?: string[] }>(
         "execute_command", {
           command: cmdStr,
           args: [] as string[],
@@ -1493,6 +1493,11 @@ export const useChatStore = defineStore("chat", () => {
       if (out) content += `\n${out}\n`;
       if (err) content += `\n[stderr]\n${err}\n`;
       content += `\n${result.timed_out ? "⏰ 执行超时，已终止" : exitStatusLabel(result.exit_code)}`;
+      // 命令重定向生成的文件：展示为可点击路径（ChatMessage 会自动把绝对路径链接化并校验存在）
+      const created = result.created_files || [];
+      if (created.length > 0) {
+        content += `\n\n📄 本次命令生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
+      }
       assistantMsg.content = content;
     } catch (e: unknown) {
       assistantMsg.content = `$ ${cmdStr}\n\n❌ 执行失败: ${e instanceof Error ? e.message : String(e)}`;

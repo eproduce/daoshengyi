@@ -803,6 +803,9 @@ struct CommandOutput {
     stderr: String,
     exit_code: i32,
     timed_out: bool,
+    /// 命令重定向生成的文件绝对路径（如 `ls > l.txt` → ["/…/l.txt"]），供前端渲染可点击链接
+    #[serde(default)]
+    created_files: Vec<String>,
 }
 
 /// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）；传入目录时返回内容列表（ls 风格）
@@ -2002,10 +2005,10 @@ async fn execute_command(
         format!("{} {}", command, args.join(" "))
     };
     let audit_args = full_cmd.clone();
-    let out = run_shell_command(&full_cmd, cwd.as_deref(), timeout_secs).await;
+    let mut out = run_shell_command(&full_cmd, cwd.as_deref(), timeout_secs).await;
     let duration = start.elapsed().as_millis() as i64;
     match &out {
-        Ok(CommandOutput { exit_code, stdout, stderr, timed_out: _ }) => {
+        Ok(CommandOutput { exit_code, stdout, stderr, timed_out: _, .. }) => {
             let _ = db.log_tool_call(
                 "command",
                 &audit_args,
@@ -2018,7 +2021,98 @@ async fn execute_command(
             let _ = db.log_tool_call("command", &audit_args, &format!("启动失败: {}", e), true, duration);
         }
     }
+    // 解析命令重定向生成的文件（绝对路径），供前端展示为可点击链接
+    if let Ok(co) = &mut out {
+        co.created_files = extract_redirected_files(&full_cmd, cwd.as_deref());
+    }
     out
+}
+
+/// 从 shell 命令中提取「重定向生成的文件」（如 `> l.txt`、`2> err.log`、`&> out.txt`），
+/// 结合工作目录转绝对路径并校验真实存在，供前端渲染为可点击文件链接。
+/// 引号感知（`echo "a > b"` 不误判）；排除 /dev/null、&1、$ 变量等特殊目标；实用优先不求完美。
+fn extract_redirected_files(cmd: &str, cwd: Option<&str>) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let chars: Vec<char> = cmd.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    let mut in_squote = false;
+    let mut in_dquote = false;
+    while i < n {
+        let c = chars[i];
+        match c {
+            '\'' if !in_dquote => in_squote = !in_squote,
+            '"' if !in_squote => in_dquote = !in_dquote,
+            _ if !in_squote && !in_dquote && c == '>' => {
+                let mut j = i;
+                while j < n && chars[j] == '>' {
+                    j += 1;
+                }
+                while j < n && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let mut tok = String::new();
+                if j < n && chars[j] == '"' {
+                    j += 1;
+                    while j < n && chars[j] != '"' {
+                        tok.push(chars[j]);
+                        j += 1;
+                    }
+                } else if j < n && chars[j] == '\'' {
+                    j += 1;
+                    while j < n && chars[j] != '\'' {
+                        tok.push(chars[j]);
+                        j += 1;
+                    }
+                } else {
+                    while j < n && !chars[j].is_whitespace() && chars[j] != '<' {
+                        tok.push(chars[j]);
+                        j += 1;
+                    }
+                }
+                let tok = tok.trim();
+                if !tok.is_empty() && tok != "/dev/null" && tok != "&1" && !tok.starts_with('$') {
+                    let abs = if tok.starts_with('/') {
+                        tok.to_string()
+                    } else if let Some(rest) = tok.strip_prefix("~/") {
+                        let home = std::env::var("HOME").unwrap_or_default();
+                        if home.is_empty() {
+                            tok.to_string()
+                        } else {
+                            format!("{}/{}", home, rest)
+                        }
+                    } else if let Some(c) = cwd {
+                        format!("{}/{}", c.trim_end_matches('/'), tok)
+                    } else {
+                        // 无显式 cwd：用进程当前目录作基准，保证相对路径能转成可点击的绝对路径
+                        let pwd = std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if pwd.is_empty() {
+                            tok.to_string()
+                        } else {
+                            format!("{}/{}", pwd.trim_end_matches('/'), tok)
+                        }
+                    };
+                    files.push(abs);
+                }
+                i = j;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    // 去重 + 校验真实存在
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    files.retain(|f| {
+        let canon = f.replace("//", "/");
+        if seen.contains(&canon) {
+            return false;
+        }
+        seen.insert(canon.clone());
+        std::path::Path::new(&canon).exists()
+    });
+    files
 }
 
 /// 通过 /bin/sh -c 执行整条 shell 命令，返回结构化输出。
@@ -2070,6 +2164,7 @@ async fn run_shell_command(
                 stderr: String::from_utf8_lossy(&err_buf).to_string(),
                 exit_code: status.code().unwrap_or(-1),
                 timed_out: false,
+                created_files: Vec::new(),
             })
         }
         Err(_) => {
@@ -2083,6 +2178,7 @@ async fn run_shell_command(
                 stderr: format!("命令执行超时（{}s），已终止", timeout_secs.unwrap_or(60)),
                 exit_code: -1,
                 timed_out: true,
+                created_files: Vec::new(),
             })
         }
     }
@@ -2140,12 +2236,12 @@ async fn git_operation(
             let stderr = String::from_utf8_lossy(&err_buf).to_string();
             let exit_code = status.code().unwrap_or(-1);
             let _ = db.log_tool_call("git", &audit_args, &format!("exit={} out={} err={}", exit_code, stdout, stderr), exit_code != 0, duration);
-            Ok(CommandOutput { stdout, stderr, exit_code, timed_out: false })
+            Ok(CommandOutput { stdout, stderr, exit_code, timed_out: false, created_files: Vec::new() })
         }
         Err(_) => {
             let msg = format!("git 操作超时（{}s），已终止", timeout_secs.unwrap_or(60));
             let _ = db.log_tool_call("git", &audit_args, &msg, true, duration);
-            Ok(CommandOutput { stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true })
+            Ok(CommandOutput { stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true, created_files: Vec::new() })
         }
     }
 }
@@ -3248,8 +3344,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_edits, delete_file_agent, detect_test_framework, diff_lines, format_unified_diff,
-        nth_occurrence, run_shell_command, validate_git_operation, EditOp,
+        apply_edits, delete_file_agent, detect_test_framework, diff_lines, extract_redirected_files,
+        format_unified_diff, nth_occurrence, run_shell_command, validate_git_operation, EditOp,
     };
 
     /// 在真实 HOME 下建独立临时目录（apply_edits 要求主目录内路径）。
@@ -3461,6 +3557,28 @@ mod tests {
         assert!(out.timed_out, "应标记超时");
         assert!(out.stderr.contains("超时"), "stderr: {}", out.stderr);
         assert!(start.elapsed().as_secs() < 15, "应在 2s 超时终止而非等 30s（进程组被杀）");
+    }
+
+    #[test]
+    fn extract_redirected_files_detects_output_files() {
+        let dir = edit_test_dir("redir");
+        let out = dir.join("out.txt");
+        std::fs::write(&out, "x").unwrap();
+        let cwd = dir.to_str().unwrap();
+        let expect = out.to_str().unwrap().to_string();
+        // > 相对路径
+        assert_eq!(extract_redirected_files("ls > out.txt", Some(cwd)), vec![expect.clone()]);
+        // >> 追加
+        assert_eq!(extract_redirected_files("echo hi >> out.txt", Some(cwd)), vec![expect.clone()]);
+        // 2> 错误重定向也生成文件
+        assert_eq!(extract_redirected_files("cmd 2> out.txt", Some(cwd)), vec![expect.clone()]);
+        // 排除 /dev/null 与 2>&1
+        assert_eq!(extract_redirected_files("cmd > /dev/null 2>&1", Some(cwd)), Vec::<String>::new());
+        // 引号内的 > 不误判
+        assert_eq!(extract_redirected_files("echo \"a > b\"", Some(cwd)), Vec::<String>::new());
+        // 不存在的文件不返回
+        assert_eq!(extract_redirected_files("cmd > missing.txt", Some(cwd)), Vec::<String>::new());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

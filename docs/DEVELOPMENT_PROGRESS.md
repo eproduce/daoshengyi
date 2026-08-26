@@ -46,6 +46,11 @@
 - **多 agent 协作计划（写入 DEVELOPMENT_PLAN §3.8，P-M1~P-M4）**：P-M1 子代理带工具（复用 sendMessage 工具循环）→ P-M2 并行子代理（Promise.all / futures join）→ P-M3 角色分工（规划/执行/验证/评审模板）→ P-M4 主代理汇总仲裁（orchestrator-subagent 树 + 监视面板）；建议推进顺序 P-A6 → P-M1~P-M4 → P-A7/P-A8
 - **验证**：cargo check 通过（菜单移除）；npm test 35 + vite build 通过；全工作区 grep 确认无 CodingAgents/agents tab 残留（仅文档记录）
 
+### ✅ /run 命令生成的文件展示为可点击链接
+- **需求**：命令重定向生成的文件（如 `ls -l > l.txt`）应该像 write_file 一样，在回复中展示路径且可点击打开
+- **实现**：`CommandOutput` 加 `created_files: Vec<String>`（serde default）；新增纯函数 `extract_redirected_files(cmd, cwd)`——引号感知解析 `>`/`>>`/`2>` 目标，排除 `/dev/null`/`&1`/`$变量`，相对路径结合 cwd（无显式 cwd 用进程当前目录 std::env::current_dir）转绝对路径，去重 + 校验存在；`execute_command` 成功后填充；前端 `runCommand` 在回复底部追加「📄 本次命令生成的文件：- <绝对路径>」，ChatMessage 的 LOCAL_FILE_RE 自动把绝对路径渲染为可点击链接（file_exists 校验 + 点击 open_file）
+- **测试**：Rust 新增 `extract_redirected_files_detects_output_files`（>`/>>`/`2>` 检出、/dev/null 与 2>&1 排除、引号内 `>` 不误判、不存在不返回）→ cargo test 35 项通过；npm test 35 + vite build 通过
+
 ### ✅ 修复：命令执行工具（/run）不走 shell + 消息框命令面板误触发
 - **Bug 1：/run 命令不走 shell**（用户报 `/run list` 报「启动命令失败: No such file or directory」）
   - 根因：`execute_command` 用 `Command::new(command)` 直接执行第一个词（不经 shell）——`~` 不展开、管道/重定向/`&&` 不生效、非可执行文件（如 `list`）报启动错误
