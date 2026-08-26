@@ -170,6 +170,16 @@
 - **踩坑**：①`path_within_any` 空白名单返回 false（调用方先判空再调用），测试断言别写成「空=放行」；②read_file 未配置白名单时**不能**回退到主目录边界（会破坏 /read 读工作区外文件的原行为），只有配置白名单才收紧
 - **验证**：npm test 72 + vite build + cargo test --lib 40 + get_errors 全部通过
 - **后续**：P-A9 记忆复习（定期 LLM 回顾记忆仓库合并过时/矛盾事实）→ 其余远期（P-A10 插件生态 / P-A11 跨设备同步 / P-A12 多模型路由）
+
+### ✅ 编程代理 P-A9 记忆复习（LLM 回顾记忆库，删除/合并过时矛盾重复事实）
+- **背景**：P-A7/P-A8 之后，长期记忆路线图（§3.5 Phase 4.2）的「记忆复习」——定期让 LLM 回顾记忆仓库，清理过时/矛盾/重复事实，避免记忆库越来越臃肿
+- **前端**：
+  - 新建 `src/utils/memory-review.ts` 纯函数：`buildReviewPrompt(facts)`（含 id 列表 → LLM 找出过时/矛盾/重复项）+ `parseReviewActions(raw)`（宽松解析 JSON 数组，兼容 `from_id`/`id`，跳过非法项）
+  - `memory.ts reviewMemories(config)`：list_facts 全量（<6 条跳过）→ buildReviewPrompt → callLLM（辅助配置）→ parseReviewActions → 应用：delete_fact_cmd 删除；merge 时同时删除来源 + 目标重要度 +1（上限 10，update_fact_cmd）；返回「删除 N 条，合并 M 条」汇总；失败静默返回提示
+  - `MemoryPanel.vue`「智能复习」按钮（Brain 图标，next to 执行维护）：用 chatStore.getAuxConfig()（未配 API 提示先配置）；完成后刷新列表
+- **自测（加强）**：新增 7 项（提示词含 id 与动作、delete+merge/from_id 兼容解析、delete 动作、merge with intoId、空 []、非法 JSON 容错、非法动作/缺 id 跳过）→ npm test 79 通过
+- **验证**：npm test 79 + vite build + get_errors 全部通过
+- **后续**：P-A10 插件/技能生态（第三方上传/评分/版本管理）→ P-A11 跨设备同步 → P-A12 多模型路由 → Phase 5/6 桌面深度集成与生态（长期）
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

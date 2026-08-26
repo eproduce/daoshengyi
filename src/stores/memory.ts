@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
 import { embeddingSource } from "@/utils/embed-provider";
+import { buildReviewPrompt, parseReviewActions } from "@/utils/memory-review";
 import type { ChatMessage } from "@/types";
 
 const SUMMARIZE_THRESHOLD = 20;
@@ -205,7 +206,39 @@ ${convText}
     } catch { return ""; }
   }
 
-  return { maybeSummarize, extractFacts, retrieveMemories, getUserProfile };
+  // --- P-A9 记忆复习：LLM 回顾记忆库，删除/合并过时、矛盾、重复的事实 ---
+  async function reviewMemories(config: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
+    try {
+      const all = await invoke<FactRow[]>("list_facts", { factType: "", limit: 200 }).catch(() => [] as FactRow[]);
+      if (all.length < 6) return `记忆数量较少（${all.length} 条），暂不需要复习。`;
+      const actions = parseReviewActions((await callLLM(config, buildReviewPrompt(all))) || "");
+      if (actions.length === 0) return "智能复习完成：未发现需要整理（过时/矛盾/重复）的记忆。";
+      let del = 0;
+      let merge = 0;
+      const byId = new Map(all.map((f) => [f.id, f]));
+      for (const a of actions) {
+        if (a.action === "delete") {
+          await invoke("delete_fact_cmd", { id: a.id }).catch(() => {});
+          del++;
+        } else if (a.action === "merge") {
+          await invoke("delete_fact_cmd", { id: a.id }).catch(() => {});
+          merge++;
+          // merge 时把保留目标的重要度 +1（上限 10），让合并后的信息更突出
+          const target = byId.get(a.intoId || "");
+          if (target && target.importance < 10) {
+            await invoke("update_fact_cmd", {
+              id: target.id, fact: target.fact, factType: target.fact_type, importance: target.importance + 1,
+            }).catch(() => {});
+          }
+        }
+      }
+      return `智能复习完成：删除 ${del} 条，合并 ${merge} 条（共整理 ${actions.length} 条）。`;
+    } catch (e) {
+      return "智能复习失败：" + (e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return { maybeSummarize, extractFacts, retrieveMemories, getUserProfile, reviewMemories };
 }
 
 // --- LLM 调用辅助 ---

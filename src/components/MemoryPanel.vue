@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Pencil, Trash2, RefreshCw, Sparkles, BookOpen, History, Search } from "lucide-vue-next";
+import { useChatStore } from "@/stores/chat";
+import { useMemorySystem } from "@/stores/memory";
+import { Pencil, Trash2, RefreshCw, Sparkles, Brain, Search } from "lucide-vue-next";
 
 interface FactRow {
   id: string; conversation_id?: string | null; fact: string; fact_type: string;
@@ -22,6 +24,9 @@ const searchKw = ref("");
 const loading = ref(false);
 const error = ref("");
 const maintenanceMsg = ref("");
+const reviewMsg = ref("");
+const chatStore = useChatStore();
+const memorySystem = useMemorySystem();
 
 async function load() {
   loading.value = true;
@@ -90,6 +95,18 @@ async function runMaintenance() {
   }
 }
 
+// P-A9 智能复习：LLM 回顾记忆库，删除/合并过时、矛盾、重复事实
+async function runReview() {
+  const config = chatStore.getAuxConfig();
+  if (!config?.baseUrl || !config?.apiKey) {
+    reviewMsg.value = "请先在 API 配置中填写地址和 Key（记忆复习需要调用模型）";
+    return;
+  }
+  reviewMsg.value = "复习中…";
+  reviewMsg.value = await memorySystem.reviewMemories(config);
+  await load();
+}
+
 function fmtTime(ts?: number | null): string {
   if (!ts) return "—";
   const d = new Date(ts);
@@ -122,7 +139,11 @@ onMounted(load);
       <button class="memory-btn" @click="runMaintenance">
         <Sparkles :size="14" /> 执行维护
       </button>
+      <button class="memory-btn" @click="runReview" :disabled="!!reviewMsg && reviewMsg === '复习中…'">
+        <Brain :size="14" /> 智能复习
+      </button>
       <span v-if="maintenanceMsg" class="memory-msg">{{ maintenanceMsg }}</span>
+      <span v-if="reviewMsg" class="memory-msg">{{ reviewMsg }}</span>
       <span v-if="error" class="memory-error">{{ error }}</span>
     </div>
 

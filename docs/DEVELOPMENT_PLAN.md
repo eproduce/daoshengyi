@@ -147,7 +147,7 @@
 | P-A6 | **本地语义 embedding** | ✅ | 🟡 | 记忆（已有） | 接入 Ollama 本地 embedding（`nomic-embed-text`）：Rust `ollama_embed` 命令（/api/embed，服务未运行/模型未装时快速失败不自动下载）；前端 `generateEmbedding` 对 DeepSeek（无 embeddings 端点）主模型改用本地 Ollama 补语义，向量存 `set_fact_embedding` + `search_by_embedding` 余弦检索；未部署 nomic-embed-text 时静默回退 FTS5 |
 | P-A7 | **权限矩阵（工具级）** | ✅ | 🟡 | approval_mode（已有） | AppSettings 加 `disabledTools`/`allowedPaths`；前端 `isToolDisabled`/`isPathAllowed` 纯函数拦截（callMcpTool/callBuiltinTool 双入口）；设置「权限」tab 配置禁用工具 + 路径白名单（每行一个，@change 即时保存） |
 | P-A8 | **沙箱** | ✅ | 🟡 | 无 | 文件层白名单沙箱：Rust `path_within_any`（组件级前缀匹配防误判）/`parse_allowed_paths`（~ 展开）纯函数 + `sandbox_allowed_paths`/`sandbox_file_path`；`read_file`/`write_file_agent` 加 `db: State` 应用白名单（未配置时 read 保持原行为、write 仍主目录边界）；命令层 `DANGEROUS_PATTERNS` 已有 + P-A7 前端门禁兜底 |
-| P-A9 | **记忆复习** | ⬜ | 🔵 | 记忆（已有） | 定期 LLM 回顾记忆仓库，合并过时/矛盾事实（Phase 4.2） |
+| P-A9 | **记忆复习** | ✅ | 🔵 | 记忆（已有） | `memory.ts reviewMemories`：LLM 回顾记忆库（list_facts → buildReviewPrompt → parseReviewActions），删除过时/矛盾/重复事实，merge 时目标重要度 +1；记忆面板「智能复习」按钮（手动触发，配 API 才可用）；纯函数 buildReviewPrompt/parseReviewActions 可测试 |
 | P-A10 | **插件/技能生态** | ⬜ | 🔵 | 技能库/MCP（已有） | 第三方技能/工具上传、评分、分享；版本管理与自动更新 |
 | P-A11 | **跨设备同步** | ⬜ | 🔵 | 无 | 记忆/技能/配置跨设备同步 |
 | P-A12 | **多模型路由** | ⬜ | 🔵 | Ollama（已有） | 按任务类型自动选模型（对话/编程/摘要），本地模型作离线回退 |

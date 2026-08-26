@@ -6,6 +6,7 @@ import { BUILTIN_TOOLS, BUILTIN_TOOL_NAMES, validBuiltinTools } from "../src/dat
 import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from "../src/data/roles-catalog.ts";
 import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissions.ts";
+import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 
 let pass = 0;
 let fail = 0;
@@ -189,6 +190,19 @@ console.log("\n== P-A7 权限矩阵（工具开关 + 路径白名单） ==");
   assert(isPathAllowed("~/Pictures/shot.png", ["~/Pictures"]) === true, "~ 前缀命中");
   assert(pathArgOf({ cwd: "/a" }) === "/a", "pathArgOf 取 cwd");
   assert(pathArgOf({ url: "https://x" }) === "", "pathArgOf 无路径参数返回空");
+}
+
+console.log("\n== P-A9 记忆复习（提示词 + 动作解析） ==");
+{
+  const prompt = buildReviewPrompt([{ id: "a", fact: "用户喜欢简洁回答", fact_type: "preference", importance: 9 }]);
+  assert(prompt.includes("id=a") && prompt.includes("delete") && prompt.includes("merge"), "提示词含事实 id 与动作说明");
+  const acts = parseReviewActions('[{"action":"delete","id":"a","reason":"过时"},{"action":"merge","from_id":"b","into_id":"c"}]');
+  assert(acts.length === 2, "解析 delete + merge（from_id 兼容）", JSON.stringify(acts));
+  assert(acts[0].action === "delete" && acts[0].id === "a", "delete 动作");
+  assert(acts[1].action === "merge" && acts[1].id === "b" && acts[1].intoId === "c", "merge 动作 with intoId");
+  assert(parseReviewActions("```json\n[]\n```").length === 0, "空结果 [] 解析为空");
+  assert(parseReviewActions("not json").length === 0, "非法 JSON 容错返回空");
+  assert(parseReviewActions('[{"action":"nope","id":"a"},{"action":"delete"}]').length === 0, "非法动作/缺 id 跳过");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
