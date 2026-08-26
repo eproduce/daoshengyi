@@ -68,6 +68,37 @@ export interface SubagentRecord {
   error?: string;
 }
 
+// --- 停止请求信号：停止按钮 → 立即中断主代理工具循环 / 子代理循环 ---
+// 之前 stopStreaming 只把 isStreaming 改为 false（隐藏按钮），正在跑的 chatOnce/
+// 工具循环不会中断，导致「停止按钮无法停止子代理操作」。这里用可取消信号：
+// 停止时触发所有 waitStopSignal() 等待方立即 resolve，配合 Promise.race 提前结束。
+let stopRequested = false;
+let stopWaiters: (() => void)[] = [];
+function requestStop() {
+  stopRequested = true;
+  const ws = stopWaiters;
+  stopWaiters = [];
+  for (const w of ws) w();
+}
+function resetStop() {
+  stopRequested = false;
+  stopWaiters = [];
+}
+/// 返回 Promise：停止信号触发时 resolve（未触发则永久 pending，配合 Promise.race 提前中断）
+function waitStopSignal(): Promise<void> {
+  if (stopRequested) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    stopWaiters.push(resolve);
+  });
+}
+/// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
+class AgentStoppedError extends Error {
+  constructor() {
+    super("任务已由用户停止");
+    this.name = "AgentStoppedError";
+  }
+}
+
 function getMcpToolsPrompt(): string {
   // 内置工具：如实描述特性/优势/适用场景，由大模型根据任务自行选择，不硬编码倾向
   // 通用输出要求：DeepSeek 思考模式易把详细分析留在 reasoning，正文只给简要结论 →
@@ -494,6 +525,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, { allowTools });
         store.completeSubagent(rec.id, finalText);
       } catch (e) {
+        if (e instanceof AgentStoppedError) {
+          // 用户点停止：优雅标记子代理已停止，不再向主代理抛错（主代理工具循环会自行 break）
+          store.failSubagent(rec.id, "已由用户停止");
+          return "（子代理已由用户停止，不再继续）";
+        }
         store.failSubagent(rec.id, e instanceof Error ? e.message : String(e));
         throw e;
       }
@@ -795,8 +831,16 @@ async function runSubagentLoop(
     { role: "user", content: `子任务：${goal}` },
   ];
   for (let round = 0; round < maxRounds; round++) {
-    const data = await chatOnce(config, msgs);
-    if (!data) throw new Error("子代理执行超时或失败");
+    if (stopRequested) throw new AgentStoppedError();
+    // 每轮 chatOnce 与停止信号 race：点停止后立即抛 AgentStoppedError，不等 60s 超时。
+    // 用 kind 标记而非 .then(throw)，避免 race 已结算后停止信号才触发导致 unhandled rejection
+    const raced = await Promise.race([
+      chatOnce(config, msgs).then((d) => ({ kind: "ok" as const, data: d })),
+      waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
+    ]);
+    if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
+    if (raced.data === null) throw new Error("子代理执行超时或失败");
+    const data = raced.data;
     const content = data.content || "";
     const tc = parseToolCall(content);
     if (tc && allowTools) {
@@ -805,12 +849,14 @@ async function runSubagentLoop(
         role: "assistant",
         content: stripToolJson(content).trim() || `（调用工具 ${tc.tool}）`,
       });
+      if (stopRequested) throw new AgentStoppedError(); // 执行工具前
       let result: string;
       try {
         result = await callMcpTool(server, tc.tool, tc.arguments);
       } catch (e) {
         result = `错误: ${e instanceof Error ? e.message : String(e)}`;
       }
+      if (stopRequested) throw new AgentStoppedError(); // 工具返回后
       msgs.push({
         role: "user",
         content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。`,
@@ -1546,6 +1592,7 @@ export const useChatStore = defineStore("chat", () => {
     // 避免 await 图片识别期间无任何反馈，看起来像卡死
     conv.messages.push(assistantMsg);
     conv.updatedAt = Date.now();
+    resetStop(); // 新消息重置停止信号
     isStreaming.value = true;
     streamingContent.value = "";
     streamingReasoning.value = "";
@@ -1843,6 +1890,7 @@ export const useChatStore = defineStore("chat", () => {
         try {
           await Promise.race([
             doneP,
+            waitStopSignal(), // 用户停止 → 提前结束本轮流式（工具循环随后 break）
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000)
             ),
@@ -1857,8 +1905,10 @@ export const useChatStore = defineStore("chat", () => {
       let round = 0;
       let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
       while (round < MAX_TOOL_ROUNDS) {
+        if (stopRequested) break; // 用户停止 → 立即退出工具循环
         dbg(`[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}`);
         roundResult = await streamRound(rustMsgs);
+        if (stopRequested) break; // 本轮流式返回后仍被停止 → 不再处理/重试
         const tc = roundResult.toolCall;
         dbg(`[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`);
         if (!tc) {
@@ -1913,6 +1963,7 @@ export const useChatStore = defineStore("chat", () => {
           break;
         }
 
+        if (stopRequested) break; // 执行工具前再检查，避免停止后仍调工具（含子代理）
         // 实时显示"正在调用工具"
         const serverName = tc.server && tc.server !== "default" ? `（${tc.server}）` : "";
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
@@ -1921,6 +1972,7 @@ export const useChatStore = defineStore("chat", () => {
         dbg(`[tool] 开始执行 ${tc.server}/${tc.tool}，args=${argsStr.slice(0, 120)}`);
         try {
           const result = await callMcpTool(tc.server, tc.tool, tc.arguments);
+          if (stopRequested) break; // 工具返回后被停止 → 不再回填继续下一轮
           dbg(`[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`);
           const clipped = formatToolResultPreview(tc.tool, result);
           const card =
@@ -2066,8 +2118,8 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function stopStreaming() {
-    // Rust 后端会自然结束，前端标记超时即可
     isStreaming.value = false;
+    requestStop(); // 立即中断正在运行的子代理/主代理工具循环（不只是改标志）
   }
 
   function clearCurrentConversation() {

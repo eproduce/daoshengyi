@@ -46,6 +46,19 @@
 - **多 agent 协作计划（写入 DEVELOPMENT_PLAN §3.8，P-M1~P-M4）**：P-M1 子代理带工具（复用 sendMessage 工具循环）→ P-M2 并行子代理（Promise.all / futures join）→ P-M3 角色分工（规划/执行/验证/评审模板）→ P-M4 主代理汇总仲裁（orchestrator-subagent 树 + 监视面板）；建议推进顺序 P-A6 → P-M1~P-M4 → P-A7/P-A8
 - **验证**：cargo check 通过（菜单移除）；npm test 35 + vite build 通过；全工作区 grep 确认无 CodingAgents/agents tab 残留（仅文档记录）
 
+### ✅ 修复：停止按钮无法停止子代理/工具循环（真正的中断机制）
+- **用户报告**：两个停止按钮（对话区「⏹ 停止生成」+ 输入框「⏹」）都无法停止正在运行的子代理（召回 agent）操作
+- **根因**：`stopStreaming()` 只做 `isStreaming.value = false`（隐藏按钮），**没有真正的取消机制**——正在跑的 `runSubagentLoop`（每轮 `chatOnce` 最长 60s）、主代理工具循环（`while round < MAX`）都不会中断；主代理还阻塞在 `await callMcpTool(subagent_delegate)` 上，停止后它返回仍会继续下一轮
+- **修复（src/stores/chat.ts）**：
+  - 引入**可取消停止信号**（模块级）：`stopRequested` + `stopWaiters` + `requestStop()`/`resetStop()`/`waitStopSignal()` + `AgentStoppedError`
+  - `stopStreaming()` 现在调 `requestStop()`（不只是改标志）；`sendMessage` 主流程开头 `resetStop()`（新消息重置）
+  - **子代理循环**：每轮 `Promise.race([chatOnce, waitStopSignal()])`，点停止立即抛 `AgentStoppedError`（不等 60s 超时）；工具执行前/后检查；`subagent_delegate` 捕获 `AgentStoppedError` → 子代理标记「已由用户停止」→ 返回"（子代理已由用户停止）"
+  - **主代理工具循环**：`while` 顶部 / `await streamRound` 后 / 执行工具前 / `await callMcpTool` 后 四处检查 `stopRequested` → break（停止后不再调新工具/发起新一轮）
+  - **streamRound**：`doneP` race 加 `waitStopSignal()`，停止时提前结束当前流式轮（工具循环随后 break）
+- **踩坑**：`runSubagentLoop` 的 race 最初用 `waitStopSignal().then(() => { throw ... })` ——race 已结算后停止信号才触发会 unhandled rejection；改用 **kind 标记**（`{kind:"ok"}` / `{kind:"stop"}`）让停止信号只 resolve 不 throw
+- **验证**：npm test 35 + vite build 通过；get_errors 无报错
+- **注意**：正在执行的单个工具（如子代理正在调的长工具/`chatOnce` 单次）无法中途掐断（Tauri invoke 无 abort），停止在「当前 await 返回后」立即生效——点停止后子代理不会进入下一轮，主代理不再继续，但正在跑的那一次请求最多等到其自然结束（子代理最多 1 轮 chatOnce 60s）
+
 ### ✅ 编程代理 P-M1 子代理带工具（多 agent 协作地基）
 - **背景**：外部编码 Agent 降级后，研发重心转向内置多 agent 协作；P-M1 是第一步——让子代理从"纯对话"升级为"能调内置工具"
 - **实现（src/stores/chat.ts）**：
