@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-25**
+> **最后更新：2026-08-26**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地）
 
 ---
 
@@ -16,7 +16,7 @@
 | 密钥 | AES-256-GCM，密钥文件 `secret.key`（0600）于 app_data_dir |
 | 定位 | 本地优先 + 国产模型（DeepSeek）的 AI Agent 桌面客户端 |
 | 远程 | `https://github.com/eproduce/daoshengyi` 分支 main |
-| 测试 | `npm test`（前端 30 项）· `cargo test settings`（Rust 4 项） |
+| 测试 | `npm test`（前端 84 项）· `cargo test --lib`（Rust 40 项）· `vue-tsc --noEmit` |
 
 ---
 
@@ -70,7 +70,7 @@
 
 ---
 
-## 3. 长期记忆功能开发计划（2026-08-25 新增，待启动）
+## 3. 长期记忆功能开发计划（2026-08-25 新增；Phase 1/2/3 大部已完成，2026-08-26 核对）
 
 > 目标：让 Agent **跨会话**记住用户偏好 / 事实 / 决策 / 待办，对话时自动检索注入；记忆可持续累积、可管理、可遗忘。基于现有 `memory_facts` / `memory_summaries` 基础设施增强，不引入重型外部依赖。
 
@@ -87,7 +87,7 @@
 
 ### 3.2 Phase 1 — 记忆内核增强（数据层，🟢）
 
-> **状态：1.1 / 1.2 / 1.3 已完成（2026-08-25），1.4 / 1.5 待做**
+> **状态：1.1 / 1.2 / 1.3 / 1.5 已完成（2026-08-26 核对）；1.4 待做**
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
@@ -99,11 +99,11 @@
 
 ### 3.3 Phase 2 — 检索与注入（Agent 侧，🟡）
 
-> **状态：2.1 部分（FTS5 混合检索）、2.2 部分（加权排序）、2.4 已完成（2026-08-25）；2.3 待做**
+> **状态：2.1 ✅（含 Ollama 本地 embedding，P-A6）、2.4 ✅（2026-08-25）；2.2 加权已做、注入条数/token 剪裁与来源标注待做；2.3 重要性门槛已做、触发优化待做**
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| 2.1 | 混合检索 | ✅ | FTS5 关键词（1.3）+ 意图关键词扩展（LLM 提取核心词，空结果时重试）；Ollama 本地 embedding 待做 |
+| 2.1 | 混合检索 | ✅ | FTS5 关键词（1.3）+ 意图关键词扩展（LLM 提取核心词，空结果时重试）+ **Ollama 本地 embedding 语义向量（P-A6：`ollama_embed` + `search_by_embedding` 余弦）** |
 | 2.2 | 排序与剪裁 | 🟡 | search_facts 已按 bm25×importance×recency 加权（Phase 1）；注入条数/token 剪裁、来源标注待做 |
 | 2.3 | 写入策略优化 | ⬜ | 对话结束异步提取（已有）；触发优化：重要性门槛、失败静默、避免低价值事实堆积 |
 | 2.4 | 主动记忆工具 | ✅ | `memory_save` / `memory_recall` / `memory_forget` 内置工具（app）+ 提示词「长期记忆使用要点」区块；memory_save 自动走去重合并；memory_recall 走 FTS5 检索；memory_forget 按关键词删除 |
@@ -112,21 +112,21 @@
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 3.1 | 记忆管理面板 | 🟡 | 已完成：查看/筛选/删除/编辑（update_fact）+ 用户画像区块 + 会话摘要 + 执行维护；待做：全文搜索框 |
+| 3.1 | 记忆管理面板 | ✅ | 已完成：查看/筛选/删除/编辑（update_fact）+ 用户画像区块 + 会话摘要 + 执行维护 + **全文搜索框（本地过滤）** + **智能复习（P-A9：LLM 合并过时/矛盾/重复事实）** |
 | 3.2 | 记忆配置 | 开关（启用记忆）、检索条数、遗忘阈值（AppSettings + 设置 tab） |
 | 3.3 | 记忆可视化 | 用户画像卡片、遗忘候选提示、记忆来源标注 |
 
 ### 3.5 Phase 4 — 增强（远期）
 
-| # | 任务 | 说明 |
-|---|------|------|
-| 4.1 | 本地语义检索 | 接入 Ollama 本地 embedding（`nomic-embed-text`）或内置轻量 BM25；可行则启用真向量 |
-| 4.2 | 记忆复习 | 定期 LLM 回顾记忆仓库，合并过时 / 矛盾事实 |
-| 4.3 | 跨设备同步 | 远期 |
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| 4.1 | 本地语义检索 | ✅ | 已接入 Ollama 本地 embedding（`nomic-embed-text`，P-A6）：`ollama_embed` 命令 + `embed-provider` 判定 + 记忆向量余弦检索；未部署时静默回退 FTS5 |
+| 4.2 | 记忆复习 | ✅ | 已实现（P-A9）：`reviewMemories` + 记忆面板「智能复习」按钮，LLM 合并过时/矛盾/重复事实 |
+| 4.3 | 跨设备同步 | ⬜ | 远期（需云端账号/服务器） |
 
 ### 3.6 关键技术点 / 坑
 
-- **DeepSeek 无 embeddings**：语义检索不依赖它；用关键词增强 + 可选 Ollama 本地 embedding；记忆检索已有 15s 超时兜底（`Promise.race`），不阻塞主对话
+- **DeepSeek 无 embeddings**：语义检索不依赖它——已接入本地 Ollama `nomic-embed-text`（P-A6）补齐；未部署时静默回退 FTS5；记忆检索已有 15s 超时兜底（`Promise.race`），不阻塞主对话
 - **FTS5 中文分词**：SQLite 内置 `unicode61` 对中文按整串切词，需自定义 unigram tokenizer（建表时 `tokenize=...` 指定）
 - **去重成本**：LLM 逐条去重贵 → 先文本相似度低阈值合并，LLM 复核仅用于高歧义
 - **注入约束**：保持短（≤N 条 / ≤X token），避免污染上下文
@@ -152,7 +152,7 @@
 | P-A11 | **跨设备同步** | ⬜ | 🔵 | 无 | 记忆/技能/配置跨设备同步 |
 | P-A12 | **多模型路由** | ✅ | 🔵 | Ollama（已有） | AppSettings 加 `modelRouting`（任务类型→Profile id）；`routeProfileId` 纯函数（routing[taskType]→辅助模型→主模型）；`getRoutedAuxConfig(taskType)`：子代理走 coding 路由、记忆摘要/提取/关键词/复习走 summarize 路由；设置「模型路由」配置（摘要/编程两个下拉） |
 
-**建议推进顺序**：P-A1（Git）→ P-A2（验证循环）→ P-A3（代码库索引）→ P-A4（多文件编辑 diff）→ P-A5（Plan）→ P-A6（本地 embedding）→ P-M1~P-M4（多 agent 协作）→ P-A7/P-A8（权限沙箱）→ 其余远期。
+**推进状态（2026-08-26）**：P-A1 → P-A2 → P-A3 → P-A4 → P-A5 → P-A6 → P-M1~P-M4 → P-A7/P-A8 → P-A9 → P-A12 **全部完成 ✅**；剩余 P-A10（插件生态，需社区后端）、P-A11（跨设备同步，需云端）为远期。
 
 ---
 
@@ -173,25 +173,25 @@
 
 > 参考项目：`https://github.com/Eynzof/Hermes-CN-Desktop`（许可 PolyForm Noncommercial，**只借鉴思路，不抄代码**）。调研详见会话记忆 `hermes-cn-research.md`。
 
-### 🟢 高价值 · 易落地
-| # | 功能 | 基础 |
-|---|------|------|
-| A | **YOLO/自动批准高危命令开关** | 已有 `DANGEROUS_PATTERNS` + `tool_audit`，加设置开关「自动批准」即闭环 |
-| B | **用量统计图表页** | 已有 token/费用/cache 命中率数据，加可视化 |
-| C | **会话归档/导出** | 基于 SQLite 会话表加归档/导出 |
+### 🟢 高价值 · 易落地（✅ 已全部落地）
+| # | 功能 | 状态 | 基础 |
+|---|------|------|------|
+| A | **YOLO/自动批准高危命令开关** | ✅ | `DANGEROUS_PATTERNS` + `tool_audit` + 设置「危险命令审批模式」（manual/smart/yolo） |
+| B | **用量统计图表页** | ✅ | token/费用/cache 命中率可视化 + 历史累计（usage_agg） |
+| C | **会话归档/导出** | ✅ | SQLite 会话表 + 归档（archivedIds）+ 导出 MD/JSON |
 
-### 🟡 中价值
-| # | 功能 | 说明 |
-|---|------|------|
-| D | 运行时健康/日志面板 | 系统健康 + 运行时诊断 + 日志查看 |
-| E | 定时任务 | `/run` 已能执行命令，配 cron 表可实现 |
-| F | 长任务防休眠 | prevent-sleep 类能力 |
+### 🟡 中价值（✅ 已全部落地）
+| # | 功能 | 状态 | 说明 |
+|---|------|------|------|
+| D | 运行时健康/日志面板 | ✅ | 系统健康 + 运行时诊断 + 日志查看（HealthPanel） |
+| E | 定时任务 | ✅ | 定时任务表 + 调度线程（ScheduledTasks） |
+| F | 长任务防休眠 | ✅ | SleepGuard + caffeinate，图片识别/命令执行时自动 |
 
 ### 🔵 长期
-| # | 功能 | 说明 |
-|---|------|------|
-| G | 子代理委派 | ReAct 单循环 → orchestrator-subagent 树 + 监视面板（**已初步：subagent_delegate 轻量单层；升级方向见 §3.8 P-M1~P-M4**） |
-| H | 编码 Agent 委派 | 检测/委派本机 Claude Code、Codex（**2026-08-26 降级为隐藏兜底**：UI 移出设置面板，保留 `delegate_coding_agent` 内置工具按需调用；内置多 agent 成熟后彻底移除，见 ROADMAP §4.5 退役路线） |
+| # | 功能 | 状态 | 说明 |
+|---|------|------|------|
+| G | 子代理委派 | ✅ | 已升级为**内置多 agent 协作全链路**（P-M1 子代理带工具 → P-M2 并行 → P-M3 角色分工 → P-M4 汇总仲裁），见 §3.8 |
+| H | 编码 Agent 委派 | 🟡 | 外部委派已**降级为隐藏兜底**（2026-08-26）：UI 移出设置面板，保留 `delegate_coding_agent` 内置工具按需调用；内置多 agent 成熟后彻底移除（退役路线见 ROADMAP §4.5） |
 
 ---
 
@@ -221,9 +221,10 @@
 
 ```bash
 npm run tauri dev          # 开发模式（自动启动 Vite + cargo）
-npx vite build            # 前端生产构建
-npm test                  # 前端测试（30 项）
+npx vite build            # 前端生产构建（不跑类型检查）
+npx vue-tsc --noEmit      # 前端严格类型检查（建议每轮自测加它）
+npm test                  # 前端测试（84 项）
 cargo check               # Rust 编译检查
-cargo test settings       # Rust 加密/设置测试（4 项）
+cargo test --lib          # Rust 单元测试（40 项，7 项 live 忽略）
 git push origin main      # 每次完成推送 GitHub
 ```

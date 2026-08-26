@@ -8,6 +8,7 @@ import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissions.ts";
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
+import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
 
 let pass = 0;
 let fail = 0;
@@ -213,6 +214,25 @@ console.log("\n== P-A12 多模型路由（按任务类型选模型） ==");
   assert(routeProfileId("summarize", undefined, "") === "", "无配置无辅助 → 跟随主模型");
   assert(routeProfileId("chat", { coding: "local" }, "aux") === "aux", "chat 未专门配置 → 辅助模型");
   assert(routeProfileId("coding", { coding: "  " }, "aux") === "aux", "空白配置按未配置处理");
+}
+
+console.log("\n== 记忆 §3 补全（来源标注 / 注入剪裁 / 遗忘候选） ==");
+{
+  const now = Date.now();
+  const f = { id: "a", fact: "用户喜欢简洁回答", fact_type: "preference", importance: 9, last_accessed: now, created_at: now - 86400000 };
+  assert(factTypeLabel("preference") === "偏好" && factTypeLabel("x") === "x", "类型标签映射");
+  assert(formatFactLine(f).includes("用户喜欢简洁回答") && formatFactLine(f).includes("偏好") && formatFactLine(f).includes("重要度 9"), "来源标注含 类型/重要度/时间");
+  const block = formatMemoriesBlock("相关记忆", [f, { ...f, id: "b", fact: "第二" }]);
+  assert(block.startsWith("## 相关记忆") && block.includes("- 用户喜欢简洁回答") && block.includes("- 第二"), "注入块格式");
+  const truncated = formatMemoriesBlock("相关记忆", [{ ...f, id: "b", fact: "x".repeat(2000) }], 200);
+  assert(truncated.includes("已按相关度截断") && truncated.length <= 250, "超长注入被截断并提示", String(truncated.length));
+  const cand = pickForgetCandidates([
+    { ...f, id: "old", fact: "旧信息", fact_type: "info", importance: 2, last_accessed: now - 40 * 86400000 },
+    { ...f, id: "pref", fact: "偏好", fact_type: "preference", importance: 2, last_accessed: now - 40 * 86400000 },
+    { ...f, id: "recent", fact: "近期", fact_type: "info", importance: 2, last_accessed: now - 86400000 },
+    { ...f, id: "high", fact: "高重要", fact_type: "info", importance: 6, last_accessed: now - 40 * 86400000 },
+  ], now);
+  assert(cand.map((c) => c.id).join() === "old", "遗忘候选=低重要+长期未访问+非偏好", cand.map((c) => c.id).join());
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

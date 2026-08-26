@@ -44,6 +44,10 @@ export interface AppSettingsPayload {
   allowedPaths: string[];
   /// P-A12 多模型路由：任务类型 → Profile id（summarize/coding/search → profileId）
   modelRouting: Record<string, string>;
+  /// 长期记忆 §3.2：是否启用记忆注入（默认开）
+  memoryEnabled: boolean;
+  /// 长期记忆 §3.2：相关记忆检索条数（默认 6）
+  memoryRecallLimit: number;
 }
 
 let cache: AppSettingsPayload = {
@@ -62,6 +66,8 @@ let cache: AppSettingsPayload = {
   disabledTools: [],
   allowedPaths: [],
   modelRouting: {},
+  memoryEnabled: true,
+  memoryRecallLimit: 6,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

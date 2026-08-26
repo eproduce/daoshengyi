@@ -78,6 +78,20 @@ pub struct AppSettings {
     /// 未配置的任务类型跟随辅助模型（auxiliary_profile_id），再跟随主模型。
     #[serde(default)]
     pub model_routing: std::collections::HashMap<String, String>,
+    /// 长期记忆 §3.2：是否启用记忆注入（默认开；关闭后不注入相关记忆，用户画像独立不受影响）
+    #[serde(default = "default_true")]
+    pub memory_enabled: bool,
+    /// 长期记忆 §3.2：相关记忆检索条数（默认 6，范围 1-20）
+    #[serde(default = "default_recall_limit")]
+    pub memory_recall_limit: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_recall_limit() -> i64 {
+    6
 }
 
 fn default_approval_mode() -> String {
@@ -102,6 +116,8 @@ impl Default for AppSettings {
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
             model_routing: std::collections::HashMap::new(),
+            memory_enabled: true,
+            memory_recall_limit: 6,
         }
     }
 }
@@ -299,6 +315,8 @@ mod tests {
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
             model_routing: std::collections::HashMap::new(),
+            memory_enabled: true,
+            memory_recall_limit: 6,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -334,6 +352,8 @@ mod tests {
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
             model_routing: std::collections::HashMap::new(),
+            memory_enabled: true,
+            memory_recall_limit: 6,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

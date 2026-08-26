@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { getSettings, updateSettings } from "@/api/appSettings";
 import { useChatStore } from "@/stores/chat";
 import { useMemorySystem } from "@/stores/memory";
-import { Pencil, Trash2, RefreshCw, Sparkles, Brain, Search } from "lucide-vue-next";
+import { pickForgetCandidates } from "@/utils/memory-format";
+import { Pencil, Trash2, RefreshCw, Sparkles, Brain, Search, BookOpen, History } from "lucide-vue-next";
 
 interface FactRow {
   id: string; conversation_id?: string | null; fact: string; fact_type: string;
@@ -113,6 +115,18 @@ function fmtTime(ts?: number | null): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+// §3.2 记忆配置：启用记忆注入 + 检索条数
+const memoryEnabled = ref(getSettings().memoryEnabled !== false);
+const memoryRecallLimit = ref(String(getSettings().memoryRecallLimit ?? 6));
+function saveMemoryConfig() {
+  const limit = Math.max(1, Math.min(20, Number(memoryRecallLimit.value) || 6));
+  memoryRecallLimit.value = String(limit);
+  updateSettings({ memoryEnabled: memoryEnabled.value, memoryRecallLimit: limit });
+}
+
+// §3.3 遗忘候选：低重要度（≤2）且 30 天以上未访问（偏好永久保护）
+const forgetCandidates = computed(() => pickForgetCandidates(facts.value));
+
 onMounted(load);
 </script>
 
@@ -122,6 +136,18 @@ onMounted(load);
       长期记忆：对话自动提取 + 跨会话检索注入。系统每天自动做<strong>重要度衰减</strong>与<strong>低价值遗忘</strong>（偏好永久保留）。
       这里可查看、筛选、删除记忆，帮助验证「越用越聪明」。
     </p>
+
+    <!-- §3.2 记忆配置 -->
+    <div class="memory-config">
+      <label class="memory-config__toggle">
+        <input type="checkbox" v-model="memoryEnabled" @change="saveMemoryConfig" />
+        <span>启用记忆注入</span>
+      </label>
+      <label class="memory-config__limit">
+        相关记忆检索条数
+        <input type="number" v-model="memoryRecallLimit" min="1" max="20" @change="saveMemoryConfig" />
+      </label>
+    </div>
 
     <div class="memory-toolbar">
       <select v-model="filter" class="memory-filter" @change="load">
@@ -161,6 +187,15 @@ onMounted(load);
         <span v-for="f in profile" :key="f.id" class="memory-profile__chip">
           {{ TYPE_LABEL[f.fact_type] || f.fact_type }}：{{ f.fact }}
         </span>
+      </div>
+    </div>
+
+    <!-- §3.3 遗忘候选：低重要度 · 长期未访问（偏好保护），提示可删除 -->
+    <div v-if="forgetCandidates.length > 0" class="memory-candidates">
+      <h4><Trash2 :size="14" /> 遗忘候选（{{ forgetCandidates.length }}）— 低重要度且 30 天以上未访问</h4>
+      <div v-for="f in forgetCandidates" :key="f.id" class="memory-candidate">
+        <span class="memory-candidate__text">{{ f.fact }}</span>
+        <button class="memory-candidate__del" title="删除" @click="deleteFact(f.id)">✕</button>
       </div>
     </div>
 
@@ -245,4 +280,14 @@ onMounted(load);
 .memory-summaries h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 8px; color: var(--text, #222); }
 .memory-summary { display: flex; gap: 8px; font-size: 12px; padding: 4px 0; color: var(--text-secondary, #666); }
 .memory-summary__time { white-space: nowrap; color: #999; font-size: 11px; padding-top: 1px; }
+.memory-config { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary, #666); padding: 6px 10px; border-radius: 8px; background: var(--bg-soft, #f5f5f5); }
+.memory-config__toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.memory-config__limit { display: inline-flex; align-items: center; gap: 6px; }
+.memory-config__limit input { width: 56px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); font-size: 12px; color: var(--text, #222); }
+.memory-candidates { border: 1px solid #c6282833; border-radius: 8px; padding: 10px 12px; background: #c6282808; }
+.memory-candidates h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 8px; color: #c62828; }
+.memory-candidate { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 0; color: var(--text-secondary, #666); }
+.memory-candidate__text { flex: 1; }
+.memory-candidate__del { border: none; background: none; cursor: pointer; color: #bbb; padding: 2px; }
+.memory-candidate__del:hover { color: #c62828; }
 </style>

@@ -4,6 +4,7 @@ import { getSettings } from "@/api/appSettings";
 import { embeddingSource } from "@/utils/embed-provider";
 import { buildReviewPrompt, parseReviewActions } from "@/utils/memory-review";
 import { routeProfileId } from "@/utils/model-routing";
+import { formatMemoriesBlock } from "@/utils/memory-format";
 import type { ChatMessage } from "@/types";
 
 const SUMMARIZE_THRESHOLD = 20;
@@ -179,17 +180,21 @@ ${convText}
   // --- 检索相关记忆（混合：FTS5 全文 + 语义向量 + 意图扩展 + 偏好，按相关度×重要度×时效排序）---
   async function retrieveMemories(query: string, config?: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
     try {
+      // §3.2 记忆配置：关闭则跳过相关记忆注入（用户画像 getUserProfile 独立不受影响）
+      const st = getSettings();
+      if (st.memoryEnabled === false) return "";
+      const recallLimit = Math.max(1, Math.min(20, Number(st.memoryRecallLimit ?? 6) || 6));
       const prefs = await invoke<FactRow[]>("get_preferences");
       let facts: FactRow[] = [];
 
       // 1) FTS5 全文检索（后端 bm25×importance×recency 加权；中文 unigram，DeepSeek 下主力）
-      facts = await invoke<FactRow[]>("search_facts", { query, limit: 6n });
+      facts = await invoke<FactRow[]>("search_facts", { query, limit: BigInt(recallLimit) });
 
       // 1.5) 意图关键词扩展：首轮无结果时，LLM 提取核心词重试（提升"模糊提问"召回）
       if (facts.length === 0 && config?.apiKey) {
         const kws = await expandKeywords(query, config);
         for (const kw of kws) {
-          const more = await invoke<FactRow[]>("search_facts", { query: kw, limit: 4n });
+          const more = await invoke<FactRow[]>("search_facts", { query: kw, limit: BigInt(Math.max(1, recallLimit - 2)) });
           for (const f of more) {
             if (!facts.some(x => x.fact === f.fact)) facts.push(f);
           }
@@ -201,7 +206,7 @@ ${convText}
       if (config?.apiKey) {
         const emb = await generateEmbedding(query, config);
         if (emb) {
-          const scored = await invoke<[FactRow, number][]>("search_by_embedding", { embedding: emb, limit: 3n });
+          const scored = await invoke<[FactRow, number][]>("search_by_embedding", { embedding: emb, limit: BigInt(Math.min(3, recallLimit)) });
           const vecFacts = scored.map(([f]) => f);
           // 与 FTS 结果按 fact 去重合并（向量优先排前）
           facts = [...vecFacts.filter(v => !facts.some(f => f.fact === v.fact)), ...facts];
@@ -218,9 +223,9 @@ ${convText}
         return true;
       });
 
+      // §2.2 注入剪裁 + 来源标注（类型/重要度/时间），超长截断避免污染上下文
       if (unique.length === 0) return "";
-      const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
-      return "## 相关记忆\n" + unique.map(f => `- ${f.fact} (${labels[f.fact_type] || f.fact_type})`).join("\n");
+      return formatMemoriesBlock("相关记忆", unique);
     } catch { return ""; }
   }
 
