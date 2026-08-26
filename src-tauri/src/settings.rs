@@ -74,6 +74,10 @@ pub struct AppSettings {
     /// P-A7 权限矩阵：路径白名单（Agent 文件/命令类工具只能访问这些目录；空=不限制，写操作仍限主目录）
     #[serde(default)]
     pub allowed_paths: Vec<String>,
+    /// P-A12 多模型路由：任务类型 → Profile id（summarize/coding/search 等）。
+    /// 未配置的任务类型跟随辅助模型（auxiliary_profile_id），再跟随主模型。
+    #[serde(default)]
+    pub model_routing: std::collections::HashMap<String, String>,
 }
 
 fn default_approval_mode() -> String {
@@ -97,6 +101,7 @@ impl Default for AppSettings {
             dingtalk_secret: String::new(),
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
+            model_routing: std::collections::HashMap::new(),
         }
     }
 }
@@ -293,6 +298,7 @@ mod tests {
             dingtalk_secret: String::new(),
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
+            model_routing: std::collections::HashMap::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -327,6 +333,7 @@ mod tests {
             dingtalk_secret: String::new(),
             disabled_tools: Vec::new(),
             allowed_paths: Vec::new(),
+            model_routing: std::collections::HashMap::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

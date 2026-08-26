@@ -7,6 +7,7 @@ import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from
 import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissions.ts";
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
+import { routeProfileId } from "../src/utils/model-routing.ts";
 
 let pass = 0;
 let fail = 0;
@@ -203,6 +204,15 @@ console.log("\n== P-A9 记忆复习（提示词 + 动作解析） ==");
   assert(parseReviewActions("```json\n[]\n```").length === 0, "空结果 [] 解析为空");
   assert(parseReviewActions("not json").length === 0, "非法 JSON 容错返回空");
   assert(parseReviewActions('[{"action":"nope","id":"a"},{"action":"delete"}]').length === 0, "非法动作/缺 id 跳过");
+}
+
+console.log("\n== P-A12 多模型路由（按任务类型选模型） ==");
+{
+  assert(routeProfileId("coding", { coding: "local" }, "aux") === "local", "任务类型专门配置优先");
+  assert(routeProfileId("search", { coding: "local" }, "aux") === "aux", "未配置任务类型回退辅助模型");
+  assert(routeProfileId("summarize", undefined, "") === "", "无配置无辅助 → 跟随主模型");
+  assert(routeProfileId("chat", { coding: "local" }, "aux") === "aux", "chat 未专门配置 → 辅助模型");
+  assert(routeProfileId("coding", { coding: "  " }, "aux") === "aux", "空白配置按未配置处理");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

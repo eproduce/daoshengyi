@@ -12,7 +12,7 @@ import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch } from "lucide-vue-next";
 
 const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions" }>();
 const emit = defineEmits<{
@@ -162,6 +162,15 @@ function savePermissions() {
   updateSettings({
     disabledTools: disabledTools.value.split("\n").map((s) => s.trim()).filter(Boolean),
     allowedPaths: allowedPaths.value.split("\n").map((s) => s.trim()).filter(Boolean),
+  });
+}
+
+// P-A12 多模型路由：任务类型 → Profile id（摘要/记忆辅助、编程子代理）
+const routeSummarize = ref(getSettings().modelRouting?.["summarize"] || "");
+const routeCoding = ref(getSettings().modelRouting?.["coding"] || "");
+function saveRouting() {
+  updateSettings({
+    modelRouting: { summarize: routeSummarize.value, coding: routeCoding.value },
   });
 }
 
@@ -422,6 +431,22 @@ function handleDelete() {
             <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
           <span class="form-hint">用于 Smart 智能审批、子代理等辅助任务；可选更便宜/更快的模型，节省主模型额度。不配置则跟随主模型。</span>
+        </div>
+
+        <!-- P-A12 模型路由：按任务类型自动选模型 -->
+        <div class="form-group">
+          <label class="form-label"><GitBranch :size="14" /> 模型路由（按任务类型）</label>
+          <label class="form-label" style="font-size:12px;font-weight:400">摘要 / 记忆辅助模型</label>
+          <select v-model="routeSummarize" class="form-select" @change="saveRouting">
+            <option value="">跟随辅助/主模型</option>
+            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <label class="form-label" style="font-size:12px;font-weight:400;margin-top:8px">编程子代理模型</label>
+          <select v-model="routeCoding" class="form-select" @change="saveRouting">
+            <option value="">跟随辅助/主模型</option>
+            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <span class="form-hint">摘要/记忆提取、编程子代理等任务可指定专门模型（如更便宜的或本地 Ollama）；未配置则跟随「辅助任务模型」，再跟随主模型。</span>
         </div>
       </div>
 

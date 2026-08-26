@@ -150,7 +150,7 @@
 | P-A9 | **记忆复习** | ✅ | 🔵 | 记忆（已有） | `memory.ts reviewMemories`：LLM 回顾记忆库（list_facts → buildReviewPrompt → parseReviewActions），删除过时/矛盾/重复事实，merge 时目标重要度 +1；记忆面板「智能复习」按钮（手动触发，配 API 才可用）；纯函数 buildReviewPrompt/parseReviewActions 可测试 |
 | P-A10 | **插件/技能生态** | ⬜ | 🔵 | 技能库/MCP（已有） | 第三方技能/工具上传、评分、分享；版本管理与自动更新 |
 | P-A11 | **跨设备同步** | ⬜ | 🔵 | 无 | 记忆/技能/配置跨设备同步 |
-| P-A12 | **多模型路由** | ⬜ | 🔵 | Ollama（已有） | 按任务类型自动选模型（对话/编程/摘要），本地模型作离线回退 |
+| P-A12 | **多模型路由** | ✅ | 🔵 | Ollama（已有） | AppSettings 加 `modelRouting`（任务类型→Profile id）；`routeProfileId` 纯函数（routing[taskType]→辅助模型→主模型）；`getRoutedAuxConfig(taskType)`：子代理走 coding 路由、记忆摘要/提取/关键词/复习走 summarize 路由；设置「模型路由」配置（摘要/编程两个下拉） |
 
 **建议推进顺序**：P-A1（Git）→ P-A2（验证循环）→ P-A3（代码库索引）→ P-A4（多文件编辑 diff）→ P-A5（Plan）→ P-A6（本地 embedding）→ P-M1~P-M4（多 agent 协作）→ P-A7/P-A8（权限沙箱）→ 其余远期。
 

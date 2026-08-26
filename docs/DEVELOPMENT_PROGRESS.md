@@ -180,6 +180,18 @@
 - **自测（加强）**：新增 7 项（提示词含 id 与动作、delete+merge/from_id 兼容解析、delete 动作、merge with intoId、空 []、非法 JSON 容错、非法动作/缺 id 跳过）→ npm test 79 通过
 - **验证**：npm test 79 + vite build + get_errors 全部通过
 - **后续**：P-A10 插件/技能生态（第三方上传/评分/版本管理）→ P-A11 跨设备同步 → P-A12 多模型路由 → Phase 5/6 桌面深度集成与生态（长期）
+
+### ✅ 编程代理 P-A12 多模型路由（按任务类型自动选模型）
+- **背景**：多模型路由路线图项——按任务类型（对话/编程/摘要）自动选模型，本地模型作辅助；本机已有 Ollama，摘要/子代理等批量任务可路由到更便宜/更快的模型节省主模型额度
+- **配置**：`settings.rs` AppSettings 加 `model_routing: HashMap<String,String>`（任务类型→Profile id，serde default 空；Default + 2 测试字面量同步）+ `appSettings.ts` 加 `modelRouting`（默认 {}）
+- **纯函数**：新建 `src/utils/model-routing.ts` `routeProfileId(taskType, routing, auxiliaryProfileId)`——优先级 `routing[taskType]`（专门配置）→ `auxiliaryProfileId`（辅助模型）→ `""`（跟随主模型）；`TASK_TYPES`（chat/coding/summarize/search）
+- **接入**：
+  - `chat.ts getRoutedAuxConfig(taskType)`：按路由解析 Profile → 辅助 → 主；`subagent_delegate` / `subagent_parallel` 改用 `getRoutedAuxConfig("coding")`（编程子代理可路由到专门编程模型）；store 导出
+  - `memory.ts resolveTaskConfig(taskType, fallback)`（读 getSettings 路由 + profiles）：`maybeSummarize` / `extractFacts` / `expandKeywords` / `reviewMemories` 的 LLM 调用与 embedding 生成改走 **summarize 路由模型**
+  - `SettingsDialog` API 页新增「模型路由（按任务类型）」：摘要/记忆辅助 + 编程子代理两个 Profile 下拉，@change 即时保存
+- **自测（加强）**：新增 5 项（任务类型专门配置优先 / 未配置回退辅助 / 无配置→主 / chat 未专门→辅助 / 空白配置按未配置）→ npm test 84；顺带修掉 chat.ts 两处既有类型错误（runCommand 解构未用 args、web_search enriched 联合类型缺 body）→ **vue-tsc --noEmit 全绿**
+- **验证**：npm test 84 + vite build + cargo test --lib 40 + vue-tsc --noEmit 全部通过
+- **后续**：P-A10 插件/技能生态（第三方上传/评分/版本管理）、P-A11 跨设备同步（需云端）为远期
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

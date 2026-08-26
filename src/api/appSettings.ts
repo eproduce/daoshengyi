@@ -42,6 +42,8 @@ export interface AppSettingsPayload {
   disabledTools: string[];
   /// P-A7 权限矩阵：路径白名单（Agent 文件/命令类工具只能访问这些目录；空 = 不限制）
   allowedPaths: string[];
+  /// P-A12 多模型路由：任务类型 → Profile id（summarize/coding/search → profileId）
+  modelRouting: Record<string, string>;
 }
 
 let cache: AppSettingsPayload = {
@@ -59,6 +61,7 @@ let cache: AppSettingsPayload = {
   dingtalkSecret: "",
   disabledTools: [],
   allowedPaths: [],
+  modelRouting: {},
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
+import { getSettings } from "@/api/appSettings";
 import { embeddingSource } from "@/utils/embed-provider";
 import { buildReviewPrompt, parseReviewActions } from "@/utils/memory-review";
+import { routeProfileId } from "@/utils/model-routing";
 import type { ChatMessage } from "@/types";
 
 const SUMMARIZE_THRESHOLD = 20;
@@ -18,6 +20,16 @@ interface SummaryRow {
 }
 
 export function useMemorySystem() {
+  // P-A12 多模型路由：按任务类型解析辅助模型配置（routing[taskType] → 辅助模型 → fallback 主模型）。
+  // 摘要/提取/关键词扩展/复习等批量辅助 LLM 任务可配置走更便宜/更快的模型，节省主模型额度。
+  function resolveTaskConfig(taskType: string, fallback: { baseUrl: string; apiKey: string; model: string }) {
+    const st = getSettings();
+    const id = routeProfileId(taskType, st.modelRouting || {}, st.auxiliaryProfileId || "");
+    const p = id ? st.profiles.find((x) => x.id === id) : undefined;
+    if (p && p.baseUrl) return { baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model };
+    return fallback;
+  }
+
   // --- Embedding 生成 (兼容 API + P-A6 本地 Ollama) ---
   async function generateEmbedding(text: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<number[] | null> {
     const src = embeddingSource(config.baseUrl);
@@ -65,7 +77,9 @@ export function useMemorySystem() {
 
       const chunk = messages.slice(start, end);
       const convText = chunk.map(m => `[${m.role}]: ${m.content}`).join("\n\n");
-      const summary = await callLLM(config, `请将以下对话压缩为一段 150 字以内的摘要，保留关键信息：\n\n${convText}`);
+      // P-A12：摘要走 summarize 路由模型（配置了专门模型则用之，否则跟随主模型）
+      const cfg = resolveTaskConfig("summarize", config);
+      const summary = await callLLM(cfg, `请将以下对话压缩为一段 150 字以内的摘要，保留关键信息：\n\n${convText}`);
       if (!summary) break;
 
       const id = uuidv4();
@@ -94,7 +108,9 @@ ${convText}
 
 只返回 JSON 数组，不要其他内容。示例：[{"fact":"用户喜欢简洁的回答","type":"preference","importance":9}]`;
 
-    const raw = await callLLM(config, prompt);
+    // P-A12：事实提取走 summarize 路由模型（降低批量辅助成本）
+    const cfg = resolveTaskConfig("summarize", config);
+    const raw = await callLLM(cfg, prompt);
     if (!raw) return [];
 
     try {
@@ -117,7 +133,7 @@ ${convText}
         const mergedId = saved.startsWith("merged:") ? saved.slice(7) : null;
 
         // 生成 embedding 并存储（后台，不阻塞；已合并则对目标 id 写入）
-        generateEmbedding(item.fact, config).then(emb => {
+        generateEmbedding(item.fact, cfg).then(emb => {
           if (emb) invoke("set_fact_embedding", { id: mergedId || f.id, embedding: emb }).catch(() => {});
         });
 
@@ -152,7 +168,9 @@ ${convText}
   async function expandKeywords(query: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<string[]> {
     try {
       const prompt = `根据用户的问题，提取 2-3 个最适合检索历史记忆的关键词（实体名词/主题词），用顿号分隔，只输出关键词不要其它。\n用户问题：${query}\n\n示例：问题"我上次说的那家公司叫什么" → 公司\n问题"还记得我偏好什么风格的代码吗" → 代码风格 偏好`;
-      const raw = await callLLM(config, prompt);
+      // P-A12：关键词扩展走 summarize 路由模型
+      const cfg = resolveTaskConfig("summarize", config);
+      const raw = await callLLM(cfg, prompt);
       if (!raw) return [];
       return raw.split(/[,，、\s]+/).map(s => s.trim()).filter(s => s.length >= 2).slice(0, 3);
     } catch { return []; }
@@ -211,7 +229,9 @@ ${convText}
     try {
       const all = await invoke<FactRow[]>("list_facts", { factType: "", limit: 200 }).catch(() => [] as FactRow[]);
       if (all.length < 6) return `记忆数量较少（${all.length} 条），暂不需要复习。`;
-      const actions = parseReviewActions((await callLLM(config, buildReviewPrompt(all))) || "");
+      // P-A12：记忆复习走 summarize 路由模型
+      const cfg = resolveTaskConfig("summarize", config);
+      const actions = parseReviewActions((await callLLM(cfg, buildReviewPrompt(all))) || "");
       if (actions.length === 0) return "智能复习完成：未发现需要整理（过时/矛盾/重复）的记忆。";
       let del = 0;
       let merge = 0;

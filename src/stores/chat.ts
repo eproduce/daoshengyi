@@ -16,6 +16,7 @@ import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
+import { routeProfileId } from "@/utils/model-routing";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -529,7 +530,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!results.length) return "（搜索无结果，请在回复中明确告知用户未找到可靠信息，不要编造）";
       // 搜索引擎摘要常被截断、不含具体信息 → 对最相关的前 2 个结果自动抓取正文片段，
       // 让模型能基于具体内容回答，而不是只罗列链接让用户自己点开。抓取失败/正文过短则跳过。
-      const enriched = await Promise.all(results.slice(0, 2).map(async (r) => {
+      const enriched: { title: string; url: string; snippet: string; body?: string }[] = await Promise.all(results.slice(0, 2).map(async (r) => {
         try {
           const res = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url: r.url });
           const text = (res.text || "").replace(/\s+/g, " ").trim();
@@ -591,7 +592,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑工具循环
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
-      const config = store.getAuxConfig();
+      // P-A12 多模型路由：编程类子代理走 coding 路由（配置了专门的编程模型则用之，否则辅助/主模型）
+      const config = store.getRoutedAuxConfig("coding");
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
       // 登记子代理记录（可视化面板实时显示；带角色则前缀标注）
       const rec = store.spawnSubagent(`${roleId ? `[${getRoleById(roleId)!.name}] ` : ""}${goal}`);
@@ -647,7 +649,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const concurrency = Math.max(1, Math.min(4, Number(args.concurrency ?? tasks.length) || tasks.length));
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
-      const config = store.getAuxConfig();
+      // P-A12 多模型路由：编程类子代理走 coding 路由
+      const config = store.getRoutedAuxConfig("coding");
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再并行委派子代理");
 
       // 信号量并发池：最多 concurrency 个 worker 从共享任务队列取任务并行执行
@@ -1329,6 +1332,26 @@ export const useChatStore = defineStore("chat", () => {
     return currentConfig.value;
   }
 
+  /// P-A12 多模型路由：按任务类型选模型配置（routing[taskType] → 辅助模型 → 主模型）。
+  /// taskType: chat / coding / summarize / search（model-routing.ts 的 TaskType）。
+  function getRoutedAuxConfig(taskType: string): ApiConfig {
+    const st = getSettings();
+    const id = routeProfileId(taskType, st.modelRouting || {}, st.auxiliaryProfileId || "");
+    const p = id ? profiles.value.find((x) => x.id === id) : undefined;
+    if (p && p.baseUrl) {
+      return {
+        baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model,
+        maxTokens: p.maxTokens, temperature: p.temperature,
+        thinkingEnabled: p.thinkingEnabled ?? false,
+        reasoningEffort: p.reasoningEffort ?? "high",
+        systemPrompt: p.systemPrompt ?? "",
+        enableWebSearch: false,
+        maxContextMessages: 20,
+      };
+    }
+    return getAuxConfig();
+  }
+
   // --- 子代理可视化（记录运行中的子代理，供面板展示） ---
   const subagents = ref<SubagentRecord[]>([]);
   function spawnSubagent(goal: string): SubagentRecord {
@@ -1691,7 +1714,7 @@ export const useChatStore = defineStore("chat", () => {
     // 输入法容错：全角波浪号 ～（U+FF5E）→ 半角 ~（U+007E）——shell 只认半角 ~ 做 HOME 展开，
     // 中文输入法下输入 ~ 常被转成全角 ～ 导致 `～/l.txt` 找不到。这里统一归一化后再执行与展示。
     const cmdStr = raw.replace(/～/g, "~");
-    const { command, args } = parseCommandLine(cmdStr);
+    const { command } = parseCommandLine(cmdStr); // 整条命令执行，args 不需拆
     if (!command) return;
 
     // 危险命令审批：manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
@@ -2508,6 +2531,7 @@ export const useChatStore = defineStore("chat", () => {
     sendMessage,
     stopStreaming,
     getAuxConfig,
+    getRoutedAuxConfig,
     activePersonaId,
     setPersona,
     subagents,
