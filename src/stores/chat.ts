@@ -88,6 +88,12 @@ function getMcpToolsPrompt(): string {
     "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
     "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
+    "\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {\"cwd\": \"项目目录绝对路径\", \"command\": \"可选，显式指定测试命令（如 pytest -q）\", \"args\": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。" +
+    "\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {\"path\": \"项目目录绝对路径\"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。" +
+    "\n\n## 验证循环（编程任务强制要求）\n" +
+    "- 你修改/生成代码后，**必须用 run_tests 运行测试验证**，不能假设改对了。\n" +
+    "- 测试失败时：分析失败项/错误信息 → 修复代码 → **再次 run_tests**，如此循环直到测试通过（「通过才算完成」门禁）。\n" +
+    "- 如果项目没有测试，用 run_tests 时显式 command（如 `python3 -m py_compile main.py` 或直接说明无测试）；不要编造测试结果。" +
     "\n- **memory_save** (app): 把用户明确告诉你的重要信息保存到长期记忆（跨会话生效，下次对话自动想起）。参数 {\"fact\": \"要记住的内容\", \"fact_type\": \"preference\" 偏好 | \"info\" 信息 | \"decision\" 决策 | \"todo\" 待办, \"importance\": 重要度 1-10}。**使用时机**：用户告知个人偏好（如「我喜欢简洁回答」）、重要个人信息（姓名/职业/所在地）、作出的决定、或叮嘱你要记住的待办事项时——主动调用记住，不要只放在本次回答里。\n" +
     "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
     "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
@@ -535,6 +541,33 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
       const status = res.exit_code === 0 ? "" : `\n（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）`;
       return `git ${action} ${gitArgs.join(" ")}\n${head}${status}`;
+    }
+    case "run_tests": {
+      // 验证循环：在项目目录自动检测并运行测试，返回结构化结果供迭代修复
+      const cwd = String(args.cwd || args.path || args.dir || "").trim();
+      if (!cwd) throw new Error("run_tests 需要 cwd 参数（项目目录绝对路径）");
+      const command = String(args.command || "").trim() || undefined;
+      const testArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+      const res = await invoke<{ framework: string; command: string; stdout: string; stderr: string; exit_code: number; timed_out: boolean }>("run_tests", {
+        cwd, command: command ?? null, args: testArgs, timeoutSecs: 300,
+      });
+      const out = (res.stdout || res.stderr || "").trim();
+      const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
+      const pass = res.exit_code === 0;
+      // 结构化返回：明确成功/失败 + 失败摘要，供 Agent 判断并迭代修复
+      const failLines = res.stdout.split("\n").filter(l => /FAILED|failed|✗|Error|error:|panicked/i.test(l)).slice(0, 15).join("\n");
+      return `【测试结果】框架=${res.framework} 命令=${res.command} 状态=${pass ? "✅ 通过" : "❌ 失败"}（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）\n${head}${!pass && failLines ? `\n\n失败项/错误：\n${failLines}` : ""}`;
+    }
+    case "analyze_project": {
+      // 代码库理解：扫描项目结构，识别技术栈/清单脚本/源码分布
+      const path = String(args.path || args.cwd || args.dir || "").trim();
+      if (!path) throw new Error("analyze_project 需要 path 参数（项目目录绝对路径）");
+      const a = await invoke<{ root: string; stack: string; manifest_hint: string; top_level: string[]; by_ext: string[]; source_files: number }>("analyze_project", { root: path });
+      return `【项目分析】${a.root}\n` +
+        `- 技术栈: ${a.stack || "未知"}\n` +
+        (a.manifest_hint ? `- ${a.manifest_hint}\n` : "") +
+        `- 源码文件: ${a.source_files} 个（${a.by_ext.join(", ")}）\n` +
+        `- 顶层结构:\n${a.top_level.map(x => `  ${x}`).join("\n")}`;
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);

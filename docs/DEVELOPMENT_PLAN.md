@@ -140,8 +140,8 @@
 | # | 功能 | 状态 | 优先级 | 前置依赖 | 说明 / 实现要点 |
 |---|------|------|--------|----------|------------------|
 | P-A1 | **Git 集成** | ✅ | 🟢 | 无 | `git_operation` 命令（git CLI 子进程，零新依赖）+ 内置 `git` 工具；白名单子命令 + 拒绝危险参数（validate_git_operation 纯函数 + 测试）；status/diff/log/branch/add/commit/pull/push/checkout |
-| P-A2 | **验证循环** | ⬜ | 🟢 | `/run`（已有） | 自动跑测试（cargo test/npm test/pytest 按项目识别）→ 收集失败 → 回灌模型 → 迭代修复；「编译通过才算完成」门禁 |
-| P-A3 | **代码库索引/理解** | ⬜ | 🟢 | list_dir（已有） | 项目结构解析 + 依赖图；语义索引（本地 embedding 或 FTS）；「自然语言找代码」；符号跳转；大文件分块阅读 |
+| P-A2 | **验证循环** | ✅ | 🟢 | `/run`（已有） | `run_tests` 命令（自动检测 package.json→npm test / Cargo.toml→cargo test / pyproject→pytest，可显式覆盖）+ 前端 `run_tests` 工具返回结构化结果（框架/命令/通过或失败/失败项摘要）；提示词「验证循环」门禁：改代码必跑测试、失败必修复直至通过 |
+| P-A3 | **代码库索引/理解** | 🟡 | 🟢 | list_dir（已有） | ✅ 已做：`analyze_project` 命令（技术栈识别 Rust/TS/Python/Vue、manifest 包名+scripts、源码按扩展名统计、顶层结构跳过 node_modules/.git/target）+ 前端工具；⬜ 待做：语义索引/「自然语言找代码」/符号跳转 |
 | P-A4 | **多文件编辑 + diff** | ⬜ | 🟡 | P-A3 | 在 write_file 上加：diff 预览（应用内查看改动/确认后应用）、精确编辑原语（replace_string/insert/create/delete）、跨文件重构、编辑后高亮受影响区域 |
 | P-A5 | **任务规划增强（Plan 模式）** | ⬜ | 🟡 | 无 | 复杂任务自动分解为子任务 todo list；子任务进度追踪 + 失败重试；与 ReAct 循环结合 Plan→Act→Observe→修正 |
 | P-A6 | **本地语义 embedding** | ⬜ | 🟡 | 记忆（已有） | 接入 Ollama 本地 embedding（`nomic-embed-text`）或 ONNX 轻量中文模型；补记忆/代码语义检索短板 |

@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-08-26
+
+### ✅ 编程代理 P-A2 验证循环 + P-A3 代码库理解（analyze_project）
+- **P-A2 验证循环**：Rust `run_tests(cwd, command?, args?, timeout)` 命令——自动检测项目测试框架（`detect_test_framework` 纯函数：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest，可显式 command 覆盖）；tokio 子进程 + 超时(默认 300s) + 审计，返回结构化 `TestOutput`（framework/command/stdout/stderr/exit_code/timed_out）。前端 `run_tests` 内置工具：返回「【测试结果】框架/命令/✅通过❌失败 + 失败项/错误摘要(正则提取 FAILED/error/panicked 前 15 行)」；系统提示词加「验证循环」门禁：改代码必跑测试、失败必修复再跑直到通过
+- **P-A3 代码库理解**：Rust `analyze_project(root)` 命令——技术栈识别（Cargo.toml→Rust、package.json→TS/JS、pyproject→Python、go.mod→Go、vite.config/App.vue→Vue）、manifest 信息（Cargo 包名/npm 包名+scripts）、源码按扩展名统计（跳过 node_modules/.git/target/dist/build 等）、顶层结构（限制 60 项）；返回结构化 `ProjectAnalysis`。前端 `analyze_project` 工具：返回「【项目分析】技术栈/包信息/源码文件数/顶层结构」；提示词引导分析项目前先调用建立认知
+- **验证**：cargo test 21 项（lib 新增 2 个 detect_test_framework 测试 + 3 个 git 校验）；npm test 35 + vite build 通过；analyze_project 对项目自身验证正确（技术栈 TS+Vue、源码 23 ts/16 vue）
+- 踩坑：①追加测试时原 tests 模块已以 `}` 结尾，再 cat >> 会多一个 `}` 编译错——追加前先确认模块闭合；②`detect_test_framework` 检查顺序 package.json 优先，测试里同时写 package.json+Cargo.toml 会返回 npm 而非 cargo，须先删 package.json 再测 Cargo；③`&[String]` 参数传 `&["str"]` 字面量 E0308，需 to_string()
+
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

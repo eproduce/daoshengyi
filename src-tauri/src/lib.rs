@@ -1854,6 +1854,219 @@ async fn git_operation(
     }
 }
 
+/// 测试输出（编程 Agent 验证循环用）
+#[derive(serde::Serialize)]
+struct TestOutput {
+    /// 检测到的测试框架：cargo / npm / pytest / custom / unknown
+    framework: String,
+    /// 实际执行的命令（如 "cargo test"）
+    command: String,
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    timed_out: bool,
+}
+
+/// 自动运行测试（编程 Agent 验证循环）：
+/// 在指定项目目录自动检测测试框架并运行——package.json→npm test，Cargo.toml→cargo test，
+/// pyproject/requirements→pytest，均不存在则用显式 command 覆盖。
+/// 返回结构化结果，前端/Agent 据此判断失败项并迭代修复。
+#[tauri::command]
+async fn run_tests(
+    db: State<'_, Database>,
+    cwd: String,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    timeout_secs: Option<u64>,
+) -> Result<TestOutput, String> {
+    use tokio::io::AsyncReadExt;
+
+    // 1) 检测项目测试框架
+    let (mut framework, mut cmd_parts): (String, Vec<String>) = detect_test_framework(&cwd);
+
+    // 2) 显式覆盖（agent 指定了具体命令时）
+    if let Some(c) = command {
+        if !c.trim().is_empty() {
+            framework = "custom".to_string();
+            let mut parts = c.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>();
+            if let Some(a) = args { parts.extend(a); }
+            cmd_parts = parts;
+        }
+    }
+    if cmd_parts.is_empty() {
+        return Err(format!("无法在 {} 检测到测试框架（无 package.json / Cargo.toml / pyproject.toml / requirements.txt），请用 command 参数显式指定测试命令", cwd));
+    }
+
+    let display_cmd = cmd_parts.join(" ");
+    let start = std::time::Instant::now();
+    let audit_args = display_cmd.clone();
+
+    let mut child = {
+        let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
+        cmd.args(&cmd_parts[1..]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+        if !cwd.trim().is_empty() { cmd.current_dir(&cwd); }
+        cmd.spawn().map_err(|e| format!("启动测试命令失败（{}）: {}", display_cmd, e))?
+    };
+
+    let mut stdout_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
+    let mut stderr_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(300));
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let (_, _, status_res) = tokio::join!(
+            stdout_pipe.read_to_end(&mut out_buf),
+            stderr_pipe.read_to_end(&mut err_buf),
+            child.wait(),
+        );
+        (status_res, out_buf, err_buf)
+    }).await;
+
+    let duration = start.elapsed().as_millis() as i64;
+
+    match result {
+        Ok((status_res, out_buf, err_buf)) => {
+            let status = status_res.map_err(|e| format!("等待测试失败: {}", e))?;
+            let stdout = String::from_utf8_lossy(&out_buf).to_string();
+            let stderr = String::from_utf8_lossy(&err_buf).to_string();
+            let exit_code = status.code().unwrap_or(-1);
+            let _ = db.log_tool_call("test", &audit_args, &format!("exit={} out={} err={}", exit_code, stdout, stderr), exit_code != 0, duration);
+            Ok(TestOutput { framework, command: display_cmd, stdout, stderr, exit_code, timed_out: false })
+        }
+        Err(_) => {
+            let msg = format!("测试执行超时（{}s），已终止", timeout_secs.unwrap_or(300));
+            let _ = db.log_tool_call("test", &audit_args, &msg, true, duration);
+            Ok(TestOutput { framework, command: display_cmd, stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true })
+        }
+    }
+}
+
+/// 检测项目测试框架（纯逻辑，可测试）：返回 (框架名, 命令 parts)
+fn detect_test_framework(cwd: &str) -> (String, Vec<String>) {
+    use std::path::Path;
+    let dir = Path::new(cwd);
+    if dir.join("package.json").exists() {
+        return ("npm".into(), vec!["npm".into(), "test".into()]);
+    }
+    if dir.join("Cargo.toml").exists() {
+        return ("cargo".into(), vec!["cargo".into(), "test".into()]);
+    }
+    if dir.join("pyproject.toml").exists() || dir.join("requirements.txt").exists() || dir.join("pytest.ini").exists() {
+        return ("pytest".into(), vec!["python3".into(), "-m".into(), "pytest".into(), "-q".into()]);
+    }
+    ("unknown".into(), Vec::new())
+}
+
+/// 项目结构分析输出（编程 Agent 代码库理解）
+#[derive(serde::Serialize)]
+struct ProjectAnalysis {
+    /// 项目根路径
+    root: String,
+    /// 识别的技术栈（如 Rust / TypeScript+Vue / Python）
+    stack: String,
+    /// 清单文件（package.json/Cargo.toml 等）里可用的脚本/元信息摘要
+    manifest_hint: String,
+    /// 顶层结构（目录+文件，跳过常见大目录）
+    top_level: Vec<String>,
+    /// 源码文件按扩展名计数（仅主要语言，跳过 node_modules/target 等）
+    by_ext: Vec<String>,
+    /// 总源码文件数
+    source_files: usize,
+}
+
+/// 分析项目结构（编程 Agent 代码库理解，P-A3）：
+/// 识别技术栈、列出顶层结构、按扩展名统计源码文件，帮 Agent 快速建立项目认知。
+/// 轻量扫描：跳过 node_modules/.git/target/dist/build 等大目录，限制扫描深度。
+#[tauri::command]
+fn analyze_project(root: String) -> Result<ProjectAnalysis, String> {
+    let dir = std::path::Path::new(&root);
+    if !dir.is_dir() {
+        return Err(format!("不是目录: {}", root));
+    }
+
+    let mut stack_parts: Vec<String> = Vec::new();
+    let mut manifest_hint = String::new();
+
+    // 识别技术栈（优先级：多清单时组合）
+    if dir.join("Cargo.toml").exists() {
+        stack_parts.push("Rust".into());
+        if let Ok(content) = std::fs::read_to_string(dir.join("Cargo.toml")) {
+            if let Some(line) = content.lines().find(|l| l.trim().starts_with("name")) {
+                manifest_hint = format!("Cargo 包: {}", line.trim().trim_start_matches("name").trim().trim_matches(|c| c == '=' || c == '"' || c == ' '));
+            }
+        }
+    }
+    if dir.join("package.json").exists() {
+        let mut is_ts = false;
+        if let Ok(content) = std::fs::read_to_string(dir.join("package.json")) {
+            if content.contains("\"typescript\"") || content.contains("\"tsc\"") { is_ts = true; }
+            if let Some(l) = content.lines().find(|l| l.contains("\"name\"")) {
+                let hint = l.trim().trim_start_matches("\"name\"").trim().trim_matches(|c| c == ':' || c == ',' || c == '"' || c == ' ');
+                manifest_hint = if manifest_hint.is_empty() { format!("npm 包: {}", hint) } else { format!("{}; npm 包: {}", manifest_hint, hint) };
+            }
+            let scripts: Vec<String> = content.split("\"scripts\"").nth(1).map(|s| {
+                s.split(',').take(5).map(|x| {
+                    x.trim().trim_start_matches('{').trim().trim_matches('}').trim().to_string()
+                }).filter(|x| !x.is_empty() && x.contains(':')).collect()
+            }).unwrap_or_default();
+            if !scripts.is_empty() {
+                manifest_hint = format!("{}; scripts: {}", manifest_hint, scripts.join(", "));
+            }
+        }
+        stack_parts.push(if is_ts { "TypeScript".into() } else { "JavaScript".into() });
+    }
+    if dir.join("pyproject.toml").exists() || dir.join("requirements.txt").exists() {
+        stack_parts.push("Python".into());
+    }
+    if dir.join("go.mod").exists() { stack_parts.push("Go".into()); }
+    if dir.join("pom.xml").exists() { stack_parts.push("Java".into()); }
+    if dir.join("vue.config.js").exists() || dir.join("vite.config.ts").exists() || dir.join("vite.config.js").exists() { stack_parts.push("Vue".into()); }
+    if dir.join("src").join("App.vue").exists() { stack_parts.push("Vue".into()); }
+    let stack = if stack_parts.is_empty() { "未知".to_string() } else { stack_parts.join(" + ") };
+
+    // 顶层结构 + 按扩展名统计（跳过常见大目录）
+    const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", "build", "vendor", ".next", "__pycache__", ".idea", ".vscode"];
+    const SRC_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "py", "go", "java", "c", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "kt", "sh", "sql", "toml", "json", "yaml", "yml", "css", "html"];
+    let mut top_level: Vec<String> = Vec::new();
+    let mut by_ext: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut source_files = 0usize;
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for ent in entries.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if SKIP_DIRS.contains(&name.as_str()) { continue; }
+                top_level.push(format!("📁 {}/", name));
+            } else {
+                top_level.push(format!("📄 {}", name));
+                if let Some(ext) = name.rsplit('.').next() {
+                    if SRC_EXTS.contains(&ext) {
+                        *by_ext.entry(ext.to_string()).or_insert(0) += 1;
+                        source_files += 1;
+                    }
+                }
+            }
+        }
+    }
+    top_level.sort();
+    let mut ext_lines: Vec<String> = by_ext.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+    ext_lines.sort();
+
+    Ok(ProjectAnalysis {
+        root,
+        stack,
+        manifest_hint,
+        top_level: top_level.into_iter().take(60).collect(),
+        by_ext: ext_lines.into_iter().take(20).collect(),
+        source_files,
+    })
+}
+
 /// Git 操作安全校验：白名单子命令 + 拒绝危险参数（可独立测试的纯逻辑）
 fn validate_git_operation(action: &str, args: &[String]) -> Result<(), String> {
     const SAFE_RO: &[&str] = &["status", "diff", "log", "branch", "remote", "show", "ls-files", "rev-parse"];
@@ -2695,6 +2908,8 @@ pub fn run() {
             debug_log,
             execute_command,
             git_operation,
+            run_tests,
+            analyze_project,
             read_file,
             open_file,
             file_exists,
@@ -2735,7 +2950,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_git_operation;
+    use super::{detect_test_framework, validate_git_operation};
 
     #[test]
     fn git_validate_allows_safe_ops() {
@@ -2761,5 +2976,39 @@ mod tests {
         assert!(validate_git_operation("branch", &["--delete".to_string(), "x".to_string()]).is_err());
         // 正常参数不受影响
         assert!(validate_git_operation("checkout", &["main".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn detect_framework_picks_correct_command() {
+        let dir = std::env::temp_dir().join(format!("ds_testfw_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let (fw, cmd) = detect_test_framework(dir.to_str().unwrap());
+        assert_eq!(fw, "npm");
+        assert_eq!(cmd, vec!["npm", "test"]);
+
+        // 删掉 package.json 只剩 Cargo.toml → 应检测为 cargo
+        std::fs::remove_file(dir.join("package.json")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "").unwrap();
+        let (fw2, cmd2) = detect_test_framework(dir.to_str().unwrap());
+        assert_eq!(fw2, "cargo");
+        assert_eq!(cmd2, vec!["cargo", "test"]);
+
+        std::fs::remove_file(dir.join("Cargo.toml")).unwrap();
+        std::fs::write(dir.join("pyproject.toml"), "").unwrap();
+        let (fw3, cmd3) = detect_test_framework(dir.to_str().unwrap());
+        assert_eq!(fw3, "pytest");
+        assert!(cmd3[0].contains("python"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn detect_framework_unknown_when_no_manifest() {
+        let dir = std::env::temp_dir().join(format!("ds_testfw_unknown_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (fw, cmd) = detect_test_framework(dir.to_str().unwrap());
+        assert_eq!(fw, "unknown");
+        assert!(cmd.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
