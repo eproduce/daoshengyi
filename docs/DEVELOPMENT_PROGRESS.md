@@ -141,6 +141,19 @@
 - **踩坑**：①`roles-catalog.ts` import `./builtin-tools` 无扩展名 → Node ESM 测试报 ERR_MODULE_NOT_FOUND（Vite 能解析、Node 不能）→ 改 `./builtin-tools.ts`（tsconfig 已开 `allowImportingTsExtensions`，Vite 构建不受影响）；②P-M4 仲裁块里 `buildSubagentSysPrompt` 计算后未拼进仲裁提示（工具列表没带上）→ 修正为 `仲裁指令 + --- + 评审角色提示 + 各子任务结果`
 - **验证**：npm test 54 + vite build + get_errors 全部通过
 - **后续**：P-A6 本地语义 embedding（Ollama nomic-embed-text / ONNX 轻量中文模型，补记忆/代码语义检索）→ P-A7/P-A8 权限矩阵 + 沙箱
+
+### ✅ 编程代理 P-A6 本地语义 embedding（Ollama nomic-embed-text）
+- **背景**：DeepSeek 无 embeddings 端点 → 记忆语义检索一直是短板（只有 FTS5 关键词）；本机已有 Ollama（一键部署 llava-phi3），正好复用其本地 embedding 补语义
+- **Rust（src-tauri/src/lib.rs）**：
+  - `ollama_embed(texts) -> Vec<Vec<f32>>` 命令：调 `http://localhost:11434/api/embed`（新版端点，返回 `embeddings: [[..]]`，支持一次多段文本）；30s 超时客户端；**不自动拉模型**——服务未运行（`ollama_running` 2s 快速失败）或 `nomic-embed-text` 未安装时返回明确错误，避免静默下载大文件；模型检测 `embed_model_installed`（`starts_with("nomic-embed-text")`）与响应解析 `parse_embed_response`（embeddings 数组/空向量校验）抽成**纯函数**供测试
+  - 向量存取复用既有 `set_fact_embedding` / `search_by_embedding`（SQLite BLOB + 余弦）
+- **前端**：
+  - 新建 `src/utils/embed-provider.ts`：`embeddingSource(baseUrl)` 判定「ollama / openai / none」——本地 11434 或 **DeepSeek 主模型都走 ollama**（DeepSeek 无 embeddings → 用本地 Ollama 补语义）；其它 OpenAI 兼容端点走通用 `/embeddings`
+  - `memory.ts generateEmbedding`：`src==="ollama"` 时改调 `invoke("ollama_embed")`；Ollama 未运行/模型未装 → invoke 报错 → 返回 null → `retrieveMemories` 的向量补充段静默跳过（FTS5 不受影响）；事实提取的 embedding 后台写入同样受益
+- **自测（加强）**：前端新增 8 项（embeddingSource 判定：本地/127.0.0.1/DeepSeek→ollama、OpenAI/通义→openai、空→none、isOllamaBase 字面命中与排除）→ npm test 62；Rust 新增 3 项（模型检测命中/未命中、embeddings 解析向量、坏形状缺字段/空向量/非数组报错）→ cargo test --lib 38 全过
+- **踩坑**：reqwest `resp.status()` 在 `resp.text().await`（self 移动）后不可用 → 先 `let code = resp.status();` 再取 body
+- **验证**：npm test 62 + vite build + cargo test --lib 38 + get_errors 全部通过
+- **后续**：P-A7 权限矩阵（工具级开关/路径白名单/会话级权限记忆）+ P-A8 沙箱（文件/网络/命令三层白名单）
 ## 2026-08-25
 
 ### ✅ ROADMAP 整合进开发计划 + 编程代理 P-A1 Git 集成

@@ -1266,6 +1266,75 @@ async fn ollama_models() -> Result<Vec<String>, String> {
     Ok(models)
 }
 
+// --- P-A6 本地语义 embedding（Ollama nomic-embed-text，补 DeepSeek 无 embeddings 端点的短板） ---
+/// 本地语义检索使用的 embedding 模型
+const EMBED_MODEL: &str = "nomic-embed-text";
+
+/// 模型列表中是否已安装本地 embedding 模型（纯函数，可测试）
+fn embed_model_installed(models: &[String]) -> bool {
+    models.iter().any(|m| m.starts_with(EMBED_MODEL))
+}
+
+/// 解析 Ollama /api/embed 响应（`{"embeddings": [[..], ..]}`）为向量列表（纯函数，可测试）。
+/// 元素为空向量视为格式异常，返回错误。
+fn parse_embed_response(json: &serde_json::Value) -> Result<Vec<Vec<f32>>, String> {
+    let embeddings = json
+        .get("embeddings")
+        .and_then(|v| v.as_array())
+        .ok_or("embedding 响应缺少 embeddings 字段")?;
+    let mut out = Vec::with_capacity(embeddings.len());
+    for e in embeddings {
+        let arr = e.as_array().ok_or("embedding 元素格式异常")?;
+        let vec: Vec<f32> = arr.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect();
+        if vec.is_empty() {
+            return Err("embedding 为空向量".into());
+        }
+        out.push(vec);
+    }
+    Ok(out)
+}
+
+/// 本地语义 embedding（P-A6）：用 Ollama 的 nomic-embed-text 生成向量，补 DeepSeek
+/// 无 embeddings 端点的语义检索短板（记忆向量检索 search_by_embedding 复用）。
+/// 设计要点：**不自动拉模型**（避免静默下载大文件）——服务未运行或模型未安装时
+/// 返回明确错误，前端静默回退（语义检索暂不可用，FTS5 关键词检索不受影响）。
+#[tauri::command]
+async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+    // 服务不可用（未运行）→ 快速失败（ollama_running 内部 2s 超时）
+    if !ollama_running().await {
+        return Err("Ollama 服务未运行".into());
+    }
+    // 模型未安装 → 明确提示，不自动拉取
+    let models = ollama_models().await.unwrap_or_default();
+    if !embed_model_installed(&models) {
+        return Err(format!(
+            "本地 embedding 模型 {} 未安装，可执行 `ollama pull {}` 后启用语义记忆检索",
+            EMBED_MODEL, EMBED_MODEL
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let resp = client
+        .post("http://localhost:11434/api/embed")
+        .json(&serde_json::json!({ "model": EMBED_MODEL, "input": texts }))
+        .send()
+        .await
+        .map_err(|e| format!("请求 embedding 失败: {}", e))?;
+    if !resp.status().is_success() {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "embedding 请求失败: HTTP {} {}",
+            code,
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    parse_embed_response(&json)
+}
+
 /// 检测 Ollama 安装状态、服务状态与已部署模型
 #[tauri::command]
 async fn ollama_status() -> Result<OllamaStatus, String> {
@@ -3315,6 +3384,7 @@ pub fn run() {
             ollama_status,
             ollama_setup,
             ollama_describe_image,
+            ollama_embed,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,
@@ -3346,9 +3416,44 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_edits, delete_file_agent, detect_test_framework, diff_lines, extract_redirected_files,
-        format_unified_diff, nth_occurrence, run_shell_command, validate_git_operation, EditOp,
+        apply_edits, delete_file_agent, detect_test_framework, diff_lines, embed_model_installed,
+        extract_redirected_files, format_unified_diff, nth_occurrence, parse_embed_response,
+        run_shell_command, validate_git_operation, EditOp,
     };
+
+    // P-A6 本地语义 embedding：模型检测 + 响应解析（纯函数）
+    #[test]
+    fn embed_model_installed_detects() {
+        let installed = vec![
+            "llava-phi3:3.8b".to_string(),
+            "nomic-embed-text:latest".to_string(),
+        ];
+        assert!(embed_model_installed(&installed));
+        assert!(!embed_model_installed(&["llava-phi3:3.8b".to_string()]));
+        assert!(!embed_model_installed(&[]));
+    }
+
+    #[test]
+    fn parse_embed_response_extracts_vectors() {
+        let json = serde_json::json!({
+            "model": "nomic-embed-text",
+            "embeddings": [[0.1, 0.2, 0.3], [1.0, 2.0, 3.0]]
+        });
+        let out = parse_embed_response(&json).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], vec![0.1, 0.2, 0.3]);
+        assert_eq!(out[1], vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn parse_embed_response_rejects_bad_shape() {
+        // 缺 embeddings 字段
+        assert!(parse_embed_response(&serde_json::json!({ "model": "x" })).is_err());
+        // 空向量元素
+        assert!(parse_embed_response(&serde_json::json!({ "embeddings": [[]] })).is_err());
+        // 非数组元素
+        assert!(parse_embed_response(&serde_json::json!({ "embeddings": [123] })).is_err());
+    }
 
     /// 在真实 HOME 下建独立临时目录（apply_edits 要求主目录内路径）。
     fn edit_test_dir(name: &str) -> std::path::PathBuf {

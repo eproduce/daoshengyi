@@ -4,6 +4,7 @@ import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolC
 import { withBrowserLock, browserLockIdle } from "../src/utils/browser-lock.ts";
 import { BUILTIN_TOOLS, BUILTIN_TOOL_NAMES, validBuiltinTools } from "../src/data/builtin-tools.ts";
 import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from "../src/data/roles-catalog.ts";
+import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
 
 let pass = 0;
 let fail = 0;
@@ -161,6 +162,18 @@ console.log("\n== P-M4 汇总仲裁（formatParallelResults 语义） ==");
   assert(roleAllowedToolNames("executor").includes("git"), "执行者含 git");
   assert(!roleAllowedToolNames("researcher").includes("git"), "研究助手不含 git（工具集约束隔离）");
   assert(!roleAllowedToolNames("planner").includes("replace_string"), "规划者不含编辑工具（只规划不改动）");
+}
+
+console.log("\n== P-A6 本地 embedding 提供方判定 ==");
+{
+  assert(embeddingSource("http://localhost:11434/v1") === "ollama", "本地 Ollama /v1 → ollama");
+  assert(embeddingSource("http://127.0.0.1:11434") === "ollama", "127.0.0.1 Ollama → ollama");
+  assert(embeddingSource("https://api.deepseek.com") === "ollama", "DeepSeek → ollama（用本地 Ollama 补语义）");
+  assert(embeddingSource("https://api.openai.com/v1") === "openai", "OpenAI → openai");
+  assert(embeddingSource("https://dashscope.aliyuncs.com/compatible-mode/v1") === "openai", "通义兼容端点 → openai");
+  assert(embeddingSource("") === "none", "空 baseUrl → none");
+  assert(isOllamaBase("http://localhost:11434/v1") === true, "isOllamaBase 命中本地 Ollama");
+  assert(isOllamaBase("https://api.deepseek.com") === false, "isOllamaBase 排除 DeepSeek（字面 Ollama 才认）");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

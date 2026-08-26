@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
+import { embeddingSource } from "@/utils/embed-provider";
 import type { ChatMessage } from "@/types";
 
 const SUMMARIZE_THRESHOLD = 20;
@@ -16,10 +17,20 @@ interface SummaryRow {
 }
 
 export function useMemorySystem() {
-  // --- Embedding 生成 (兼容 API) ---
+  // --- Embedding 生成 (兼容 API + P-A6 本地 Ollama) ---
   async function generateEmbedding(text: string, config: { baseUrl: string; apiKey: string; model: string }): Promise<number[] | null> {
-    // DeepSeek 不提供 embeddings 端点，跳过语义检索（回退关键词检索）
-    if (config.baseUrl.includes("deepseek")) return null;
+    const src = embeddingSource(config.baseUrl);
+    // P-A6 本地语义 embedding：baseUrl 是本地 Ollama，或主模型 DeepSeek（无 embeddings 端点）时，
+    // 用 Ollama 的 nomic-embed-text 生成向量补语义检索。Ollama 未运行 / 模型未装时
+    // ollama_embed 返回错误 → 返回 null（语义检索静默跳过，FTS5 关键词检索不受影响）。
+    if (src === "ollama") {
+      try {
+        const emb = await invoke<number[][]>("ollama_embed", { texts: [text.slice(0, 8000)] });
+        return emb?.[0] ?? null;
+      } catch { return null; }
+    }
+    // 其它 OpenAI 兼容 /embeddings 端点（OpenAI/通义/智谱等）
+    if (src === "none") return null;
     try {
       const baseUrl = config.baseUrl.replace(/\/+$/, "");
       const resp = await fetch(`${baseUrl}/embeddings`, {
