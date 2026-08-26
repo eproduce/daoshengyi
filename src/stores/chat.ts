@@ -474,24 +474,24 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const goal = String(args.goal || "");
       if (!goal) throw new Error("subagent_delegate 需要 goal 参数");
       const context = String(args.context || "");
-      // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑一轮 chat_once
+      // P-M1：子代理默认可调用内置工具（allow_tools=false 可关，纯对话子代理）
+      const allowTools = args.allow_tools !== false;
+      // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑工具循环
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
       const config = store.getAuxConfig();
       if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
       // 登记子代理记录（可视化面板实时显示）
       const rec = store.spawnSubagent(goal);
-      const sys = "你是道生一的子代理，负责独立完成一个子任务。" +
+      const sys =
+        "你是道生一的子代理，负责独立完成一个子任务。" +
         (context ? `\n补充上下文：${context}` : "") +
-        "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
+        (allowTools
+          ? "\n\n**你可以调用内置工具（git / 文件编辑 replace_string/insert_string/create_file / 跑测试 run_tests / 搜索 web_search / 记忆 memory_recall 等）来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息明确说明无法获取。\n\n" + getMcpToolsPrompt()
+          : "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。");
       let finalText = "";
       try {
-        const data = await chatOnce(config, [
-          { role: "system", content: withMathRule(withCurrentDate(sys)) },
-          { role: "user", content: `子任务：${goal}` },
-        ]);
-        if (!data) throw new Error("子代理执行超时或失败");
-        finalText = (data.content || "（子代理未返回内容）").trim();
+        finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, { allowTools });
         store.completeSubagent(rec.id, finalText);
       } catch (e) {
         store.failSubagent(rec.id, e instanceof Error ? e.message : String(e));
@@ -776,6 +776,50 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
     }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), CHAT_ONCE_TIMEOUT_MS)),
   ]);
+}
+
+/// P-M1：子代理带工具循环。子代理不仅能对话，还能调内置工具（git/编辑/测试/搜索/记忆），
+/// 独立上下文 + 独立工具结果回填，为多 agent 协作打基础。
+/// 与主代理差异：非流式（chat_once）+ 无 UI 流式副作用（后台任务，面板只显示状态）。
+/// opts.allowTools 可关闭（纯对话子代理）；返回最终结论文本。
+async function runSubagentLoop(
+  config: ApiConfig,
+  sysPrompt: string,
+  goal: string,
+  opts: { allowTools?: boolean; maxRounds?: number } = {},
+): Promise<string> {
+  const allowTools = opts.allowTools !== false;
+  const maxRounds = opts.maxRounds || 8;
+  const msgs: { role: string; content: string }[] = [
+    { role: "system", content: sysPrompt },
+    { role: "user", content: `子任务：${goal}` },
+  ];
+  for (let round = 0; round < maxRounds; round++) {
+    const data = await chatOnce(config, msgs);
+    if (!data) throw new Error("子代理执行超时或失败");
+    const content = data.content || "";
+    const tc = parseToolCall(content);
+    if (tc && allowTools) {
+      const server = tc.server && tc.server !== "default" ? tc.server : "app";
+      msgs.push({
+        role: "assistant",
+        content: stripToolJson(content).trim() || `（调用工具 ${tc.tool}）`,
+      });
+      let result: string;
+      try {
+        result = await callMcpTool(server, tc.tool, tc.arguments);
+      } catch (e) {
+        result = `错误: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      msgs.push({
+        role: "user",
+        content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。`,
+      });
+      continue;
+    }
+    return stripToolJson(content).trim() || "（子代理未返回内容）";
+  }
+  return "（子代理达到工具轮次上限，请基于已获取信息给出结论）";
 }
 
 const DEFAULT_PROFILES: ApiProfile[] = [

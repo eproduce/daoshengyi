@@ -46,6 +46,16 @@
 - **多 agent 协作计划（写入 DEVELOPMENT_PLAN §3.8，P-M1~P-M4）**：P-M1 子代理带工具（复用 sendMessage 工具循环）→ P-M2 并行子代理（Promise.all / futures join）→ P-M3 角色分工（规划/执行/验证/评审模板）→ P-M4 主代理汇总仲裁（orchestrator-subagent 树 + 监视面板）；建议推进顺序 P-A6 → P-M1~P-M4 → P-A7/P-A8
 - **验证**：cargo check 通过（菜单移除）；npm test 35 + vite build 通过；全工作区 grep 确认无 CodingAgents/agents tab 残留（仅文档记录）
 
+### ✅ 编程代理 P-M1 子代理带工具（多 agent 协作地基）
+- **背景**：外部编码 Agent 降级后，研发重心转向内置多 agent 协作；P-M1 是第一步——让子代理从"纯对话"升级为"能调内置工具"
+- **实现（src/stores/chat.ts）**：
+  - 新增模块级 `runSubagentLoop(config, sysPrompt, goal, opts)`：子代理工具循环——`chatOnce`（非流式）→ `parseToolCall` 从返回内容解析工具调用 → `callMcpTool` 执行（复用主代理工具执行器，内置工具+安全边界一致）→ `<tool_result>` 回填上下文 → 继续下一轮，直到无工具调用返回最终结论；`opts.allowTools` 可关（纯对话子代理）、`maxRounds` 默认 8
+  - `subagent_delegate` 工具改造：新增 `allow_tools` 参数（默认 true）；子代理系统提示词注入工具列表（`getMcpToolsPrompt()`）+「可调用内置工具完成子任务，能动手查证/修改/测试就不只靠推理」引导
+  - 与主代理差异：非流式 + 无 UI 流式副作用（后台任务，SubagentPanel 只显示状态），符合子代理定位
+- **验证**：npm test 35 + vite build 通过；get_errors 无报错
+- **注意**：子代理工具循环复用 `callMcpTool`（模块级状态 mcpToolsCache/browserNavigated），P-M2 并行子代理时需处理状态竞争（各子代理独立上下文已隔离，MCP 连接状态共享需加锁/串行浏览器操作）
+- **后续**：P-M2 并行子代理（Promise.all 多 runSubagentLoop 并发）→ P-M3 角色分工 → P-M4 主代理汇总仲裁
+
 ### ✅ 联网搜索无关结果修复（三层根因：关键词清洗 / 单源填满 / 相关性过滤）
 - **用户报告**：搜索"说说什么是人工智能神经网络"返回 11 条全是微软股票（MSFT）等完全无关内容
 - **根因链（三层叠加）**：
