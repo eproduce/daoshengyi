@@ -9,6 +9,7 @@ import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissio
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
+import { topoSort, renderTemplate, executeWorkflow } from "../src/utils/workflow-engine.ts";
 
 let pass = 0;
 let fail = 0;
@@ -233,6 +234,45 @@ console.log("\n== 记忆 §3 补全（来源标注 / 注入剪裁 / 遗忘候选
     { ...f, id: "high", fact: "高重要", fact_type: "info", importance: 6, last_accessed: now - 40 * 86400000 },
   ], now);
   assert(cand.map((c) => c.id).join() === "old", "遗忘候选=低重要+长期未访问+非偏好", cand.map((c) => c.id).join());
+}
+
+console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行） ==");
+{
+  // 拓扑排序：依赖顺序正确 + 环检测
+  const g1 = { nodes: [{ id: "a" }, { id: "b" }] as never[], edges: [{ id: "e1", source: "a", target: "b" }] };
+  const o1 = topoSort(g1);
+  assert(!("error" in o1) && (o1 as { order: string[] }).order.join() === "a,b", "拓扑序 a→b", JSON.stringify(o1));
+  const cyc = topoSort({ nodes: [{ id: "a" }, { id: "b" }] as never[], edges: [{ id: "e1", source: "a", target: "b" }, { id: "e2", source: "b", target: "a" }] });
+  assert("error" in cyc, "环依赖被检测");
+  assert(renderTemplate("你好 {{a}} 再见", { a: "世界" }) === "你好 世界 再见", "占位符替换");
+
+  // 执行链：text→llm→tool→end，注入 mock runtime
+  const g = {
+    nodes: [
+      { id: "start", type: "text", label: "开始", config: { text: "今天天气如何" }, x: 0, y: 0 },
+      { id: "llm1", type: "llm", label: "LLM 摘要", config: { prompt: "基于：{{start}}，请总结" }, x: 0, y: 100 },
+      { id: "tool1", type: "tool", label: "搜索", config: { tool: "web_search", toolArgs: { query: "{{llm1}}" } }, x: 0, y: 200 },
+      { id: "end", type: "end", label: "结束", config: {}, x: 0, y: 300 },
+    ],
+    edges: [
+      { id: "e1", source: "start", target: "llm1" },
+      { id: "e2", source: "llm1", target: "tool1" },
+      { id: "e3", source: "tool1", target: "end" },
+    ],
+  };
+  const res = await executeWorkflow(g, {}, {
+    llmCall: async (p) => `LLM[${p.slice(-8)}]`,
+    toolCall: async (t, a) => `TOOL(${t}):${String(a.query).slice(0, 20)}`,
+  });
+  assert(res.log.length === 4, "4 个节点都有执行日志", res.log.join("; "));
+  assert(res.outputs.length === 1 && res.outputs[0].nodeId === "end", "终端输出为 end 节点");
+  assert(res.outputs[0].value.includes("TOOL(web_search)"), "end 拿到 tool 输出", res.outputs[0].value);
+  assert(res.log.some((l) => l.includes("LLM 摘要") && l.includes("✅")), "LLM 节点成功日志");
+
+  // 外部输入 {{key}} 注入 + 节点失败不中断
+  const g2 = { nodes: [{ id: "t", type: "text", label: "T", config: { text: "{{user}}" }, x: 0, y: 0 }], edges: [] };
+  const r2 = await executeWorkflow(g2, { user: "外部值" }, { llmCall: async () => "", toolCall: async () => "" });
+  assert(r2.outputs[0].value === "外部值", "外部输入占位符替换", r2.outputs[0].value);
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

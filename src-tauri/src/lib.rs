@@ -3431,6 +3431,8 @@ fn build_app_menu<R: tauri::Runtime>(
         &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
         &MenuItem::with_id(app, "open-memory", "长期记忆", true, None::<&str>)?,
+        &PredefinedMenuItem::separator(app)?,
+        &MenuItem::with_id(app, "open-workflow", "可视化工作流", true, None::<&str>)?,
     ])?;
 
     Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &tools_menu])
@@ -3449,7 +3451,7 @@ pub fn run() {
                 "toggle-sidebar", "toggle-theme",
                 "open-skills", "open-mcp", "open-ollama",
                 "open-stats", "open-tasks", "open-health",
-                "open-memory",
+                "open-memory", "open-workflow",
             ];
             if ACTIONS.contains(&id) {
                 let _ = app.emit("menu://action", id);

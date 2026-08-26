@@ -7,6 +7,7 @@ import SubagentPanel from "./components/SubagentPanel.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AboutDialog from "./components/AboutDialog.vue";
+import WorkflowDialog from "./components/WorkflowDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
@@ -252,6 +253,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
     <!-- 关于道生一 -->
     <AboutDialog v-if="ui.aboutOpen" @close="ui.closeAbout()" />
+
+    <!-- 可视化工作流（Phase 3） -->
+    <WorkflowDialog v-if="ui.workflowOpen" @close="ui.closeWorkflow()" />
   </div>
 </template>
 

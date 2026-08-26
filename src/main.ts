@@ -44,6 +44,7 @@ listen<string>("menu://action", (e) => {
     case "open-tasks": ui.openSettings("tasks"); break;
     case "open-health": ui.openSettings("health"); break;
     case "open-memory": ui.openSettings("memory"); break;
+    case "open-workflow": ui.openWorkflow(); break;
   }
 }).catch(() => {});
 
