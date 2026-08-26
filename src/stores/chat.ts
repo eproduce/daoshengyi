@@ -85,7 +85,11 @@ function getMcpToolsPrompt(): string {
     "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
     "- **subagent_delegate** (app): 委派子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\"}。适合分头研究/独立验证、或需要并行推进多个子任务时使用；子代理结论会作为工具结果返回。" +
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
-    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。" +
+    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**" +
+    "\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {\"path\": \"文件绝对路径\", \"old_text\": \"要替换的原文（须与文件内容完全一致）\", \"new_text\": \"新文本（可为空=删除该段）\", \"occurrence\": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。" +
+    "\n- **insert_string** (app): **在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {\"path\": \"文件绝对路径\", \"anchor\": \"锚点文本（须唯一且与文件内容完全一致）\", \"position\": \"before 之前 | after 之后（默认 before）\", \"new_text\": \"要插入的内容\"}。适合在函数/代码块末尾、配置项列表中添加新条目。" +
+    "\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {\"path\": \"绝对路径或以 ~/ 开头\", \"content\": \"文件内容\"}。文件已存在时不会覆盖，返回提示。" +
+    "\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {\"path\": \"文件绝对路径\"}。删除前先确认用户确实要求删除该文件。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
     "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
     "\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {\"cwd\": \"项目目录绝对路径\", \"command\": \"可选，显式指定测试命令（如 pytest -q）\", \"args\": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。" +
@@ -121,6 +125,14 @@ function getMcpToolsPrompt(): string {
     "5. **不要堆砌**：删除重复/低价值条目，按相关度排序，每条摘要控制在 1-2 行。\n" +
     "6. **来源链接必须原样完整复制**：引用来源时，必须逐字原样复制搜索结果/工具返回中给出的**完整 URL**（如 `链接: https://...` 冒号后的整个地址），**禁止**截断路径、删改扩展名（如 `.shtml`/`.html`/`.pdf`）、缩写域名、自行拼接或凭空编造链接；每条引用的链接都必须是可直接打开访问的完整网址。\n" +
     "7. **禁止『口头承诺』式回复**：不要只写『我将访问 XX 官网获取信息』『接下来我去查询』『搜索与问题无关，我直接…』这类过程声明就结束回复——以过程声明代替实际内容 = 未完成任务。要么**立即输出工具调用**（web_search / fetch_page）真正获取数据，要么**直接给出基于已有信息的完整、结构化答案**（结论 / 步骤 / 要点）。";
+  // 文件编辑规范：修改已有文件优先精确编辑（replace_string/insert_string），返回 diff 需展示
+  const editRule =
+    "\n\n## 文件编辑规范（编程/改文件时）\n" +
+    "- **修改已有文件优先用精确编辑**：小改动用 replace_string / insert_string（只改目标片段、返回 unified diff 显示改动）；只有新建文件或整体重写才用 write_file / create_file。\n" +
+    "- 编辑前若不确定文件内容，先用 list_dir 确认路径、read_file 读取相关片段，再精确编辑（old_text/anchor 必须与文件内容**逐字一致**，含缩进/标点）。\n" +
+    "- 每次编辑会返回 **unified diff**（@@ 头 + 改动行）：编辑后**必须在最终回复中说明改了什么**（列出新增/修改/删除的关键行），让用户看到确切改动；不要只说『已修改』。\n" +
+    "- 修改代码后**必须用 run_tests 验证**（验证循环门禁），不能假设改对了。\n" +
+    "- 编辑失败（未找到文本）时，用 read_file 读取实际内容核对后重试，不要盲目重复相同编辑。";
   // 文件导出规范：必须用内置可信 write_file，禁止在正文模拟工具调用、编造路径
   const fileRule =
     "\n\n## 文件导出规范（重要）\n" +
@@ -133,11 +145,11 @@ function getMcpToolsPrompt(): string {
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + searchFormat + fileRule + pending +
+    return builtin + realtime + searchFormat + editRule + fileRule + pending +
       "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
   }
 
-  return builtin + realtime + searchFormat + fileRule +
+  return builtin + realtime + searchFormat + editRule + fileRule +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
@@ -208,7 +220,9 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
     const content = String((args as Record<string, unknown>)?.content ?? "");
     if (path) {
       try {
-        return await callBuiltinTool("write_file", { path, content });
+        // create_file 转发到内置非覆盖版（已存在则拒绝），其余转发到内置 write_file（覆盖）
+        const isCreate = /^create_file$/i.test(tool);
+        return await callBuiltinTool(isCreate ? "create_file" : "write_file", { path, content });
       } catch (e) {
         return `【文件写入被内置工具接管，但执行失败】${e instanceof Error ? e.message : String(e)}`;
       }
@@ -482,6 +496,51 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 由应用自身写盘并校验真实存在，返回真实绝对路径
       const real = await invoke<string>("write_file_agent", { path, content });
       return real;
+    }
+    case "replace_string": {
+      // 精确编辑：替换文件中一段文本（occurrence 指定第几次出现，默认第 1 次），返回 unified diff
+      const path = String(args.path || "");
+      const oldText = String(args.old_text ?? args.old ?? "");
+      const newText = String(args.new_text ?? args.new ?? "");
+      if (!path) throw new Error("replace_string 需要 path 参数");
+      if (!oldText) throw new Error("replace_string 需要 old_text 参数（要替换的原文）");
+      const edits: Record<string, unknown>[] = [
+        { op: "replace", old: oldText, new: newText, ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}) },
+      ];
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits });
+      return res.summary;
+    }
+    case "insert_string": {
+      // 精确编辑：在锚点文本前（before，默认）或后（after）插入一段文本，返回 unified diff
+      const path = String(args.path || "");
+      const anchor = String(args.anchor || "");
+      const text = String(args.new_text ?? args.text ?? "");
+      if (!path) throw new Error("insert_string 需要 path 参数");
+      if (!anchor) throw new Error("insert_string 需要 anchor 参数（插入位置的锚点文本）");
+      if (!text) throw new Error("insert_string 需要 new_text 参数（要插入的内容）");
+      const position = String(args.position || "before");
+      const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits });
+      return res.summary;
+    }
+    case "create_file": {
+      // 新建文件：仅当目标文件不存在时创建（避免误覆盖），成功后返回真实路径
+      const path = String(args.path || "");
+      const content = String(args.content ?? "");
+      if (!path) throw new Error("create_file 需要 path 参数");
+      if (!content) throw new Error("create_file 需要 content 参数");
+      const exists = await invoke<boolean>("file_exists", { path });
+      if (exists) {
+        return `⚠️ 文件已存在（${path}），为避免误覆盖未创建。若要修改请用 replace_string / insert_string 精确编辑，或先 delete_file 再重建。`;
+      }
+      const real = await invoke<string>("write_file_agent", { path, content });
+      return real;
+    }
+    case "delete_file": {
+      // 删除文件（仅主目录内文件，不删除目录）
+      const path = String(args.path || "");
+      if (!path) throw new Error("delete_file 需要 path 参数");
+      return await invoke<string>("delete_file_agent", { path });
     }
     case "list_dir": {
       const path = String(args.path || "");

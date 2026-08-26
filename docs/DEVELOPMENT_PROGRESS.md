@@ -8,6 +8,22 @@
 
 ## 2026-08-26
 
+### ✅ 编程代理 P-A4 多文件编辑 + diff（精确编辑原语 + unified diff 预览）
+- **背景**：P-A1 Git / P-A2 验证循环 / P-A3 代码库理解 之后，编程 Agent 修改代码的能力闭环
+- **Rust（src-tauri/src/lib.rs）**：
+  - `sanitize_home_path(path)` helper：展开 ~/ 并校验主目录内（write_file_agent / apply_edits / delete_file_agent 三处复用安全边界）
+  - `apply_edits(path, edits)` 命令：一次调用对单文件应用多个**精确编辑操作**——`replace`（old→new，`occurrence` 指定第几次出现，默认第 1 次）、`insert`（在 anchor 文本 before/after 插入 text）、`delete`（精确删除一段，occurrence 支持）；任一 op 未匹配文本即报错且**不写盘**；写盘后校验；返回 `EditResult{path, diff, new_len, summary}`
+  - `line_diff(old, new)` 纯函数：行级 LCS diff → `(char, String)` 操作序列；`format_unified_diff` 渲染**标准 unified diff**（@@ 头 + 3 行上下文 + 相邻 hunk 合并）；无改动返回"（无改动）"
+  - `nth_occurrence(hay, needle, occ)`：字节偏移定位第 N 次出现；`truncate_disp` 错误信息截断
+  - `delete_file_agent(path)` 命令：仅删除主目录内文件、拒绝目录
+- **前端（src/stores/chat.ts）**：
+  - 新增 4 个内置工具：`replace_string`（精确替换 + 返回 diff，new_text 可空=删除）、`insert_string`（锚点前/后插入）、`create_file`（**仅当目标不存在时创建**，防误覆盖，返回提示）、`delete_file`（删文件）；均走 `apply_edits` / `delete_file_agent` / `write_file_agent`（存在性校验），只允许主目录内
+  - 写入类 MCP 守卫更新：`create_file` 从转发覆盖式 write_file 改为转发内置非覆盖版 create_file
+  - 系统提示词：内置工具列表加 4 个编辑工具描述（修改已有文件优先 replace_string / insert_string 精确编辑，勿整体重写）；新增「文件编辑规范」区块——编辑前先 read_file 核对、old_text/anchor 逐字一致、编辑后必须在回复中**说明改动**（列出新增/修改/删除行）、改代码必须 run_tests 验证、失败用 read_file 核对后重试
+- **验证**：Rust 测试新增 7 项（diff 标记、unified diff 格式、无改动、occurrence 定位、三原语端到端、坏路径/未匹配拒绝且文件不变、delete_file 安全边界）→ cargo test 全过（38 项含 db/settings/search，31 passed + 7 ignored live）；npm test 35 + vite build 通过
+- 踩坑：①unified diff context 行是 `" "+text`、删除/新增行是 `-text`/`+text`（**无中间空格**），测试断言 context 行用 ` line2`、删除行用 `-line4`；②`delete "hello"` 不含换行时删完会留空行，断言按"剩 N 处出现"而非精确内容；③追加测试到已闭合 tests 模块需先确认模块结尾
+- **后续**：P-A5 任务规划增强（Plan 模式）为下一优先级；应用内 diff「确认后应用」UI 并入 P-A7 权限矩阵
+
 ### ✅ 联网搜索无关结果修复（三层根因：关键词清洗 / 单源填满 / 相关性过滤）
 - **用户报告**：搜索"说说什么是人工智能神经网络"返回 11 条全是微软股票（MSFT）等完全无关内容
 - **根因链（三层叠加）**：

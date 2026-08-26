@@ -154,25 +154,32 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
+/// 展开用户路径（~/ → $HOME/）并校验必须在用户主目录内。
+/// 供内置文件工具（write_file_agent / apply_edits / delete_file_agent）复用安全边界。
+fn sanitize_home_path(path: &str) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
+    // 展开 ~/ 为 $HOME/，其余必须是绝对路径
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{}", home, rest)
+    } else if path.starts_with('/') {
+        path.to_string()
+    } else {
+        return Err("文件路径必须是绝对路径或以 ~/ 开头".into());
+    };
+    // 仅允许操作主目录内，避免越权写系统目录
+    if !expanded.starts_with(&format!("{}/", home)) {
+        return Err(format!("仅允许操作用户主目录（{}）内的文件", home));
+    }
+    Ok(expanded)
+}
+
 /// 内置可信文件写入工具（供 agent 使用）：写入文本文件并**校验文件真实存在**后返回真实绝对路径。
 /// 目的：由应用自身写盘，确保文件真实落盘；并把唯一真实路径返回给模型，要求其**原样引用**
 /// （防止模型在最终回复中改写/编造文件路径，导致前端文件链接点击后打不开）。
 /// 安全边界：仅允许写入当前用户主目录（$HOME）下的文件。
 #[tauri::command]
 fn write_file_agent(path: String, content: String) -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
-    // 展开 ~/ 为 $HOME/，其余必须是绝对路径
-    let expanded = if let Some(rest) = path.strip_prefix("~/") {
-        format!("{}/{}", home, rest)
-    } else if path.starts_with('/') {
-        path.clone()
-    } else {
-        return Err("文件路径必须是绝对路径或以 ~/ 开头".into());
-    };
-    // 仅允许写入主目录内，避免越权写系统目录
-    if !expanded.starts_with(&format!("{}/", home)) {
-        return Err(format!("仅允许写入用户主目录（{}）内的文件", home));
-    }
+    let expanded = sanitize_home_path(&path)?;
     // 创建父目录（如 ~/Desktop、~/Documents 等）
     if let Some(parent) = std::path::Path::new(&expanded).parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -187,6 +194,267 @@ fn write_file_agent(path: String, content: String) -> Result<String, String> {
         "已成功写入文件：{}\n（共 {} 字节，真实路径如上，回复用户时请原样引用该路径，禁止改写文件名或目录）",
         expanded, size
     ))
+}
+
+/// 行级 diff：LCS 计算两段文本的行差异，返回操作序列（' '=相同 / '-'=删除 / '+'=新增）。
+fn diff_lines(old: &str, new: &str) -> Vec<(char, String)> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let (n, m) = (old_lines.len(), new_lines.len());
+    // dp[i][j] = old[i..] 与 new[j..] 的 LCS 长度
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if old_lines[i] == new_lines[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut ops: Vec<(char, String)> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if old_lines[i] == new_lines[j] {
+            ops.push((' ', old_lines[i].to_string()));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            ops.push(('-', old_lines[i].to_string()));
+            i += 1;
+        } else {
+            ops.push(('+', new_lines[j].to_string()));
+            j += 1;
+        }
+    }
+    while i < n {
+        ops.push(('-', old_lines[i].to_string()));
+        i += 1;
+    }
+    while j < m {
+        ops.push(('+', new_lines[j].to_string()));
+        j += 1;
+    }
+    ops
+}
+
+/// 把行级 diff 渲染成带行号的 unified diff 文本（3 行上下文、@@ hunk 头）。
+/// 仅包含有改动的区块，供模型与应用内查看改动。
+fn format_unified_diff(old: &str, new: &str) -> String {
+    let ops = diff_lines(old, new);
+    let mut rows: Vec<(char, String, Option<usize>, Option<usize>)> = Vec::new(); // (kind, text, old_ln, new_ln)
+    let (mut o, mut nn) = (1usize, 1usize);
+    for (kind, text) in ops {
+        match kind {
+            ' ' => {
+                rows.push((kind, text, Some(o), Some(nn)));
+                o += 1;
+                nn += 1;
+            }
+            '-' => {
+                rows.push((kind, text, Some(o), None));
+                o += 1;
+            }
+            _ => {
+                rows.push((kind, text, None, Some(nn)));
+                nn += 1;
+            }
+        }
+    }
+    let ctx = 3;
+    let len = rows.len();
+    let mut marked = vec![false; len];
+    let mut any_change = false;
+    for (i, r) in rows.iter().enumerate() {
+        if r.0 != ' ' {
+            any_change = true;
+            let lo = i.saturating_sub(ctx);
+            let hi = (i + ctx).min(len.saturating_sub(1));
+            for k in lo..=hi {
+                marked[k] = true;
+            }
+        }
+    }
+    if !any_change {
+        return "（无改动）".to_string();
+    }
+    // 切出 marked 连续块
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < len {
+        if marked[i] {
+            let mut j = i;
+            while j + 1 < len && marked[j + 1] {
+                j += 1;
+            }
+            blocks.push((i, j));
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    // 间隔 ≤ 2*ctx 的相邻块合并成一个 hunk
+    let mut hunks: Vec<(usize, usize)> = Vec::new();
+    for b in blocks {
+        if let Some(last) = hunks.last_mut() {
+            let gap = b.0.saturating_sub(last.1 + 1);
+            if gap <= 2 * ctx {
+                last.1 = b.1;
+            } else {
+                hunks.push(b);
+            }
+        } else {
+            hunks.push(b);
+        }
+    }
+    let mut out = String::new();
+    for (s, e) in hunks {
+        let old_start = rows[s..=e].iter().find_map(|r| r.2).unwrap_or_else(|| {
+            if s == 0 { 1 } else { rows[s - 1].2.map(|v| v + 1).unwrap_or(1) }
+        });
+        let new_start = rows[s..=e].iter().find_map(|r| r.3).unwrap_or_else(|| {
+            if s == 0 { 1 } else { rows[s - 1].3.map(|v| v + 1).unwrap_or(1) }
+        });
+        let old_count = rows[s..=e].iter().filter(|r| r.2.is_some()).count();
+        let new_count = rows[s..=e].iter().filter(|r| r.3.is_some()).count();
+        out.push_str(&format!("@@ -{},{} +{},{} @@\n", old_start, old_count, new_start, new_count));
+        for r in &rows[s..=e] {
+            // unified diff：context 行前导一个空格，删除行 '-text'，新增行 '+text'
+            out.push(r.0);
+            out.push_str(&r.1);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// 在 hay 中找 needle 的第 occurrence 次出现（1-based），返回字节偏移。
+fn nth_occurrence(hay: &str, needle: &str, occurrence: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let mut idx = 0usize;
+    let mut found = 0usize;
+    while idx <= hay.len() {
+        if let Some(pos) = hay[idx..].find(needle) {
+            found += 1;
+            if found == occurrence {
+                return Some(idx + pos);
+            }
+            idx += pos + needle.len();
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+/// 截断显示超长文本（错误信息/预览用）。
+fn truncate_disp(s: &str) -> String {
+    if s.chars().count() > 40 {
+        format!("{}…", s.chars().take(40).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// 单文件精确编辑操作（P-A4 多文件编辑原语）。
+/// - replace: 精确替换一段文本（occurrence 指定第几次出现，默认 1）
+/// - insert:  在 anchor 文本前（before，默认）或后（after）插入 text
+/// - delete:  精确删除一段文本（occurrence 指定第几次出现，默认 1）
+#[derive(serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum EditOp {
+    Replace { old: String, new: String, occurrence: Option<usize> },
+    Insert { anchor: String, position: String, text: String },
+    Delete { old: String, occurrence: Option<usize> },
+}
+
+#[derive(serde::Serialize)]
+struct EditResult {
+    path: String,
+    diff: String,
+    new_len: usize,
+    summary: String,
+}
+
+/// 对一个文件应用一系列精确编辑操作（replace/insert/delete），返回 unified diff。
+/// 支持跨文件重构：模型可对多个文件各调一次本命令，每次返回该文件改动 diff。
+/// 安全边界：与 write_file_agent 一致，仅允许操作用户主目录内文件。
+#[tauri::command]
+fn apply_edits(path: String, edits: Vec<EditOp>) -> Result<EditResult, String> {
+    let expanded = sanitize_home_path(&path)?;
+    let original = std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("读取文件失败（{}）: {}", expanded, e))?;
+    let mut content = original.clone();
+    for (i, edit) in edits.iter().enumerate() {
+        match edit {
+            EditOp::Replace { old, new, occurrence } => {
+                if old.is_empty() {
+                    return Err(format!("第 {} 个操作 replace 的 old 不能为空", i + 1));
+                }
+                let occ = occurrence.unwrap_or(1).max(1);
+                let pos = nth_occurrence(&content, old, occ).ok_or_else(|| {
+                    format!("replace 未找到文本（第 {} 次出现）：{:?}", occ, truncate_disp(old))
+                })?;
+                content = format!("{}{}{}", &content[..pos], new, &content[pos + old.len()..]);
+            }
+            EditOp::Insert { anchor, position, text } => {
+                if anchor.is_empty() {
+                    return Err(format!("第 {} 个操作 insert 的 anchor 不能为空", i + 1));
+                }
+                let pos = content.find(anchor).ok_or_else(|| {
+                    format!("insert 未找到锚点文本：{:?}", truncate_disp(anchor))
+                })?;
+                let insert_at = if position.as_str() == "after" {
+                    pos + anchor.len()
+                } else {
+                    pos // before（默认）
+                };
+                content = format!("{}{}{}", &content[..insert_at], text, &content[insert_at..]);
+            }
+            EditOp::Delete { old, occurrence } => {
+                if old.is_empty() {
+                    return Err(format!("第 {} 个操作 delete 的 old 不能为空", i + 1));
+                }
+                let occ = occurrence.unwrap_or(1).max(1);
+                let pos = nth_occurrence(&content, old, occ).ok_or_else(|| {
+                    format!("delete 未找到文本（第 {} 次出现）：{:?}", occ, truncate_disp(old))
+                })?;
+                content = format!("{}{}", &content[..pos], &content[pos + old.len()..]);
+            }
+        }
+    }
+    if content == original {
+        return Err("编辑未产生任何改动（请检查要替换/删除的文本是否与文件内容匹配）".into());
+    }
+    // 写盘 + 校验
+    if let Some(parent) = std::path::Path::new(&expanded).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&expanded, &content).map_err(|e| format!("写入文件失败: {}", e))?;
+    let new_len = content.len();
+    let diff = format_unified_diff(&original, &content);
+    let summary = format!(
+        "已对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节）：\n```diff\n{}```",
+        expanded, edits.len(), original.len(), new_len, diff
+    );
+    Ok(EditResult { path: expanded, diff, new_len, summary })
+}
+
+/// 删除文件（仅允许删除用户主目录内的文件，不删除目录）。供 agent 的 delete_file 工具使用。
+#[tauri::command]
+fn delete_file_agent(path: String) -> Result<String, String> {
+    let expanded = sanitize_home_path(&path)?;
+    let p = std::path::Path::new(&expanded);
+    if !p.exists() {
+        return Err(format!("文件不存在: {}", expanded));
+    }
+    if p.is_dir() {
+        return Err("仅允许删除文件，不删除目录（删除目录请用 git 或终端）".into());
+    }
+    std::fs::remove_file(&expanded).map_err(|e| format!("删除文件失败: {}", e))?;
+    Ok(format!("已删除文件：{}", expanded))
 }
 
 // --- 定时任务 ---
@@ -2898,6 +3166,8 @@ pub fn run() {
             system_diagnostics,
             write_text_file,
             write_file_agent,
+            apply_edits,
+            delete_file_agent,
             list_scheduled_tasks,
             save_scheduled_task,
             delete_scheduled_task,
@@ -2950,7 +3220,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_test_framework, validate_git_operation};
+    use super::{
+        apply_edits, delete_file_agent, detect_test_framework, diff_lines, format_unified_diff,
+        nth_occurrence, validate_git_operation, EditOp,
+    };
+
+    /// 在真实 HOME 下建独立临时目录（apply_edits 要求主目录内路径）。
+    fn edit_test_dir(name: &str) -> std::path::PathBuf {
+        let home = std::env::var("HOME").expect("HOME 应存在");
+        let dir = std::path::Path::new(&home).join(format!("ds_edit_test_{}_{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn git_validate_allows_safe_ops() {
@@ -3010,5 +3291,137 @@ mod tests {
         assert_eq!(fw, "unknown");
         assert!(cmd.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn diff_lines_marks_removed_and_added() {
+        let ops = diff_lines("a\nb\nc\n", "a\nB\nc\n");
+        let bi = ops.iter().position(|(_, t)| t == "b").unwrap();
+        let cap_i = ops.iter().position(|(_, t)| t == "B").unwrap();
+        assert_eq!(ops[bi].0, '-');
+        assert_eq!(ops[cap_i].0, '+');
+        // 相同行标记为 ' '
+        let a_i = ops.iter().position(|(_, t)| t == "a").unwrap();
+        assert_eq!(ops[a_i].0, ' ');
+        // 插入（新增在末尾）与删除（末尾）也正确标记
+        let ops2 = diff_lines("x\n", "x\ny\n");
+        assert!(ops2.iter().any(|(k, t)| *k == '+' && t == "y"));
+    }
+
+    #[test]
+    fn format_unified_diff_shows_hunks() {
+        let old = "line1\nline2\nline3\nline4\nline5\nline6\n";
+        let new = "line1\nline2\nline3\nLINE3B\nline5\nline6\n";
+        let d = format_unified_diff(old, new);
+        assert!(d.starts_with("@@ "), "diff 应以 @@ 头开始: {}", d);
+        assert!(d.contains("-line4"), "应含删除行: {}", d);
+        assert!(d.contains("+LINE3B"), "应含新增行: {}", d);
+        assert!(d.contains(" line2"), "应含上下文行: {}", d);
+        assert!(d.contains(" line5"), "应含上下文行: {}", d);
+    }
+
+    #[test]
+    fn format_unified_diff_no_change() {
+        assert_eq!(format_unified_diff("a\nb\n", "a\nb\n"), "（无改动）");
+    }
+
+    #[test]
+    fn nth_occurrence_finds_occurrences() {
+        assert_eq!(nth_occurrence("a-b-a-b", "a", 1), Some(0));
+        assert_eq!(nth_occurrence("a-b-a-b", "a", 2), Some(4));
+        assert_eq!(nth_occurrence("a-b-a-b", "z", 1), None);
+    }
+
+    #[test]
+    fn apply_edits_replace_insert_delete() {
+        let dir = edit_test_dir("ops");
+        let file = dir.join("t.txt");
+        std::fs::write(&file, "hello world\nfoo bar\nhello world\n").unwrap();
+        let path = file.to_str().unwrap().to_string();
+
+        // replace 默认第 1 次出现 → 只改第一处
+        let r = apply_edits(
+            path.clone(),
+            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+        )
+        .unwrap();
+        assert!(r.diff.contains("+hello RUST"), "diff 应含新增行: {}", r.diff);
+        assert!(r.path == path);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "hello RUST\nfoo bar\nhello world\n",
+            "replace 默认只应改第 1 次出现"
+        );
+
+        // insert after 锚点
+        apply_edits(
+            path.clone(),
+            vec![EditOp::Insert { anchor: "foo bar".into(), position: "after".into(), text: "\nINSERTED".into() }],
+        )
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&file).unwrap().contains("foo bar\nINSERTED"),
+            "插入后内容: {}",
+            std::fs::read_to_string(&file).unwrap()
+        );
+
+        // delete occurrence=2：写两份 hello，删除第 2 次出现后应只剩 1 处
+        std::fs::write(&file, "hello\nhello\n").unwrap();
+        apply_edits(
+            path.clone(),
+            vec![EditOp::Delete { old: "hello".into(), occurrence: Some(2) }],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content.matches("hello").count(), 1, "删除第 2 次出现后应只剩 1 处: {}", content);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn apply_edits_rejects_bad_path_or_missing_text() {
+        let dir = edit_test_dir("reject");
+        let file = dir.join("t2.txt");
+        std::fs::write(&file, "abc\n").unwrap();
+        let path = file.to_str().unwrap().to_string();
+
+        // 相对路径拒绝
+        assert!(apply_edits("relative.txt".into(), vec![]).is_err());
+        // 未匹配文本 → 报错且文件不变
+        assert!(
+            apply_edits(
+                path.clone(),
+                vec![EditOp::Replace { old: "不存在的文本".into(), new: "x".into(), occurrence: None }]
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "abc\n");
+        // 编辑后无变化 → 报错
+        assert!(
+            apply_edits(
+                path.clone(),
+                vec![EditOp::Replace { old: "abc".into(), new: "abc".into(), occurrence: None }]
+            )
+            .is_err()
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn delete_file_agent_only_file_in_home() {
+        let dir = edit_test_dir("del");
+        let file = dir.join("del.txt");
+        std::fs::write(&file, "x").unwrap();
+        let path = file.to_str().unwrap().to_string();
+        // 相对路径拒绝
+        assert!(delete_file_agent("relative.txt".into()).is_err());
+        // 删除文件成功
+        assert!(delete_file_agent(path.clone()).unwrap().contains("已删除"));
+        assert!(!file.exists());
+        // 删除目录拒绝
+        std::fs::write(&file, "x").unwrap();
+        assert!(delete_file_agent(dir.to_str().unwrap().to_string()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
