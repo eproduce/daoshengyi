@@ -46,6 +46,16 @@
 - **多 agent 协作计划（写入 DEVELOPMENT_PLAN §3.8，P-M1~P-M4）**：P-M1 子代理带工具（复用 sendMessage 工具循环）→ P-M2 并行子代理（Promise.all / futures join）→ P-M3 角色分工（规划/执行/验证/评审模板）→ P-M4 主代理汇总仲裁（orchestrator-subagent 树 + 监视面板）；建议推进顺序 P-A6 → P-M1~P-M4 → P-A7/P-A8
 - **验证**：cargo check 通过（菜单移除）；npm test 35 + vite build 通过；全工作区 grep 确认无 CodingAgents/agents tab 残留（仅文档记录）
 
+### ✅ 修复：命令执行工具（/run）不走 shell + 消息框命令面板误触发
+- **Bug 1：/run 命令不走 shell**（用户报 `/run list` 报「启动命令失败: No such file or directory」）
+  - 根因：`execute_command` 用 `Command::new(command)` 直接执行第一个词（不经 shell）——`~` 不展开、管道/重定向/`&&` 不生效、非可执行文件（如 `list`）报启动错误
+  - 修复：前端 `runCommand` 改传**整条命令**（不再 parseCommandLine 拆分，拆分会丢引号与 shell 语义）；后端 `execute_command` 改走 `/bin/sh -c <整条>` + `process_group(0)` 新进程组（超时 kill 整个进程组防 sleep 残留）；提取 `run_shell_command` 辅助函数（不依赖 State）便于测试
+  - 新增 3 项 Rust 测试：`~` 展开/管道/`cd &&`、超时杀进程组（2s 超时不等待）、未知命令报 exit 127（非启动失败）→ cargo test 34 项通过
+- **Bug 2：消息框命令面板误触发**（用户报 `/run /Users/xx` 无法正常输入）
+  - 根因：`currentWord()` 取光标前最后一个非空白词，参数路径 `/Users/xx` 以 `/` 开头 → 又触发命令面板；且面板开着时 Enter 被拦截为「选命令」，用户无法输入含 `/` 的参数
+  - 修复：`updateSlash` 仅当 `/` 开头的词位于**行首**（`w.start === 0`）才触发命令面板；参数里的 `/`（路径/URL）一律当普通内容，不弹面板、不拦截输入（可 Esc 关闭、可自由输入，非强制）
+- **验证**：cargo test 34 项 + npm test 35 + vite build 通过
+
 ### ✅ 修复：停止按钮无法停止子代理/工具循环（真正的中断机制）
 - **用户报告**：两个停止按钮（对话区「⏹ 停止生成」+ 输入框「⏹」）都无法停止正在运行的子代理（召回 agent）操作
 - **根因**：`stopStreaming()` 只做 `isStreaming.value = false`（隐藏按钮），**没有真正的取消机制**——正在跑的 `runSubagentLoop`（每轮 `chatOnce` 最长 60s）、主代理工具循环（`while round < MAX`）都不会中断；主代理还阻塞在 `await callMcpTool(subagent_delegate)` 上，停止后它返回仍会继续下一轮

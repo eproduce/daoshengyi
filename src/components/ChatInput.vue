@@ -82,7 +82,11 @@ function currentWord(): { start: number; word: string } | null {
 
 function updateSlash() {
   const w = currentWord();
-  if (w && w.word.startsWith("/")) {
+  // 仅当 `/` 开头的词位于**行首**（w.start === 0，即消息的开头第一个词）才触发命令面板：
+  // 命令参数里可能含 `/`（如 `/run /Users/foo` 的路径、URL 等），这些不应再触发面板，
+  // 否则用户无法正常输入含 `/` 的内容。面板只是辅助建议（可 Esc 关闭、可继续自由输入），
+  // 不强制用户选择命令——非行首的 `/` 一律当作普通内容正常输入。
+  if (w && w.word.startsWith("/") && w.start === 0) {
     const q = w.word.slice(1).toLowerCase();
     slashFiltered.value = SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(q));
     slashActive.value = 0;
