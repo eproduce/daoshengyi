@@ -1424,6 +1424,20 @@ export const useChatStore = defineStore("chat", () => {
     return false;
   }
 
+  /// 退出码 → 人类可读状态（0=成功，常见非 0 有含义，其余标注错误）
+  function exitStatusLabel(code: number): string {
+    if (code === 0) return "✅ 执行成功";
+    const map: Record<number, string> = {
+      1: "一般错误",
+      2: "误用 shell 命令/参数",
+      126: "命令存在但不可执行",
+      127: "命令未找到",
+      130: "被 Ctrl+C 中断",
+      137: "被强制终止（OOM 或 kill）",
+    };
+    return `❌ 执行失败（退出码 ${code}${map[code] ? `：${map[code]}` : ""}）`;
+  }
+
   async function runCommand(cmdStr: string) {
     const { command, args } = parseCommandLine(cmdStr);
     if (!command) return;
@@ -1478,7 +1492,7 @@ export const useChatStore = defineStore("chat", () => {
       let content = `$ ${cmdStr}\n`;
       if (out) content += `\n${out}\n`;
       if (err) content += `\n[stderr]\n${err}\n`;
-      content += `\n退出码: ${result.exit_code}${result.timed_out ? "（超时）" : ""}`;
+      content += `\n${result.timed_out ? "⏰ 执行超时，已终止" : exitStatusLabel(result.exit_code)}`;
       assistantMsg.content = content;
     } catch (e: unknown) {
       assistantMsg.content = `$ ${cmdStr}\n\n❌ 执行失败: ${e instanceof Error ? e.message : String(e)}`;
