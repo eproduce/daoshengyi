@@ -1192,6 +1192,148 @@ fn read_pdf_part(path: String, offset: i64, length: i64) -> Result<String, Strin
     Ok(chars[start..start + len].iter().collect())
 }
 
+// --- Phase 3 知识库 RAG：本地文件索引 + FTS5 关键词检索 ---
+
+/// 把长文本切成约 size 字符的分块（尽量在换行处断开；超长行按 char 级切，避免 UTF-8 边界；纯函数可测试）
+fn chunk_text(text: &str, size: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut cur_len = 0usize;
+    for line in text.split('\n') {
+        if line.chars().count() > size {
+            if !current.trim().is_empty() {
+                out.push(current.trim().to_string());
+                current = String::new();
+                cur_len = 0;
+            }
+            let mut buf = String::new();
+            let mut n = 0usize;
+            for c in line.chars() {
+                buf.push(c);
+                n += 1;
+                if n >= size {
+                    let t = buf.trim().to_string();
+                    if !t.is_empty() {
+                        out.push(t);
+                    }
+                    buf = String::new();
+                    n = 0;
+                }
+            }
+            if !buf.trim().is_empty() {
+                current = buf;
+                cur_len = current.chars().count();
+            }
+            continue;
+        }
+        if cur_len > 0 && cur_len + 1 + line.chars().count() > size {
+            if !current.trim().is_empty() {
+                out.push(current.trim().to_string());
+            }
+            current = String::new();
+            cur_len = 0;
+        }
+        if cur_len > 0 {
+            current.push('\n');
+            cur_len += 1;
+        }
+        current.push_str(line);
+        cur_len += line.chars().count();
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+/// 知识库索引：扫描目录（md/txt/代码/PDF），分块写入并建 FTS 索引（重建式：先清空同名知识库）。
+/// 支持 P-A8 沙箱：配置了路径白名单时只能索引白名单内目录。
+#[tauri::command]
+fn kb_index(db: State<Database>, kb_name: String, path: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let allowed = sandbox_allowed_paths(db.inner());
+    let expanded = expand_user_path(&path)?;
+    if !allowed.is_empty() && !path_within_any(std::path::Path::new(&expanded), &allowed) {
+        return Err(format!("路径不在沙箱白名单内，拒绝索引：{}", path));
+    }
+    let root = std::path::PathBuf::from(&expanded);
+    if !root.is_dir() {
+        return Err(format!("不是目录: {}", path));
+    }
+    let skip: [&str; 9] = ["node_modules", ".git", "target", "dist", "build", ".next", "__pycache__", "vendor", ".idea"];
+    let is_ok_ext = |ext: &str| {
+        matches!(ext, "md" | "txt" | "markdown" | "json" | "py" | "ts" | "js" | "rs" | "vue" | "html" | "css" | "c" | "cpp" | "h" | "java" | "go" | "toml" | "yml" | "yaml" | "sh" | "csv" | "pdf")
+    };
+
+    db.kb_clear(&kb_name)?;
+    let mut files = 0usize;
+    let mut chunks = 0usize;
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if skip.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push(p);
+            } else if p.is_file() {
+                let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if !is_ok_ext(&ext) {
+                    continue;
+                }
+                files += 1;
+                let text = if ext == "pdf" {
+                    std::fs::read(&p)
+                        .ok()
+                        .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+                        .and_then(|b64| extract_pdf_text(b64).ok())
+                        .unwrap_or_default()
+                } else {
+                    std::fs::read_to_string(&p).unwrap_or_default()
+                };
+                let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().to_string();
+                for (i, chunk) in chunk_text(&text, 800).into_iter().enumerate() {
+                    if chunk.trim().is_empty() {
+                        continue;
+                    }
+                    db.kb_add_chunk(&kb_name, &rel, &chunk, i as i64)?;
+                    chunks += 1;
+                }
+            }
+        }
+    }
+    Ok(format!(
+        "知识库「{}」索引完成：{} 个文件 → {} 个分块（{}）",
+        kb_name,
+        files,
+        chunks,
+        root.display()
+    ))
+}
+
+/// 知识库检索（FTS5 关键词，中文 unigram）
+#[tauri::command]
+fn kb_search(db: State<Database>, kb_name: String, query: String, limit: Option<i64>) -> Result<Vec<db::KbChunk>, String> {
+    let lim = limit.unwrap_or(6).clamp(1, 20);
+    db.kb_search(&kb_name, &query, lim)
+}
+
+/// 列出所有知识库及分块数
+#[tauri::command]
+fn kb_list(db: State<Database>) -> Result<Vec<db::KbInfo>, String> {
+    db.kb_list()
+}
+
+/// 删除整个知识库
+#[tauri::command]
+fn kb_delete(db: State<Database>, kb_name: String) -> Result<String, String> {
+    db.kb_delete(&kb_name)?;
+    Ok(format!("知识库「{}」已删除", kb_name))
+}
+
 /// 把 base64 附件写入临时目录并返回路径（拖拽/粘贴无磁盘路径的文件，先落盘再走 read_attachment 统一处理）
 #[tauri::command]
 fn save_temp_attachment(data: String, name: String) -> Result<String, String> {
@@ -3496,6 +3638,10 @@ pub fn run() {
             git_operation,
             run_tests,
             analyze_project,
+            kb_index,
+            kb_search,
+            kb_list,
+            kb_delete,
             read_file,
             open_file,
             file_exists,
@@ -3538,10 +3684,41 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_edits, delete_file_agent, detect_test_framework, diff_lines, embed_model_installed,
-        extract_redirected_files, format_unified_diff, nth_occurrence, parse_allowed_paths,
-        parse_embed_response, path_within_any, run_shell_command, validate_git_operation, EditOp,
+        apply_edits, chunk_text, delete_file_agent, detect_test_framework, diff_lines,
+        embed_model_installed, extract_redirected_files, format_unified_diff, nth_occurrence,
+        parse_allowed_paths, parse_embed_response, path_within_any, run_shell_command,
+        validate_git_operation, EditOp,
     };
+
+    // Phase 3 知识库 RAG：分块纯函数
+    #[test]
+    fn chunk_text_short_text_single_chunk() {
+        assert_eq!(chunk_text("第一行\n第二行", 800), vec!["第一行\n第二行"]);
+        assert!(chunk_text("", 10).is_empty());
+        assert!(chunk_text("   ", 10).is_empty());
+    }
+
+    #[test]
+    fn chunk_text_splits_long_line() {
+        let long = "字".repeat(100);
+        let chunks = chunk_text(&long, 30);
+        assert!(chunks.len() >= 3, "长行切成多块，实际 {}", chunks.len());
+        assert!(chunks.iter().all(|c| c.chars().count() <= 30), "每块不超过 size");
+        assert_eq!(chunks.concat().chars().count(), 100, "拼接后内容完整");
+    }
+
+    #[test]
+    fn chunk_text_respects_newline_boundary() {
+        // 两行合计超 size → 在新行前断开成两块
+        let text = format!("{}\n{}", "a".repeat(30), "b".repeat(30));
+        let chunks = chunk_text(&text, 50);
+        assert_eq!(chunks.len(), 2, "两行合并超 size 时在新行前断开，实际 {}", chunks.len());
+        assert_eq!(chunks[0].trim(), "a".repeat(30), "首块为第一行");
+        assert_eq!(chunks[1].trim(), "b".repeat(30), "次块为第二行");
+        // 超长行(>size)会被切成多块
+        let long = chunk_text(&"b".repeat(200), 50);
+        assert_eq!(long.len(), 4, "200 字符长行切成 4 块");
+    }
 
     // P-A8 沙箱：路径白名单（组件级匹配，防前缀误判）+ 白名单解析
     #[test]

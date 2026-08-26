@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-26**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地）
+> **最后更新：2026-08-27**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + Phase 5 系统托盘落地）
 
 ---
 
@@ -166,6 +166,17 @@
 | P-M2 | **并行子代理** | ✅ | 🟢 | P-M1 | 多个子代理并发执行（前端 `subagent_parallel` 工具，信号量并发池默认≤4）；主代理分发子任务后并行收集结果（结果按原顺序汇总）；可视化面板同时显示各子代理状态；共享状态竞争处理：浏览器操作 `withBrowserLock` 串行锁 + `refreshMcpTools` 单飞 |
 | P-M3 | **角色分工** | ✅ | 🟡 | P-M2 | 面向任务的 agent 角色模板（规划者 planner / 执行者 executor / 验证者 verifier / 评审者 reviewer / 研究助手 researcher），各自系统提示词 + **工具集约束**（提示词只展示允许工具 + runSubagentLoop 执行层强制拦截不允许工具，双保险） |
 | P-M4 | **主代理汇总仲裁** | ✅ | 🟡 | P-M3 | `subagent_parallel` 支持 `synth=true`：并行完成后用评审角色做**汇总仲裁**（冲突消解/交叉验证/统一呈现，失败回退普通汇总）；主代理系统提示加「多子代理结果仲裁规范」（冲突时明确冲突点/评估依据/给出判定/统一呈现） |
+
+---
+
+## 3.9 Phase 3/5 落地（2026-08-27）
+
+| 项 | 状态 | 说明 |
+|---|------|------|
+| 知识库 RAG（Phase 3 部分） | ✅ | `kb_chunks` 表 + `kb_chunks_fts`（FTS5 unigram）；Rust `kb_index`（扫描 md/txt/代码/PDF，`chunk_text` 分块 800 字符、P-A8 沙箱白名单、重建式）、`kb_search`（FTS5 关键词）、`kb_list`/`kb_delete`；前端内置工具 `kb_index`/`kb_search`/`kb_list` + 提示词。待做：Ollama 分块语义向量检索（复用 `ollama_embed`） |
+| 系统托盘（Phase 5 部分） | ✅ | Cargo 开 `tray-icon` feature；`TrayIconBuilder`（**macOS 模板图 `tray-icon.png` + `icon_as_template`** 自动适配深浅菜单栏；左键切换窗口、菜单新建对话/退出） |
+| 全局快捷键（Phase 5） | ⬜ | 需 `@tauri-apps/plugin-global-shortcut` 依赖 + 能力授权 |
+| 可视化工作流编辑器（Phase 3） | ⬜ | 需 `@vue-flow/core` 依赖 + 工作流 DAG 引擎（LLM/工具/条件/代码节点） |
 
 ---
 

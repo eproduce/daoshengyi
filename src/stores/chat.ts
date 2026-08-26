@@ -946,6 +946,32 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `- 源码文件: ${a.source_files} 个（${a.by_ext.join(", ")}）\n` +
         `- 顶层结构:\n${a.top_level.map(x => `  ${x}`).join("\n")}`;
     }
+    case "kb_index": {
+      // Phase 3 知识库 RAG：把本地目录索引成知识库（重建式）
+      const kbName = String(args.kb_name || "").trim();
+      const path = String(args.path || "");
+      if (!kbName) throw new Error("kb_index 需要 kb_name 参数（知识库名）");
+      if (!path) throw new Error("kb_index 需要 path 参数（目录绝对路径）");
+      return await invoke<string>("kb_index", { kbName, path });
+    }
+    case "kb_search": {
+      // Phase 3 知识库 RAG：检索已索引知识库
+      const kbName = String(args.kb_name || "").trim();
+      const query = String(args.query || "").trim();
+      if (!kbName) throw new Error("kb_search 需要 kb_name 参数（知识库名）");
+      if (!query) throw new Error("kb_search 需要 query 参数（检索词）");
+      const limit = args.limit ? Number(args.limit) : null;
+      const hits = await invoke<{ id: number; kb_name: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]>("kb_search", { kbName, query, limit });
+      if (!hits.length) return `（知识库「${kbName}」未检索到与「${query}」相关的内容，可换关键词或先 kb_index 索引目录）`;
+      const out = hits.map((h, i) => `[${i + 1}] ${h.file}#${h.chunk_idx}\n${h.chunk.slice(0, 500)}`).join("\n\n");
+      return `【知识库「${kbName}」检索「${query}」】命中 ${hits.length} 条：\n\n${out}`;
+    }
+    case "kb_list": {
+      // Phase 3 知识库 RAG：列出已建知识库
+      const list = await invoke<{ name: string; chunks: number }[]>("kb_list");
+      if (!list.length) return "（尚未建立知识库，可用 kb_index 索引本地目录）";
+      return "已建立知识库：\n" + list.map((k) => `- ${k.name}（${k.chunks} 分块）`).join("\n");
+    }
     default:
       throw new Error(`未知内置工具: ${tool}`);
   }

@@ -60,6 +60,18 @@ CREATE INDEX IF NOT EXISTS idx_summaries_conv ON memory_summaries(conversation_i
 -- rowid 与 memory_facts.rowid 一一对应；由 Rust 侧在 save/delete 时同步维护。
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(fact_terms, tokenize='unicode61');
 
+-- Phase 3 知识库 RAG：本地文件分块（kb_index 写入）+ FTS5 关键词检索
+CREATE TABLE IF NOT EXISTS kb_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kb_name TEXT NOT NULL,
+    file TEXT NOT NULL,
+    chunk TEXT NOT NULL,
+    chunk_idx INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_name ON kb_chunks(kb_name);
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(chunk_terms, tokenize='unicode61');
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -803,6 +815,91 @@ impl Database {
         Ok(scored)
     }
 
+    // --- Phase 3 知识库 RAG（kb_chunks + FTS5 关键词检索） ---
+
+    /// 清空某知识库所有分块（重建索引前调用；同步清理 FTS 行）
+    pub fn kb_clear(&self, kb_name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM kb_chunks WHERE kb_name=?1")
+            .map_err(|e| e.to_string())?
+            .query_map(params![kb_name], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for id in ids {
+            let _ = conn.execute("DELETE FROM kb_chunks_fts WHERE rowid=?1", params![id]);
+        }
+        conn.execute("DELETE FROM kb_chunks WHERE kb_name=?1", params![kb_name])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 写入一个分块（自动建 FTS 索引）
+    pub fn kb_add_chunk(&self, kb_name: &str, file: &str, chunk: &str, chunk_idx: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO kb_chunks(kb_name, file, chunk, chunk_idx, created_at) VALUES (?1,?2,?3,?4,?5)",
+            params![kb_name, file, chunk, chunk_idx, chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO kb_chunks_fts(rowid, chunk_terms) VALUES (?1, ?2)",
+            params![id, cjk_terms(chunk)],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 检索知识库（FTS5 关键词，中文 unigram 分词）
+    pub fn kb_search(&self, kb_name: &str, query: &str, limit: i64) -> Result<Vec<KbChunk>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let q = fts_query(&cjk_terms(query));
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let sql = "SELECT kc.id, kc.kb_name, kc.file, kc.chunk, kc.chunk_idx, kc.created_at
+                   FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
+                   WHERE kb_chunks_fts MATCH ?1 AND kc.kb_name = ?2
+                   ORDER BY bm25(kb_chunks_fts) LIMIT ?3";
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![q, kb_name, limit], |r| {
+                Ok(KbChunk {
+                    id: r.get(0)?, kb_name: r.get(1)?, file: r.get(2)?,
+                    chunk: r.get(3)?, chunk_idx: r.get(4)?, created_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 列出所有知识库及分块数
+    pub fn kb_list(&self) -> Result<Vec<KbInfo>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT kb_name, COUNT(*) FROM kb_chunks GROUP BY kb_name ORDER BY kb_name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(KbInfo { name: r.get(0)?, chunks: r.get(1)? }))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 删除整个知识库
+    pub fn kb_delete(&self, kb_name: &str) -> Result<(), String> {
+        self.kb_clear(kb_name)
+    }
+
     // --- 应用设置存取 ---
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
@@ -971,6 +1068,24 @@ pub struct ToolAuditRow {
     pub created_at: i64,
 }
 
+/// 知识库分块（Phase 3 RAG）
+#[derive(Debug, serde::Serialize)]
+pub struct KbChunk {
+    pub id: i64,
+    pub kb_name: String,
+    pub file: String,
+    pub chunk: String,
+    pub chunk_idx: i64,
+    pub created_at: i64,
+}
+
+/// 知识库概览（Phase 3 RAG）
+#[derive(Debug, serde::Serialize)]
+pub struct KbInfo {
+    pub name: String,
+    pub chunks: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +1102,32 @@ mod tests {
 
     fn cleanup(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Phase 3 知识库 RAG：写入/检索/隔离/列表/清空
+    #[test]
+    fn kb_add_search_list_clear() {
+        let (dir, db) = tmp_db();
+        db.kb_add_chunk("docs", "a.md", "华为技术有限公司成立于1987年", 0).unwrap();
+        db.kb_add_chunk("docs", "b.md", "DeepSeek 是一个大语言模型", 0).unwrap();
+        db.kb_add_chunk("notes", "c.md", "今天天气很好", 0).unwrap();
+
+        let hits = db.kb_search("docs", "华为", 5).unwrap();
+        assert!(hits.iter().any(|c| c.chunk.contains("华为")), "中文 unigram 命中");
+        assert!(!hits.iter().any(|c| c.file == "b.md"), "无关文件不命中");
+
+        // 跨库隔离：other 库查不到 docs 内容
+        assert!(db.kb_search("other", "华为", 5).unwrap().is_empty(), "跨库隔离");
+        // kb_list 汇总
+        let list = db.kb_list().unwrap();
+        let docs = list.iter().find(|k| k.name == "docs").unwrap();
+        assert_eq!(docs.chunks, 2);
+        assert_eq!(list.len(), 2);
+        // 清空后检索为空
+        db.kb_clear("docs").unwrap();
+        assert!(db.kb_search("docs", "华为", 5).unwrap().is_empty(), "清空后检索为空");
+        assert_eq!(db.kb_list().unwrap().len(), 1);
+        cleanup(&dir);
     }
 
     #[test]
