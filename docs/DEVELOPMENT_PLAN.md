@@ -178,6 +178,27 @@
 | 可视化工作流编辑器（Phase 3） | ✅ | 依赖 `@vue-flow/core`；`workflow-engine.ts` 纯 DAG 引擎（topoSort 环检测 / renderTemplate `{{id}}` 占位 / executeWorkflow，runtime 注入可测）；节点类型 text/llm/tool/**condition（条件分支：安全布尔表达式求值器 `evalCondition`，支持 `{{id}}`/裸节点id/字符串/数字 + `== != > < >= <= contains startsWith endsWith && \|\| !`（及 and/or/not），条件出边带 true/false 标签做分支路由，未激活分支节点跳过不执行、跳过死端不计入终端输出）**/**code（代码节点 `runCodeNode`：JS 函数体注入 input/outputs，异常捕获为文案，对象 JSON 序列化）**/end；`WorkflowDialog.vue`（画布 + 节点面板 + 配置编辑 + 点选连线编辑分支标签 + 运行（LLM 走 chat_once / 工具走 callMcpTool）+ 日志/输出 + 导入导出 JSON）；**内置模板库 `workflow-templates.ts`（研究助手/文案润色/日报生成/Bug 分流，`materializeTemplate` 重新生成唯一 id 并同步替换 `{{id}}` 引用，可多次载入不冲突，模板合法性自测校验）**；入口=工具菜单「可视化工作流」。待做：云端工作流市场 |
 | 全局快捷键（Phase 5） | ✅ | `tauri-plugin-global-shortcut` 依赖 + capability `global-shortcut:default`；setup 从设置读取并注册 `CommandOrControl+Shift+Space`（显示/隐藏主窗口，快速召唤）与 `CommandOrControl+Shift+K`（新建对话，复用 `menu://action` 通道）；`OnceLock<Mutex<Option<(Shortcut, Shortcut)>>>` 存当前注册句柄供 handler 比对（register 返回 `()`，需 `Shortcut::from_str` 解析句柄）；**设置页「快捷键」tab 可自定义两个快捷键**（AppSettings 加 `global_shortcut_toggle`/`global_shortcut_new_chat` 字段 + serde 默认 + 测试字面量同步；`apply_global_shortcuts` 命令注销旧注册并按新配置重注册，保存即生效；「恢复默认」按钮）；注册失败（被占用）仅日志不阻塞启动；「关于」对话框展示默认快捷键 |
 
+## 3.10 近期开发方向（2026-08-27 规划）
+
+> 按「本地可立即开发（自包含、价值高）」优先整理，推进顺序 ①→②→③…；🟡 中等（需设计，本地可做）、🔵 远期（需云端/社区后端）。
+
+### 🟢 本地可立即开发（自包含、价值高，推荐优先）
+| # | 方向 | 复用基础 | 实现要点 |
+|---|------|---------|---------|
+| 1 | **会话内「撤销最近操作」** | `apply_edits`（preview）+ `tool_audit`（工具调用全记录） | 文件编辑/命令执行写盘前备份原文 → 一键回滚；操作回放面板（可筛选/导出） |
+| 2 | **项目语义索引 / 自然语言找代码**（P-A3 补全） | `ollama_embed` + `kb_chunks` embedding 基建 | 给项目代码建向量索引；「找处理登录的地方」式自然语言检索；符号跳转（定义/引用） |
+| 3 | **IM 网关（远程驱动 agent）** | `send_im`（已有只发不收）+ 设计方案 `docs/IM_GATEWAY.md` | Rust 长轮询网关 `ImAdapter` trait（poll_updates/send_message）+ `ImGateway`（去重/白名单/限流）；Telegram/钉钉/飞书；收到消息→执行工具→回结果 |
+| 4 | **知识库 RAG 自动注入** | `kb_search_hybrid` + 记忆注入通道 | 对话前自动检索相关分块注入上下文（像记忆注入），RAG 无感化 |
+| 5 | **工作流持久化 + 运行历史** | `workflow-engine` + 设置持久化 | 「我的工作流」保存列表、一键运行、最近运行记录 |
+
+### 🟡 中等复杂度（需设计，本地可做）
+- 会话级权限记忆（「本次会话允许执行 X」→ 减少重复确认）
+- 审计可视化面板（工具调用全记录 UI：筛选/回放/导出）
+- 外部编码 Agent 阶段三：彻底移除 `delegate_coding_agent`，零外部依赖
+
+### 🔵 远期（需云端/社区后端）
+- P-A10 插件/技能生态、P-A11 / 4.3 跨设备同步、云端工作流市场、团队协作共享
+
 ---
 
 ## 4. 计划功能（借鉴 Hermes-CN-Desktop，按优先级）

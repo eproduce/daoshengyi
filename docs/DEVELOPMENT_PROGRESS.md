@@ -8,6 +8,9 @@
 
 ## 2026-08-27
 
+### 📋 开发方向规划（近期路线写入计划与路线图）
+- 按「本地可立即开发（自包含、价值高）」整理近期路线：写入 **DEVELOPMENT_PLAN §3.10 近期开发方向** + **ROADMAP 近期落地清单**——🟢 ①会话内「撤销最近操作」（复用 apply_edits/tool_audit）②项目语义索引/自然语言找代码（复用 ollama_embed/kb_chunks，P-A3 补全）③IM 网关远程驱动（方案 docs/IM_GATEWAY.md 已备，补 send_im 只发不收）④知识库 RAG 自动注入 ⑤工作流持久化+运行历史；🟡 会话级权限记忆/审计可视化面板/移除外部委派；🔵 插件生态/跨设备同步/云端工作流市场为远期
+
 ### ✅ 弹窗统一改造 + 回复中断修复
 - **弹窗关不掉**：`ChatMessage.vue` 点「文件不存在」提示用 `window.alert`，Tauri 2 + macOS WKWebView 下 `alert/confirm` 有已知「弹窗关不掉/无响应」问题 → 新建 `src/utils/dialog.ts`（`notify` 用 `@tauri-apps/plugin-dialog` 的 `message`、`askConfirm` 用 `ask`，原生对话框可正常关闭；非 Tauri 回退 alert/confirm）；ChatMessage/ChatInput 的 8 处 `alert` → `notify`，chat.ts 危险命令审批 2 处 `window.confirm` → `askConfirm`
 - **回复中断（只思考无正文/工具没执行）**：日志 `[loop] 第 0 轮结束，toolCall=null，content 4508 / streamingContent 62 / reasoning 4289`——模型在思考里规划（4289 字符），正文输出含**未闭合的工具调用开标记**（visibleText 剥掉后只剩 62 字符残句），`hasCompleteToolCall` 为 false 不走格式修正重试、`isVagueBody` 判非空洞 → break → 中断 → 新增 `tool-call.ts hasToolCallIntent`（检测工具调用**开标记**：标准 `<tool_call`、DSML `<｜DSML｜tool_call｜` 含半截 `tool_`、伪卡片 `### 🔧 调用工具`，无论是否闭合）；主循环 `!tc` 分支在格式无效重试后插入「有意图但未闭合 → 注入修正指令重试」分支，避免「想调工具但标记不完整 → 工具没执行 → 回复中断」
