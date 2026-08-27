@@ -18,6 +18,7 @@ const chatStore = useChatStore();
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
 const selectedId = ref<string | null>(null);
+const selectedEdgeId = ref<string | null>(null);
 const running = ref(false);
 const log = ref<string[]>([]);
 const outputs = ref<{ nodeId: string; label: string; value: string }[]>([]);
@@ -27,9 +28,11 @@ const NODE_COLORS: Record<WorkflowNodeType, string> = {
   text: "#4caf50",
   llm: "#2196f3",
   tool: "#ff9800",
+  condition: "#9c27b0",
+  code: "#00bcd4",
   end: "#9e9e9e",
 };
-const TYPE_LABEL: Record<WorkflowNodeType, string> = { text: "文本", llm: "LLM", tool: "工具", end: "结束" };
+const TYPE_LABEL: Record<WorkflowNodeType, string> = { text: "文本", llm: "LLM", tool: "工具", condition: "条件", code: "代码", end: "结束" };
 
 // vue-flow 1.x 的 Node 类型泛型极深会触发 TS2589，selected 用 any 承载
 const selected = computed<any>(() => {
@@ -39,12 +42,30 @@ const selected = computed<any>(() => {
 const selectedWf = computed<WorkflowNode | undefined>(
   () => (selected.value as { data?: { wf?: WorkflowNode } } | undefined)?.data?.wf
 );
+const selectedEdge = computed<any>(() =>
+  selectedEdgeId.value ? (edges.value as { id: string }[]).find((e) => e.id === selectedEdgeId.value) : undefined
+);
+const selectedEdgeWf = computed<WorkflowEdge | undefined>(
+  () => (selectedEdge.value as { data?: { edge?: WorkflowEdge } } | undefined)?.data?.edge
+);
+// 选中边源节点是否为条件节点（只有条件出边需要分支标签）
+const selectedEdgeIsCondition = computed(() => {
+  const e = selectedEdge.value;
+  if (!e) return false;
+  const src = (nodes.value as { id: string }[]).find((n) => n.id === e.source);
+  return (src as { data?: { wf?: WorkflowNode } } | undefined)?.data?.wf?.type === "condition";
+});
 
 function addNode(type: WorkflowNodeType) {
   const id = uuidv4();
   const wf: WorkflowNode = {
     id, type, label: `${TYPE_LABEL[type]}节点`,
-    config: type === "llm" ? { prompt: "请基于上方上下文回答：{{user}}" } : type === "tool" ? { tool: "web_search", toolArgs: { query: "{{user}}" } } : type === "text" ? { text: "输入内容" } : {},
+    config: type === "llm" ? { prompt: "请基于上方上下文回答：{{user}}" }
+      : type === "tool" ? { tool: "web_search", toolArgs: { query: "{{user}}" } }
+      : type === "text" ? { text: "输入内容" }
+      : type === "condition" ? { expression: "{{user}} != \"\"" }
+      : type === "code" ? { code: "return input.trim().toUpperCase();" }
+      : {},
     x: 60 + nodes.value.length * 30,
     y: 60 + nodes.value.length * 30,
   };
@@ -54,18 +75,23 @@ function addNode(type: WorkflowNodeType) {
     style: { border: `1px solid ${NODE_COLORS[type]}`, borderLeft: `4px solid ${NODE_COLORS[type]}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
   });
   selectedId.value = id;
+  selectedEdgeId.value = null;
 }
 
 function connectEdge(params: { source: string; target: string }) {
   if (params.source === params.target) return;
   if (edges.value.some((e) => e.source === params.source && e.target === params.target)) return;
-  edges.value.push({ id: uuidv4(), source: params.source, target: params.target, animated: true });
+  const edge: WorkflowEdge = { id: uuidv4(), source: params.source, target: params.target };
+  edges.value.push({ id: edge.id, source: edge.source, target: edge.target, animated: true, data: { edge } });
+  selectedEdgeId.value = edge.id;
+  selectedId.value = null;
 }
 
 function removeNode(id: string) {
   nodes.value = nodes.value.filter((n) => n.id !== id);
   edges.value = edges.value.filter((e) => e.source !== id && e.target !== id);
   if (selectedId.value === id) selectedId.value = null;
+  selectedEdgeId.value = null;
 }
 
 function updateToolArgs(obj: Record<string, unknown>) {
@@ -81,7 +107,10 @@ watch(() => selectedWf.value?.label, (l) => {
 function buildGraph(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
     nodes: nodes.value.map((n) => ({ ...(n.data.wf as WorkflowNode), id: n.id })),
-    edges: edges.value.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    edges: edges.value.map((e) => {
+      const wfEdge = (e.data as { edge?: WorkflowEdge } | undefined)?.edge;
+      return { id: e.id, source: e.source, target: e.target, label: wfEdge?.label };
+    }),
   };
 }
 
@@ -136,12 +165,15 @@ function importJson(ev: Event) {
         data: { label: wf.label, wf },
         style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
       }));
-      edges.value = g.edges.map((e) => ({ id: e.id || uuidv4(), source: e.source, target: e.target, animated: true }));
+      edges.value = g.edges.map((e) => {
+        const wfEdge: WorkflowEdge = { id: e.id || uuidv4(), source: e.source, target: e.target, label: e.label };
+        return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+      });
     } catch { log.value = ["❌ JSON 解析失败"]; }
   });
 }
 function clearAll() {
-  nodes.value = []; edges.value = []; selectedId.value = null; outputs.value = []; log.value = [];
+  nodes.value = []; edges.value = []; selectedId.value = null; selectedEdgeId.value = null; outputs.value = []; log.value = [];
 }
 </script>
 
@@ -167,21 +199,32 @@ function clearAll() {
           <button class="wf-palette__btn" @click="addNode('text')"><Plus :size="13" /> 文本</button>
           <button class="wf-palette__btn" @click="addNode('llm')"><Plus :size="13" /> LLM</button>
           <button class="wf-palette__btn" @click="addNode('tool')"><Plus :size="13" /> 工具</button>
+          <button class="wf-palette__btn" @click="addNode('condition')"><Plus :size="13" /> 条件</button>
+          <button class="wf-palette__btn" @click="addNode('code')"><Plus :size="13" /> 代码</button>
           <button class="wf-palette__btn" @click="addNode('end')"><Plus :size="13" /> 结束</button>
-          <div class="wf-palette__hint">外部输入在运行时用 <code>&#123;&#123;user&#125;&#125;</code> 引用；上游节点输出用 <code>&#123;&#123;节点id&#125;&#125;</code> 引用。</div>
+          <div class="wf-palette__hint">外部输入用 <code>&#123;&#123;user&#125;&#125;</code>；上游输出用 <code>&#123;&#123;节点id&#125;&#125;</code> 引用。条件节点出边点选后设 true/false 分支；未激活分支自动跳过。</div>
         </div>
 
         <!-- 画布 -->
         <div class="wf-canvas">
           <VueFlow v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }"
-            @connect="connectEdge" @node-click="(e: any) => selectedId = e.node.id"
-            @pane-click="selectedId = null">
+            @connect="connectEdge" @node-click="(e: any) => { selectedId = e.node.id; selectedEdgeId = null; }"
+            @edge-click="(e: any) => { selectedEdgeId = e.edge.id; selectedId = null; }"
+            @pane-click="selectedId = null; selectedEdgeId = null;">
           </VueFlow>
         </div>
 
         <!-- 配置面板 -->
         <div class="wf-inspector">
-          <template v-if="selectedWf">
+          <template v-if="selectedEdgeWf && selectedEdgeIsCondition">
+            <div class="wf-inspector__title">连线（条件分支）</div>
+            <label class="wf-field"><span>分支（true / false / 留空=始终）</span>
+              <input :value="selectedEdgeWf?.label || ''" placeholder="true 或 false"
+                @change="(e: any) => { if (selectedEdgeWf) selectedEdgeWf.label = e.target.value || undefined; }" />
+            </label>
+            <div class="wf-palette__hint">该边从条件节点出发：填 true 表示条件成立时走此分支，填 false 相反。留空=始终激活。</div>
+          </template>
+          <template v-else-if="selectedWf">
             <label class="wf-field"><span>名称</span><input v-model="selectedWf.label" /></label>
             <template v-if="selectedWf.type === 'llm'">
               <label class="wf-field"><span>提示词（支持 <code>&#123;&#123;id&#125;&#125;</code> 引用上游）</span><textarea v-model="selectedWf.config.prompt" rows="4" /></label>
@@ -194,12 +237,24 @@ function clearAll() {
                   @change="(e: any) => { try { updateToolArgs(JSON.parse(e.target.value)); } catch { /* ignore */ } }" />
               </div>
             </template>
+            <template v-else-if="selectedWf.type === 'condition'">
+              <div class="wf-field"><span>表达式（true/false 路由）</span>
+                <textarea v-model="selectedWf.config.expression" rows="5" />
+              </div>
+              <div class="wf-palette__hint">支持 <code>&#123;&#123;id&#125;&#125;</code> 或裸节点 id 引用上游输出；运算符 == != &gt; &lt; &gt;= &lt;= contains startsWith endsWith &amp;&amp; || ! （及 and or not）。例：<code>&#123;&#123;a&#125;&#125; contains "成功"</code>、<code>score &gt; 80</code>。</div>
+            </template>
+            <template v-else-if="selectedWf.type === 'code'">
+              <div class="wf-field"><span>JS 代码（入参 input/outputs，需 return）</span>
+                <textarea v-model="selectedWf.config.code" rows="6" spellcheck="false" />
+              </div>
+              <div class="wf-palette__hint">函数体写法：<code>return input.trim().toUpperCase();</code>；也可 <code>return outputs.a + outputs.b;</code>。对象自动 JSON 序列化。</div>
+            </template>
             <template v-else-if="selectedWf.type === 'text'">
               <label class="wf-field"><span>内容</span><textarea v-model="selectedWf.config.text" rows="4" /></label>
             </template>
             <button class="wf-btn wf-btn--danger" @click="removeNode(selectedWf.id)"><Trash2 :size="13" /> 删除节点</button>
           </template>
-          <div v-else class="wf-inspector__empty">点击节点编辑配置<br />拖拽连线连接上下游</div>
+          <div v-else class="wf-inspector__empty">点击节点/连线编辑配置<br />拖拽连线连接上下游</div>
         </div>
       </div>
 
@@ -242,6 +297,7 @@ function clearAll() {
 .wf-canvas { flex: 1; min-width: 0; }
 .wf-inspector { width: 260px; padding: 10px; border-left: 1px solid var(--border, #eee); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .wf-inspector__empty { font-size: 12px; color: var(--text-secondary, #888); text-align: center; margin-top: 40px; line-height: 1.8; }
+.wf-inspector__title { font-size: 12px; font-weight: 700; color: var(--text, #222); }
 .wf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary, #666); }
 .wf-field input, .wf-field textarea { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; font-family: inherit; }
 .wf-run { border-top: 1px solid var(--border, #eee); padding: 10px 14px; display: flex; gap: 16px; height: 160px; min-height: 0; }

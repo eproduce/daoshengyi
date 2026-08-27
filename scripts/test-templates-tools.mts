@@ -9,7 +9,7 @@ import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissio
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
-import { topoSort, renderTemplate, executeWorkflow } from "../src/utils/workflow-engine.ts";
+import { topoSort, renderTemplate, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
 
 let pass = 0;
 let fail = 0;
@@ -273,6 +273,93 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   const g2 = { nodes: [{ id: "t", type: "text", label: "T", config: { text: "{{user}}" }, x: 0, y: 0 }], edges: [] };
   const r2 = await executeWorkflow(g2, { user: "外部值" }, { llmCall: async () => "", toolCall: async () => "" });
   assert(r2.outputs[0].value === "外部值", "外部输入占位符替换", r2.outputs[0].value);
+}
+
+console.log("\n== Phase 3 工作流：条件表达式求值器 ==");
+{
+  const o = { a: "任务执行成功", b: "失败", n: "95", user: "hello" };
+  assert(evalCondition('{{a}} contains "成功"', o) === true, "占位符 contains 命中");
+  assert(evalCondition('a contains "成功"', o) === true, "裸节点id contains 命中");
+  assert(evalCondition('b == "失败"', o) === true, "== 字符串相等");
+  assert(evalCondition('b != "成功"', o) === true, "!= 不等");
+  assert(evalCondition('n > 90', o) === true, "数字大于");
+  assert(evalCondition('n >= 95 && n < 100', o) === true, "&& 组合");
+  assert(evalCondition('a startsWith "任务" && b endsWith "败"', o) === true, "startsWith/endsWith");
+  assert(evalCondition('!(n > 100)', o) === true, "! 取反");
+  assert(evalCondition('a contains "失败" or b contains "失败"', o) === true, "or 短路命中");
+  assert(evalCondition('a contains "失败"', o) === false, "未命中 false");
+  assert(evalCondition('unknown == ""', o) === true, "未定义引用为空串");
+  assert(evalCondition('a contains', o) === false, "残缺表达式安全返回 false");
+  assert(evalCondition('(n > 90) && (user == "hello")', o) === true, "括号分组 + 外部输入引用");
+  assert(evalCondition('user == "hello" and n > 90', o) === true, "and/or 关键字形式");
+}
+
+console.log("\n== Phase 3 工作流：代码节点 ==");
+{
+  assert(runCodeNode("return input.trim().toUpperCase();", "  ab  ", {}) === "AB", "代码节点大写");
+  assert(runCodeNode("return outputs.x + outputs.y;", "", { x: "1", y: "2" }) === "12", "代码节点读 outputs");
+  assert(runCodeNode("return { k: 1 };", "", {}) === JSON.stringify({ k: 1 }, null, 2), "对象 JSON 序列化");
+  assert(runCodeNode("return undefined;", "", {}) === "", "undefined 返回空串");
+  assert(runCodeNode("throw new Error('boom');", "", {}).includes("boom"), "代码异常被捕获为字符串");
+}
+
+console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过 ==");
+{
+  // text → condition（true）→ code A；condition（false）→ code B
+  const g = {
+    nodes: [
+      { id: "src", type: "text", label: "源", config: { text: "任务执行成功" }, x: 0, y: 0 },
+      { id: "cond", type: "condition", label: "判断", config: { expression: "src contains \"成功\"" }, x: 0, y: 100 },
+      { id: "ok", type: "code", label: "成功分支", config: { code: "return 'OK:' + input;" }, x: 0, y: 200 },
+      { id: "no", type: "code", label: "失败分支", config: { code: "return 'NO:' + input;" }, x: 0, y: 300 },
+      { id: "end", type: "end", label: "结束", config: {}, x: 0, y: 400 },
+    ],
+    edges: [
+      { id: "e1", source: "src", target: "cond" },
+      { id: "e2", source: "cond", target: "ok", label: "true" },
+      { id: "e3", source: "cond", target: "no", label: "false" },
+      { id: "e4", source: "ok", target: "end" },
+    ],
+  };
+  const res = await executeWorkflow(g, {}, { llmCall: async () => "", toolCall: async () => "" });
+  assert(res.log.some((l) => l.includes("🔀") && l.includes("true")), "条件节点走 true 分支", res.log.join("; "));
+  assert(res.log.some((l) => l.includes("成功分支") && l.includes("✅")), "true 分支节点执行");
+  assert(res.log.some((l) => l.includes("失败分支") && l.includes("跳过")), "false 分支节点跳过", res.log.join("; "));
+  assert(res.outputs.length === 1 && res.outputs[0].nodeId === "end", "终端输出为 end");
+  assert(res.outputs[0].value.includes("OK:"), "end 收到激活分支结果", res.outputs[0].value);
+  assert(!res.outputs[0].value.includes("NO:"), "未激活分支结果未流入 end");
+
+  // 无 label 边始终激活（向后兼容）
+  const g3 = {
+    nodes: [
+      { id: "a", type: "text", label: "A", config: { text: "x" }, x: 0, y: 0 },
+      { id: "c", type: "condition", label: "C", config: { expression: "false" }, x: 0, y: 100 },
+      { id: "b", type: "code", label: "B", config: { code: "return 'R:' + input;" }, x: 0, y: 200 },
+    ],
+    edges: [{ id: "e1", source: "a", target: "c" }, { id: "e2", source: "c", target: "b" }],
+  };
+  const r3 = await executeWorkflow(g3, {}, { llmCall: async () => "", toolCall: async () => "" });
+  assert(r3.log.some((l) => l.includes("B（b）") && l.includes("✅")), "无 label 条件边始终激活", r3.log.join("; "));
+
+  // 分支合流：true/false 两条边都连到 end → end 仍执行且只拿激活分支
+  const g4 = {
+    nodes: [
+      { id: "a", type: "text", label: "A", config: { text: "1" }, x: 0, y: 0 },
+      { id: "c", type: "condition", label: "C", config: { expression: "a == \"1\"" }, x: 0, y: 100 },
+      { id: "t", type: "code", label: "T", config: { code: "return 'T';" }, x: 0, y: 200 },
+      { id: "f", type: "code", label: "F", config: { code: "return 'F';" }, x: 0, y: 300 },
+      { id: "end", type: "end", label: "E", config: {}, x: 0, y: 400 },
+    ],
+    edges: [
+      { id: "e1", source: "a", target: "c" },
+      { id: "e2", source: "c", target: "t", label: "true" },
+      { id: "e3", source: "c", target: "f", label: "false" },
+      { id: "e4", source: "t", target: "end" },
+      { id: "e5", source: "f", target: "end" },
+    ],
+  };
+  const r4 = await executeWorkflow(g4, {}, { llmCall: async () => "", toolCall: async () => "" });
+  assert(r4.outputs[0].value.includes("T") && !r4.outputs[0].value.includes("F"), "合流 end 只收激活分支", r4.outputs[0].value);
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

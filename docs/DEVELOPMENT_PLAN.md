@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-27**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + Phase 5 系统托盘落地）
+> **最后更新：2026-08-27**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地）
 
 ---
 
@@ -175,7 +175,7 @@
 |---|------|------|
 | 知识库 RAG（Phase 3 部分） | ✅ | `kb_chunks` 表（含 `embedding BLOB`）+ `kb_chunks_fts`（FTS5 unigram）；Rust `kb_index`（扫描 md/txt/代码/PDF，`chunk_text` 分块 800 字符、P-A8 沙箱白名单、重建式；异步批量调用 `ollama_embed` 生成分块 embedding，Ollama 不可用时回退纯关键词）、`kb_search`（**混合检索 `kb_search_hybrid`：FTS5 关键词 bm25 在前 + 语义向量余弦补充召回**）、`kb_list`/`kb_delete`；前端内置工具 `kb_index`/`kb_search`/`kb_list` + 提示词 |
 | 系统托盘（Phase 5 部分） | ✅ | Cargo 开 `tray-icon` feature；`TrayIconBuilder`（**macOS 模板图 `tray-icon.png` + `icon_as_template`** 自动适配深浅菜单栏；左键切换窗口、菜单新建对话/退出） |
-| 可视化工作流编辑器（Phase 3） | ✅ | 依赖 `@vue-flow/core`；`workflow-engine.ts` 纯 DAG 引擎（topoSort 环检测 / renderTemplate `{{id}}` 占位 / executeWorkflow：text/llm/tool/end 节点，runtime 注入可测）；`WorkflowDialog.vue`（画布 + 节点面板 + 配置编辑 + 运行（LLM 走 chat_once / 工具走 callMcpTool）+ 日志/输出 + 导入导出 JSON）；入口=工具菜单「可视化工作流」。待做：条件分支/代码节点、工作流市场 |
+| 可视化工作流编辑器（Phase 3） | ✅ | 依赖 `@vue-flow/core`；`workflow-engine.ts` 纯 DAG 引擎（topoSort 环检测 / renderTemplate `{{id}}` 占位 / executeWorkflow，runtime 注入可测）；节点类型 text/llm/tool/**condition（条件分支：安全布尔表达式求值器 `evalCondition`，支持 `{{id}}`/裸节点id/字符串/数字 + `== != > < >= <= contains startsWith endsWith && \|\| !`（及 and/or/not），条件出边带 true/false 标签做分支路由，未激活分支节点跳过不执行、跳过死端不计入终端输出）**/**code（代码节点 `runCodeNode`：JS 函数体注入 input/outputs，异常捕获为文案，对象 JSON 序列化）**/end；`WorkflowDialog.vue`（画布 + 节点面板 + 配置编辑 + 点选连线编辑分支标签 + 运行（LLM 走 chat_once / 工具走 callMcpTool）+ 日志/输出 + 导入导出 JSON）；入口=工具菜单「可视化工作流」。待做：工作流市场 |
 | 全局快捷键（Phase 5） | ⬜ | 需 `@tauri-apps/plugin-global-shortcut` 依赖 + 能力授权 |
 
 ---
