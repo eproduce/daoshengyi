@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, markRaw } from "vue";
 import { VueFlow } from "@vue-flow/core";
+import WorkflowNodeView from "./WorkflowNodeView.vue";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import { v4 as uuidv4 } from "@/stores/uuid";
@@ -31,15 +32,11 @@ const loadedWfId = ref<number | null>(null);
 const runs = ref<{ id: number; wf_name: string; status: string; started_at: number; summary: string }[]>([]);
 const loadedWfName = ref("");
 
-const NODE_COLORS: Record<WorkflowNodeType, string> = {
-  text: "#4caf50",
-  llm: "#2196f3",
-  tool: "#ff9800",
-  condition: "#9c27b0",
-  code: "#00bcd4",
-  end: "#9e9e9e",
-};
 const TYPE_LABEL: Record<WorkflowNodeType, string> = { text: "文本", llm: "LLM", tool: "工具", condition: "条件", code: "代码", end: "结束" };
+
+// 自定义节点：显式渲染可拖拽连线 Handle（条件节点 T/F 双出点自动带分支标签）
+// vue-flow 1.x 的 NodeTypesObject 与 SFC 组件 props 类型不兼容，用宽松断言
+const nodeTypes = { wf: markRaw(WorkflowNodeView) } as any;
 
 // vue-flow 1.x 的 Node 类型泛型极深会触发 TS2589，selected 用 any 承载
 const selected = computed<any>(() => {
@@ -77,19 +74,25 @@ function addNode(type: WorkflowNodeType) {
     y: 60 + nodes.value.length * 30,
   };
   nodes.value.push({
-    id, type: "default", position: { x: wf.x, y: wf.y },
+    id, type: "wf", position: { x: wf.x, y: wf.y },
     data: { label: `${wf.label}`, wf },
-    style: { border: `1px solid ${NODE_COLORS[type]}`, borderLeft: `4px solid ${NODE_COLORS[type]}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
   });
   selectedId.value = id;
   selectedEdgeId.value = null;
 }
 
-function connectEdge(params: { source: string; target: string }) {
+function connectEdge(params: { source: string; target: string; sourceHandle?: string | null }) {
   if (params.source === params.target) return;
   if (edges.value.some((e) => e.source === params.source && e.target === params.target)) return;
-  const edge: WorkflowEdge = { id: uuidv4(), source: params.source, target: params.target };
-  edges.value.push({ id: edge.id, source: edge.source, target: edge.target, animated: true, data: { edge } });
+  // 从条件节点 T/F 连接点拖出时自动带分支标签，无需手动填写
+  const src = nodes.value.find((n) => n.id === params.source);
+  const isCond = (src?.data?.wf as WorkflowNode | undefined)?.type === "condition";
+  let label: string | undefined;
+  if (isCond && params.sourceHandle) {
+    label = params.sourceHandle === "true" ? "true" : params.sourceHandle === "false" ? "false" : undefined;
+  }
+  const edge: WorkflowEdge = { id: uuidv4(), source: params.source, target: params.target, ...(label ? { label } : {}) };
+  edges.value.push({ id: edge.id, source: edge.source, target: edge.target, animated: true, data: { edge }, ...(edge.label ? { label: edge.label } : {}) });
   selectedEdgeId.value = edge.id;
   selectedId.value = null;
 }
@@ -192,13 +195,12 @@ async function loadWorkflow(id: number) {
     if (!w) return;
     const g = JSON.parse(w.graph) as { nodes: WorkflowNode[]; edges: WorkflowEdge[] };
     nodes.value = (g.nodes || []).map((wf) => ({
-      id: wf.id, type: "default", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
+      id: wf.id, type: "wf", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
       data: { label: wf.label, wf },
-      style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
     }));
     edges.value = (g.edges || []).map((e) => {
       const wfEdge: WorkflowEdge = { id: e.id, source: e.source, target: e.target, label: e.label };
-      return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+      return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge }, ...(wfEdge.label ? { label: wfEdge.label } : {}) };
     });
     loadedWfId.value = w.id;
     loadedWfName.value = w.name;
@@ -243,13 +245,12 @@ function importJson(ev: Event) {
     try {
       const g = JSON.parse(t) as { nodes: WorkflowNode[]; edges: WorkflowEdge[] };
       nodes.value = g.nodes.map((wf) => ({
-        id: wf.id, type: "default", position: { x: wf.x ?? 0, y: wf.y ?? 0 },
+        id: wf.id, type: "wf", position: { x: wf.x ?? 0, y: wf.y ?? 0 },
         data: { label: wf.label, wf },
-        style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
       }));
       edges.value = g.edges.map((e) => {
         const wfEdge: WorkflowEdge = { id: e.id || uuidv4(), source: e.source, target: e.target, label: e.label };
-        return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+        return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge }, ...(wfEdge.label ? { label: wfEdge.label } : {}) };
       });
     } catch { log.value = ["❌ JSON 解析失败"]; }
   });
@@ -264,13 +265,12 @@ function loadTemplate(ev: Event) {
   if (!tpl) return;
   const g = materializeTemplate(tpl);
   nodes.value = g.nodes.map((wf) => ({
-    id: wf.id, type: "default", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
+    id: wf.id, type: "wf", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
     data: { label: wf.label, wf },
-    style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
   }));
   edges.value = g.edges.map((e) => {
     const wfEdge: WorkflowEdge = { id: e.id, source: e.source, target: e.target, label: e.label };
-    return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+    return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge }, ...(wfEdge.label ? { label: wfEdge.label } : {}) };
   });
   selectedId.value = null; selectedEdgeId.value = null;
   log.value = [`✅ 已载入模板「${tpl.name}」：${g.nodes.length} 节点 / ${g.edges.length} 连线`];
@@ -323,7 +323,7 @@ function loadTemplate(ev: Event) {
 
         <!-- 画布 -->
         <div class="wf-canvas">
-          <VueFlow v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }"
+          <VueFlow v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }" :node-types="nodeTypes" fit-view-on-init :min-zoom="0.1"
             @connect="connectEdge" @node-click="(e: any) => { selectedId = e.node.id; selectedEdgeId = null; }"
             @edge-click="(e: any) => { selectedEdgeId = e.edge.id; selectedId = null; }"
             @pane-click="selectedId = null; selectedEdgeId = null;">
