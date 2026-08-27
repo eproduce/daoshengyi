@@ -6,6 +6,7 @@
     "core:default",
     "shell:allow-open",
     "store:default",
-    "dialog:default"
+    "dialog:default",
+    "global-shortcut:default"
   ]
 }

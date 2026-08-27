@@ -44,6 +44,10 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
         <div class="about-links">
           <button class="about-link" @click="openHome"><Github :size="15" /> GitHub</button>
         </div>
+        <div class="about-shortcuts">
+          <div class="about-shortcut"><kbd>⌘⇧Space</kbd> 显示/隐藏主窗口</div>
+          <div class="about-shortcut"><kbd>⌘⇧K</kbd> 新建对话</div>
+        </div>
         <div class="about-copy">© 2026 道生一 · 道生一，一生二，二生三，三生万物</div>
         <button class="about-close" @click="emit('close')">关闭</button>
       </div>
@@ -91,6 +95,13 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
   background: var(--accent-bg); color: var(--accent-color); font-weight: 600;
 }
 .about-links { margin-bottom: 14px; }
+.about-shortcuts { margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+.about-shortcut { font-size: 12px; color: var(--text-secondary); display: flex; gap: 8px; align-items: center; justify-content: center; }
+.about-shortcut kbd {
+  font-family: inherit; font-size: 11px; padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--border-color); background: var(--bg-soft);
+  color: var(--text-primary); box-shadow: 0 1px 0 var(--border-color);
+}
 .about-link {
   border: 1px solid var(--border-color); border-radius: 14px;
   background: var(--bg-secondary); color: var(--text-secondary);

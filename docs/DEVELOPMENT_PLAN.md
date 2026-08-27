@@ -176,7 +176,7 @@
 | 知识库 RAG（Phase 3 部分） | ✅ | `kb_chunks` 表（含 `embedding BLOB`）+ `kb_chunks_fts`（FTS5 unigram）；Rust `kb_index`（扫描 md/txt/代码/PDF，`chunk_text` 分块 800 字符、P-A8 沙箱白名单、重建式；异步批量调用 `ollama_embed` 生成分块 embedding，Ollama 不可用时回退纯关键词）、`kb_search`（**混合检索 `kb_search_hybrid`：FTS5 关键词 bm25 在前 + 语义向量余弦补充召回**）、`kb_list`/`kb_delete`；前端内置工具 `kb_index`/`kb_search`/`kb_list` + 提示词 |
 | 系统托盘（Phase 5 部分） | ✅ | Cargo 开 `tray-icon` feature；`TrayIconBuilder`（**macOS 模板图 `tray-icon.png` + `icon_as_template`** 自动适配深浅菜单栏；左键切换窗口、菜单新建对话/退出） |
 | 可视化工作流编辑器（Phase 3） | ✅ | 依赖 `@vue-flow/core`；`workflow-engine.ts` 纯 DAG 引擎（topoSort 环检测 / renderTemplate `{{id}}` 占位 / executeWorkflow，runtime 注入可测）；节点类型 text/llm/tool/**condition（条件分支：安全布尔表达式求值器 `evalCondition`，支持 `{{id}}`/裸节点id/字符串/数字 + `== != > < >= <= contains startsWith endsWith && \|\| !`（及 and/or/not），条件出边带 true/false 标签做分支路由，未激活分支节点跳过不执行、跳过死端不计入终端输出）**/**code（代码节点 `runCodeNode`：JS 函数体注入 input/outputs，异常捕获为文案，对象 JSON 序列化）**/end；`WorkflowDialog.vue`（画布 + 节点面板 + 配置编辑 + 点选连线编辑分支标签 + 运行（LLM 走 chat_once / 工具走 callMcpTool）+ 日志/输出 + 导入导出 JSON）；入口=工具菜单「可视化工作流」。待做：工作流市场 |
-| 全局快捷键（Phase 5） | ⬜ | 需 `@tauri-apps/plugin-global-shortcut` 依赖 + 能力授权 |
+| 全局快捷键（Phase 5） | ✅ | `tauri-plugin-global-shortcut` 依赖 + capability `global-shortcut:default`；setup 注册 `CommandOrControl+Shift+Space`（显示/隐藏主窗口，快速召唤）与 `CommandOrControl+Shift+K`（新建对话，复用 `menu://action` 通道）；`OnceLock<Shortcut>` 供 handler 比对（register 返回 `()`，需 `Shortcut::from_str` 解析句柄）；注册失败（被占用）仅日志不阻塞启动；「关于」对话框展示快捷键；待做：设置页可自定义快捷键 |
 
 ---
 

@@ -3501,11 +3501,40 @@ fn build_app_menu<R: tauri::Runtime>(
     Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &tools_menu])
 }
 
+// 全局快捷键（Phase 5）：进程级静态，供 plugin handler 与 setup 注册共享比对。
+// - CommandOrControl+Shift+Space：显示/隐藏主窗口（快速召唤）
+// - CommandOrControl+Shift+K：新建对话（复用 menu://action 通道）
+static SHORTCUT_TOGGLE: std::sync::OnceLock<tauri_plugin_global_shortcut::Shortcut> = std::sync::OnceLock::new();
+static SHORTCUT_NEW_CHAT: std::sync::OnceLock<tauri_plugin_global_shortcut::Shortcut> = std::sync::OnceLock::new();
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if Some(shortcut) == SHORTCUT_TOGGLE.get() {
+                        if let Some(win) = app.get_webview_window("main") {
+                            if win.is_visible().unwrap_or(true) {
+                                let _ = win.hide();
+                            } else {
+                                let _ = win.show();
+                                let _ = win.unminimize();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    } else if Some(shortcut) == SHORTCUT_NEW_CHAT.get() {
+                        let _ = app.emit("menu://action", "new-chat");
+                    }
+                })
+                .build(),
+        )
         .menu(build_app_menu)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -3639,6 +3668,26 @@ pub fn run() {
                         }
                     })
                     .build(app)?;
+            }
+
+            // 全局快捷键（Phase 5）：注册后即使应用在后台/隐藏也能通过按键唤起。
+            // 注册失败（如被系统/其他应用占用）仅记录日志，不阻塞启动。
+            {
+                use std::str::FromStr;
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+                let gs = app.global_shortcut();
+                if let Ok(s) = Shortcut::from_str("CommandOrControl+Shift+Space") {
+                    let _ = SHORTCUT_TOGGLE.set(s);
+                    if gs.register(s).is_err() {
+                        eprintln!("[shortcut] 注册 CommandOrControl+Shift+Space 失败（可能被占用）");
+                    }
+                }
+                if let Ok(s) = Shortcut::from_str("CommandOrControl+Shift+K") {
+                    let _ = SHORTCUT_NEW_CHAT.set(s);
+                    if gs.register(s).is_err() {
+                        eprintln!("[shortcut] 注册 CommandOrControl+Shift+K 失败（可能被占用）");
+                    }
+                }
             }
 
             // devtools 默认不自动打开；需要调试时用环境变量开启：
