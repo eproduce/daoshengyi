@@ -2,7 +2,29 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-08-27**
+> **最后更新：2026-08-28**
+
+---
+
+## 2026-08-28
+
+### ✅ IM 网关落地（§3.10 ③，用户确认国内平台：钉钉 / 飞书 / 企业微信）
+- **背景**：用户确认 IM 平台「国内的吧，国外的访问不了」→ 选型钉钉 / 飞书 / 企微（方案 `docs/IM_GATEWAY.md`）
+- **框架**：新增 `src-tauri/src/im.rs`——`ImConfig`（platform/enabled/whitelist/trigger/system_prompt/max_context + 三平台凭据，存 `settings.im_config` 整体 AES-256-GCM 加密落盘）+ `ImAdapter` trait（async-trait：`poll_updates`/`send_message`）+ `ReplyGenerator`（宿主注入便于 mock）+ `ImGateway`（消息去重 HashSet / 白名单 chat_id / 触发前缀剥离 / 每会话最近 N 条上下文 / 同会话 20s 限流 / 调 LLM 生成回复并回发）+ `ImGatewayState`（running/日志/最近消息，`Arc<Mutex>` 前端轮询）
+- **适配器**：`WecomAdapter`（企微只推不接：`gettoken`→`message/send`，可测 token 解析）、`DingtalkAdapter`（stream 长连接：`oauth2/accessToken`→`gateway/connections/open`→wss 发 CONNECTED→收 PING 回 PONG→DATA AES-CBC 解密→`robot/oToMessages/batchSend`）、`FeishuAdapter`（长连接：`tenant_access_token`→`bot/v2/ws/endpoint`→wss 认证帧→事件解密→`im/v1/messages` 发送）；纯函数 `decrypt_dingtalk_data`/`decrypt_feishu_data`（AES-256-CBC，key 派生方式按平台文档，自加密-解密往返测试）
+- **命令/生命周期**：`im_start`（读设置 im_config→validate→build adapter→`tauri::async_runtime::spawn` 后台常驻，handle 存 static 供 abort）/`im_stop`（abort + 状态复位）/`im_status`（快照）；setup 里 `app.manage(im::ImGatewayState::shared())`
+- **回复生成**：`LlmReplyGen`（lib.rs）每次回复独立开 DB + SecretCipher 读活跃 profile → `api::chat_once` 非流式生成，IM 内置精简系统提示词
+- **前端**：`appSettings.ts` 加 `imConfig`；新组件 `ImGatewayPanel.vue`（平台选择 + 分平台凭据 + 白名单/触发前缀/上下文条数/系统提示词 + 保存/启动/停止 + 运行状态/日志/最近消息 3s 轮询）；`SettingsDialog` 新增「即时聊天」Tab
+- **测试**：Rust +5（gateway 去重 / 白名单过滤 / 触发前缀剥离 / 钉钉+飞书解密往返 / 企微 token 解析）→ cargo test 59；npm test 189 + vue-tsc + vite build 全过。**待做**：真实凭据实连验证（协议细节按官方文档实现，未在真实平台实测）
+- **踩坑**：①reqwest 0.12 **无 websocket feature**（错误提示列出全部可用 feature 亦无）——WebSocket 帧编解码需专用库，改用 `tokio-tungstenite 0.24`（rustls-tls-webpki-roots）+ `futures-util`（直接 use 需直接依赖）+ `async-trait`；②cipher 0.4.4 `encrypt_padded_mut::<Pkcs7>` 需第 2 参 msg_len；③`self.history.entry().or_default()` 的 &mut 借用贯穿到 `self.reply.reply()` 冲突 → 借用块内结束 + `get().cloned()` 取快照；④`ws.as_mut()` 顶部绑定与 PING 处理内再取冲突（E0499）→ 用块内 `let ws = self.ws.as_mut()?` 每次独立借用
+
+### ✅ 修复：本地创作/生图类请求误触发联网搜索
+- **背景**：用户「你能画一幅山水画吗」触发自动联网搜索（结果「维基'你'词条、手绘视频教程」无关）——创作类请求本地（HTML/CSS/SVG）即可完成，无需联网
+- **修复**：`search-gate.ts shouldSkipAutoSearch` 新增 `ART_CREATE` 规则（画/绘制/画画/作画/画一幅/创作/插画/海报/logo/banner/漫画/表情包/配图/示意图/流程图/思维导图/数据图表/做一张/来一张/生成…图）且无明确联网意图词（教程/怎么/找素材等）→ 跳过自动搜索；多模态视觉模型本地即可理解画面，无需联网教程
+- 测试：+6 项（画山水画/画 logo/创作插画/画流程图/做海报 跳过；「怎么画好山水画（想学教程）」仍搜索）→ npm test 189
+
+### 📋 Agent 多模式规划（§3.11 + ROADMAP 近期清单⑥）
+- 用户建议：Agent 应像自动化编码助手一样有多种运行模式（任务模式/办公模式等）。设计：**模式 = 系统提示词 + 工具集约束 + 行为风格 + 界面入口**，与角色 persona（我是谁）正交（怎么做）。6 模式：对话(默认)/任务(自动规划→执行→自测→汇报，复用 task-plan)/办公(文档导出规范+知识库 RAG)/研究(检索优先)/编码(语义索引+测试+git)/速答(禁工具低延迟)。Phase A 落地 modes-catalog + 注入 + 输入框切换 UI + 任务/办公模式打通框架；远期自定义模式/模式市场
 
 ---
 

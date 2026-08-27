@@ -508,8 +508,16 @@ console.log("\n== 自动联网搜索触发门槛（shouldSkipAutoSearch） ==");
   assert(shouldSkipAutoSearch("列出 /Users/wanghuan/op 目录下的项目") === true, "本地路径+目录词跳过");
   assert(shouldSkipAutoSearch("op目录") === true, "本地目录词跳过");
 
+  // 本地创作/生图类（用户场景）：多模态模型本地即可完成，跳过联网
+  assert(shouldSkipAutoSearch("你能画一幅山水画吗") === true, "画山水画跳过搜索（用户场景）");
+  assert(shouldSkipAutoSearch("帮我画一个 logo") === true, "画 logo 跳过搜索");
+  assert(shouldSkipAutoSearch("创作一幅插画") === true, "创作插画跳过搜索");
+  assert(shouldSkipAutoSearch("把这段代码画成流程图") === true, "画流程图跳过搜索");
+  assert(shouldSkipAutoSearch("做一张海报") === true, "做海报跳过搜索");
+
   // 明确联网意图：仍搜索
   assert(shouldSkipAutoSearch("把最近 AI 新闻整理成表格") === false, "含联网意图词(新闻)不跳过");
+  assert(shouldSkipAutoSearch("怎么画好一幅山水画（想学教程）") === false, "学画画教程需搜索");
   assert(shouldSkipAutoSearch("今天的天气怎么样") === false, "天气查询需搜索");
   assert(shouldSkipAutoSearch("2026 最新入学政策是什么") === false, "政策/最新需搜索");
   assert(shouldSkipAutoSearch("如何学习 Rust 编程") === false, "教程类需搜索");

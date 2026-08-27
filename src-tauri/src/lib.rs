@@ -5,6 +5,7 @@ mod search;
 mod mcp;
 mod mcp_server;
 mod settings;
+mod im;
 
 use tauri::{Emitter, Manager, State};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -1507,6 +1508,127 @@ fn workflow_run_add(
 #[tauri::command]
 fn workflow_runs(db: State<Database>, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
     db.wf_runs(limit.unwrap_or(10).clamp(1, 100))
+}
+
+// --- IM 网关（钉钉/飞书/企微，docs/IM_GATEWAY.md，2026-08-28 落地） ---
+
+/// IM 网关后台任务句柄（供停止）
+static IM_GATEWAY_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
+    std::sync::OnceLock::new();
+
+/// IM 回复生成器：读当前活跃模型配置，调 chat_once 生成回复
+struct LlmReplyGen {
+    app_dir: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl im::ReplyGenerator for LlmReplyGen {
+    async fn reply(&self, history: Vec<(String, String)>, _user_text: &str) -> Result<String, String> {
+        let db = db::Database::new(self.app_dir.clone()).map_err(|e| e.to_string())?;
+        let cipher = settings::SecretCipher::new(&self.app_dir)?;
+        let json = db.get_setting(SETTINGS_KEY)?.ok_or("未找到设置")?;
+        let mut st: settings::AppSettings =
+            serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
+        cipher.decrypt_settings(&mut st)?;
+        let profile = st
+            .profiles
+            .iter()
+            .find(|p| p.id == st.active_profile_id)
+            .or_else(|| st.profiles.first())
+            .ok_or("未配置模型（请先在设置中配置 API）")?;
+        let config = api::ApiConfig {
+            base_url: profile.base_url.clone(),
+            api_key: profile.api_key.clone(),
+            model: profile.model.clone(),
+            max_tokens: profile.max_tokens,
+            temperature: profile.temperature,
+            thinking_enabled: profile.thinking_enabled,
+            reasoning_effort: profile.reasoning_effort.clone(),
+            system_prompt: String::new(),
+            enable_web_search: false,
+        };
+        let sys = "你是「道生一」AI 助手，正在通过 IM（钉钉/飞书/企业微信）回答用户。\
+回答简洁、友好、直接给出结论；需要长内容时给要点；不要输出复杂排版。";
+        let mut msgs = vec![api::ChatMessage {
+            role: "system".into(),
+            content: serde_json::Value::String(sys.into()),
+        }];
+        for (role, text) in history {
+            let r = if role == "user" { "user" } else { "assistant" };
+            msgs.push(api::ChatMessage { role: r.into(), content: serde_json::Value::String(text) });
+        }
+        let r = api::chat_once(config, msgs).await?;
+        let content = r.content.trim().to_string();
+        if content.is_empty() {
+            Err("模型返回空回复".into())
+        } else {
+            Ok(content)
+        }
+    }
+}
+
+/// 启动 IM 网关：读设置 im_config → 构建平台适配器 → 后台常驻轮询/长连接
+#[tauri::command]
+async fn im_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+) -> Result<im::ImStatus, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = db::Database::new(app_dir.clone()).map_err(|e| e.to_string())?;
+    let cipher = settings::SecretCipher::new(&app_dir)?;
+    let json = db.get_setting(SETTINGS_KEY)?.ok_or("未找到设置")?;
+    let mut st: settings::AppSettings =
+        serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
+    cipher.decrypt_settings(&mut st)?;
+    let cfg: im::ImConfig = serde_json::from_value(st.im_config.clone()).unwrap_or_default();
+    if !cfg.enabled {
+        return Err("IM 网关未启用：请在设置「即时聊天」中启用并保存".into());
+    }
+    cfg.validate()?;
+    let gw_state = state.inner().clone();
+    {
+        let g = gw_state.lock().await;
+        if g.running {
+            return Ok(g.snapshot());
+        }
+    }
+    let adapter = im::build_adapter(&cfg)?;
+    let reply: std::sync::Arc<dyn im::ReplyGenerator> = std::sync::Arc::new(LlmReplyGen { app_dir });
+    let mut gateway = im::ImGateway::new(cfg, adapter, reply, gw_state.clone());
+    let handle = tauri::async_runtime::spawn(async move { gateway.run().await });
+    *IM_GATEWAY_HANDLE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some(handle);
+    let st = gw_state.lock().await.snapshot();
+    Ok(st)
+}
+
+/// 停止 IM 网关（abort 后台任务）
+#[tauri::command]
+async fn im_stop(
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+) -> Result<im::ImStatus, String> {
+    if let Some(h) = IM_GATEWAY_HANDLE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap()
+        .take()
+    {
+        h.abort();
+    }
+    let mut g = state.inner().lock().await;
+    g.running = false;
+    g.push_log("🛑 IM 网关已停止".into());
+    Ok(g.snapshot())
+}
+
+/// IM 网关状态（运行中 / 日志 / 最近消息）
+#[tauri::command]
+async fn im_status(
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+) -> Result<im::ImStatus, String> {
+    Ok(state.inner().lock().await.snapshot())
 }
 
 // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
@@ -3871,6 +3993,8 @@ pub fn run() {
                 clients: Mutex::new(std::collections::HashMap::new()),
             });
             app.manage(SleepGuard(std::sync::Mutex::new(None)));
+            // IM 网关共享状态（后台任务与前端 im_status 共用）
+            app.manage(im::ImGatewayState::shared());
 
             // 定时任务调度线程：每 30 秒检查一次到点任务并执行（/bin/sh -c，300 秒超时）。
             // 每次循环用独立数据库连接（SQLite WAL 支持多连接并发）。
@@ -4082,6 +4206,9 @@ pub fn run() {
             workflow_delete,
             workflow_run_add,
             workflow_runs,
+            im_start,
+            im_stop,
+            im_status,
             read_file,
             open_file,
             file_exists,

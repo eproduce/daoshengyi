@@ -99,6 +99,9 @@ pub struct AppSettings {
     /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
     #[serde(default = "default_shortcut_new_chat")]
     pub global_shortcut_new_chat: String,
+    /// IM 网关配置（钉钉/飞书/企微）。敏感字段（token/secret）随整个对象整体加密落盘
+    #[serde(default)]
+    pub im_config: serde_json::Value,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -149,6 +152,7 @@ impl Default for AppSettings {
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            im_config: serde_json::json!({}),
         }
     }
 }
@@ -211,6 +215,13 @@ impl SecretCipher {
         settings.wecom_webhook = self.encrypt(&settings.wecom_webhook)?;
         settings.dingtalk_webhook = self.encrypt(&settings.dingtalk_webhook)?;
         settings.dingtalk_secret = self.encrypt(&settings.dingtalk_secret)?;
+        // IM 网关配置整体加密（含 token/secret 敏感字段）
+        if let Some(obj) = settings.im_config.as_object() {
+            if !obj.is_empty() {
+                let plain = serde_json::to_string(&settings.im_config).unwrap_or_default();
+                settings.im_config = serde_json::Value::String(self.encrypt(&plain)?);
+            }
+        }
         Ok(())
     }
 
@@ -242,6 +253,14 @@ impl SecretCipher {
         if !settings.dingtalk_secret.is_empty() {
             if let Ok(plain) = self.decrypt(&settings.dingtalk_secret) {
                 settings.dingtalk_secret = plain;
+            }
+        }
+        // IM 网关配置整体解密（字符串=密文，对象=明文/旧数据）
+        if let Some(enc) = settings.im_config.as_str() {
+            if let Ok(plain) = self.decrypt(enc) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&plain) {
+                    settings.im_config = v;
+                }
             }
         }
         Ok(())
@@ -353,6 +372,7 @@ mod tests {
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            im_config: serde_json::json!({}),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -395,6 +415,7 @@ mod tests {
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            im_config: serde_json::json!({}),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

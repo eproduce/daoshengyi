@@ -54,6 +54,8 @@ export interface AppSettingsPayload {
   ragKb: string;
   /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
   fileEditConfirm: boolean;
+  /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
+  imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）
   globalShortcutToggle: string;
   /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
@@ -81,6 +83,7 @@ let cache: AppSettingsPayload = {
   ragEnabled: false,
   ragKb: "",
   fileEditConfirm: false,
+  imConfig: {},
   globalShortcutToggle: "CommandOrControl+Shift+Space",
   globalShortcutNewChat: "CommandOrControl+Shift+K",
 };
