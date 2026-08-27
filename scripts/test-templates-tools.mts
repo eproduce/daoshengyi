@@ -15,6 +15,7 @@ import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
 import { shouldSkipAutoSearch } from "../src/utils/search-gate.ts";
 import { LOCAL_FILE_RE } from "../src/utils/local-file-re.ts";
+import { MODES, getModeById, isToolAllowedByMode } from "../src/data/modes-catalog.ts";
 
 let pass = 0;
 let fail = 0;
@@ -549,6 +550,32 @@ console.log("\n== 本地文件路径链接化（LOCAL_FILE_RE 扩展名长优先
   assert("https://a.b.com/x/y.sh".match(LOCAL_FILE_RE) === null, "URL 路径不误判为本地文件");
   // 无扩展名的路径不匹配
   assert("/Users/wanghuan/folder".match(LOCAL_FILE_RE) === null, "无扩展名不匹配");
+}
+
+console.log("\n== Agent 多模式（modes-catalog） ==");
+{
+  // 6 种模式齐全
+  assert(MODES.length === 6, "共 6 种模式");
+  assert(MODES.some((m) => m.id === "task" && m.name === "任务"), "任务模式存在");
+  assert(MODES.some((m) => m.id === "office" && m.name === "办公"), "办公模式存在");
+  assert(MODES.some((m) => m.id === "quick" && m.name === "速答"), "速答模式存在");
+  // getModeById
+  assert(getModeById("task")?.name === "任务", "getModeById 命中");
+  assert(getModeById("nope") === undefined, "未知模式返回 undefined");
+  assert(getModeById(null) === undefined, "null 返回 undefined");
+  // 工具白名单：chat/task/office/research/coding 不限；quick 禁用全部
+  const chat = getModeById("chat")!;
+  const quick = getModeById("quick")!;
+  const task = getModeById("task")!;
+  assert(isToolAllowedByMode(undefined, "web_search") === true, "无模式=不限工具");
+  assert(isToolAllowedByMode(chat, "write_file") === true, "对话模式不限工具");
+  assert(isToolAllowedByMode(task, "plan_task") === true, "任务模式允许 plan_task");
+  assert(isToolAllowedByMode(quick, "write_file") === false, "速答模式禁 write_file");
+  assert(isToolAllowedByMode(quick, "web_search") === false, "速答模式禁 web_search");
+  // 各模式都有行为提示词（除对话默认）
+  for (const m of MODES.filter((x) => x.id !== "chat")) {
+    assert(m.prompt.length > 10, `${m.name} 模式有行为提示词`);
+  }
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

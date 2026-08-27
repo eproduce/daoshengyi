@@ -15,6 +15,7 @@ import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolC
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
+import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
@@ -29,6 +30,18 @@ async function dbg(msg: string): Promise<void> {
 // --- MCP 工具辅助 ---
 let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
 let mcpToolsRefreshing: Promise<void> | null = null;
+
+// --- Agent 多模式（§3.11）：当前模式 id。模块级定义（供模块级 callMcpTool 做工具白名单拦截），
+// store 内 setMode 同步写入 localStorage。模式=行为约束提示词 + 工具白名单（modes-catalog）。 ---
+const MODE_KEY = "daoshengyi_mode";
+function loadMode(): AgentModeId {
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    if (saved && getModeById(saved)) return saved as AgentModeId;
+  } catch { /* ignore */ }
+  return "chat";
+}
+const activeModeId = ref<AgentModeId>(loadMode());
 export async function refreshMcpTools() {
   // 单飞（single-flight）：并发调用只执行一次、共享同一结果。并行子代理/主代理
   // 可能同时触发刷新，避免两次 refresh 交错清空 mcpToolsCache 导致读到空缓存。
@@ -334,6 +347,11 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
+  }
+  // §3.11 Agent 多模式：模式工具白名单（如速答模式禁用全部工具）
+  const mode = getModeById(activeModeId.value);
+  if (!isToolAllowedByMode(mode, tool)) {
+    return `⛔ 当前「${mode?.name || "速答"}」模式不允许调用工具「${tool}」。请直接作答，或切换到其他模式后再调用工具。`;
   }
   // 内置工具（应用自带，无需 MCP 服务器）
   if (server === "app" || server === "builtin") {
@@ -1458,6 +1476,12 @@ export const useChatStore = defineStore("chat", () => {
     try { localStorage.setItem(PERSONA_KEY, id); } catch { /* ignore */ }
   }
 
+  // --- Agent 多模式（§3.11）：切换运行模式（对话/任务/办公/研究/编码/速答） ---
+  function setMode(id: AgentModeId) {
+    activeModeId.value = id;
+    try { localStorage.setItem(MODE_KEY, id); } catch { /* ignore */ }
+  }
+
   /// 辅助任务使用的模型配置：配置了 auxiliaryProfileId 则用对应 Profile，否则跟随主模型
   function getAuxConfig(): ApiConfig {
     const auxId = getSettings().auxiliaryProfileId;
@@ -2101,6 +2125,9 @@ export const useChatStore = defineStore("chat", () => {
       const persona = getPersona(activePersonaId.value);
       if (persona) spBase = `${persona.prompt}\n\n${spBase}`;
       let sp = withMathRule(withCurrentDate(spBase));
+      // §3.11 Agent 多模式：行为约束注入（人格管"我是谁"，模式管"怎么做"）
+      const mode = getModeById(activeModeId.value);
+      if (mode?.prompt) sp = `${sp}\n\n【当前模式：${mode.name}】\n${mode.prompt}`;
 
       // ---- 稳定上下文：进 system（跨消息不变，保证前缀可缓存） ----
       // 注入已启用的技能
@@ -2724,6 +2751,8 @@ export const useChatStore = defineStore("chat", () => {
     resolveEditConfirm,
     activePersonaId,
     setPersona,
+    activeModeId,
+    setMode,
     subagents,
     spawnSubagent,
     completeSubagent,

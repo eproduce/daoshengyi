@@ -26,6 +26,14 @@
 ### 📋 Agent 多模式规划（§3.11 + ROADMAP 近期清单⑥）
 - 用户建议：Agent 应像自动化编码助手一样有多种运行模式（任务模式/办公模式等）。设计：**模式 = 系统提示词 + 工具集约束 + 行为风格 + 界面入口**，与角色 persona（我是谁）正交（怎么做）。6 模式：对话(默认)/任务(自动规划→执行→自测→汇报，复用 task-plan)/办公(文档导出规范+知识库 RAG)/研究(检索优先)/编码(语义索引+测试+git)/速答(禁工具低延迟)。Phase A 落地 modes-catalog + 注入 + 输入框切换 UI + 任务/办公模式打通框架；远期自定义模式/模式市场
 
+### ✅ Agent 多模式 Phase A 落地（§3.11）
+- **数据**：新建 `src/data/modes-catalog.ts`——`AgentModeId`（chat/task/office/research/coding/quick）+ `AgentMode`（id/name/emoji/description/**prompt 行为提示词**/**allowedTools 工具白名单**）+ `getModeById`/`isToolAllowedByMode`（undefined=不限；`[]`=禁全部（速答）；数组=仅允许）+ 6 模式定义（对话无约束 / 任务引导 plan_task 自动拆解→执行→汇报 / 办公含文档导出规范（CSV/HTML 行列对齐、如实报文件数）+ kb_search 优先 / 研究检索优先来源可溯 / 编码 code_index/code_search+测试 / 速答极简禁工具）
+- **提示词注入**：`chat.ts sendMessage` persona 前缀后、skills 前注入「【当前模式：X】+ prompt」——人格管"我是谁"，模式管"怎么做"，二者互补
+- **工具约束**：`callMcpTool` 入口加模式白名单拦截（覆盖内置+MCP 所有工具），速答模式返回引导提示
+- **状态/持久化**：模块级 `activeModeId` ref（模块级供 callMcpTool 使用，初始从 localStorage 读 `daoshengyi_mode`）+ store `setMode` 写入 localStorage；store return 导出 activeModeId/setMode
+- **UI**：`ChatInput.vue` 新增「模式」pill 下拉（6 模式，emoji+名称+描述+✓ 高亮，点击外部关闭），放在联网按钮旁
+- 测试：+17 项（6 模式齐全 / getModeById 命中与未知 / 工具白名单 chat 不限 task 允许 plan_task quick 全禁 / 各模式有行为提示词）→ npm test 206；vue-tsc + vite build 全过。**待做**：Phase B（研究/编码深化、模式记忆）、Phase C（自定义模式/市场）
+
 ---
 
 ## 2026-08-27

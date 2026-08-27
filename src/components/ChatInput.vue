@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onUnmounted } from "vue";
+import { ref, computed, onMounted, nextTick, onUnmounted } from "vue";
 import type { ImageAttachment, FileAttachment, ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
@@ -9,6 +9,7 @@ import SkillManager from "./SkillManager.vue";
 import { Settings } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
+import { MODES } from "@/data/modes-catalog";
 
 const chatStore = useChatStore();
 
@@ -24,9 +25,13 @@ const textareaRef = ref<HTMLTextAreaElement>();
 const attachInputRef = ref<HTMLInputElement>();
 const showModelDropdown = ref(false);
 const showReasoningDropdown = ref(false);
+const showModeDropdown = ref(false);
 const modelDropdownRef = ref<HTMLDivElement>();
 const modelBtnRef = ref<HTMLDivElement>();
 const reasoningRef = ref<HTMLDivElement>();
+const modeDropdownRef = ref<HTMLDivElement>();
+// 当前 Agent 模式（§3.11：对话/任务/办公/研究/编码/速答）
+const currentMode = computed(() => MODES.find((m) => m.id === chatStore.activeModeId) || MODES[0]);
 
 defineProps<{ disabled: boolean; placeholder?: string }>();
 
@@ -169,6 +174,9 @@ function onDocClick(e: MouseEvent) {
   }
   if (showReasoningDropdown.value && reasoningRef.value && !reasoningRef.value.contains(t)) {
     showReasoningDropdown.value = false;
+  }
+  if (showModeDropdown.value && modeDropdownRef.value && !modeDropdownRef.value.contains(t)) {
+    showModeDropdown.value = false;
   }
 }
 
@@ -442,6 +450,21 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span>{{ chatStore.activeProfile?.enableWebSearch ? '联网' : '离线' }}</span>
         </button>
 
+        <!-- Agent 模式（§3.11：对话/任务/办公/研究/编码/速答） -->
+        <div class="ci-tool-group">
+          <button class="ci-pill" :class="{ active: chatStore.activeModeId !== 'chat' }" @click.stop="showModeDropdown = !showModeDropdown" title="切换运行模式">
+            <span>{{ currentMode.emoji }} {{ currentMode.name }}</span>
+            <svg class="ci-chev" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="showModeDropdown" ref="modeDropdownRef" class="ci-drop ci-drop-sm ci-drop-modes" @click.stop>
+            <div v-for="m in MODES" :key="m.id" class="ci-drop-item" :class="{ on: chatStore.activeModeId === m.id }" @click="chatStore.setMode(m.id); showModeDropdown = false">
+              <span class="ci-drop-name">{{ m.emoji }} {{ m.name }}</span>
+              <span class="ci-drop-desc">{{ m.description }}</span>
+              <span v-if="chatStore.activeModeId === m.id" class="ci-drop-check">✓</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 附件上传（图片与文件统一入口） -->
         <button class="ci-pill" @click="triggerAttach" title="上传图片或文件">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -540,6 +563,12 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-drop-item.on { background: rgba(99,102,241,.1); color: #a5b4fc; }
 .ci-drop-name { font-weight: 600; }
 .ci-drop-model { color: var(--text-muted); font-size: 10px; font-family: "SF Mono","Fira Code",monospace; }
+.ci-drop-desc { color: var(--text-muted, #888); font-size: 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-drop-modes { min-width: 230px; max-height: 320px; overflow-y: auto; }
+.ci-drop-modes .ci-drop-item { display: grid; grid-template-columns: 1fr auto; row-gap: 1px; }
+.ci-drop-modes .ci-drop-name { grid-column: 1; }
+.ci-drop-modes .ci-drop-desc { grid-column: 1; grid-row: 2; max-width: 190px; }
+.ci-drop-modes .ci-drop-check { grid-column: 2; grid-row: 1 / span 2; }
 .ci-drop-check { color: var(--accent-color); font-weight: 700; margin-left: auto; font-size: 11px; }
 .ci-drop-foot { padding: 7px 12px; border-top: 1px solid #333; font-size: 11px; color: #888; cursor: pointer; transition: background .1s; }
 .ci-drop-foot:hover { background: #252540; }

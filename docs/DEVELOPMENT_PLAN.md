@@ -237,10 +237,14 @@
 
 ### 分阶段
 
-- **Phase A（近期，本地可做）**：`modes-catalog` + 提示词/工具集注入 + 输入框模式切换 UI +
-  任务模式（复用 task-plan 自动推进）+ 办公模式（复用文档规范/RAG）——先落地 3 个模式打通框架。
+- **Phase A（✅ 已完成 2026-08-28）**：`src/data/modes-catalog.ts`（6 模式：对话/任务/办公/研究/
+  编码/速答，每模式含行为提示词 prompt + 工具白名单 allowedTools）+ 主提示词按模式注入
+  （sendMessage「【当前模式：X】+ prompt」，与 persona 互补）+ `callMcpTool` 模式工具白名单拦截
+  （速答模式禁用全部工具）+ 输入框「模式」pill 下拉切换（ChatInput，会话级 localStorage 持久化）+
+  任务模式复用 plan_task/plan_update（自动拆解→执行→汇报）、办公模式复用文档导出规范 + 知识库 RAG。
+  测试 npm +17。
 - **Phase B**：研究模式（检索优先）、编码模式深化（语义索引 + 自动测试循环）、模式记忆（记住用户
-  常用模式）。
+  常用模式）、模式图标高亮与快捷切换。
 - **Phase C（远期）**：自定义模式（用户可写自己的 mode）/ 模式市场 / 云端同步。
 
 ---
