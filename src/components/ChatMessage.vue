@@ -42,7 +42,7 @@ marked.setOptions({ breaks: true, gfm: true });
 // 支持 ~/ 开头与中文目录；排除 markdown 链接/括号内；
 // (?<![\w\/:]) 负向后顾排除 URL：https://... 等外链路径（如 /finance.sina.com.cn/.../x.sh）
 // 会被当作本地文件，导致引用地址显示成「文件不存在」。URL 由 marked gfm autolink 正常渲染。
-const LOCAL_FILE_RE = /(?<![\w\/:])((?:~\/|\/)[A-Za-z0-9_@.\/\-\u4e00-\u9fa5]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|c|cpp|h|hpp|html?|css|sql|db|zip|tar\.gz|7z))/gi;
+import { LOCAL_FILE_RE } from "@/utils/local-file-re";
 
 function linkifyLocalPaths(s: string): string {
   return s.replace(LOCAL_FILE_RE, (m) => {

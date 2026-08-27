@@ -14,6 +14,7 @@ import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-te
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
 import { shouldSkipAutoSearch } from "../src/utils/search-gate.ts";
+import { LOCAL_FILE_RE } from "../src/utils/local-file-re.ts";
 
 let pass = 0;
 let fail = 0;
@@ -504,6 +505,33 @@ console.log("\n== 自动联网搜索触发门槛（shouldSkipAutoSearch） ==");
   assert(shouldSkipAutoSearch("2026 最新入学政策是什么") === false, "政策/最新需搜索");
   assert(shouldSkipAutoSearch("如何学习 Rust 编程") === false, "教程类需搜索");
   assert(shouldSkipAutoSearch("") === true, "空消息跳过");
+}
+
+console.log("\n== 本地文件路径链接化（LOCAL_FILE_RE 扩展名长优先） ==");
+{
+  // 修复回归：.html 不能被 .h 截断（长扩展名优先）
+  const cases: [string, string][] = [
+    ["/Users/wanghuan/Desktop/社保参保证明_王欢_2026.05.html", "含点中文文件名 .html"],
+    ["/Users/wanghuan/Desktop/a.html", ".html"],
+    ["/Users/wanghuan/src/foo.h", ".h 头文件"],
+    ["/Users/wanghuan/src/main.cpp", ".cpp"],
+    ["/Users/wanghuan/src/main.c", ".c"],
+    ["/Users/wanghuan/src/main.hpp", ".hpp"],
+    ["/Users/wanghuan/out/data.csv", ".csv"],
+    ["/Users/wanghuan/doc/a.docx", ".docx"],
+    ["/Users/wanghuan/pic/x.jpg", ".jpg"],
+    ["/Users/wanghuan/Pictures/道生一截图/shot.png", "中文目录 .png"],
+    ["~/Downloads/报告.pdf", "~/ 开头 .pdf"],
+    ["/Users/wanghuan/ops/app.ts", ".ts"],
+  ];
+  for (const [p, label] of cases) {
+    const m = p.match(LOCAL_FILE_RE);
+    assert(!!m && m[0] === p, `${label} 完整匹配`, m ? m[0] : "NO MATCH");
+  }
+  // URL 不应被误识别为本地文件（负向后顾排除）
+  assert("https://a.b.com/x/y.sh".match(LOCAL_FILE_RE) === null, "URL 路径不误判为本地文件");
+  // 无扩展名的路径不匹配
+  assert("/Users/wanghuan/folder".match(LOCAL_FILE_RE) === null, "无扩展名不匹配");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
