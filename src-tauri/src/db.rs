@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -102,6 +102,17 @@ CREATE TABLE IF NOT EXISTS tool_audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON tool_audit(created_at);
+
+-- 会话内撤销：文件写/删操作前的快照（回滚用）。action: edit(编辑)/create(新建)/delete(删除)
+CREATE TABLE IF NOT EXISTS undo_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    path TEXT NOT NULL,
+    backup TEXT,
+    existed INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_undo_created ON undo_history(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id TEXT PRIMARY KEY,
@@ -1087,6 +1098,80 @@ impl Database {
         for r in rows { result.push(r.map_err(|e| e.to_string())?); }
         Ok(result)
     }
+
+    // --- 会话内撤销：文件写/删操作快照与回滚 ---
+
+    /// 记录一次可撤销的文件操作（写盘/删除前调用）。
+    /// action: edit（编辑覆盖，原内容在 backup）/ create（新建，原不存在）/ delete（删除，原内容在 backup）
+    pub fn record_undo(&self, action: &str, path: &str, backup: &str, existed: bool) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO undo_history (action, path, backup, existed, created_at) VALUES (?1,?2,?3,?4,?5)",
+            params![action, path, backup, if existed { 1 } else { 0 }, chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 列出可撤销操作（最近优先）
+    pub fn list_undo(&self, limit: i64) -> Result<Vec<UndoRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, action, path, backup, existed, created_at FROM undo_history ORDER BY id DESC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(UndoRow {
+                    id: row.get(0)?,
+                    action: row.get(1)?,
+                    path: row.get(2)?,
+                    backup: row.get(3)?,
+                    existed: row.get::<_, i64>(4)? != 0,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
+    /// 撤销指定操作：按 action 回滚文件系统状态，删除该 undo 记录。返回操作摘要。
+    pub fn undo_by_id(&self, id: i64) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let (action, path, backup): (String, String, String) = conn
+            .query_row(
+                "SELECT action, path, backup FROM undo_history WHERE id=?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("该操作不存在或已被撤销")?;
+        let p = std::path::Path::new(&path);
+        match action.as_str() {
+            "edit" => {
+                // 撤销编辑：恢复原内容
+                std::fs::write(&path, &backup).map_err(|e| format!("恢复文件失败: {}", e))?;
+            }
+            "create" => {
+                // 撤销新建：当时文件不存在，现在删掉它
+                if p.exists() {
+                    std::fs::remove_file(&path).map_err(|e| format!("删除文件失败: {}", e))?;
+                }
+            }
+            "delete" => {
+                // 撤销删除：恢复原内容
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&path, &backup).map_err(|e| format!("恢复文件失败: {}", e))?;
+            }
+            _ => return Err("未知操作类型".into()),
+        }
+        conn.execute("DELETE FROM undo_history WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(format!("已撤销（{}）: {}", action_label(&action), path))
+    }
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -1186,6 +1271,26 @@ pub struct ToolAuditRow {
     pub is_error: bool,
     pub duration_ms: i64,
     pub created_at: i64,
+}
+
+/// 会话内撤销记录（文件写/删操作前的快照）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UndoRow {
+    pub id: i64,
+    pub action: String, // edit / create / delete
+    pub path: String,
+    pub backup: String,
+    pub existed: bool,
+    pub created_at: i64,
+}
+
+fn action_label(action: &str) -> &str {
+    match action {
+        "edit" => "编辑",
+        "create" => "新建",
+        "delete" => "删除",
+        _ => action,
+    }
 }
 
 /// 知识库分块（Phase 3 RAG）
@@ -1486,6 +1591,72 @@ mod tests {
         db.delete_episodic("e1").unwrap();
         assert_eq!(db.list_episodic(10).unwrap().len(), 1);
         assert!(!db.episodic_covered().unwrap().contains(&"s1".to_string()), "删除后来源摘要不再被覆盖");
+        cleanup(&dir);
+    }
+
+    // --- 会话内撤销：文件写/删操作快照与回滚 ---
+
+    #[test]
+    fn undo_edit_restores_original_content() {
+        let (dir, db) = tmp_db();
+        let file = dir.join("undo.txt");
+        std::fs::write(&file, "版本一\n").unwrap();
+        let path = file.to_str().unwrap().to_string();
+
+        // 模拟编辑：写盘前记录 undo（backup=原内容），再写入新内容
+        db.record_undo("edit", &path, "版本一\n", true).unwrap();
+        std::fs::write(&file, "版本二（被 agent 改写）\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "版本二（被 agent 改写）\n");
+
+        // 撤销 → 恢复原内容
+        let msg = db.undo_by_id(db.list_undo(10).unwrap()[0].id).unwrap();
+        assert!(msg.contains("编辑"), "摘要含操作类型: {}", msg);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "版本一\n", "撤销后应恢复原内容");
+        assert!(db.list_undo(10).unwrap().is_empty(), "撤销后记录应删除");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn undo_create_deletes_new_file() {
+        let (dir, db) = tmp_db();
+        let file = dir.join("new.txt");
+        let path = file.to_str().unwrap().to_string();
+        assert!(!file.exists());
+
+        // 模拟新建：操作前不存在 → record create
+        db.record_undo("create", &path, "", false).unwrap();
+        std::fs::write(&file, "新建内容").unwrap();
+        assert!(file.exists());
+
+        // 撤销新建 → 删除文件（回到操作前不存在）
+        db.undo_by_id(db.list_undo(10).unwrap()[0].id).unwrap();
+        assert!(!file.exists(), "撤销新建后文件应删除");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn undo_delete_restores_file() {
+        let (dir, db) = tmp_db();
+        let file = dir.join("del.txt");
+        std::fs::write(&file, "要删除的内容").unwrap();
+        let path = file.to_str().unwrap().to_string();
+
+        // 模拟删除：删除前记录 undo（backup=原内容），再删除
+        db.record_undo("delete", &path, "要删除的内容", true).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert!(!file.exists());
+
+        // 撤销删除 → 恢复文件与内容
+        db.undo_by_id(db.list_undo(10).unwrap()[0].id).unwrap();
+        assert!(file.exists(), "撤销删除后文件应恢复");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "要删除的内容");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn undo_unknown_id_errors() {
+        let (dir, db) = tmp_db();
+        assert!(db.undo_by_id(9999).is_err(), "不存在的 undo id 应报错");
         cleanup(&dir);
     }
 }

@@ -239,11 +239,16 @@ fn sandbox_file_path(db: &Database, path: &str) -> Result<String, String> {
 fn write_file_agent(db: State<Database>, path: String, content: String) -> Result<String, String> {
     // P-A8 沙箱：主目录边界 + 路径白名单（配置时收紧）
     let expanded = sandbox_file_path(db.inner(), &path)?;
+    // 撤销快照：操作前状态（是否已存在 + 原内容）
+    let existed = std::path::Path::new(&expanded).exists();
+    let backup = if existed { std::fs::read_to_string(&expanded).unwrap_or_default() } else { String::new() };
     // 创建父目录（如 ~/Desktop、~/Documents 等）
     if let Some(parent) = std::path::Path::new(&expanded).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&expanded, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    // 写盘成功后记录撤销快照（编辑覆盖或新建）
+    let _ = db.record_undo(if existed { "edit" } else { "create" }, &expanded, &backup, existed);
     // 写入后校验文件真实存在，杜绝"谎报成功"
     if !std::path::Path::new(&expanded).exists() {
         return Err("写入校验失败：文件未生成，请重试".into());
@@ -437,11 +442,10 @@ struct EditResult {
     summary: String,
 }
 
-/// 对一个文件应用一系列精确编辑操作（replace/insert/delete），返回 unified diff。
-/// 支持跨文件重构：模型可对多个文件各调一次本命令，每次返回该文件改动 diff。
+/// 对一个文件应用一系列精确编辑操作（replace/insert/delete），返回 unified diff（纯函数，不写盘）。
 /// 安全边界：与 write_file_agent 一致，仅允许操作用户主目录内文件。
-#[tauri::command]
-fn apply_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditResult, String> {
+/// preview=true 只计算 diff 不写盘（供 diff 确认 UI）；命令层 apply_edits 负责写盘前记录撤销快照。
+fn compute_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditResult, String> {
     let expanded = sanitize_home_path(&path)?;
     let original = std::fs::read_to_string(&expanded)
         .map_err(|e| format!("读取文件失败（{}）: {}", expanded, e))?;
@@ -511,9 +515,26 @@ fn apply_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditRe
     Ok(EditResult { path: expanded, diff, new_len, summary })
 }
 
-/// 删除文件（仅允许删除用户主目录内的文件，不删除目录）。供 agent 的 delete_file 工具使用。
+/// 应用编辑（命令层）：调用 compute_edits；真正写盘（非 preview）前读取原内容记录撤销快照。
 #[tauri::command]
-fn delete_file_agent(path: String) -> Result<String, String> {
+fn apply_edits(db: State<Database>, path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditResult, String> {
+    let original = if preview {
+        String::new()
+    } else {
+        match sanitize_home_path(&path) {
+            Ok(p) => std::fs::read_to_string(&p).unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    };
+    let res = compute_edits(path.clone(), edits, preview)?;
+    if !preview {
+        let _ = db.record_undo("edit", &res.path, &original, true);
+    }
+    Ok(res)
+}
+
+/// 删除文件（纯函数，仅允许删除用户主目录内的文件，不删除目录）。供 delete_file_agent 命令调用。
+fn delete_file_impl(path: String) -> Result<String, String> {
     let expanded = sanitize_home_path(&path)?;
     let p = std::path::Path::new(&expanded);
     if !p.exists() {
@@ -524,6 +545,18 @@ fn delete_file_agent(path: String) -> Result<String, String> {
     }
     std::fs::remove_file(&expanded).map_err(|e| format!("删除文件失败: {}", e))?;
     Ok(format!("已删除文件：{}", expanded))
+}
+
+/// 删除文件（命令层）：删除前备份原内容记录撤销快照，再调用 delete_file_impl。
+#[tauri::command]
+fn delete_file_agent(db: State<Database>, path: String) -> Result<String, String> {
+    let (backup_path, backup) = match sanitize_home_path(&path) {
+        Ok(p) => (p.clone(), std::fs::read_to_string(&p).unwrap_or_default()),
+        Err(_) => (String::new(), String::new()),
+    };
+    let res = delete_file_impl(path.clone())?;
+    let _ = db.record_undo("delete", &backup_path, &backup, true);
+    Ok(res)
 }
 
 // --- 定时任务 ---
@@ -3422,6 +3455,18 @@ fn list_tool_audit(db: State<Database>, limit: i64) -> Result<Vec<db::ToolAuditR
     db.list_tool_audit(limit)
 }
 
+/// 列出可撤销的文件操作（最近优先）
+#[tauri::command]
+fn list_undo(db: State<Database>, limit: i64) -> Result<Vec<db::UndoRow>, String> {
+    db.list_undo(limit)
+}
+
+/// 撤销指定文件操作（按快照回滚文件系统状态）
+#[tauri::command]
+fn undo_by_id(db: State<Database>, id: i64) -> Result<String, String> {
+    db.undo_by_id(id)
+}
+
 fn extract_title(html: &str) -> String {
     let start = html.find("<title").unwrap_or(0);
     let end = html[start..].find("</title>").map(|i| start + i).unwrap_or(0);
@@ -3884,6 +3929,8 @@ pub fn run() {
             mcp_call_tool,
             mcp_list_tools,
             list_tool_audit,
+            list_undo,
+            undo_by_id,
             fetch_community_plugins,
             fetch_remote_plugin_endpoint,
         ])
@@ -3906,7 +3953,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_edits, chunk_text, delete_file_agent, detect_test_framework, diff_lines,
+        chunk_text, compute_edits, delete_file_impl, detect_test_framework, diff_lines,
         embed_model_installed, extract_redirected_files, format_unified_diff, nth_occurrence,
         parse_allowed_paths, parse_embed_response, path_within_any, run_shell_command,
         validate_git_operation, EditOp,
@@ -4112,7 +4159,7 @@ mod tests {
         let path = file.to_str().unwrap().to_string();
 
         // replace 默认第 1 次出现 → 只改第一处
-        let r = apply_edits(
+        let r = compute_edits(
             path.clone(),
             vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
             false,
@@ -4127,7 +4174,7 @@ mod tests {
         );
 
         // insert after 锚点
-        apply_edits(
+        compute_edits(
             path.clone(),
             vec![EditOp::Insert { anchor: "foo bar".into(), position: "after".into(), text: "\nINSERTED".into() }],
             false,
@@ -4141,7 +4188,7 @@ mod tests {
 
         // delete occurrence=2：写两份 hello，删除第 2 次出现后应只剩 1 处
         std::fs::write(&file, "hello\nhello\n").unwrap();
-        apply_edits(
+        compute_edits(
             path.clone(),
             vec![EditOp::Delete { old: "hello".into(), occurrence: Some(2) }],
             false,
@@ -4161,10 +4208,10 @@ mod tests {
         let path = file.to_str().unwrap().to_string();
 
         // 相对路径拒绝
-        assert!(apply_edits("relative.txt".into(), vec![], false).is_err());
+        assert!(compute_edits("relative.txt".into(), vec![], false).is_err());
         // 未匹配文本 → 报错且文件不变
         assert!(
-            apply_edits(
+            compute_edits(
                 path.clone(),
                 vec![EditOp::Replace { old: "不存在的文本".into(), new: "x".into(), occurrence: None }],
                 false,
@@ -4174,7 +4221,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "abc\n");
         // 编辑后无变化 → 报错
         assert!(
-            apply_edits(
+            compute_edits(
                 path.clone(),
                 vec![EditOp::Replace { old: "abc".into(), new: "abc".into(), occurrence: None }],
                 false,
@@ -4193,7 +4240,7 @@ mod tests {
         std::fs::write(&file, "hello world\n").unwrap();
         let path = file.to_str().unwrap().to_string();
 
-        let r = apply_edits(
+        let r = compute_edits(
             path.clone(),
             vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
             true,
@@ -4205,7 +4252,7 @@ mod tests {
         // 文件内容未变
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world\n", "preview 不应写盘");
         // 随后真正应用（preview=false）→ 内容才变
-        apply_edits(path.clone(),
+        compute_edits(path.clone(),
             vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
             false).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello RUST\n");
@@ -4282,13 +4329,13 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let path = file.to_str().unwrap().to_string();
         // 相对路径拒绝
-        assert!(delete_file_agent("relative.txt".into()).is_err());
+        assert!(delete_file_impl("relative.txt".into()).is_err());
         // 删除文件成功
-        assert!(delete_file_agent(path.clone()).unwrap().contains("已删除"));
+        assert!(delete_file_impl(path.clone()).unwrap().contains("已删除"));
         assert!(!file.exists());
         // 删除目录拒绝
         std::fs::write(&file, "x").unwrap();
-        assert!(delete_file_agent(dir.to_str().unwrap().to_string()).is_err());
+        assert!(delete_file_impl(dir.to_str().unwrap().to_string()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

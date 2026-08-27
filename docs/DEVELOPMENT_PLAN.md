@@ -185,7 +185,7 @@
 ### 🟢 本地可立即开发（自包含、价值高，推荐优先）
 | # | 方向 | 复用基础 | 实现要点 |
 |---|------|---------|---------|
-| 1 | **会话内「撤销最近操作」** | `apply_edits`（preview）+ `tool_audit`（工具调用全记录） | 文件编辑/命令执行写盘前备份原文 → 一键回滚；操作回放面板（可筛选/导出） |
+| 1 | **会话内「撤销最近操作」** | ✅ | `apply_edits`（preview）+ `tool_audit`（工具调用全记录） | **已完成（2026-08-27）**：`undo_history` 表（action/path/backup/existed）+ `record_undo`（apply_edits 写盘前 / write_file_agent / delete_file_agent 自动快照）+ `undo_by_id`（edit 恢复内容 / create 删除新建 / delete 恢复文件，回滚后删记录）+ `list_undo`；命令 `apply_edits`/`delete_file_agent` 重构为纯函数+命令层（compute_edits/delete_file_impl）；前端 `UndoBubble` 右下角悬浮气泡显示最近可撤销操作一键回滚（写/删工具成功后 dispatch undo-changed 刷新）；测试 Rust +4 / 前端全绿。待做：操作回放面板（可筛选/导出） |
 | 2 | **项目语义索引 / 自然语言找代码**（P-A3 补全） | `ollama_embed` + `kb_chunks` embedding 基建 | 给项目代码建向量索引；「找处理登录的地方」式自然语言检索；符号跳转（定义/引用） |
 | 3 | **IM 网关（远程驱动 agent）** | `send_im`（已有只发不收）+ 设计方案 `docs/IM_GATEWAY.md` | Rust 长轮询网关 `ImAdapter` trait（poll_updates/send_message）+ `ImGateway`（去重/白名单/限流）；Telegram/钉钉/飞书；收到消息→执行工具→回结果 |
 | 4 | **知识库 RAG 自动注入** | `kb_search_hybrid` + 记忆注入通道 | 对话前自动检索相关分块注入上下文（像记忆注入），RAG 无感化 |

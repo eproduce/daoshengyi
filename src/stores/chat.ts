@@ -536,6 +536,11 @@ function extractSearchKeywords(text: string): string {
     .slice(0, 12);
   return cleaned || text.trim().slice(0, 12);
 }
+// 文件写/删操作成功后触发：通知 UndoBubble 刷新可撤销列表（会话内撤销）
+function notifyUndoChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("undo-changed"));
+}
+
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
   // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
@@ -782,6 +787,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!content) throw new Error("write_file 需要 content 参数");
       // 由应用自身写盘并校验真实存在，返回真实绝对路径
       const real = await invoke<string>("write_file_agent", { path, content });
+      notifyUndoChanged(); // 可撤销（编辑覆盖/新建）
       return real;
     }
     case "replace_string": {
@@ -804,6 +810,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
       const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
+      notifyUndoChanged(); // 可撤销（编辑）
       return res.summary;
     }
     case "insert_string": {
@@ -826,6 +833,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
       const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
+      notifyUndoChanged(); // 可撤销（编辑）
       return res.summary;
     }
     case "create_file": {
@@ -839,6 +847,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         return `⚠️ 文件已存在（${path}），为避免误覆盖未创建。若要修改请用 replace_string / insert_string 精确编辑，或先 delete_file 再重建。`;
       }
       const real = await invoke<string>("write_file_agent", { path, content });
+      notifyUndoChanged(); // 可撤销（新建）
       return real;
     }
     case "delete_file": {
@@ -850,7 +859,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         const ok = await requestEditConfirm({ kind: "delete", path, tool: "delete_file", args: { ...args } });
         if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
       }
-      return await invoke<string>("delete_file_agent", { path });
+      const del = await invoke<string>("delete_file_agent", { path });
+      notifyUndoChanged(); // 可撤销（删除）
+      return del;
     }
     case "plan_task": {
       // P-A5 Plan 模式：创建/替换当前任务计划（对话区顶部进度卡片实时更新）

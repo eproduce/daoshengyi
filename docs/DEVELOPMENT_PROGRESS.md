@@ -8,6 +8,11 @@
 
 ## 2026-08-27
 
+### ✅ 会话内撤销最近操作（§3.10 ①落地）
+- **后端**：db.rs 加 `undo_history` 表（action/path/backup/existed/created_at）+ `record_undo`/`list_undo`/`undo_by_id`（edit=恢复原内容、create=删除新建文件、delete=恢复被删文件，回滚后删记录）+ `UndoRow` 结构体；lib.rs `apply_edits` 重构为 `compute_edits` 纯函数 + 命令层（写盘前读原内容记录 undo），`delete_file_agent` 重构为 `delete_file_impl` + 命令层（删前备份记录 undo），`write_file_agent` 写前快照（存在→edit / 不存在→create）；新命令 `list_undo`/`undo_by_id` + 注册
+- **前端**：`callBuiltinTool` 文件写/删工具成功返回后 `dispatchEvent("undo-changed")`；新建 `UndoBubble.vue`（右下角悬浮气泡：显示最近一条「编辑/新建/删除 + 文件名」，点一键回滚，undo 后 notify 提示并刷新）；App.vue 挂载
+- **测试**：Rust 新增 4 项（undo_edit_restores / undo_create_deletes / undo_delete_restores / undo_unknown_id）→ cargo test 51；vue-tsc + vite build 全过。**待做**：操作回放面板（审计可视化）
+
 ### 📋 开发方向规划（近期路线写入计划与路线图）
 - 按「本地可立即开发（自包含、价值高）」整理近期路线：写入 **DEVELOPMENT_PLAN §3.10 近期开发方向** + **ROADMAP 近期落地清单**——🟢 ①会话内「撤销最近操作」（复用 apply_edits/tool_audit）②项目语义索引/自然语言找代码（复用 ollama_embed/kb_chunks，P-A3 补全）③IM 网关远程驱动（方案 docs/IM_GATEWAY.md 已备，补 send_im 只发不收）④知识库 RAG 自动注入 ⑤工作流持久化+运行历史；🟡 会话级权限记忆/审计可视化面板/移除外部委派；🔵 插件生态/跨设备同步/云端工作流市场为远期
 

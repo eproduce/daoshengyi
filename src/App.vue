@@ -9,6 +9,7 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import AboutDialog from "./components/AboutDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
 import DiffConfirmDialog from "./components/DiffConfirmDialog.vue";
+import UndoBubble from "./components/UndoBubble.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
@@ -260,6 +261,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
     <!-- P-A4 应用内 diff 确认（文件编辑需确认时弹出） -->
     <DiffConfirmDialog />
+
+    <!-- 会话内撤销气泡（最近文件操作可一键回滚） -->
+    <UndoBubble />
   </div>
 </template>
 
