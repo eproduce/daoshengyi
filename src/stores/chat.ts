@@ -256,7 +256,10 @@ function getMcpToolsPrompt(): string {
     "- **只有 write_file 真实返回的路径才可引用**：最终回复**必须原样引用**工具返回的真实绝对路径，禁止改写文件名、目录或编造路径。\n" +
     "- **若未真实调用并成功写入，禁止给出任何文件路径**，也不要声称「已写入」或「已导出」，可如实说明无法保存文件。\n" +
     "- **如实报告文件数量**：生成了几个文件就引用几个（每个都是 write_file 真实返回的路径）；**禁止声称「已生成 N 份 / 两个版本」除非确实写入了 N 个文件**。若确实写了多个文件（如 HTML 版 + CSV 版），必须把每个文件的真实路径都列出来，不能只说一份。\n" +
-    "- **表格文档格式**：用户要「表格文档 / Excel / 表格 / CSV」时，用 write_file 生成 **CSV**（Excel/WPS 可直接打开）或 **HTML 表格**（浏览器打开可打印），并在回复中说明文件格式；当前无法直接生成二进制 .xlsx/.docx，**不要假装生成了 Excel/Word 文件**，如实说明已生成 CSV/HTML 及打开方式。\n" +
+    "- **表格文档格式（排版必须正确）**：用户要「表格文档 / Excel / 表格 / CSV」时，用 write_file 生成 **CSV**（Excel/WPS 可直接打开，行列最稳）或 **HTML 表格**（浏览器打开可打印），并在回复中说明文件格式。\n" +
+    "- **HTML 表格必须行列对齐**：每一行 `<tr>` 内的单元格数量必须与表头**完全一致**（表头 5 列则每行都恰好 5 个 `<td>`/`<th>`），**禁止行内单元格数不齐**（浏览器会错位显示、排版错乱）；需要跨列/跨行时用 `colspan`/`rowspan` 显式声明并保持总列数不变。最小结构示例：`<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><thead><tr><th>列1</th><th>列2</th></tr></thead><tbody><tr><td>值</td><td>值</td></tr></tbody></table>`。\n" +
+    "- **CSV 单元格规范**：含逗号、换行或中文标点的单元格用双引号包裹（如 `\"某,单位\"`），每行列数一致；文件用 UTF-8 编码。\n" +
+    "- 当前无法直接生成二进制 .xlsx/.docx，**不要假装生成了 Excel/Word 文件**，如实说明已生成 CSV/HTML 及打开方式。\n" +
     "- 禁止使用社区 filesystem MCP 服务器的写入类工具（write_file / write_text_file 等）。";
   const pending = pendingServersPrompt();
 
