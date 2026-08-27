@@ -8,6 +8,7 @@ import ChatInput from "./components/ChatInput.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AboutDialog from "./components/AboutDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
+import DiffConfirmDialog from "./components/DiffConfirmDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
@@ -256,6 +257,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
     <!-- 可视化工作流（Phase 3） -->
     <WorkflowDialog v-if="ui.workflowOpen" @close="ui.closeWorkflow()" />
+
+    <!-- P-A4 应用内 diff 确认（文件编辑需确认时弹出） -->
+    <DiffConfirmDialog />
   </div>
 </template>
 

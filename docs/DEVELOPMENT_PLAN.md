@@ -87,25 +87,25 @@
 
 ### 3.2 Phase 1 — 记忆内核增强（数据层，🟢）
 
-> **状态：1.1 / 1.2 / 1.3 / 1.5 已完成（2026-08-26 核对）；1.4 待做**
+> **状态：1.1 / 1.2 / 1.3 / 1.4 / 1.5 全部完成（2026-08-27 核对）**
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
 | 1.1 | 事实去重与合并 | ✅ | `save_fact` 前字符集 Jaccard 相似度（>0.62 + 长度比惩罚）检测近似重复 → 合并：累加 importance（上限 10）、文本取更长、复用原 id；`mcp_server` memory_save 与前端 extractFacts 均反馈合并状态 |
 | 1.2 | 记忆衰减与遗忘调度 | ✅ | 新增 `maintain_facts`：>45 天未访问非 preference 的 importance 降 1（最低 1）；importance≤2 且 60 天未访问的删除；清理孤儿 FTS 行。lib.rs 后台线程启动即跑 + 每 6 小时检查；`prune_facts` 命令复用 |
 | 1.3 | FTS5 全文索引 | ✅ | `memory_facts_fts` FTS5 虚拟表（rowid 关联）；中文 unigram 分词（`cjk_terms`）+ 英文小写词；`search_facts` 改为 FTS5 bm25 × importance × recency 加权 + LIKE 兜底；`Database::new` 对旧库幂等回填索引；save/delete 同步维护 |
-| 1.4 | 记忆分层 | ⬜ | episodic（会话摘要）+ semantic（事实）双库明确；跨会话摘要汇总 |
+| 1.4 | 记忆分层 | ✅ | episodic（会话摘要）+ semantic（事实）双库明确 + **跨会话主题汇总（episodic 聚合层）**：`memory_episodic` 表（title/summary/source_summary_ids）+ `aggregateEpisodic`（LLM 提炼跨会话反复出现的主题，已汇总摘要记入来源避免重复）+ MemoryPanel「跨会话汇总」按钮与主题列表 |
 | 1.5 | 用户画像沉淀 | ✅ | `getUserProfile()` 聚合 preference+高重要度身份/环境信息，每次对话稳定注入；MemoryPanel 用户画像高亮区块 |
 
 ### 3.3 Phase 2 — 检索与注入（Agent 侧，🟡）
 
-> **状态：2.1 ✅（含 Ollama 本地 embedding，P-A6）、2.4 ✅（2026-08-25）；2.2 加权已做、注入条数/token 剪裁与来源标注待做；2.3 重要性门槛已做、触发优化待做**
+> **状态：2.1 ✅（含 Ollama 本地 embedding，P-A6）、2.4 ✅（2026-08-25）；2.2 ✅（2026-08-27 来源标注 + 条数/token 剪裁）；2.3 ✅（2026-08-27 触发门槛）**
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
 | 2.1 | 混合检索 | ✅ | FTS5 关键词（1.3）+ 意图关键词扩展（LLM 提取核心词，空结果时重试）+ **Ollama 本地 embedding 语义向量（P-A6：`ollama_embed` + `search_by_embedding` 余弦）** |
-| 2.2 | 排序与剪裁 | 🟡 | search_facts 已按 bm25×importance×recency 加权（Phase 1）；注入条数/token 剪裁、来源标注待做 |
-| 2.3 | 写入策略优化 | ⬜ | 对话结束异步提取（已有）；触发优化：重要性门槛、失败静默、避免低价值事实堆积 |
+| 2.2 | 排序与剪裁 | ✅ | search_facts 按 bm25×importance×recency 加权 + **注入条数（memoryRecallLimit）/token 剪裁 + 来源标注（formatMemoriesBlock）** |
+| 2.3 | 写入策略优化 | ✅ | 对话结束异步提取 + **重要性门槛（<3 不存）+ 触发门槛（shouldExtractMessages：对话过短/内容过少跳过提取）+ 失败静默** |
 | 2.4 | 主动记忆工具 | ✅ | `memory_save` / `memory_recall` / `memory_forget` 内置工具（app）+ 提示词「长期记忆使用要点」区块；memory_save 自动走去重合并；memory_recall 走 FTS5 检索；memory_forget 按关键词删除 |
 
 ### 3.4 Phase 3 — 记忆 UI 与管理（🔵）
@@ -142,7 +142,7 @@
 | P-A1 | **Git 集成** | ✅ | 🟢 | 无 | `git_operation` 命令（git CLI 子进程，零新依赖）+ 内置 `git` 工具；白名单子命令 + 拒绝危险参数（validate_git_operation 纯函数 + 测试）；status/diff/log/branch/add/commit/pull/push/checkout |
 | P-A2 | **验证循环** | ✅ | 🟢 | `/run`（已有） | `run_tests` 命令（自动检测 package.json→npm test / Cargo.toml→cargo test / pyproject→pytest，可显式覆盖）+ 前端 `run_tests` 工具返回结构化结果（框架/命令/通过或失败/失败项摘要）；提示词「验证循环」门禁：改代码必跑测试、失败必修复直至通过 |
 | P-A3 | **代码库索引/理解** | 🟡 | 🟢 | list_dir（已有） | ✅ 已做：`analyze_project` 命令（技术栈识别 Rust/TS/Python/Vue、manifest 包名+scripts、源码按扩展名统计、顶层结构跳过 node_modules/.git/target）+ 前端工具；⬜ 待做：语义索引/「自然语言找代码」/符号跳转 |
-| P-A4 | **多文件编辑 + diff** | ✅ | 🟢 | P-A3 | `apply_edits` 命令（replace/insert/delete 三原语 + occurrence 定位 + 主目录安全边界）+ 行级 LCS **unified diff** 返回（@@ 头 + 3 行上下文）；前端内置工具 replace_string / insert_string / create_file / delete_file（精确编辑、避免整文件覆盖误伤，`create_file` 防误覆盖、`delete_file_agent` 仅删主目录文件）；diff 在工具结果卡片展示、提示词要求编辑后回复说明改动；跨文件重构 = 对多文件连续精确编辑。待做：应用内 diff「确认后应用」UI（并入 P-A7 权限矩阵审批） |
+| P-A4 | **多文件编辑 + diff** | ✅ | 🟢 | P-A3 | `apply_edits` 命令（replace/insert/delete 三原语 + occurrence 定位 + 主目录安全边界 + **preview 参数：只算 diff 不写盘**）+ 行级 LCS **unified diff** 返回；前端内置工具 replace_string / insert_string / create_file / delete_file；**应用内 diff「确认后应用」UI（2026-08-27）**：设置「文件编辑需确认」开启后，编辑/删除类工具先调 apply_edits(preview=true) 拿 diff → `DiffConfirmDialog` 弹窗展示（diff 高亮 + 路径 + 应用/拒绝，点停止自动拒绝）→ 确认后才写盘；`create_file` 防误覆盖、`delete_file_agent` 仅删主目录文件 |
 | P-A5 | **任务规划增强（Plan 模式）** | ✅ | 🟢 | 无 | 内置 `plan_task`（创建/替换计划：标题+有序子步骤）+ `plan_update`（逐步标记 doing/done/failed）；对话区顶部实时进度卡片（进度条+步骤状态徽标+完成计数，可手动关闭）；与工具循环结合 Plan→Act→Observe→修正（提示词「任务规划规范」引导复杂任务先分解、逐步更新、全部完成后再给最终答案）；新对话自动清空计划。简单任务不触发 |
 | P-A6 | **本地语义 embedding** | ✅ | 🟡 | 记忆（已有） | 接入 Ollama 本地 embedding（`nomic-embed-text`）：Rust `ollama_embed` 命令（/api/embed，服务未运行/模型未装时快速失败不自动下载）；前端 `generateEmbedding` 对 DeepSeek（无 embeddings 端点）主模型改用本地 Ollama 补语义，向量存 `set_fact_embedding` + `search_by_embedding` 余弦检索；未部署 nomic-embed-text 时静默回退 FTS5 |
 | P-A7 | **权限矩阵（工具级）** | ✅ | 🟡 | approval_mode（已有） | AppSettings 加 `disabledTools`/`allowedPaths`；前端 `isToolDisabled`/`isPathAllowed` 纯函数拦截（callMcpTool/callBuiltinTool 双入口）；设置「权限」tab 配置禁用工具 + 路径白名单（每行一个，@change 即时保存） |

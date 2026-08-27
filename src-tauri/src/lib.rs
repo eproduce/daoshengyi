@@ -441,7 +441,7 @@ struct EditResult {
 /// 支持跨文件重构：模型可对多个文件各调一次本命令，每次返回该文件改动 diff。
 /// 安全边界：与 write_file_agent 一致，仅允许操作用户主目录内文件。
 #[tauri::command]
-fn apply_edits(path: String, edits: Vec<EditOp>) -> Result<EditResult, String> {
+fn apply_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditResult, String> {
     let expanded = sanitize_home_path(&path)?;
     let original = std::fs::read_to_string(&expanded)
         .map_err(|e| format!("读取文件失败（{}）: {}", expanded, e))?;
@@ -487,17 +487,27 @@ fn apply_edits(path: String, edits: Vec<EditOp>) -> Result<EditResult, String> {
     if content == original {
         return Err("编辑未产生任何改动（请检查要替换/删除的文本是否与文件内容匹配）".into());
     }
-    // 写盘 + 校验
-    if let Some(parent) = std::path::Path::new(&expanded).parent() {
-        let _ = std::fs::create_dir_all(parent);
+    // P-A4 应用内 diff 确认：preview=true 只计算并返回 diff，不写盘（供前端展示确认）。
+    if !preview {
+        // 写盘 + 校验
+        if let Some(parent) = std::path::Path::new(&expanded).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&expanded, &content).map_err(|e| format!("写入文件失败: {}", e))?;
     }
-    std::fs::write(&expanded, &content).map_err(|e| format!("写入文件失败: {}", e))?;
     let new_len = content.len();
     let diff = format_unified_diff(&original, &content);
-    let summary = format!(
-        "已对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节）：\n```diff\n{}```",
-        expanded, edits.len(), original.len(), new_len, diff
-    );
+    let summary = if preview {
+        format!(
+            "【预览】将对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节，未写盘）：\n```diff\n{}```",
+            expanded, edits.len(), original.len(), new_len, diff
+        )
+    } else {
+        format!(
+            "已对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节）：\n```diff\n{}```",
+            expanded, edits.len(), original.len(), new_len, diff
+        )
+    };
     Ok(EditResult { path: expanded, diff, new_len, summary })
 }
 
@@ -756,6 +766,20 @@ async fn chat_once(
     result
 }
 
+/// 已被前端「停止」取消的流式 request_id 集合：send_message 每收到一个 chunk 前检查，
+/// 命中则立即停止拉流/emit（否则前端虽移除了监听，Rust 仍在生成并消耗 token）。
+static CANCELLED_STREAMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+
+/// 取消指定 request_id 的流式生成（前端点「停止」时调用，实现立刻停止）。
+#[tauri::command]
+fn cancel_stream(request_id: String) {
+    CANCELLED_STREAMS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap()
+        .insert(request_id);
+}
+
 #[tauri::command]
 async fn send_message(
     app: tauri::AppHandle,
@@ -783,6 +807,18 @@ async fn send_message(
     let mut buf = String::new();
     let mut delta_count = 0usize;
     while let Some(chunk) = stream.next().await {
+        // 用户点「停止」：前端 cancel_stream 把 request_id 加入取消集合 → 下一个 chunk 到达即停
+        if CANCELLED_STREAMS
+            .get()
+            .map(|m| m.lock().unwrap().contains(&request_id))
+            .unwrap_or(false)
+        {
+            let cm = format!("[sse] request_id={} 已被用户取消，停止生成", request_id);
+            eprintln!("{}", cm);
+            append_log(&app, &cm);
+            let _ = app.emit("sse-done", &request_id);
+            return Ok(());
+        }
         match chunk {
             Ok(text) => {
                 buf.push_str(&text);
@@ -2917,6 +2953,36 @@ fn list_all_summaries(db: State<Database>, limit: i64) -> Result<Vec<db::Summary
     db.list_all_summaries(limit)
 }
 
+// --- 记忆分层 1.4：episodic 聚合层（跨会话主题汇总）命令 ---
+
+/// 列出跨会话主题条目（记忆管理面板展示）
+#[tauri::command]
+fn list_episodic(db: State<Database>, limit: i64) -> Result<Vec<db::EpisodicRow>, String> {
+    db.list_episodic(limit)
+}
+
+#[tauri::command]
+fn save_episodic_cmd(
+    db: State<Database>,
+    id: String,
+    title: String,
+    summary: String,
+    source_summary_ids: String,
+) -> Result<(), String> {
+    db.save_episodic(&id, &title, &summary, &source_summary_ids)
+}
+
+#[tauri::command]
+fn delete_episodic_cmd(db: State<Database>, id: String) -> Result<(), String> {
+    db.delete_episodic(&id)
+}
+
+/// 已参与跨会话汇总的会话摘要 id 列表（前端过滤未汇总的新摘要，避免重复汇总）
+#[tauri::command]
+fn episodic_covered(db: State<Database>) -> Result<Vec<String>, String> {
+    db.episodic_covered()
+}
+
 // --- 应用设置存取（配置 + 加密 API Key） ---
 
 const SETTINGS_KEY: &str = "app_settings";
@@ -3758,10 +3824,15 @@ pub fn run() {
             get_preferences,
             list_facts,
             list_all_summaries,
+            list_episodic,
+            save_episodic_cmd,
+            delete_episodic_cmd,
+            episodic_covered,
             maintain_facts,
             save_app_settings,
             load_app_settings,
             apply_global_shortcuts,
+            cancel_stream,
             list_models,
             touch_fact,
             delete_fact_cmd,
@@ -4044,6 +4115,7 @@ mod tests {
         let r = apply_edits(
             path.clone(),
             vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+            false,
         )
         .unwrap();
         assert!(r.diff.contains("+hello RUST"), "diff 应含新增行: {}", r.diff);
@@ -4058,6 +4130,7 @@ mod tests {
         apply_edits(
             path.clone(),
             vec![EditOp::Insert { anchor: "foo bar".into(), position: "after".into(), text: "\nINSERTED".into() }],
+            false,
         )
         .unwrap();
         assert!(
@@ -4071,6 +4144,7 @@ mod tests {
         apply_edits(
             path.clone(),
             vec![EditOp::Delete { old: "hello".into(), occurrence: Some(2) }],
+            false,
         )
         .unwrap();
         let content = std::fs::read_to_string(&file).unwrap();
@@ -4087,12 +4161,13 @@ mod tests {
         let path = file.to_str().unwrap().to_string();
 
         // 相对路径拒绝
-        assert!(apply_edits("relative.txt".into(), vec![]).is_err());
+        assert!(apply_edits("relative.txt".into(), vec![], false).is_err());
         // 未匹配文本 → 报错且文件不变
         assert!(
             apply_edits(
                 path.clone(),
-                vec![EditOp::Replace { old: "不存在的文本".into(), new: "x".into(), occurrence: None }]
+                vec![EditOp::Replace { old: "不存在的文本".into(), new: "x".into(), occurrence: None }],
+                false,
             )
             .is_err()
         );
@@ -4101,10 +4176,39 @@ mod tests {
         assert!(
             apply_edits(
                 path.clone(),
-                vec![EditOp::Replace { old: "abc".into(), new: "abc".into(), occurrence: None }]
+                vec![EditOp::Replace { old: "abc".into(), new: "abc".into(), occurrence: None }],
+                false,
             )
             .is_err()
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn apply_edits_preview_does_not_write() {
+        // P-A4 应用内 diff 确认：preview=true 只返回 diff 不写盘
+        let dir = edit_test_dir("preview");
+        let file = dir.join("p.txt");
+        std::fs::write(&file, "hello world\n").unwrap();
+        let path = file.to_str().unwrap().to_string();
+
+        let r = apply_edits(
+            path.clone(),
+            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+            true,
+        )
+        .unwrap();
+        // 返回 diff 且标记「预览/未写盘」
+        assert!(r.diff.contains("+hello RUST"), "diff 应含新增行: {}", r.diff);
+        assert!(r.summary.contains("预览") && r.summary.contains("未写盘"), "summary 应标注预览: {}", r.summary);
+        // 文件内容未变
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world\n", "preview 不应写盘");
+        // 随后真正应用（preview=false）→ 内容才变
+        apply_edits(path.clone(),
+            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+            false).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello RUST\n");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

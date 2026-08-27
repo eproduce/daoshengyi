@@ -5,7 +5,7 @@ import { getSettings, updateSettings } from "@/api/appSettings";
 import { useChatStore } from "@/stores/chat";
 import { useMemorySystem } from "@/stores/memory";
 import { pickForgetCandidates } from "@/utils/memory-format";
-import { Pencil, Trash2, RefreshCw, Sparkles, Brain, Search, BookOpen, History } from "lucide-vue-next";
+import { Pencil, Trash2, RefreshCw, Sparkles, Brain, Search, BookOpen, History, Layers, X } from "lucide-vue-next";
 
 interface FactRow {
   id: string; conversation_id?: string | null; fact: string; fact_type: string;
@@ -15,18 +15,24 @@ interface SummaryRow {
   id: string; conversation_id: string; summary: string;
   msg_range_start: number; msg_range_end: number; created_at: number;
 }
+interface EpisodicRow {
+  id: string; title: string; summary: string;
+  source_summary_ids: string; created_at: number; updated_at: number;
+}
 
 const FACT_TYPES = ["", "preference", "info", "decision", "todo"] as const;
 const TYPE_LABEL: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
 
 const facts = ref<FactRow[]>([]);
 const summaries = ref<SummaryRow[]>([]);
+const episodic = ref<EpisodicRow[]>([]);
 const filter = ref<string>("");
 const searchKw = ref("");
 const loading = ref(false);
 const error = ref("");
 const maintenanceMsg = ref("");
 const reviewMsg = ref("");
+const episodicMsg = ref("");
 const chatStore = useChatStore();
 const memorySystem = useMemorySystem();
 
@@ -36,6 +42,7 @@ async function load() {
   try {
     facts.value = await invoke<FactRow[]>("list_facts", { factType: filter.value, limit: 200 });
     summaries.value = await invoke<SummaryRow[]>("list_all_summaries", { limit: 30 });
+    episodic.value = await invoke<EpisodicRow[]>("list_episodic", { limit: 20 });
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -109,6 +116,22 @@ async function runReview() {
   await load();
 }
 
+// 记忆分层 1.4：跨会话主题汇总（episodic 聚合层）
+async function runAggregate() {
+  const config = chatStore.getAuxConfig();
+  if (!config?.baseUrl || !config?.apiKey) {
+    episodicMsg.value = "请先在 API 配置中填写地址和 Key（跨会话汇总需要调用模型）";
+    return;
+  }
+  episodicMsg.value = "汇总中…";
+  episodicMsg.value = await memorySystem.aggregateEpisodic(config);
+  await load();
+}
+async function deleteEpisodic(id: string) {
+  await invoke("delete_episodic_cmd", { id }).catch(() => {});
+  await load();
+}
+
 function fmtTime(ts?: number | null): string {
   if (!ts) return "—";
   const d = new Date(ts);
@@ -168,8 +191,12 @@ onMounted(load);
       <button class="memory-btn" @click="runReview" :disabled="!!reviewMsg && reviewMsg === '复习中…'">
         <Brain :size="14" /> 智能复习
       </button>
+      <button class="memory-btn" @click="runAggregate" :disabled="!!episodicMsg && episodicMsg === '汇总中…'">
+        <Layers :size="14" /> 跨会话汇总
+      </button>
       <span v-if="maintenanceMsg" class="memory-msg">{{ maintenanceMsg }}</span>
       <span v-if="reviewMsg" class="memory-msg">{{ reviewMsg }}</span>
+      <span v-if="episodicMsg" class="memory-msg">{{ episodicMsg }}</span>
       <span v-if="error" class="memory-error">{{ error }}</span>
     </div>
 
@@ -233,6 +260,21 @@ onMounted(load);
         <span class="memory-summary__text">{{ s.summary }}</span>
       </div>
     </div>
+
+    <!-- 记忆分层 1.4：episodic 聚合层（跨会话主题汇总） -->
+    <div class="memory-episodic">
+      <h4><Layers :size="14" /> 跨会话主题（{{ episodic.length }}）— episodic 聚合层</h4>
+      <p class="memory-episodic__hint">把多段会话摘要汇总成反复出现的主题/项目/持续关注点。点「跨会话汇总」用模型生成；语义层：事实=memory_facts、单会话摘要=memory_summaries、此处=跨会话聚合。</p>
+      <div v-if="episodic.length === 0" class="memory-episodic__empty">尚未生成跨会话主题。先让多个对话生成会话摘要，再点上方「跨会话汇总」。</div>
+      <div v-for="e in episodic" :key="e.id" class="memory-episodic__item">
+        <div class="memory-episodic__head">
+          <strong class="memory-episodic__title">{{ e.title }}</strong>
+          <span class="memory-episodic__meta">更新 {{ fmtTime(e.updated_at) }}</span>
+          <button class="memory-del" title="删除该主题" @click="deleteEpisodic(e.id)"><X :size="13" /></button>
+        </div>
+        <div class="memory-episodic__text">{{ e.summary }}</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -280,6 +322,15 @@ onMounted(load);
 .memory-summaries h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 8px; color: var(--text, #222); }
 .memory-summary { display: flex; gap: 8px; font-size: 12px; padding: 4px 0; color: var(--text-secondary, #666); }
 .memory-summary__time { white-space: nowrap; color: #999; font-size: 11px; padding-top: 1px; }
+.memory-episodic { border-top: 1px solid var(--border, #eee); padding-top: 10px; }
+.memory-episodic h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 4px; color: #6a1b9a; }
+.memory-episodic__hint { font-size: 11px; color: var(--text-secondary, #888); margin: 0 0 8px; line-height: 1.5; }
+.memory-episodic__empty { font-size: 12px; color: var(--text-secondary, #888); padding: 6px 0; }
+.memory-episodic__item { border: 1px solid #6a1b9a33; border-left: 3px solid #9c27b0; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #6a1b9a06; }
+.memory-episodic__head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.memory-episodic__title { font-size: 13px; color: #6a1b9a; }
+.memory-episodic__meta { font-size: 11px; color: #999; flex: 1; }
+.memory-episodic__text { font-size: 12px; color: var(--text-secondary, #555); line-height: 1.6; }
 .memory-config { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary, #666); padding: 6px 10px; border-radius: 8px; background: var(--bg-soft, #f5f5f5); }
 .memory-config__toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .memory-config__limit { display: inline-flex; align-items: center; gap: 6px; }

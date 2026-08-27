@@ -11,6 +11,8 @@ import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
 import { topoSort, renderTemplate, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
+import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
+import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
 
 let pass = 0;
 let fail = 0;
@@ -408,6 +410,77 @@ console.log("\n== Phase 3 工作流：内置模板库 ==");
   const m2 = materializeTemplate(t);
   const overlap = m.nodes.some((n) => m2.nodes.some((n2) => n2.id === n.id));
   assert(!overlap, "两次物化 id 互不冲突");
+}
+
+console.log("\n== 长期记忆 1.4：跨会话主题汇总（episodic 聚合层）纯函数 ==");
+{
+  const prompt = buildEpisodicPrompt([
+    { summary: "继续开发道生一，完成知识库语义向量" },
+    { summary: "道生一工作流新增条件分支" },
+    { summary: "用户聊了健身计划" },
+  ]);
+  assert(prompt.includes("继续开发道生一"), "提示词包含会话摘要");
+  assert(prompt.includes("JSON 数组"), "提示词要求 JSON 输出");
+
+  // 解析合法 JSON
+  const items = parseEpisodic('[{"title":"道生一项目","summary":"持续开发 AI 客户端"}]');
+  assert(items.length === 1 && items[0].title === "道生一项目", "解析合法 JSON");
+  assert(items[0].summary === "持续开发 AI 客户端", "解析 summary");
+
+  // 剥离代码块
+  const fenced = parseEpisodic('```json\n[{"title":"健身","summary":"每周跑步"}] \n```');
+  assert(fenced.length === 1 && fenced[0].title === "健身", "剥离代码块");
+
+  // 跳过非法项 + 截断标题长度
+  const mixed = parseEpisodic('[{"title":"合法主题","summary":"ok"},{"summary":"缺标题"},{"title":"缺摘要"},{"title":"这个标题实在是太长了超过十二个字","summary":"内容"}]');
+  assert(mixed.length === 2, "跳过非法项 + 截断长标题", JSON.stringify(mixed));
+  assert(mixed.find((x) => x.title.includes("太长"))?.title.length! <= 12, "标题截断到 12 字");
+
+  // 空/非法输入安全返回 []
+  assert(parseEpisodic("not json").length === 0, "非法 JSON 安全返回 []");
+  assert(parseEpisodic("").length === 0, "空输入返回 []");
+  assert(parseEpisodic("[1,2,3]").length === 0, "非对象数组项跳过");
+}
+
+console.log("\n== 长期记忆 2.3：写入触发门槛（shouldExtractMessages） ==");
+{
+  // 足够长且有实质内容的对话 → 提取
+  const longConv = [
+    { role: "user", content: "我喜欢简洁的回答风格" },
+    { role: "assistant", content: "好的，以后我尽量简洁。" },
+    { role: "user", content: "我在做道生一这个项目，用 Tauri 和 Vue。" },
+    { role: "assistant", content: "了解了，道生一是 AI Agent 桌面客户端。" },
+    { role: "user", content: "周末打算去杭州玩，帮我规划下行程。" },
+    { role: "assistant", content: "好的，杭州三日游推荐西湖、灵隐寺、西溪湿地。" },
+    { role: "user", content: "还有我想把项目推送到 GitHub。" },
+    { role: "assistant", content: "可以，git add 后 commit 再 push。" },
+  ];
+  assert(shouldExtractMessages(longConv) === true, "足够长且有内容的对话应提取");
+
+  // 消息太少 → 跳过
+  assert(shouldExtractMessages([{ role: "user", content: "你好" }]) === false, "单条消息跳过");
+  // 消息够但内容太短（寒暄）→ 跳过
+  const shortText = [
+    { role: "user", content: "你好" }, { role: "assistant", content: "你好" },
+    { role: "user", content: "在吗" }, { role: "assistant", content: "在的" },
+    { role: "user", content: "谢谢" }, { role: "assistant", content: "不客气" },
+    { role: "user", content: "好的" }, { role: "assistant", content: "嗯" },
+  ];
+  assert(shouldExtractMessages(shortText) === false, "内容过短的寒暄跳过");
+  assert(extractGateReason(shortText).includes("内容过少"), "诊断原因说明内容过少", extractGateReason(shortText));
+  // 自定义门槛
+  assert(shouldExtractMessages(shortText, { minMessages: 4, minChars: 10 }) === true, "放宽门槛后可提取");
+  // 工具/系统消息不参与正文统计（只有 user/assistant 字符串算）
+  const toolHeavy = [
+    { role: "user", content: "hi" },
+    { role: "tool", content: "{\"args\":{}}" },
+    { role: "assistant", content: "hi" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "hi" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "hi" },
+  ];
+  assert(shouldExtractMessages(toolHeavy) === false, "工具消息不算正文，仍判定内容过少");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

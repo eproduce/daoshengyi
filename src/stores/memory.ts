@@ -5,6 +5,8 @@ import { embeddingSource } from "@/utils/embed-provider";
 import { buildReviewPrompt, parseReviewActions } from "@/utils/memory-review";
 import { routeProfileId } from "@/utils/model-routing";
 import { formatMemoriesBlock } from "@/utils/memory-format";
+import { buildEpisodicPrompt, parseEpisodic } from "@/utils/memory-episodic";
+import { shouldExtractMessages, extractGateReason } from "@/utils/memory-extract";
 import type { ChatMessage } from "@/types";
 
 const SUMMARIZE_THRESHOLD = 20;
@@ -95,6 +97,12 @@ export function useMemorySystem() {
 
   // --- 事实提取（带质量门槛：只存跨会话有用的关键事实，排除过程性/一次性信息）---
   async function extractFacts(convId: string, messages: ChatMessage[], config: { baseUrl: string; apiKey: string; model: string }): Promise<FactRow[]> {
+    // 2.3 写入触发优化：对话过短/内容过少（纯寒暄、过程性问答）跳过提取，
+    // 避免每次对话都调 LLM 生成低价值事实导致记忆库堆积（失败静默，不阻塞主流程）
+    if (!shouldExtractMessages(messages)) {
+      extractGateReason(messages); // 诊断用（当前静默，不打印日志）
+      return [];
+    }
     const convText = messages.slice(-10).map(m => `[${m.role}]: ${m.content}`).join("\n\n");
     const prompt = `从以下对话中提取值得长期记住的关键事实。返回 JSON 数组，每项含 fact、type、importance 字段。
 type: preference(用户偏好)/info(信息)/decision(决策)/todo(待办)
@@ -263,7 +271,41 @@ ${convText}
     }
   }
 
-  return { maybeSummarize, extractFacts, retrieveMemories, getUserProfile, reviewMemories };
+  // --- 记忆分层 1.4：跨会话主题汇总（episodic 聚合层） ---
+  // 把最近的会话摘要（episodic 单会话层）交给 LLM 提炼跨会话反复出现的主题，
+  // 保存到 memory_episodic（聚合层）；已汇总的摘要 id 记入来源，避免重复汇总。
+  async function aggregateEpisodic(config: { baseUrl: string; apiKey: string; model: string }): Promise<string> {
+    try {
+      const summaries = await invoke<SummaryRow[]>("list_all_summaries", { limit: 60 }).catch(() => [] as SummaryRow[]);
+      if (summaries.length === 0) return "暂无会话摘要。对话达到一定长度会自动生成摘要，之后可在此跨会话汇总。";
+      const covered = await invoke<string[]>("episodic_covered").catch(() => [] as string[]);
+      const pending = summaries.filter((s) => !covered.includes(s.id));
+      if (pending.length < 2) {
+        return `没有新的可汇总摘要（已有 ${covered.length} 条被汇总覆盖，待汇总 ${pending.length} 条，至少需 2 条）。`;
+      }
+      const batch = pending.slice(0, 30);
+      const cfg = resolveTaskConfig("summarize", config);
+      const raw = await callLLM(cfg, buildEpisodicPrompt(batch));
+      const items = parseEpisodic(raw || "");
+      if (items.length === 0) {
+        return "跨会话汇总完成：未发现跨会话共同主题（这些摘要已标记为已汇总）。";
+      }
+      const sourceIds = JSON.stringify(batch.map((s) => s.id));
+      let saved = 0;
+      for (const it of items) {
+        const id = uuidv4();
+        await invoke("save_episodic_cmd", {
+          id, title: it.title, summary: it.summary, sourceSummaryIds: sourceIds,
+        }).catch(() => {});
+        saved++;
+      }
+      return `跨会话汇总完成：新增 ${saved} 个主题条目（覆盖 ${batch.length} 条会话摘要）。`;
+    } catch (e) {
+      return "跨会话汇总失败：" + (e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return { maybeSummarize, extractFacts, retrieveMemories, getUserProfile, reviewMemories, aggregateEpisodic };
 }
 
 // --- LLM 调用辅助 ---

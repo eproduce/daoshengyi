@@ -90,6 +90,8 @@ export interface SubagentRecord {
 // 停止时触发所有 waitStopSignal() 等待方立即 resolve，配合 Promise.race 提前结束。
 let stopRequested = false;
 let stopWaiters: (() => void)[] = [];
+/// 当前正在流式生成的 request_id（供停止时取消 Rust 端生成，实现「立刻停止」）
+let activeStreamRequestId: string | null = null;
 function requestStop() {
   stopRequested = true;
   const ws = stopWaiters;
@@ -113,6 +115,39 @@ class AgentStoppedError extends Error {
     super("任务已由用户停止");
     this.name = "AgentStoppedError";
   }
+}
+
+// --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
+// 开启「文件编辑需确认」设置后，replace_string/insert_string/delete_file 会先
+// 挂起等待 DiffConfirmDialog 的用户确认（Promise resolve 机制），避免 Agent 静默改文件。
+export interface EditConfirmRequest {
+  kind: "edit" | "delete";
+  path: string;
+  diff?: string; // edit：unified diff 预览
+  summary?: string; // edit：Rust 预览 summary
+  edits?: Record<string, unknown>[]; // edit：待应用的编辑操作（确认后回传）
+  tool: string;
+  args: Record<string, unknown>;
+}
+const editConfirm = ref<EditConfirmRequest | null>(null);
+let editConfirmResolver: ((ok: boolean) => void) | null = null;
+/** 触发一次文件编辑确认；返回 true=用户确认应用，false=用户拒绝。 */
+function requestEditConfirm(req: EditConfirmRequest): Promise<boolean> {
+  editConfirm.value = req;
+  return new Promise<boolean>((resolve) => {
+    const done = (ok: boolean) => {
+      editConfirm.value = null;
+      editConfirmResolver = null;
+      resolve(ok);
+    };
+    editConfirmResolver = done;
+    // 用户点「停止」时自动按拒绝处理，避免工具循环挂死在确认弹窗上
+    waitStopSignal().then(() => done(false));
+  });
+}
+/** 供 DiffConfirmDialog 调用：用户点「应用」/「拒绝」后结束挂起 */
+function resolveEditConfirm(ok: boolean) {
+  if (editConfirmResolver) editConfirmResolver(ok);
 }
 
 function getMcpToolsPrompt(): string {
@@ -752,7 +787,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const edits: Record<string, unknown>[] = [
         { op: "replace", old: oldText, new: newText, ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}) },
       ];
-      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits });
+      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘
+      if (getSettings().fileEditConfirm) {
+        const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
+        const ok = await requestEditConfirm({
+          kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
+          tool: "replace_string", args: { ...args },
+        });
+        if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+      }
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
       return res.summary;
     }
     case "insert_string": {
@@ -765,7 +809,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!text) throw new Error("insert_string 需要 new_text 参数（要插入的内容）");
       const position = String(args.position || "before");
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
-      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits });
+      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘
+      if (getSettings().fileEditConfirm) {
+        const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
+        const ok = await requestEditConfirm({
+          kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
+          tool: "insert_string", args: { ...args },
+        });
+        if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+      }
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
       return res.summary;
     }
     case "create_file": {
@@ -785,6 +838,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 删除文件（仅主目录内文件，不删除目录）
       const path = String(args.path || "");
       if (!path) throw new Error("delete_file 需要 path 参数");
+      // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除
+      if (getSettings().fileEditConfirm) {
+        const ok = await requestEditConfirm({ kind: "delete", path, tool: "delete_file", args: { ...args } });
+        if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
+      }
       return await invoke<string>("delete_file_agent", { path });
     }
     case "plan_task": {
@@ -2134,6 +2192,7 @@ export const useChatStore = defineStore("chat", () => {
       async function streamRound(msgs: { role: string; content: unknown }[]): Promise<{ toolCall: ToolCall | null; content: string }> {
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
         const requestId = uuidv4(); // 本轮请求唯一 id：事件过滤，避免旧请求的 sse-delta/done 串扰新一轮
+        activeStreamRequestId = requestId; // 暴露给 stopStreaming，用于取消 Rust 端生成
         let resolveDone!: () => void;
         let rejectDone!: (e: Error) => void;
         const doneP = new Promise<void>((resolve, reject) => {
@@ -2383,6 +2442,7 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
     } finally {
+      activeStreamRequestId = null; // 本轮结束，清除当前流式 request_id
       dbg(`[sendMessage] finally: toolChain=${toolChain.length}，streamingContent=${streamingContent.value.length}，reasoning=${streamingReasoning.value.length}`);
       unlistenFns.forEach(f => f());
       // 流式兜底：剥离模型口头输出的工具调用 JSON；工具卡片（toolChain）逐段拼在最前
@@ -2442,6 +2502,13 @@ export const useChatStore = defineStore("chat", () => {
   function stopStreaming() {
     isStreaming.value = false;
     requestStop(); // 立即中断正在运行的子代理/主代理工具循环（不只是改标志）
+    // 立刻取消 Rust 端当前流式生成：之前只在前端移除了监听，Rust 仍在继续拉流/emit/耗 token，
+    // 用户会感觉「点了停止还在生成」。cancel_stream 让 Rust 在下一个 chunk 到达时停止。
+    if (activeStreamRequestId) {
+      const rid = activeStreamRequestId;
+      activeStreamRequestId = null;
+      invoke("cancel_stream", { requestId: rid }).catch(() => {});
+    }
   }
 
   function clearCurrentConversation() {
@@ -2558,6 +2625,8 @@ export const useChatStore = defineStore("chat", () => {
     stopStreaming,
     getAuxConfig,
     getRoutedAuxConfig,
+    editConfirm,
+    resolveEditConfirm,
     activePersonaId,
     setPersona,
     subagents,

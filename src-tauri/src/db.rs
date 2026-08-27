@@ -40,6 +40,19 @@ CREATE TABLE IF NOT EXISTS memory_summaries (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
+-- 长期记忆 1.4 记忆分层：episodic 聚合层（跨会话主题汇总）。
+-- semantic=memory_facts（事实）、episodic 单会话=memory_summaries、
+-- episodic 聚合层=memory_episodic（跨会话反复出现的主题/项目/持续关注点）。
+CREATE TABLE IF NOT EXISTS memory_episodic (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    source_summary_ids TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_episodic_updated ON memory_episodic(updated_at);
+
 CREATE TABLE IF NOT EXISTS memory_facts (
     id TEXT PRIMARY KEY,
     conversation_id TEXT,
@@ -546,6 +559,55 @@ impl Database {
         let mut result = Vec::new();
         for r in rows { result.push(r.map_err(|e| e.to_string())?); }
         Ok(result)
+    }
+
+    // --- 记忆分层 1.4：episodic 聚合层（跨会话主题汇总） ---
+
+    /// 保存/更新一条跨会话主题条目（upsert）。source_summary_ids 为来源会话摘要 id 的 JSON 数组。
+    pub fn save_episodic(&self, id: &str, title: &str, summary: &str, source_summary_ids: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_episodic (id, title, summary, source_summary_ids, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![id, title, summary, source_summary_ids, now, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 列出跨会话主题条目，按更新时间倒序
+    pub fn list_episodic(&self, limit: i64) -> Result<Vec<EpisodicRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, summary, source_summary_ids, created_at, updated_at FROM memory_episodic ORDER BY updated_at DESC LIMIT ?1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(EpisodicRow { id: row.get(0)?, title: row.get(1)?, summary: row.get(2)?, source_summary_ids: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }
+
+    pub fn delete_episodic(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM memory_episodic WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 已参与跨会话汇总的会话摘要 id 列表（避免重复汇总同一批摘要）
+    pub fn episodic_covered(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT source_summary_ids FROM memory_episodic").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        let mut covered: Vec<String> = Vec::new();
+        for r in rows {
+            if let Ok(list) = r {
+                if let Ok(ids) = serde_json::from_str::<Vec<String>>(&list) {
+                    covered.extend(ids);
+                }
+            }
+        }
+        Ok(covered)
     }
 
     /// 保存事实（带 FTS 索引同步 + 近似去重合并）：
@@ -1091,6 +1153,17 @@ pub struct SummaryRow {
     pub created_at: i64,
 }
 
+/// 记忆分层 1.4：episodic 聚合层条目（跨会话主题汇总）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EpisodicRow {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub source_summary_ids: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FactRow {
     pub id: String,
@@ -1377,6 +1450,42 @@ mod tests {
         assert!(all.iter().any(|f| f.id == "i2"), "近期重要记忆应保留");
         let prefs = db.get_facts_by_type("preference", 10).unwrap();
         assert!(prefs.iter().any(|f| f.id == "p1"), "preference 应受保护");
+        cleanup(&dir);
+    }
+
+    // --- 记忆分层 1.4：episodic 聚合层（跨会话主题汇总） ---
+
+    #[test]
+    fn episodic_save_list_covered_delete() {
+        let (dir, db) = tmp_db();
+        // 保存两条跨会话主题（来源摘要 id 为 JSON 数组字符串）
+        db.save_episodic("e1", "道生一项目", "持续开发道生一 AI 客户端，近期完成知识库语义向量与工作流编辑器", r#"["s1","s2","s3"]"#).unwrap();
+        db.save_episodic("e2", "健身计划", "用户计划每周跑步三次", r#"["s4"]"#).unwrap();
+
+        // 列表：按 updated_at 倒序，e2 后写应在最前（同毫秒时顺序不保证，改查数量与字段）
+        let list = db.list_episodic(10).unwrap();
+        assert_eq!(list.len(), 2);
+        let e1 = list.iter().find(|e| e.id == "e1").unwrap();
+        assert_eq!(e1.title, "道生一项目");
+        assert!(e1.summary.contains("知识库语义向量"));
+        assert_eq!(e1.source_summary_ids, r#"["s1","s2","s3"]"#);
+
+        // covered：收集所有来源摘要 id（跨多条）
+        let covered = db.episodic_covered().unwrap();
+        assert_eq!(covered.len(), 4);
+        assert!(covered.contains(&"s3".to_string()));
+        assert!(covered.contains(&"s4".to_string()));
+
+        // upsert：同 id 更新不新增
+        db.save_episodic("e2", "健身计划", "用户每周跑步三次，并开始练瑜伽", r#"["s4","s5"]"#).unwrap();
+        assert_eq!(db.list_episodic(10).unwrap().len(), 2);
+        let covered2 = db.episodic_covered().unwrap();
+        assert_eq!(covered2.len(), 5, "upsert 后来源合并为 5 个: {:?}", covered2);
+
+        // 删除：列表与 covered 同步减少
+        db.delete_episodic("e1").unwrap();
+        assert_eq!(db.list_episodic(10).unwrap().len(), 1);
+        assert!(!db.episodic_covered().unwrap().contains(&"s1".to_string()), "删除后来源摘要不再被覆盖");
         cleanup(&dir);
     }
 }

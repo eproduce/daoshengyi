@@ -166,6 +166,12 @@ function savePermissions() {
   });
 }
 
+// P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘
+const fileEditConfirm = ref(getSettings().fileEditConfirm ?? false);
+function saveEditConfirm() {
+  updateSettings({ fileEditConfirm: fileEditConfirm.value });
+}
+
 // P-A12 多模型路由：任务类型 → Profile id（摘要/记忆辅助、编程子代理）
 const routeSummarize = ref(getSettings().modelRouting?.["summarize"] || "");
 const routeCoding = ref(getSettings().modelRouting?.["coding"] || "");
@@ -544,6 +550,13 @@ function handleDelete() {
       <div v-show="activeTab === 'permissions'">
         <h3><Shield :size="17" /> 权限矩阵</h3>
         <p class="ollama-desc">工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent 的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。</p>
+        <div class="form-group approval-mode">
+          <label class="memory-config__toggle" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" v-model="fileEditConfirm" @change="saveEditConfirm" />
+            <span>文件编辑需确认（Agent 改文件前先预览 diff，你确认后才写入）</span>
+          </label>
+          <span class="form-hint">开启后，Agent 调用 replace_string / insert_string / delete_file 会先弹出 diff/路径确认框，点「应用」才真正写盘；关闭则保持自动应用（可用「禁用工具」白名单保护文件）。</span>
+        </div>
         <div class="form-group">
           <label>禁用工具（每行一个工具名）</label>
           <textarea
