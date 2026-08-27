@@ -3502,10 +3502,43 @@ fn build_app_menu<R: tauri::Runtime>(
 }
 
 // 全局快捷键（Phase 5）：进程级静态，供 plugin handler 与 setup 注册共享比对。
-// - CommandOrControl+Shift+Space：显示/隐藏主窗口（快速召唤）
-// - CommandOrControl+Shift+K：新建对话（复用 menu://action 通道）
-static SHORTCUT_TOGGLE: std::sync::OnceLock<tauri_plugin_global_shortcut::Shortcut> = std::sync::OnceLock::new();
-static SHORTCUT_NEW_CHAT: std::sync::OnceLock<tauri_plugin_global_shortcut::Shortcut> = std::sync::OnceLock::new();
+// 默认 CommandOrControl+Shift+Space（显示/隐藏主窗口）/ CommandOrControl+Shift+K（新建对话），
+// 可在设置页自定义；SHORTCUTS 存当前已注册的 (toggle, new_chat) 用于运行时重注册。
+static SHORTCUTS: std::sync::OnceLock<std::sync::Mutex<Option<(tauri_plugin_global_shortcut::Shortcut, tauri_plugin_global_shortcut::Shortcut)>>> = std::sync::OnceLock::new();
+
+/// 注册全局快捷键（解析失败回退默认），并记录当前注册句柄供重新注册。
+fn register_global_shortcuts(app: &tauri::AppHandle, toggle: &str, new_chat: &str) {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    let gs = app.global_shortcut();
+    let t = Shortcut::from_str(toggle)
+        .unwrap_or_else(|_| Shortcut::from_str(settings::DEFAULT_SHORTCUT_TOGGLE).unwrap());
+    let n = Shortcut::from_str(new_chat)
+        .unwrap_or_else(|_| Shortcut::from_str(settings::DEFAULT_SHORTCUT_NEW_CHAT).unwrap());
+    if gs.register(t.clone()).is_err() {
+        eprintln!("[shortcut] 注册 {} 失败（可能被占用），保持未注册", toggle);
+    }
+    if gs.register(n.clone()).is_err() {
+        eprintln!("[shortcut] 注册 {} 失败（可能被占用），保持未注册", new_chat);
+    }
+    let slot = SHORTCUTS.get_or_init(|| std::sync::Mutex::new(None));
+    *slot.lock().unwrap() = Some((t, n));
+}
+
+/// 运行时应用全局快捷键设置：先注销当前注册，再按新配置注册（前端保存设置后调用）。
+#[tauri::command]
+fn apply_global_shortcuts(app: tauri::AppHandle, toggle: String, new_chat: String) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    if let Some(slot) = SHORTCUTS.get() {
+        if let Some((t, n)) = slot.lock().unwrap().take() {
+            let _ = gs.unregister(t);
+            let _ = gs.unregister(n);
+        }
+    }
+    register_global_shortcuts(&app, &toggle, &new_chat);
+    Ok(())
+}
 
 pub fn run() {
     let app = tauri::Builder::default()
@@ -3519,18 +3552,24 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    if Some(shortcut) == SHORTCUT_TOGGLE.get() {
-                        if let Some(win) = app.get_webview_window("main") {
-                            if win.is_visible().unwrap_or(true) {
-                                let _ = win.hide();
-                            } else {
-                                let _ = win.show();
-                                let _ = win.unminimize();
-                                let _ = win.set_focus();
+                    let pair = SHORTCUTS
+                        .get()
+                        .and_then(|m| m.lock().ok())
+                        .and_then(|g| g.clone());
+                    if let Some((t, n)) = pair {
+                        if shortcut == &t {
+                            if let Some(win) = app.get_webview_window("main") {
+                                if win.is_visible().unwrap_or(true) {
+                                    let _ = win.hide();
+                                } else {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                }
                             }
+                        } else if shortcut == &n {
+                            let _ = app.emit("menu://action", "new-chat");
                         }
-                    } else if Some(shortcut) == SHORTCUT_NEW_CHAT.get() {
-                        let _ = app.emit("menu://action", "new-chat");
                     }
                 })
                 .build(),
@@ -3671,23 +3710,20 @@ pub fn run() {
             }
 
             // 全局快捷键（Phase 5）：注册后即使应用在后台/隐藏也能通过按键唤起。
-            // 注册失败（如被系统/其他应用占用）仅记录日志，不阻塞启动。
+            // 从设置读取自定义快捷键（未配置/解析失败回退默认）；注册失败（被占用）仅记录日志。
             {
-                use std::str::FromStr;
-                use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
-                let gs = app.global_shortcut();
-                if let Ok(s) = Shortcut::from_str("CommandOrControl+Shift+Space") {
-                    let _ = SHORTCUT_TOGGLE.set(s);
-                    if gs.register(s).is_err() {
-                        eprintln!("[shortcut] 注册 CommandOrControl+Shift+Space 失败（可能被占用）");
+                let (toggle, new_chat) = {
+                    let db = app.state::<Database>();
+                    let cipher = app.state::<settings::SecretCipher>();
+                    match load_app_settings(db, cipher) {
+                        Ok(s) => (s.global_shortcut_toggle, s.global_shortcut_new_chat),
+                        Err(_) => (
+                            settings::DEFAULT_SHORTCUT_TOGGLE.to_string(),
+                            settings::DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+                        ),
                     }
-                }
-                if let Ok(s) = Shortcut::from_str("CommandOrControl+Shift+K") {
-                    let _ = SHORTCUT_NEW_CHAT.set(s);
-                    if gs.register(s).is_err() {
-                        eprintln!("[shortcut] 注册 CommandOrControl+Shift+K 失败（可能被占用）");
-                    }
-                }
+                };
+                register_global_shortcuts(app.handle(), &toggle, &new_chat);
             }
 
             // devtools 默认不自动打开；需要调试时用环境变量开启：
@@ -3725,6 +3761,7 @@ pub fn run() {
             maintain_facts,
             save_app_settings,
             load_app_settings,
+            apply_global_shortcuts,
             list_models,
             touch_fact,
             delete_fact_cmd,

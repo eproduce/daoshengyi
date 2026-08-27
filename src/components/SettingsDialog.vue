@@ -12,16 +12,17 @@ import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard } from "lucide-vue-next";
 
-const props = defineProps<{ initialTab?: "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions" }>();
+type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions" | "shortcuts";
+const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
 }>();
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
-const activeTab = ref<"api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions">("api");
+const activeTab = ref<SettingsTabId>("api");
 watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
@@ -174,6 +175,26 @@ function saveRouting() {
   });
 }
 
+// Phase 5 全局快捷键：显示/隐藏主窗口 + 新建对话（保存后即时重注册）
+const shortcutToggle = ref(getSettings().globalShortcutToggle || "CommandOrControl+Shift+Space");
+const shortcutNewChat = ref(getSettings().globalShortcutNewChat || "CommandOrControl+Shift+K");
+function saveShortcuts() {
+  updateSettings({
+    globalShortcutToggle: shortcutToggle.value.trim() || "CommandOrControl+Shift+Space",
+    globalShortcutNewChat: shortcutNewChat.value.trim() || "CommandOrControl+Shift+K",
+  });
+  // 立即应用新快捷键（Rust 注销旧注册并按新配置注册）
+  invoke("apply_global_shortcuts", {
+    toggle: shortcutToggle.value.trim() || "CommandOrControl+Shift+Space",
+    newChat: shortcutNewChat.value.trim() || "CommandOrControl+Shift+K",
+  }).catch(() => { /* 注册失败（被占用）由 Rust 日志记录 */ });
+}
+function resetShortcuts() {
+  shortcutToggle.value = "CommandOrControl+Shift+Space";
+  shortcutNewChat.value = "CommandOrControl+Shift+K";
+  saveShortcuts();
+}
+
 // 切换编辑目标
 function selectProfile(id: string) {
   const p = chatStore.profiles.find((p) => p.id === id);
@@ -242,6 +263,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'"><span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆</button>
           <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
           <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
+          <button :class="['settings-tab', { active: activeTab === 'shortcuts' }]" @click="activeTab = 'shortcuts'"><span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键</button>
         </nav>
 
         <!-- 右侧内容 -->
@@ -587,6 +609,23 @@ function handleDelete() {
           <span class="form-hint">钉钉机器人安全设置若选「加签」，填 SEC 开头的密钥；选「自定义关键词」则留空</span>
         </div>
       </div>
+
+      <!-- Phase 5 全局快捷键 -->
+      <div v-show="activeTab === 'shortcuts'">
+        <h3><Keyboard :size="17" /> 全局快捷键</h3>
+        <p class="ollama-desc">全局快捷键在应用最小化/隐藏到后台时仍生效。格式：修饰键 + 键名（如 CommandOrControl+Shift+Space）。仅支持单个非修饰键 + 修饰键组合。</p>
+        <div class="form-group">
+          <label>显示 / 隐藏主窗口（快速召唤）</label>
+          <input v-model="shortcutToggle" placeholder="CommandOrControl+Shift+Space" @change="saveShortcuts" />
+          <span class="form-hint">macOS 用 Command / ⌘；Windows/Linux 用 Control / Ctrl。例：CommandOrControl+Shift+Space、CommandOrControl+Alt+D</span>
+        </div>
+        <div class="form-group">
+          <label>新建对话</label>
+          <input v-model="shortcutNewChat" placeholder="CommandOrControl+Shift+K" @change="saveShortcuts" />
+          <span class="form-hint">保存后立即生效（注销旧快捷键并按新配置重新注册）。若提示被占用，说明与其他应用冲突，请换一个组合。</span>
+        </div>
+        <button class="settings-reset-btn" @click="resetShortcuts">恢复默认（⌘⇧Space / ⌘⇧K）</button>
+      </div>
         </div>
       </div>
 
@@ -694,6 +733,11 @@ function handleDelete() {
   box-shadow: 0 0 0 3px rgba(99,102,241,.1);
 }
 .form-hint { font-size: 11px; color: var(--text-muted); }
+.settings-reset-btn {
+  padding: 8px 14px; border: 1.5px solid var(--border-color); border-radius: var(--radius-md);
+  background: var(--bg-secondary); color: var(--text-secondary); font-size: 12px; cursor: pointer; transition: all .2s;
+}
+.settings-reset-btn:hover { border-color: var(--accent-color); color: var(--accent-color); }
 .approval-modes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
 .approval-mode {
   display: flex; align-items: center; gap: 10px; padding: 8px 12px;

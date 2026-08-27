@@ -84,6 +84,23 @@ pub struct AppSettings {
     /// 长期记忆 §3.2：相关记忆检索条数（默认 6，范围 1-20）
     #[serde(default = "default_recall_limit")]
     pub memory_recall_limit: i64,
+    /// 全局快捷键：显示/隐藏主窗口（Phase 5，可自定义；默认 CommandOrControl+Shift+Space）
+    #[serde(default = "default_shortcut_toggle")]
+    pub global_shortcut_toggle: String,
+    /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
+    #[serde(default = "default_shortcut_new_chat")]
+    pub global_shortcut_new_chat: String,
+}
+
+pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
+pub const DEFAULT_SHORTCUT_NEW_CHAT: &str = "CommandOrControl+Shift+K";
+
+fn default_shortcut_toggle() -> String {
+    DEFAULT_SHORTCUT_TOGGLE.to_string()
+}
+
+fn default_shortcut_new_chat() -> String {
+    DEFAULT_SHORTCUT_NEW_CHAT.to_string()
 }
 
 fn default_true() -> bool {
@@ -118,6 +135,8 @@ impl Default for AppSettings {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
+            global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
         }
     }
 }
@@ -317,6 +336,8 @@ mod tests {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
+            global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -354,6 +375,8 @@ mod tests {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
+            global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

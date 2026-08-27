@@ -48,6 +48,10 @@ export interface AppSettingsPayload {
   memoryEnabled: boolean;
   /// 长期记忆 §3.2：相关记忆检索条数（默认 6）
   memoryRecallLimit: number;
+  /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）
+  globalShortcutToggle: string;
+  /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
+  globalShortcutNewChat: string;
 }
 
 let cache: AppSettingsPayload = {
@@ -68,6 +72,8 @@ let cache: AppSettingsPayload = {
   modelRouting: {},
   memoryEnabled: true,
   memoryRecallLimit: 6,
+  globalShortcutToggle: "CommandOrControl+Shift+Space",
+  globalShortcutNewChat: "CommandOrControl+Shift+K",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
