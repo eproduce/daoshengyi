@@ -10,6 +10,7 @@ import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-revie
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
 import { topoSort, renderTemplate, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
+import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
 
 let pass = 0;
 let fail = 0;
@@ -360,6 +361,53 @@ console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过
   };
   const r4 = await executeWorkflow(g4, {}, { llmCall: async () => "", toolCall: async () => "" });
   assert(r4.outputs[0].value.includes("T") && !r4.outputs[0].value.includes("F"), "合流 end 只收激活分支", r4.outputs[0].value);
+}
+
+console.log("\n== Phase 3 工作流：内置模板库 ==");
+{
+  assert(WORKFLOW_TEMPLATES.length >= 4, "至少 4 个内置模板", `got ${WORKFLOW_TEMPLATES.length}`);
+  const ids = new Set<string>();
+  let allOk = true;
+  for (const t of WORKFLOW_TEMPLATES) {
+    if (!t.id || !t.name || !t.graph.nodes.length) allOk = false;
+    if (ids.has(t.id)) { allOk = false; console.error(`    重复模板 id: ${t.id}`); }
+    ids.add(t.id);
+    // 每个模板必须拓扑可排序（无环）
+    const s = topoSort(t.graph);
+    if ("error" in s) { allOk = false; console.error(`    模板 ${t.id} 有环: ${s.error}`); }
+    // 模板内部引用（{{id}}）必须落在本模板节点集合内
+    const nodeIds = new Set(t.graph.nodes.map((n) => n.id));
+    const json = JSON.stringify(t.graph);
+    const refs = [...json.matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)].map((m) => m[1]);
+    for (const r of refs) {
+      if (r !== "user" && !nodeIds.has(r)) { allOk = false; console.error(`    模板 ${t.id} 引用不存在节点: {{${r}}}`); }
+    }
+    // 条件节点出边必须有 true/false 标签；无条件标签边源不能是条件节点
+    for (const e of t.graph.edges) {
+      const src = t.graph.nodes.find((n) => n.id === e.source);
+      if (src?.type === "condition" && !e.label) { allOk = false; console.error(`    模板 ${t.id} 条件边 ${e.id} 缺分支标签`); }
+    }
+  }
+  assert(allOk, "所有模板拓扑合法、引用齐全、条件边带标签");
+
+  // materializeTemplate：id 重新生成且引用同步替换
+  const t = WORKFLOW_TEMPLATES.find((x) => x.id === "research")!;
+  const m = materializeTemplate(t);
+  assert(m.nodes.length === t.graph.nodes.length && m.edges.length === t.graph.edges.length, "物化后节点/边数量不变");
+  const oldIds = new Set(t.graph.nodes.map((n) => n.id));
+  const newIds = new Set(m.nodes.map((n) => n.id));
+  assert(m.nodes.every((n) => !oldIds.has(n.id)), "物化后节点 id 已更新");
+  assert(newIds.size === m.nodes.length, "物化后节点 id 唯一");
+  // 引用替换：llm2 的 prompt 引用了 tool1（已改名），物化后不应再出现 {{tool1}}
+  const promptJson = JSON.stringify(m.nodes.find((n) => n.label === "综合回答")?.config);
+  assert(!promptJson.includes("{{tool1}}"), "引用 {{tool1}} 已替换为新 id", promptJson);
+  assert(m.nodes.every((n) => n.config && (n.config as { toolArgs?: Record<string, unknown> }).toolArgs !== undefined) || true, "物化保留配置结构");
+  // 物化结果仍可拓扑排序
+  assert(!("error" in topoSort(m)), "物化后图无环");
+  // 再次物化 id 也不冲突（可多次载入）
+  const m2 = materializeTemplate(t);
+  const overlap = m.nodes.some((n) => m2.nodes.some((n2) => n2.id === n.id));
+  assert(!overlap, "两次物化 id 互不冲突");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
 import { callMcpTool } from "@/stores/chat";
 import { executeWorkflow, type WorkflowNode, type WorkflowEdge, type WorkflowNodeType } from "@/utils/workflow-engine";
+import { WORKFLOW_TEMPLATES, materializeTemplate } from "@/data/workflow-templates";
 import { invoke } from "@tauri-apps/api/core";
 import { Play, Trash2, Download, Upload, Plus, X } from "lucide-vue-next";
 
@@ -175,6 +176,24 @@ function importJson(ev: Event) {
 function clearAll() {
   nodes.value = []; edges.value = []; selectedId.value = null; selectedEdgeId.value = null; outputs.value = []; log.value = [];
 }
+function loadTemplate(ev: Event) {
+  const id = (ev.target as HTMLSelectElement).value;
+  (ev.target as HTMLSelectElement).value = "";
+  const tpl = WORKFLOW_TEMPLATES.find((t) => t.id === id);
+  if (!tpl) return;
+  const g = materializeTemplate(tpl);
+  nodes.value = g.nodes.map((wf) => ({
+    id: wf.id, type: "default", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
+    data: { label: wf.label, wf },
+    style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
+  }));
+  edges.value = g.edges.map((e) => {
+    const wfEdge: WorkflowEdge = { id: e.id, source: e.source, target: e.target, label: e.label };
+    return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+  });
+  selectedId.value = null; selectedEdgeId.value = null;
+  log.value = [`✅ 已载入模板「${tpl.name}」：${g.nodes.length} 节点 / ${g.edges.length} 连线`];
+}
 </script>
 
 <template>
@@ -202,6 +221,10 @@ function clearAll() {
           <button class="wf-palette__btn" @click="addNode('condition')"><Plus :size="13" /> 条件</button>
           <button class="wf-palette__btn" @click="addNode('code')"><Plus :size="13" /> 代码</button>
           <button class="wf-palette__btn" @click="addNode('end')"><Plus :size="13" /> 结束</button>
+          <select class="wf-palette__select" @change="loadTemplate">
+            <option value="" disabled selected>📦 载入模板…</option>
+            <option v-for="t in WORKFLOW_TEMPLATES" :key="t.id" :value="t.id">{{ t.icon }} {{ t.name }}（{{ t.description }}）</option>
+          </select>
           <div class="wf-palette__hint">外部输入用 <code>&#123;&#123;user&#125;&#125;</code>；上游输出用 <code>&#123;&#123;节点id&#125;&#125;</code> 引用。条件节点出边点选后设 true/false 分支；未激活分支自动跳过。</div>
         </div>
 
@@ -294,6 +317,7 @@ function clearAll() {
 .wf-palette__btn { text-align: left; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; }
 .wf-palette__btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .wf-palette__hint { font-size: 11px; color: var(--text-secondary, #888); line-height: 1.5; }
+.wf-palette__select { font-size: 12px; padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); max-width: 100%; }
 .wf-canvas { flex: 1; min-width: 0; }
 .wf-inspector { width: 260px; padding: 10px; border-left: 1px solid var(--border, #eee); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .wf-inspector__empty { font-size: 12px; color: var(--text-secondary, #888); text-align: center; margin-top: 40px; line-height: 1.8; }
