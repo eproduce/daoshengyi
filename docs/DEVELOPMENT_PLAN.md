@@ -186,7 +186,7 @@
 | # | 方向 | 复用基础 | 实现要点 |
 |---|------|---------|---------|
 | 1 | **会话内「撤销最近操作」** | ✅ | `apply_edits`（preview）+ `tool_audit`（工具调用全记录） | **已完成（2026-08-27）**：`undo_history` 表（action/path/backup/existed）+ `record_undo`（apply_edits 写盘前 / write_file_agent / delete_file_agent 自动快照）+ `undo_by_id`（edit 恢复内容 / create 删除新建 / delete 恢复文件，回滚后删记录）+ `list_undo`；命令 `apply_edits`/`delete_file_agent` 重构为纯函数+命令层（compute_edits/delete_file_impl）；前端 `UndoBubble` 右下角悬浮气泡显示最近可撤销操作一键回滚（写/删工具成功后 dispatch undo-changed 刷新）；测试 Rust +4 / 前端全绿。待做：操作回放面板（可筛选/导出） |
-| 2 | **项目语义索引 / 自然语言找代码**（P-A3 补全） | `ollama_embed` + `kb_chunks` embedding 基建 | 给项目代码建向量索引；「找处理登录的地方」式自然语言检索；符号跳转（定义/引用） |
+| 2 | **项目语义索引 / 自然语言找代码**（P-A3 补全） | ✅ | `ollama_embed` + `kb_chunks` embedding 基建 | **已完成（2026-08-27）**：`code_chunks` 表（按 root 组织）+ `code_clear/code_add_chunk/code_search(余弦)/code_roots/code_stats`；命令 `code_index`（扫描代码文件→chunk_text 500 分块→Ollama 批量向量化，跳过 node_modules/.git/target 与大文件）/`code_search`（查询嵌入→余弦召回）/`code_roots`/`code_stats`/`code_delete`；前端内置工具 code_index/code_search/code_roots/code_stats/code_delete + BUILTIN_TOOLS/提示词描述；测试 Rust +1。待做：符号跳转（定义/引用） |
 | 3 | **IM 网关（远程驱动 agent）** | `send_im`（已有只发不收）+ 设计方案 `docs/IM_GATEWAY.md` | Rust 长轮询网关 `ImAdapter` trait（poll_updates/send_message）+ `ImGateway`（去重/白名单/限流）；Telegram/钉钉/飞书；收到消息→执行工具→回结果 |
 | 4 | **知识库 RAG 自动注入** | `kb_search_hybrid` + 记忆注入通道 | 对话前自动检索相关分块注入上下文（像记忆注入），RAG 无感化 |
 | 5 | **工作流持久化 + 运行历史** | `workflow-engine` + 设置持久化 | 「我的工作流」保存列表、一键运行、最近运行记录 |

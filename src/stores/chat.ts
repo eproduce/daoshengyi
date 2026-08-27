@@ -189,6 +189,9 @@ function getMcpToolsPrompt(): string {
     "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
     "\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {\"cwd\": \"项目目录绝对路径\", \"command\": \"可选，显式指定测试命令（如 pytest -q）\", \"args\": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。" +
     "\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {\"path\": \"项目目录绝对路径\"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。" +
+    "\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地 Ollama + nomic-embed-text，重建式）。参数 {\"root\": \"项目目录绝对路径\"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。" +
+    "\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {\"root\": \"项目目录绝对路径\", \"query\": \"自然语言描述要查的代码，如「处理用户登录」「解析配置文件」\", \"limit\": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。" +
+    "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
     "\n\n## 验证循环（编程任务强制要求）\n" +
     "- 你修改/生成代码后，**必须用 run_tests 运行测试验证**，不能假设改对了。\n" +
     "- 测试失败时：分析失败项/错误信息 → 修复代码 → **再次 run_tests**，如此循环直到测试通过（「通过才算完成」门禁）。\n" +
@@ -1047,6 +1050,43 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const list = await invoke<{ name: string; chunks: number }[]>("kb_list");
       if (!list.length) return "（尚未建立知识库，可用 kb_index 索引本地目录）";
       return "已建立知识库：\n" + list.map((k) => `- ${k.name}（${k.chunks} 分块）`).join("\n");
+    }
+    case "code_index": {
+      // P-A3 项目语义索引：扫描项目代码文件并向量化（自然语言找代码的地基，重建式）
+      const root = String(args.root || args.path || "").trim();
+      if (!root) throw new Error("code_index 需要 root 参数（项目目录绝对路径）");
+      return await invoke<string>("code_index", { rootPath: root });
+    }
+    case "code_search": {
+      // P-A3 自然语言找代码：语义检索已索引项目的代码分块
+      const root = String(args.root || args.path || "").trim();
+      const query = String(args.query || "").trim();
+      if (!root) throw new Error("code_search 需要 root 参数（项目目录绝对路径）");
+      if (!query) throw new Error("code_search 需要 query 参数（自然语言描述要查的代码，如「处理用户登录」）");
+      const limit = args.limit ? Number(args.limit) : null;
+      const hits = await invoke<{ id: number; root: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]>("code_search", { rootPath: root, query, limit });
+      if (!hits.length) return `（项目「${root}」未检索到与「${query}」相关的代码。若尚未索引，先调 code_index 索引该项目；也可换更贴近代码语义的描述）`;
+      const out = hits.map((h, i) => `[${i + 1}] ${h.file}#${h.chunk_idx}\n\`\`\`\n${h.chunk.slice(0, 600)}\n\`\`\``).join("\n\n");
+      return `【项目「${root}」语义检索「${query}」】相关代码 ${hits.length} 处（按相似度）：\n\n${out}`;
+    }
+    case "code_roots": {
+      // P-A3 列出已索引项目
+      const roots = await invoke<string[]>("code_roots");
+      if (!roots.length) return "（尚未索引任何项目，可用 code_index 索引项目目录）";
+      return "已索引的项目：\n" + roots.map((r) => `- ${r}`).join("\n");
+    }
+    case "code_stats": {
+      // P-A3 查看项目索引统计
+      const root = String(args.root || args.path || "").trim();
+      if (!root) throw new Error("code_stats 需要 root 参数（项目目录绝对路径）");
+      const [files, chunks] = await invoke<[number, number]>("code_stats", { rootPath: root });
+      return `项目「${root}」语义索引：${files} 个文件 / ${chunks} 个分块`;
+    }
+    case "code_delete": {
+      // P-A3 删除某项目语义索引
+      const root = String(args.root || args.path || "").trim();
+      if (!root) throw new Error("code_delete 需要 root 参数（项目目录绝对路径）");
+      return await invoke<string>("code_delete", { rootPath: root });
     }
     default:
       throw new Error(`未知内置工具: ${tool}`);

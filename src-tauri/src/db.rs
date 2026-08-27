@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 CREATE INDEX IF NOT EXISTS idx_kb_name ON kb_chunks(kb_name);
 CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(chunk_terms, tokenize='unicode61');
 
+-- 项目语义索引（P-A3 补全）：自然语言找代码（按 root 项目目录组织，向量余弦检索）
+CREATE TABLE IF NOT EXISTS code_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root TEXT NOT NULL,
+    file TEXT NOT NULL,
+    chunk TEXT NOT NULL,
+    chunk_idx INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    embedding BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_code_root ON code_chunks(root);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -1020,6 +1032,87 @@ impl Database {
         self.kb_clear(kb_name)
     }
 
+    // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
+
+    /// 清空某项目的代码索引（重建前调用）
+    pub fn code_clear(&self, root: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM code_chunks WHERE root=?1", params![root]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 写入一个代码分块（embedding 为 Ollama 向量）
+    pub fn code_add_chunk(
+        &self,
+        root: &str,
+        file: &str,
+        chunk: &str,
+        chunk_idx: i64,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let emb_bytes: Option<Vec<u8>> = embedding.map(|e| e.iter().flat_map(|f| f.to_le_bytes()).collect());
+        conn.execute(
+            "INSERT INTO code_chunks(root, file, chunk, chunk_idx, created_at, embedding) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![root, file, chunk, chunk_idx, chrono::Utc::now().timestamp_millis(), emb_bytes],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 语义检索项目代码（余弦相似度，仅返回有 embedding 的分块，按相似度降序）
+    pub fn code_search(&self, root: &str, query_vec: &[f32], limit: i64) -> Result<Vec<CodeChunkRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, root, file, chunk, chunk_idx, created_at, embedding FROM code_chunks WHERE root=?1 AND embedding IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![root], |row| {
+                let emb_bytes: Vec<u8> = row.get(6)?;
+                let emb: Vec<f32> = emb_bytes
+                    .chunks(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let score = cosine_similarity(query_vec, &emb);
+                Ok((
+                    CodeChunkRow {
+                        id: row.get(0)?, root: row.get(1)?, file: row.get(2)?,
+                        chunk: row.get(3)?, chunk_idx: row.get(4)?, created_at: row.get(5)?,
+                    },
+                    score,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut scored: Vec<(CodeChunkRow, f32)> = Vec::new();
+        for r in rows { scored.push(r.map_err(|e| e.to_string())?); }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit as usize);
+        Ok(scored.into_iter().map(|(c, _)| c).collect())
+    }
+
+    /// 已索引的项目根目录列表
+    pub fn code_roots(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT DISTINCT root FROM code_chunks ORDER BY root").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+
+    /// 某项目的索引统计（文件数, 分块数）
+    pub fn code_stats(&self, root: &str) -> Result<(i64, i64), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let (files, chunks): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT file), COUNT(*) FROM code_chunks WHERE root=?1",
+                params![root],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok((files, chunks))
+    }
+
     // --- 应用设置存取 ---
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
@@ -1291,6 +1384,17 @@ fn action_label(action: &str) -> &str {
         "delete" => "删除",
         _ => action,
     }
+}
+
+/// 项目语义索引分块（P-A3 补全：自然语言找代码）
+#[derive(Debug, serde::Serialize)]
+pub struct CodeChunkRow {
+    pub id: i64,
+    pub root: String,
+    pub file: String,
+    pub chunk: String,
+    pub chunk_idx: i64,
+    pub created_at: i64,
 }
 
 /// 知识库分块（Phase 3 RAG）
@@ -1657,6 +1761,37 @@ mod tests {
     fn undo_unknown_id_errors() {
         let (dir, db) = tmp_db();
         assert!(db.undo_by_id(9999).is_err(), "不存在的 undo id 应报错");
+        cleanup(&dir);
+    }
+
+    // --- 项目语义索引：code_chunks 存取 + 余弦召回 ---
+
+    #[test]
+    fn code_index_search_recalls_relevant_chunk() {
+        let (dir, db) = tmp_db();
+        db.code_add_chunk("/proj", "auth.rs", "fn login(user, pwd) { verify password }", 0, Some(&[0.9, 0.1, 0.2])).unwrap();
+        db.code_add_chunk("/proj", "ui.rs", "fn renderButton() { draw }", 0, Some(&[0.1, 0.9, 0.1])).unwrap();
+        db.code_add_chunk("/other", "x.rs", "fn login(user) {}", 0, Some(&[0.9, 0.1, 0.2])).unwrap();
+
+        // 查询向量偏「登录/鉴权」→ 命中 auth.rs 的 login 分块
+        let hits = db.code_search("/proj", &[0.9, 0.1, 0.2], 5).unwrap();
+        assert!(hits.len() >= 1 && hits[0].file == "auth.rs", "余弦最相似分块应在前: {:?}", hits.iter().map(|h| &h.file).collect::<Vec<_>>());
+
+        // 跨项目隔离：other 查不到 proj 内容
+        assert!(db.code_search("/other", &[0.1, 0.9, 0.1], 5).unwrap().iter().all(|h| h.file == "x.rs"), "跨项目隔离");
+
+        // roots 列出已索引项目
+        let roots = db.code_roots().unwrap();
+        assert!(roots.contains(&"/proj".to_string()) && roots.contains(&"/other".to_string()));
+
+        // stats
+        let (files, chunks) = db.code_stats("/proj").unwrap();
+        assert_eq!(files, 2);
+        assert_eq!(chunks, 2);
+
+        // 清空
+        db.code_clear("/proj").unwrap();
+        assert!(db.code_search("/proj", &[0.9, 0.1, 0.2], 5).unwrap().is_empty(), "清空后检索为空");
         cleanup(&dir);
     }
 }

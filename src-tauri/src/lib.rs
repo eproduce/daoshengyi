@@ -1461,6 +1461,120 @@ fn kb_delete(db: State<Database>, kb_name: String) -> Result<String, String> {
     Ok(format!("知识库「{}」已删除", kb_name))
 }
 
+// --- 项目语义索引（P-A3 补全：自然语言找代码） ---
+
+/// 项目语义索引：扫描项目代码文件分块 + Ollama embedding 向量化（自然语言找代码用）。
+/// 需要本地 Ollama 且已装 nomic-embed-text（语义检索无向量无法工作，直接报错引导部署）。
+#[tauri::command]
+async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String, String> {
+    let allowed = sandbox_allowed_paths(db.inner());
+    let expanded = expand_user_path(&root_path)?;
+    if !allowed.is_empty() && !path_within_any(std::path::Path::new(&expanded), &allowed) {
+        return Err(format!("路径不在沙箱白名单内，拒绝索引：{}", root_path));
+    }
+    let root = std::path::PathBuf::from(&expanded);
+    if !root.is_dir() {
+        return Err(format!("不是目录: {}", root_path));
+    }
+    let skip: [&str; 9] = ["node_modules", ".git", "target", "dist", "build", ".next", "__pycache__", "vendor", ".idea"];
+    let is_code_ext = |ext: &str| {
+        matches!(ext, "py"|"ts"|"js"|"jsx"|"tsx"|"rs"|"go"|"java"|"c"|"cpp"|"h"|"hpp"|"vue"|"rb"|"php"|"swift"|"kt"|"scala"|"sh"|"toml"|"yml"|"yaml"|"json"|"html"|"css"|"sql")
+    };
+
+    let mut collected: Vec<(String, String, i64)> = Vec::new();
+    let mut files = 0usize;
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for ent in std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {}", e))?.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if skip.contains(&name.as_str()) { continue; }
+                stack.push(p);
+            } else if p.is_file() {
+                let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if !is_code_ext(&ext) { continue; }
+                // 跳过过大文件（可能是生成物/压缩产物）
+                if !p.metadata().map(|m| m.len() < 512 * 1024).unwrap_or(false) { continue; }
+                files += 1;
+                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().to_string();
+                for (i, chunk) in chunk_text(&text, 500).into_iter().enumerate() {
+                    if chunk.trim().is_empty() { continue; }
+                    collected.push((rel.clone(), chunk, i as i64));
+                }
+            }
+        }
+    }
+    if collected.is_empty() {
+        return Ok(format!("未扫描到代码文件：{}", root.display()));
+    }
+    // 语义向量必须可用（否则索引无意义）
+    ollama_embed_impl(vec![collected[0].1.clone()]).await
+        .map_err(|e| format!("语义向量不可用（需要本地 Ollama 已运行且安装 nomic-embed-text）：{}", e))?;
+
+    db.code_clear(&expanded)?;
+    let mut chunks = 0usize;
+    let mut batch: Vec<String> = Vec::new();
+    let mut meta: Vec<&(String, String, i64)> = Vec::new();
+    for item in &collected {
+        batch.push(item.1.clone());
+        meta.push(item);
+        if batch.len() >= 20 {
+            let vecs = ollama_embed_impl(batch.clone()).await.map_err(|e| format!("生成向量失败: {}", e))?;
+            for (m, v) in meta.iter().zip(vecs.into_iter()) {
+                db.code_add_chunk(&expanded, &m.0, &m.1, m.2, Some(&v))?;
+                chunks += 1;
+            }
+            batch.clear();
+            meta.clear();
+        }
+    }
+    if !batch.is_empty() {
+        let vecs = ollama_embed_impl(batch.clone()).await.map_err(|e| format!("生成向量失败: {}", e))?;
+        for (m, v) in meta.iter().zip(vecs.into_iter()) {
+            db.code_add_chunk(&expanded, &m.0, &m.1, m.2, Some(&v))?;
+            chunks += 1;
+        }
+    }
+    Ok(format!(
+        "项目语义索引完成：{} 个代码文件 → {} 个分块（{}）",
+        files, chunks, root.display()
+    ))
+}
+
+/// 自然语言找代码：查询嵌入 → 余弦召回相关代码分块
+#[tauri::command]
+async fn code_search(db: State<'_, Database>, root_path: String, query: String, limit: Option<i64>) -> Result<Vec<db::CodeChunkRow>, String> {
+    let lim = limit.unwrap_or(6).clamp(1, 20);
+    let expanded = expand_user_path(&root_path)?;
+    let qvec = ollama_embed_impl(vec![query]).await
+        .map_err(|e| format!("语义向量不可用（需要本地 Ollama + nomic-embed-text）：{}", e))?;
+    let v = qvec.into_iter().next().ok_or("查询向量为空")?;
+    db.code_search(&expanded, &v, lim)
+}
+
+/// 已索引的项目根目录
+#[tauri::command]
+fn code_roots(db: State<Database>) -> Result<Vec<String>, String> {
+    db.code_roots()
+}
+
+/// 某项目的语义索引统计（文件数, 分块数）
+#[tauri::command]
+fn code_stats(db: State<Database>, root_path: String) -> Result<(i64, i64), String> {
+    let expanded = expand_user_path(&root_path)?;
+    db.code_stats(&expanded)
+}
+
+/// 删除某项目的语义索引
+#[tauri::command]
+fn code_delete(db: State<Database>, root_path: String) -> Result<String, String> {
+    let expanded = expand_user_path(&root_path)?;
+    db.code_clear(&expanded)?;
+    Ok(format!("已删除项目语义索引：{}", expanded))
+}
+
 /// 把 base64 附件写入临时目录并返回路径（拖拽/粘贴无磁盘路径的文件，先落盘再走 read_attachment 统一处理）
 #[tauri::command]
 fn save_temp_attachment(data: String, name: String) -> Result<String, String> {
@@ -3909,6 +4023,11 @@ pub fn run() {
             kb_search,
             kb_list,
             kb_delete,
+            code_index,
+            code_search,
+            code_roots,
+            code_stats,
+            code_delete,
             read_file,
             open_file,
             file_exists,

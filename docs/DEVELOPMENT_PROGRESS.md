@@ -8,6 +8,11 @@
 
 ## 2026-08-27
 
+### ✅ 项目语义索引 / 自然语言找代码（§3.10 ②落地，P-A3 补全）
+- **后端**：db.rs `code_chunks` 表（root/file/chunk/embedding，按项目组织）+ `code_clear`/`code_add_chunk`/`code_search`（余弦相似度召回）/`code_roots`/`code_stats` + `CodeChunkRow`；lib.rs `code_index` 命令（扫描代码扩展名文件 → 跳过 node_modules/.git/target/dist 与大文件（<512KB）→ `chunk_text` 500 分块 → Ollama `nomic-embed-text` 批量向量化（20/批，重建式；Ollama 不可用明确报错引导部署））、`code_search`（查询嵌入→余弦召回）、`code_roots`/`code_stats`/`code_delete` + 注册
+- **前端**：内置工具 `code_index`/`code_search`/`code_roots`/`code_stats`/`code_delete`（callBuiltinTool 分支，code_search 返回 `[文件#分块]` + 代码片段）+ BUILTIN_TOOLS 描述 + 主提示词描述（「找 XX 代码」先 code_index 再 code_search，命中后 read_file 精读）
+- **测试**：Rust 新增 1 项（code_index_search_recalls_relevant_chunk：余弦召回/跨项目隔离/roots/stats/清空）→ cargo test 52；vue-tsc + vite build 全过。**待做**：符号跳转（定义/引用）
+
 ### ✅ 会话内撤销最近操作（§3.10 ①落地）
 - **后端**：db.rs 加 `undo_history` 表（action/path/backup/existed/created_at）+ `record_undo`/`list_undo`/`undo_by_id`（edit=恢复原内容、create=删除新建文件、delete=恢复被删文件，回滚后删记录）+ `UndoRow` 结构体；lib.rs `apply_edits` 重构为 `compute_edits` 纯函数 + 命令层（写盘前读原内容记录 undo），`delete_file_agent` 重构为 `delete_file_impl` + 命令层（删前备份记录 undo），`write_file_agent` 写前快照（存在→edit / 不存在→create）；新命令 `list_undo`/`undo_by_id` + 注册
 - **前端**：`callBuiltinTool` 文件写/删工具成功返回后 `dispatchEvent("undo-changed")`；新建 `UndoBubble.vue`（右下角悬浮气泡：显示最近一条「编辑/新建/删除 + 文件名」，点一键回滚，undo 后 notify 提示并刷新）；App.vue 挂载
