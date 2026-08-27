@@ -1461,6 +1461,54 @@ fn kb_delete(db: State<Database>, kb_name: String) -> Result<String, String> {
     Ok(format!("知识库「{}」已删除", kb_name))
 }
 
+// --- 可视化工作流持久化 + 运行历史（Phase 3） ---
+
+/// 保存工作流（同名更新，返回 id）
+#[tauri::command]
+fn workflow_save(db: State<Database>, name: String, graph: String) -> Result<i64, String> {
+    let n = name.trim().to_string();
+    if n.is_empty() { return Err("工作流名称不能为空".into()); }
+    db.wf_save(&n, &graph)
+}
+
+/// 工作流列表
+#[tauri::command]
+fn workflow_list(db: State<Database>) -> Result<Vec<db::WorkflowRow>, String> {
+    db.wf_list()
+}
+
+/// 读取单个工作流
+#[tauri::command]
+fn workflow_get(db: State<Database>, id: i64) -> Result<Option<db::WorkflowRow>, String> {
+    db.wf_get(id)
+}
+
+/// 删除工作流
+#[tauri::command]
+fn workflow_delete(db: State<Database>, id: i64) -> Result<(), String> {
+    db.wf_delete(id)
+}
+
+/// 记录一次工作流运行
+#[tauri::command]
+fn workflow_run_add(
+    db: State<Database>,
+    wf_id: Option<i64>,
+    wf_name: String,
+    status: String,
+    started_at: i64,
+    finished_at: i64,
+    summary: String,
+) -> Result<i64, String> {
+    db.wf_run_add(wf_id, &wf_name, &status, started_at, finished_at, &summary)
+}
+
+/// 工作流运行历史
+#[tauri::command]
+fn workflow_runs(db: State<Database>, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
+    db.wf_runs(limit.unwrap_or(10).clamp(1, 100))
+}
+
 // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
 
 /// 项目语义索引：扫描项目代码文件分块 + Ollama embedding 向量化（自然语言找代码用）。
@@ -4028,6 +4076,12 @@ pub fn run() {
             code_roots,
             code_stats,
             code_delete,
+            workflow_save,
+            workflow_list,
+            workflow_get,
+            workflow_delete,
+            workflow_run_add,
+            workflow_runs,
             read_file,
             open_file,
             file_exists,

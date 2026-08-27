@@ -126,6 +126,27 @@ CREATE TABLE IF NOT EXISTS undo_history (
 );
 CREATE INDEX IF NOT EXISTS idx_undo_created ON undo_history(created_at);
 
+-- 可视化工作流持久化：用户编辑的工作流（DAG 图 JSON）。name 唯一，同名保存即更新
+CREATE TABLE IF NOT EXISTS workflows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    graph TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+-- 工作流运行历史（一键运行后记录，供回顾/复跑）
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wf_id INTEGER,
+    wf_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wf_runs_started ON workflow_runs(started_at);
+
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1113,6 +1134,111 @@ impl Database {
         Ok((files, chunks))
     }
 
+    // --- 可视化工作流持久化 + 运行历史（Phase 3） ---
+
+    /// 保存工作流：同名存在则更新图与 updated_at（返回 id），否则新建
+    pub fn wf_save(&self, name: &str, graph: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let existing: Option<i64> = conn
+            .query_row("SELECT id FROM workflows WHERE name=?1", params![name], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE workflows SET graph=?1, updated_at=?2 WHERE id=?3",
+                params![graph, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(id)
+        } else {
+            conn.execute(
+                "INSERT INTO workflows(name, graph, created_at, updated_at) VALUES (?1,?2,?3,?3)",
+                params![name, graph, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+
+    /// 工作流列表（按更新时间倒序）
+    pub fn wf_list(&self) -> Result<Vec<WorkflowRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, graph, updated_at FROM workflows ORDER BY updated_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(WorkflowRow { id: r.get(0)?, name: r.get(1)?, graph: r.get(2)?, updated_at: r.get(3)? })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+
+    /// 读取单个工作流
+    pub fn wf_get(&self, id: i64) -> Result<Option<WorkflowRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT id, name, graph, updated_at FROM workflows WHERE id=?1",
+            params![id],
+            |r| Ok(WorkflowRow { id: r.get(0)?, name: r.get(1)?, graph: r.get(2)?, updated_at: r.get(3)? }),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// 删除工作流（运行历史保留 wf_name 快照，不删）
+    pub fn wf_delete(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM workflows WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 记录一次工作流运行
+    pub fn wf_run_add(
+        &self,
+        wf_id: Option<i64>,
+        wf_name: &str,
+        status: &str,
+        started_at: i64,
+        finished_at: i64,
+        summary: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO workflow_runs(wf_id, wf_name, status, started_at, finished_at, summary) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![wf_id, wf_name, status, started_at, finished_at, summary],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 运行历史（按开始时间倒序，limit 条）
+    pub fn wf_runs(&self, limit: i64) -> Result<Vec<WorkflowRunRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, wf_id, wf_name, status, started_at, finished_at, summary FROM workflow_runs ORDER BY started_at DESC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(WorkflowRunRow {
+                    id: r.get(0)?,
+                    wf_id: r.get(1)?,
+                    wf_name: r.get(2)?,
+                    status: r.get(3)?,
+                    started_at: r.get(4)?,
+                    finished_at: r.get(5)?,
+                    summary: r.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+
     // --- 应用设置存取 ---
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
@@ -1395,6 +1521,27 @@ pub struct CodeChunkRow {
     pub chunk: String,
     pub chunk_idx: i64,
     pub created_at: i64,
+}
+
+/// 可视化工作流持久化行
+#[derive(Debug, serde::Serialize)]
+pub struct WorkflowRow {
+    pub id: i64,
+    pub name: String,
+    pub graph: String,
+    pub updated_at: i64,
+}
+
+/// 工作流运行历史行
+#[derive(Debug, serde::Serialize)]
+pub struct WorkflowRunRow {
+    pub id: i64,
+    pub wf_id: Option<i64>,
+    pub wf_name: String,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub summary: String,
 }
 
 /// 知识库分块（Phase 3 RAG）
@@ -1792,6 +1939,48 @@ mod tests {
         // 清空
         db.code_clear("/proj").unwrap();
         assert!(db.code_search("/proj", &[0.9, 0.1, 0.2], 5).unwrap().is_empty(), "清空后检索为空");
+        cleanup(&dir);
+    }
+
+    // --- 可视化工作流持久化 + 运行历史 ---
+
+    #[test]
+    fn workflow_save_upsert_list_get_delete() {
+        let (dir, db) = tmp_db();
+        let g = r#"{"nodes":[{"id":"n1","type":"text","label":"T"}],"edges":[]}"#;
+        // 新建
+        let id1 = db.wf_save("流程A", g).unwrap();
+        // 同名保存 = 更新，不新增
+        let id2 = db.wf_save("流程A", r#"{"nodes":[],"edges":[]}"#).unwrap();
+        assert_eq!(id1, id2, "同名保存应更新同一行");
+        // 列表
+        let list = db.wf_list().unwrap();
+        assert!(list.iter().any(|w| w.name == "流程A" && w.graph.contains("nodes")));
+        // 读取
+        let got = db.wf_get(id1).unwrap().unwrap();
+        assert_eq!(got.name, "流程A");
+        assert!(db.wf_get(99999).unwrap().is_none());
+        // 删除
+        db.wf_delete(id1).unwrap();
+        assert!(db.wf_get(id1).unwrap().is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn workflow_run_history_records_and_lists() {
+        let (dir, db) = tmp_db();
+        let id = db.wf_save("流程A", "{}").unwrap();
+        db.wf_run_add(Some(id), "流程A", "success", 1000, 2000, "输出：你好").unwrap();
+        db.wf_run_add(None, "临时流程", "failed", 3000, 4000, "执行异常").unwrap();
+        let runs = db.wf_runs(10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].wf_name, "临时流程"); // 按开始时间倒序
+        assert_eq!(runs[0].status, "failed");
+        assert_eq!(runs[1].wf_name, "流程A");
+        assert_eq!(runs[1].summary, "输出：你好");
+        // 删除工作流不影响历史（wf_name 快照）
+        db.wf_delete(id).unwrap();
+        assert_eq!(db.wf_runs(10).unwrap().len(), 2);
         cleanup(&dir);
     }
 }

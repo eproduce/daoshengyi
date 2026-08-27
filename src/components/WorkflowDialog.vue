@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { VueFlow } from "@vue-flow/core";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -9,7 +9,7 @@ import { callMcpTool } from "@/stores/chat";
 import { executeWorkflow, type WorkflowNode, type WorkflowEdge, type WorkflowNodeType } from "@/utils/workflow-engine";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "@/data/workflow-templates";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Trash2, Download, Upload, Plus, X } from "lucide-vue-next";
+import { Play, Trash2, Download, Upload, Plus, X, Save, RotateCw } from "lucide-vue-next";
 
 const emit = defineEmits<{ close: [] }>();
 const chatStore = useChatStore();
@@ -24,6 +24,12 @@ const running = ref(false);
 const log = ref<string[]>([]);
 const outputs = ref<{ nodeId: string; label: string; value: string }[]>([]);
 const externalInput = ref("");
+// 持久化：我的工作流 + 运行历史
+const wfName = ref("");
+const myWorkflows = ref<{ id: number; name: string; updated_at: number }[]>([]);
+const loadedWfId = ref<number | null>(null);
+const runs = ref<{ id: number; wf_name: string; status: string; started_at: number; summary: string }[]>([]);
+const loadedWfName = ref("");
 
 const NODE_COLORS: Record<WorkflowNodeType, string> = {
   text: "#4caf50",
@@ -121,6 +127,8 @@ async function run() {
   running.value = true;
   log.value = [];
   outputs.value = [];
+  const startedAt = Date.now();
+  const runName = loadedWfName.value || wfName.value.trim() || "未命名工作流";
   const external: Record<string, string> = {};
   if (externalInput.value.trim()) external["user"] = externalInput.value.trim();
   try {
@@ -143,12 +151,85 @@ async function run() {
     });
     log.value = res.log;
     outputs.value = res.outputs;
+    // 记录运行历史
+    const summary = (res.outputs.length
+      ? res.outputs.slice(0, 2).map((o) => `[${o.label}] ${o.value.slice(0, 80)}`).join("；")
+      : (res.log[0] || "").slice(0, 160)) || "（无输出）";
+    await recordRun(runName, "success", startedAt, Date.now(), summary);
   } catch (e) {
-    log.value = [`❌ 执行异常：${e instanceof Error ? e.message : String(e)}`];
+    const msg = e instanceof Error ? e.message : String(e);
+    log.value = [`❌ 执行异常：${msg}`];
+    await recordRun(runName, "failed", startedAt, Date.now(), msg.slice(0, 160));
   } finally {
     running.value = false;
   }
 }
+
+// --- 持久化：我的工作流 + 运行历史 ---
+
+async function refreshWorkflows() {
+  try {
+    myWorkflows.value = await invoke<{ id: number; name: string; updated_at: number }[]>("workflow_list");
+    runs.value = await invoke<{ id: number; wf_name: string; status: string; started_at: number; summary: string }[]>("workflow_runs", { limit: 10 });
+  } catch { /* 后端暂不可用 */ }
+}
+async function saveWorkflow() {
+  const name = wfName.value.trim();
+  if (!name) { log.value = ["请先在名称框输入工作流名称再保存"]; return; }
+  const graph = buildGraph();
+  try {
+    loadedWfId.value = await invoke<number>("workflow_save", { name, graph: JSON.stringify(graph) });
+    loadedWfName.value = name;
+    await refreshWorkflows();
+    log.value = [`✅ 已保存「${name}」：${graph.nodes.length} 节点 / ${graph.edges.length} 连线`];
+  } catch (e) {
+    log.value = [`❌ 保存失败：${e instanceof Error ? e.message : String(e)}`];
+  }
+}
+async function loadWorkflow(id: number) {
+  try {
+    const w = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id });
+    if (!w) return;
+    const g = JSON.parse(w.graph) as { nodes: WorkflowNode[]; edges: WorkflowEdge[] };
+    nodes.value = (g.nodes || []).map((wf) => ({
+      id: wf.id, type: "default", position: { x: wf.x ?? 40, y: wf.y ?? 40 },
+      data: { label: wf.label, wf },
+      style: { border: `1px solid ${NODE_COLORS[wf.type] || "#999"}`, borderLeft: `4px solid ${NODE_COLORS[wf.type] || "#999"}`, background: "#fff", color: "#222", borderRadius: 8, minWidth: 120 },
+    }));
+    edges.value = (g.edges || []).map((e) => {
+      const wfEdge: WorkflowEdge = { id: e.id, source: e.source, target: e.target, label: e.label };
+      return { id: wfEdge.id, source: wfEdge.source, target: wfEdge.target, animated: true, data: { edge: wfEdge } };
+    });
+    loadedWfId.value = w.id;
+    loadedWfName.value = w.name;
+    wfName.value = w.name;
+    selectedId.value = null; selectedEdgeId.value = null;
+    log.value = [`✅ 已载入工作流「${w.name}」：${g.nodes.length} 节点 / ${g.edges.length} 连线`];
+  } catch (e) {
+    log.value = [`❌ 载入失败：${e instanceof Error ? e.message : String(e)}`];
+  }
+}
+async function deleteCurrentWf() {
+  if (!loadedWfId.value) { log.value = ["当前未载入可删除的工作流"]; return; }
+  try {
+    await invoke("workflow_delete", { id: loadedWfId.value });
+    await refreshWorkflows();
+    loadedWfId.value = null; loadedWfName.value = "";
+    log.value = ["🗑 已删除该工作流"];
+  } catch (e) {
+    log.value = [`❌ 删除失败：${e instanceof Error ? e.message : String(e)}`];
+  }
+}
+async function recordRun(wfName: string, status: string, startedAt: number, finishedAt: number, summary: string) {
+  try {
+    await invoke("workflow_run_add", { wfId: loadedWfId.value, wfName, status, startedAt, finishedAt, summary });
+    await refreshWorkflows();
+  } catch { /* 历史记录失败不影响运行结果展示 */ }
+}
+function fmtTime(ms: number) {
+  return new Date(ms).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+onMounted(refreshWorkflows);
 
 function exportJson() {
   const a = document.createElement("a");
@@ -211,6 +292,18 @@ function loadTemplate(ev: Event) {
           <button class="wf-btn wf-btn--close" @click="emit('close')"><X :size="14" /></button>
         </div>
       </header>
+
+      <div class="wf-toolbar">
+        <input v-model="wfName" class="wf-toolbar__name" placeholder="工作流名称（保存用）" @keydown.enter="saveWorkflow" />
+        <button class="wf-btn" @click="saveWorkflow"><Save :size="13" /> 保存</button>
+        <select class="wf-palette__select" @change="(e: any) => { const id = Number(e.target.value); e.target.value = ''; if (id) loadWorkflow(id); }">
+          <option value="" disabled selected>📂 我的工作流…</option>
+          <option v-for="w in myWorkflows" :key="w.id" :value="w.id">{{ w.name }}（{{ w.updated_at ? new Date(w.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '' }}）</option>
+        </select>
+        <button class="wf-btn" @click="deleteCurrentWf"><Trash2 :size="13" /> 删除当前</button>
+        <button class="wf-btn" @click="refreshWorkflows" title="刷新我的工作流与运行历史"><RotateCw :size="13" /></button>
+        <span v-if="loadedWfName" class="wf-toolbar__loaded">已载入：{{ loadedWfName }}</span>
+      </div>
 
       <div class="wf-body">
         <!-- 节点面板 -->
@@ -294,6 +387,18 @@ function loadTemplate(ev: Event) {
             <pre class="wf-run__pre">{{ o.value }}</pre>
           </div>
         </div>
+        <div class="wf-run__hist">
+          <strong>运行历史</strong>
+          <div v-if="!runs.length" class="wf-run__empty">暂无历史记录</div>
+          <div v-for="r in runs" :key="r.id" class="wf-run__hist-item" :title="r.summary">
+            <span class="wf-run__hist-status" :class="r.status === 'success' ? 'ok' : 'fail'">{{ r.status === "success" ? "✓" : "✗" }}</span>
+            <div class="wf-run__hist-body">
+              <b>{{ r.wf_name }}</b>
+              <span class="wf-run__hist-meta">{{ fmtTime(r.started_at) }}</span>
+              <span class="wf-run__hist-sum">{{ r.summary }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -306,6 +411,9 @@ function loadTemplate(ev: Event) {
 .wf-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border, #eee); }
 .wf-title { font-weight: 700; }
 .wf-head__actions { display: flex; gap: 8px; align-items: center; }
+.wf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border, #eee); flex-wrap: wrap; }
+.wf-toolbar__name { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; width: 170px; }
+.wf-toolbar__loaded { font-size: 12px; color: #2e7d32; font-weight: 600; }
 .wf-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }
 .wf-btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .wf-btn:disabled { opacity: .5; cursor: default; }
@@ -324,9 +432,18 @@ function loadTemplate(ev: Event) {
 .wf-inspector__title { font-size: 12px; font-weight: 700; color: var(--text, #222); }
 .wf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary, #666); }
 .wf-field input, .wf-field textarea { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; font-family: inherit; }
-.wf-run { border-top: 1px solid var(--border, #eee); padding: 10px 14px; display: flex; gap: 16px; height: 160px; min-height: 0; }
+.wf-run { border-top: 1px solid var(--border, #eee); padding: 10px 14px; display: flex; gap: 16px; height: 180px; min-height: 0; }
 .wf-run__log { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .wf-run__out { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; }
+.wf-run__hist { width: 240px; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; border-left: 1px solid var(--border, #eee); padding-left: 12px; }
+.wf-run__hist-item { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; }
+.wf-run__hist-status { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; flex-shrink: 0; margin-top: 1px; }
+.wf-run__hist-status.ok { background: #2e7d32; }
+.wf-run__hist-status.fail { background: #c62828; }
+.wf-run__hist-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wf-run__hist-body b { font-size: 11px; }
+.wf-run__hist-meta { color: var(--text-secondary, #999); font-size: 10px; }
+.wf-run__hist-sum { color: var(--text-secondary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
 .wf-run__pre { font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--bg-soft, #f5f5f5); border-radius: 6px; padding: 6px 8px; margin: 0; max-height: 110px; overflow-y: auto; color: var(--text, #222); }
 .wf-run__empty { font-size: 12px; color: var(--text-secondary, #888); }
 .wf-run__out-item { display: flex; flex-direction: column; gap: 2px; }
