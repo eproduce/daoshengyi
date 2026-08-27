@@ -13,6 +13,7 @@ import { topoSort, renderTemplate, executeWorkflow, evalCondition, runCodeNode }
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
+import { shouldSkipAutoSearch } from "../src/utils/search-gate.ts";
 
 let pass = 0;
 let fail = 0;
@@ -481,6 +482,28 @@ console.log("\n== 长期记忆 2.3：写入触发门槛（shouldExtractMessages�
     { role: "assistant", content: "hi" },
   ];
   assert(shouldExtractMessages(toolHeavy) === false, "工具消息不算正文，仍判定内容过少");
+}
+
+console.log("\n== 自动联网搜索触发门槛（shouldSkipAutoSearch） ==");
+{
+  // 文档/附件处理类：应跳过联网搜索
+  assert(shouldSkipAutoSearch("转成清晰表格文档") === true, "转表格文档跳过搜索（用户场景）");
+  assert(shouldSkipAutoSearch("把这份证明转成 Excel") === true, "转 Excel 跳过搜索");
+  assert(shouldSkipAutoSearch("整理成清单发给我") === true, "整理成清单跳过搜索");
+  assert(shouldSkipAutoSearch("解读这份社保证明") === true, "解读证明跳过搜索");
+  assert(shouldSkipAutoSearch("帮我生成一份总结报告") === true, "生成报告跳过搜索");
+  assert(shouldSkipAutoSearch("翻译这段为文档") === true, "翻译成文档跳过搜索");
+
+  // 本地文件系统类：跳过
+  assert(shouldSkipAutoSearch("列出 /Users/wanghuan/op 目录下的项目") === true, "本地路径+目录词跳过");
+  assert(shouldSkipAutoSearch("op目录") === true, "本地目录词跳过");
+
+  // 明确联网意图：仍搜索
+  assert(shouldSkipAutoSearch("把最近 AI 新闻整理成表格") === false, "含联网意图词(新闻)不跳过");
+  assert(shouldSkipAutoSearch("今天的天气怎么样") === false, "天气查询需搜索");
+  assert(shouldSkipAutoSearch("2026 最新入学政策是什么") === false, "政策/最新需搜索");
+  assert(shouldSkipAutoSearch("如何学习 Rust 编程") === false, "教程类需搜索");
+  assert(shouldSkipAutoSearch("") === true, "空消息跳过");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);

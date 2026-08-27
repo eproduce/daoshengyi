@@ -8,6 +8,11 @@
 
 ## 2026-08-27
 
+### ✅ 自动搜索误触发修复：文档/附件处理类不再联网搜索
+- **根因**：发送前自动搜索（enableWebSearch 开关）的跳过逻辑只覆盖「本地文件系统类」，未覆盖**文档/附件处理类**——用户对参保证明附件回复「转成清晰表格文档」（本地格式转换请求），被清洗成关键词联网搜索（界面出现「正在联网搜索：转成清晰表格文档...」），不合理
+- **修复**：新建 `src/utils/search-gate.ts` 纯函数 `shouldSkipAutoSearch(text)`（可测），自动搜索跳过规则：①本地文件系统类（本地路径+目录词/纯目录词且无联网意图）②**文档/附件处理类** `DOC_EDIT`（转成/整理/汇总/提取/解读/编辑/翻译/生成/分析 + 表格/文档/excel/word/pdf/清单/报告/证明/截图/文件/附件…）且**无明确联网意图词**（新闻/最新/政策/怎么/是什么…）——含联网意图仍搜索；chat.ts 自动搜索判断改为调用该纯函数。**经验**：本地处理请求（转格式/整理附件）与联网检索要区分触发，启发式按「动词+处理对象」识别 + 联网意图词兜底
+- 测试：新增 13 项 → npm test 162；vue-tsc + vite build 全过
+
 ### ✅ 停止即时化 + 记忆分层 1.4 + 写入触发 2.3 + P-A4 diff 确认
 - **停止不即时修复（真正立刻停）**：此前停止只在前端移除监听，**Rust 端 `send_message` 仍在继续拉流/emit/耗 token** → 新增 `CANCELLED_STREAMS` 取消集合 + `cancel_stream(request_id)` 命令；`send_message` 每收到一个 chunk 前检查，命中即停止生成并 emit sse-done；前端 `activeStreamRequestId` 记录当前流式 id，`stopStreaming` 立即 `invoke("cancel_stream")`——流式生成**下一个 chunk 到达即停**（毫秒级）。已存在的 stopRequested/waitStopSignal 负责中断工具循环。验证：cargo check 0 警告
 - **长期记忆 1.4 记忆分层（episodic 聚合层）**：新建 `src/utils/memory-episodic.ts` 纯函数 `buildEpisodicPrompt`（把会话摘要交给 LLM 提炼跨会话反复出现的主题）/`parseEpisodic`（宽松解析、剥离代码块、标题截断 12 字）；db.rs 加 `memory_episodic` 表（id/title/summary/source_summary_ids/created_at/updated_at）+ `save_episodic`/`list_episodic`/`delete_episodic`/`episodic_covered`（收集已汇总摘要 id 避免重复）；lib.rs 命令 `list_episodic`/`save_episodic_cmd`/`delete_episodic_cmd`/`episodic_covered`；memory.ts `aggregateEpisodic(config)`（取最近 60 条摘要 → 过滤未汇总 → LLM 提炼 → 保存）；MemoryPanel 加「跨会话汇总」按钮 + 主题列表（紫色分层区块）。**踩坑**：multi_replace 时误删了「会话摘要」区块导致 History 图标未使用报 TS6133——补回区块。测试：前端 6 项（episodic 纯函数）+ Rust 1 项（episodic_save_list_covered_delete）→ npm test 149、cargo test 46
