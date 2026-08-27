@@ -187,9 +187,9 @@
 |---|------|---------|---------|
 | 1 | **会话内「撤销最近操作」** | ✅ | `apply_edits`（preview）+ `tool_audit`（工具调用全记录） | **已完成（2026-08-27）**：`undo_history` 表（action/path/backup/existed）+ `record_undo`（apply_edits 写盘前 / write_file_agent / delete_file_agent 自动快照）+ `undo_by_id`（edit 恢复内容 / create 删除新建 / delete 恢复文件，回滚后删记录）+ `list_undo`；命令 `apply_edits`/`delete_file_agent` 重构为纯函数+命令层（compute_edits/delete_file_impl）；前端 `UndoBubble` 右下角悬浮气泡显示最近可撤销操作一键回滚（写/删工具成功后 dispatch undo-changed 刷新）；测试 Rust +4 / 前端全绿。待做：操作回放面板（可筛选/导出） |
 | 2 | **项目语义索引 / 自然语言找代码**（P-A3 补全） | ✅ | `ollama_embed` + `kb_chunks` embedding 基建 | **已完成（2026-08-27）**：`code_chunks` 表（按 root 组织）+ `code_clear/code_add_chunk/code_search(余弦)/code_roots/code_stats`；命令 `code_index`（扫描代码文件→chunk_text 500 分块→Ollama 批量向量化，跳过 node_modules/.git/target 与大文件）/`code_search`（查询嵌入→余弦召回）/`code_roots`/`code_stats`/`code_delete`；前端内置工具 code_index/code_search/code_roots/code_stats/code_delete + BUILTIN_TOOLS/提示词描述；测试 Rust +1。待做：符号跳转（定义/引用） |
-| 3 | **IM 网关（远程驱动 agent）** | `send_im`（已有只发不收）+ 设计方案 `docs/IM_GATEWAY.md` | Rust 长轮询网关 `ImAdapter` trait（poll_updates/send_message）+ `ImGateway`（去重/白名单/限流）；Telegram/钉钉/飞书；收到消息→执行工具→回结果 |
-| 4 | **知识库 RAG 自动注入** | `kb_search_hybrid` + 记忆注入通道 | 对话前自动检索相关分块注入上下文（像记忆注入），RAG 无感化 |
-| 5 | **工作流持久化 + 运行历史** | `workflow-engine` + 设置持久化 | 「我的工作流」保存列表、一键运行、最近运行记录 |
+| 3 | **IM 网关（远程驱动 agent）** | `send_im`（已有只发不收）+ 设计方案 `docs/IM_GATEWAY.md` | **待用户确认目标平台后实施**（2026-08-27）：方案已备（Rust 长轮询网关 `ImAdapter` trait + `ImGateway` 去重/白名单/限流；Telegram/钉钉/飞书；收到消息→执行工具→回结果）。文档明确「等确认目标平台后按 Phase 实施」，未擅自实现具体平台 |
+| 4 | **知识库 RAG 自动注入** | `kb_search_hybrid` + 记忆注入通道 | **已完成（2026-08-27）**：`AppSettings.rag_enabled/rag_kb`；`sendMessage` 会话首轮自动 `kb_search` 默认知识库命中分块注入上下文（`ragInjectedConvs` 同会话只注入一次 + 5s 超时兜底，精细引用仍可手动 kb_search）；设置「知识库」Tab（开关 + 默认库下拉 + 库列表/分块数 + 刷新） |
+| 5 | **工作流持久化 + 运行历史** | `workflow-engine` + 设置持久化 | **已完成（2026-08-27）**：`workflows` 表（name 唯一同名保存即更新）+ `workflow_runs` 表 + `wf_save/list/get/delete/run_add/runs`；命令 `workflow_*`；前端工具栏（名称保存 + 我的工作流下拉载入 + 删除当前 + 刷新）+ 运行成功/失败自动记录历史 + 底部「运行历史」列。**后续（同日）工作流 UI 优化**：接入 `WorkflowNodeView` 自定义节点（显式可拖拽 Handle 连接点，条件节点 T/F 双出点自动带分支标签）+ fit-view-on-init |
 
 ### 🟡 中等复杂度（需设计，本地可做）
 - 会话级权限记忆（「本次会话允许执行 X」→ 减少重复确认）

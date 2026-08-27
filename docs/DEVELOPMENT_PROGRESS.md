@@ -8,6 +8,23 @@
 
 ## 2026-08-27
 
+### ✅ 工作流 UI 优化（§3.10 ⑤，工作流编辑器可用化）
+- **背景**：用户反馈「编辑器还是半成品、好多功能需要优化、甚至节点都无法连线」——默认 vue-flow 节点连接点不可见、难拖线
+- **落地**：`WorkflowDialog.vue` 接入已备好的 `WorkflowNodeView.vue` 自定义节点（`markRaw` + `nodeTypes`）：节点**显式渲染可拖拽连线 Handle**——顶部入口（target）+ 底部出口（source）；**条件节点底部双出点**（蓝「T」true / 红「F」false），从对应连接点拖线**自动带分支标签**（connectEdge 读 sourceHandle），无需手动填写；连线/导入/模板/载入工作流时把分支标签同步到 vue-flow 边显示；`fit-view-on-init` + `min-zoom 0.1` 大图自动适配；移除自定义节点外的重复边框样式（节点自带）
+- **踩坑**：`nodeTypes` 里 `markRaw(WorkflowNodeView)` 与 vue-flow 1.x `NodeTypesObject`（要求 NodeComponent 含 id/type/selected 等 NodeProps）类型不兼容 → 用宽松断言 `as any`（运行时正确）
+- 验证：vue-tsc + vite build 全过
+
+### ✅ 工作流持久化 + 运行历史（§3.10 ④落地）
+- **后端**：db.rs 加 `workflows` 表（`name` 唯一，同名保存即更新 graph+updated_at）+ `workflow_runs` 表（wf_id 可空，历史保留 wf_name 快照）+ `wf_save`/`wf_list`/`wf_get`/`wf_delete`/`wf_run_add`/`wf_runs` + `WorkflowRow`/`WorkflowRunRow`；lib.rs 命令 `workflow_save`/`workflow_list`/`workflow_get`/`workflow_delete`/`workflow_run_add`/`workflow_runs` + 注册
+- **前端**：`WorkflowDialog.vue` 顶部工具栏——名称输入 +「保存」（`workflow_save`）、「我的工作流」下拉（`workflow_list` + `workflow_get` 载入）、「删除当前」、「刷新」；运行成功/失败自动 `workflow_run_add` 记录（摘要=终端输出前 2 项/错误信息）；底部新增「运行历史」列（✓/✗ 状态 + 名称 + 时间 + 摘要）
+- 测试：Rust +2（workflow_save_upsert_list_get_delete：同名更新同 id/列表/读取/删除；workflow_run_history_records_and_lists：记录+倒序+删流不影响历史）→ cargo test 54；vue-tsc + vite build 全过
+
+### ✅ 知识库 RAG 自动注入（§3.10 ③落地）
+- **设置**：settings.rs `AppSettings` 加 `rag_enabled`（默认关）/`rag_kb`（空=未配置）字段（serde default + Default + 2 测试字面量同步）+ appSettings.ts 接口与默认值
+- **注入**：`chat.ts sendMessage` 在记忆注入后、`ragInjectedConvs` 集合判断**会话首轮只注入一次**（避免每轮重复灌入膨胀上下文）——开启且配置默认知识库时自动 `kb_search` 检索用户消息相关分块（limit 4，5s 超时兜底）注入 volatileCtx「知识库相关上下文（自动检索，非必须逐条引用）」；精细引用仍可让模型手动 kb_search
+- **设置 UI**：`SettingsDialog.vue` 新增「知识库」Tab（Database 图标）——自动注入开关 + 默认知识库下拉（kb_list 展示名称+分块数，默认库失效自动兜底第一个）+ 刷新按钮
+- 验证：cargo test 52 + vue-tsc + vite build 全过。**踩坑**：multi_replace 时两个测试字面量文本相同导致「Multiple matches」——字段被加进测试却漏了 `Default impl`（改字段类改 4 处：serde 默认 + Default + 各测试字面量，务必逐一核对）
+
 ### ✅ 项目语义索引 / 自然语言找代码（§3.10 ②落地，P-A3 补全）
 - **后端**：db.rs `code_chunks` 表（root/file/chunk/embedding，按项目组织）+ `code_clear`/`code_add_chunk`/`code_search`（余弦相似度召回）/`code_roots`/`code_stats` + `CodeChunkRow`；lib.rs `code_index` 命令（扫描代码扩展名文件 → 跳过 node_modules/.git/target/dist 与大文件（<512KB）→ `chunk_text` 500 分块 → Ollama `nomic-embed-text` 批量向量化（20/批，重建式；Ollama 不可用明确报错引导部署））、`code_search`（查询嵌入→余弦召回）、`code_roots`/`code_stats`/`code_delete` + 注册
 - **前端**：内置工具 `code_index`/`code_search`/`code_roots`/`code_stats`/`code_delete`（callBuiltinTool 分支，code_search 返回 `[文件#分块]` + 代码片段）+ BUILTIN_TOOLS 描述 + 主提示词描述（「找 XX 代码」先 code_index 再 code_search，命中后 read_file 精读）
