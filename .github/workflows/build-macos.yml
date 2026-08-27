@@ -1,11 +1,14 @@
 # 道生一 macOS 打包流水线
 # - 手动触发：Actions → Build macOS → Run workflow
-# - 推送 v* 标签：自动打包并发布 GitHub Release（附 x64 + aarch64 两个 dmg）
+# - 推送 v* 标签：自动打包并发布 GitHub Release（一个 universal dmg，兼容 Intel + Apple Silicon）
 #
 # 注意：
-# - bundle.resources 里的 ocr_tool 是编译产物（.gitignore 忽略），CI 会先用 swiftc 编译 ocr_tool.swift
+# - GitHub 已退役 macOS 13（Intel）runner，当前只有 Apple Silicon（macos-14/15）→
+#   用 `tauri build --target universal-apple-darwin` 在 arm64 runner 上交叉编译
+#   x86_64 + aarch64 两个 target 并 lipo 合并为通用二进制（单个 dmg 两种芯片都能装）
+# - bundle.resources 里的 ocr_tool 是编译产物（.gitignore 忽略），需编译为 universal：
+#   swiftc 分别编 arm64/x86_64 再 lipo 合并（Vision/ImageIO 为系统框架自动链接）
 # - 产物为 ad-hoc 签名（未配置 Apple 开发者证书），首次打开若被 Gatekeeper 拦截，右键「打开」放行
-# - 架构：macos-13(Intel)→x64；macos-14(Apple Silicon)→aarch64
 
 name: Build macOS
 
@@ -17,18 +20,8 @@ on:
 
 jobs:
   build-macos:
-    name: Bundle macOS ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Intel (x86_64)：打 x64 安装包
-          - os: macos-13
-            arch: x86_64
-          # Apple Silicon (aarch64)：打 arm64 安装包
-          - os: macos-14
-            arch: aarch64
-    runs-on: ${{ matrix.os }}
+    name: Bundle macOS (universal x86_64 + aarch64)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +33,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -49,25 +44,30 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # ocr_tool 是编译产物且被 gitignore，需先编译（Vision/ImageIO 为系统框架，swiftc 自动链接）
-      - name: Compile OCR tool (native arch)
+      # ocr_tool 是编译产物且被 gitignore，需先编译为 universal（两架构 + lipo 合并）
+      - name: Compile OCR tool (universal)
         working-directory: src-tauri
-        run: swiftc -O ocr_tool.swift -o ocr_tool
+        run: |
+          swiftc -O ocr_tool.swift -o ocr_tool-arm64 -target arm64-apple-macos13.0
+          swiftc -O ocr_tool.swift -o ocr_tool-x64 -target x86_64-apple-macos13.0
+          lipo -create -output ocr_tool ocr_tool-arm64 ocr_tool-x64
+          file ocr_tool
 
       # beforeBuildCommand 会先执行 npm run build（vue-tsc + vite build）
-      - name: Build & bundle (Tauri, native arch)
-        run: npm run tauri build
+      # universal-apple-darwin：交叉编译两架构并 lipo 合并为通用 app → 单个 dmg 兼容两种芯片
+      - name: Build & bundle (Tauri, universal)
+        run: npm run tauri build -- --target universal-apple-darwin
 
-      - name: Upload artifacts (dmg + app)
+      - name: Upload artifacts (universal dmg + app)
         uses: actions/upload-artifact@v4
         with:
-          name: daoshengyi-${{ matrix.arch }}
+          name: daoshengyi-universal
           path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
 
-  # 推送 v* 标签时：汇总两个架构的 dmg 发布为 GitHub Release
+  # 推送 v* 标签时：发布 dmg 为 GitHub Release
   publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')

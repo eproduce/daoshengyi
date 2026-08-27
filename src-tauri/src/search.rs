@@ -139,6 +139,17 @@ async fn search_baidu(query: &str) -> Result<Vec<SearchResult>, String> {
     Ok(Vec::new())
 }
 
+/// 把字节索引对齐到最近的字符边界（避免按字节切片切到 UTF-8 字符中间导致 panic）
+/// 泛型接受 String 或 &str（各引擎解析函数的 html 参数类型不一）
+fn cbound<S: AsRef<str>>(s: S, i: usize) -> usize {
+    let s = s.as_ref();
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// 解析百度结果页：按结果块 class 分段，提取 mu= 真实 URL、<h3> 标题、s-data 摘要
 fn parse_baidu(html: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
@@ -149,14 +160,14 @@ fn parse_baidu(html: &str) -> Vec<SearchResult> {
         };
         // 结果块结束：下一个 "class=\"result " 或 8KB 上限（块内可能嵌套 div）
         let end = match html[start + 5..].find("class=\"result ") {
-            Some(i) => start + 5 + i, None => (start + 8000).min(html.len()),
+            Some(i) => start + 5 + i, None => cbound(&html, (start + 8000).min(html.len())),
         };
         let block = &html[start..end];
 
         let title = extract_baidu_title(block);
         let url = extract_baidu_mu(block);
         if title.is_empty() || url.is_empty() {
-            pos = end + 5; continue;
+            pos = cbound(&html, end + 5); continue;
         }
         let snippet = extract_baidu_summary(block);
         results.push(SearchResult {
@@ -164,7 +175,7 @@ fn parse_baidu(html: &str) -> Vec<SearchResult> {
             url,
             snippet: snippet.chars().take(300).collect(),
         });
-        pos = end + 5;
+        pos = cbound(&html, end + 5);
     }
     results
 }
@@ -253,19 +264,19 @@ async fn search_360(query: &str) -> Result<Vec<SearchResult>, String> {
             Some(i) => pos + i, None => break,
         };
         let end = match html[start + 12..].find("class=\"res-list\"") {
-            Some(i) => start + 12 + i, None => (start + 3000).min(html.len()),
+            Some(i) => start + 12 + i, None => cbound(&html, (start + 3000).min(html.len())),
         };
         let block = &html[start..end];
 
         let url = extract_attr(block, "data-mdurl=\"", "\"");
         if url.is_empty() || url.contains("so.com/link") {
-            pos = end + 12; continue;
+            pos = cbound(&html, end + 12); continue;
         }
         let title = extract_360_title(block);
         let snippet = extract_360_desc(block);
-        if title.is_empty() { pos = end + 12; continue; }
+        if title.is_empty() { pos = cbound(&html, end + 12); continue; }
         results.push(SearchResult { title, url, snippet: snippet.chars().take(300).collect() });
-        pos = end + 12;
+        pos = cbound(&html, end + 12);
     }
     if !results.is_empty() {
         eprintln!("[360] {} results", results.len());
@@ -318,7 +329,7 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
             Some(i) => pos + i, None => break,
         };
         let end = match html[start + 5..].find("class=\"rb\"") {
-            Some(i) => start + 5 + i, None => (start + 2500).min(html.len()),
+            Some(i) => start + 5 + i, None => cbound(&html, (start + 2500).min(html.len())),
         };
         let block = &html[start..end];
         let title = extract_sogou_title(block);
@@ -331,7 +342,7 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
                 results.push(SearchResult { title, url: href, snippet: snippet.chars().take(300).collect() });
             }
         }
-        pos = end + 5;
+        pos = cbound(&html, end + 5);
     }
     // 补充 vr-title 卡片（标题在 <h3 class="vr-title"> 内的 <a> 中，链接可能是相对路径）
     if results.len() < 6 {
@@ -340,7 +351,7 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
             let start = match html[pos2..].find("class=\"vr-title") {
                 Some(i) => pos2 + i, None => break,
             };
-            let end = (start + 1000).min(html.len());
+            let end = cbound(&html, (start + 1000).min(html.len()));
             let block = &html[start..end];
             // 提取 <a ...>...</a> 内的标题文本
             let title = extract_vr_title(block);
@@ -349,7 +360,7 @@ async fn search_sogou(query: &str) -> Result<Vec<SearchResult>, String> {
             if !title.is_empty() && href.starts_with("http") && seen_urls.insert(href.clone()) {
                 results.push(SearchResult { title, url: href, snippet: String::new() });
             }
-            pos2 = end;
+            pos2 = cbound(&html, end);
         }
     }
     if !results.is_empty() {
@@ -421,7 +432,7 @@ async fn search_bing(query: &str) -> Result<Vec<SearchResult>, String> {
             if !title.is_empty() && !url.is_empty() {
                 results.push(SearchResult { title, url, snippet: snippet.chars().take(300).collect() });
             }
-            pos = end + 5;
+            pos = cbound(&html, end + 5);
         }
         if !results.is_empty() {
             eprintln!("[Bing {}] {} results", domain, results.len());

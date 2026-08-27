@@ -152,6 +152,20 @@ function waitStopSignal(): Promise<void> {
     stopWaiters.push(resolve);
   });
 }
+
+/**
+ * 执行工具但用户停止时立即中断：race waitStopSignal，点停止后不等当前工具跑完
+ * 立即抛 AgentStoppedError，让工具循环马上退出——真正「立即停止 agent 行为」。
+ * 注：后台 Rust 命令可能仍在执行（前端无法 kill 进程），但 agent 不再继续生成/调工具。
+ */
+async function callToolStoppable(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+  const raced = await Promise.race([
+    callMcpTool(server, tool, args).then((r) => ({ kind: "ok" as const, data: r })),
+    waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
+  ]);
+  if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
+  return raced.data;
+}
 /// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
 class AgentStoppedError extends Error {
   constructor() {
@@ -1274,8 +1288,9 @@ async function runSubagentLoop(
       if (stopRequested) throw new AgentStoppedError(); // 执行工具前
       let result: string;
       try {
-        result = await callMcpTool(server, tc.tool, tc.arguments);
+        result = await callToolStoppable(server, tc.tool, tc.arguments);
       } catch (e) {
+        if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
         result = `错误: ${e instanceof Error ? e.message : String(e)}`;
       }
       if (stopRequested) throw new AgentStoppedError(); // 工具返回后
@@ -2483,7 +2498,8 @@ export const useChatStore = defineStore("chat", () => {
         const startTool = Date.now();
         dbg(`[tool] 开始执行 ${tc.server}/${tc.tool}，args=${argsStr.slice(0, 120)}`);
         try {
-          const result = await callMcpTool(tc.server, tc.tool, tc.arguments);
+          // 用户停止时立即中断（不等当前工具跑完），让「停止」即刻生效
+          const result = await callToolStoppable(tc.server, tc.tool, tc.arguments);
           if (stopRequested) break; // 工具返回后被停止 → 不再回填继续下一轮
           dbg(`[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`);
           const clipped = formatToolResultPreview(tc.tool, result);
@@ -2509,6 +2525,7 @@ export const useChatStore = defineStore("chat", () => {
             content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
           });
         } catch (e: unknown) {
+          if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环，不当作工具失败
           const err = e instanceof Error ? e.message : String(e);
           dbg(`[tool] ${tc.tool} 执行失败: ${err}`);
           const card = `> ❌ 工具调用失败: \`${err}\``;
