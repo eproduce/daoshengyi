@@ -192,7 +192,7 @@
 | 5 | **工作流持久化 + 运行历史** | `workflow-engine` + 设置持久化 | **已完成（2026-08-27）**：`workflows` 表（name 唯一同名保存即更新）+ `workflow_runs` 表 + `wf_save/list/get/delete/run_add/runs`；命令 `workflow_*`；前端工具栏（名称保存 + 我的工作流下拉载入 + 删除当前 + 刷新）+ 运行成功/失败自动记录历史 + 底部「运行历史」列。**后续（同日）工作流 UI 优化**：接入 `WorkflowNodeView` 自定义节点（显式可拖拽 Handle 连接点，条件节点 T/F 双出点自动带分支标签）+ fit-view-on-init |
 
 ### 🟡 中等复杂度（需设计，本地可做）
-- 会话级权限记忆（「本次会话允许执行 X」→ 减少重复确认）
+- **会话级权限记忆（✅ 已完成 2026-08-28）**：文件编辑确认弹窗加「本会话内不再询问」勾选——用户在 DiffConfirmDialog 勾选后，`replace_string`/`insert_string`/`delete_file` 本会话内自动放行（chat.ts 模块级 `sessionPermits` reactive Set + `hasSessionPermit`/`rememberSessionPermit`/`clearSessionPermits`，仅本会话有效不落盘）
 - 审计可视化面板（工具调用全记录 UI：筛选/回放/导出）
 - 外部编码 Agent 阶段三：彻底移除 `delegate_coding_agent`，零外部依赖
 

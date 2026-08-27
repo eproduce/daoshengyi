@@ -34,6 +34,11 @@
 - **UI**：`ChatInput.vue` 新增「模式」pill 下拉（6 模式，emoji+名称+描述+✓ 高亮，点击外部关闭），放在联网按钮旁
 - 测试：+17 项（6 模式齐全 / getModeById 命中与未知 / 工具白名单 chat 不限 task 允许 plan_task quick 全禁 / 各模式有行为提示词）→ npm test 206；vue-tsc + vite build 全过。**待做**：Phase B（研究/编码深化、模式记忆）、Phase C（自定义模式/市场）
 
+### ✅ 会话级权限记忆（§3.10 🟡）
+- **背景**：开启「文件编辑需确认」后，Agent 多次改文件每次都弹 diff 确认，重复打扰
+- **落地**：chat.ts 模块级 `sessionPermits` reactive Set（仅本会话有效，不落盘）+ `hasSessionPermit`/`rememberSessionPermit`/`clearSessionPermits`（store 导出）；`replace_string`/`insert_string`/`delete_file` 三个确认点在请求前检查会话允许集（命中直接放行），`EditConfirmRequest` 加 `rememberLabel` 提示文案；`DiffConfirmDialog` 加「本会话内不再询问」勾选——勾选后点「应用」先 `rememberSessionPermit(tool)` 再 `resolveEditConfirm(true)`，后续同工具不再弹确认
+- 验证：vue-tsc + vite build 全过
+
 ---
 
 ## 2026-08-27

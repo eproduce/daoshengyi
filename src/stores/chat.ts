@@ -42,6 +42,20 @@ function loadMode(): AgentModeId {
   return "chat";
 }
 const activeModeId = ref<AgentModeId>(loadMode());
+
+// --- 会话级权限记忆（§3.10 🟡）：本会话内已允许的操作（按工具名），减少重复确认。 ---
+// 用户在某文件操作确认弹窗勾选「本会话内不再询问」后，该工具后续调用自动放行（仅本会话有效）。
+const sessionPermits = reactive<Set<string>>(new Set());
+function hasSessionPermit(tool: string): boolean {
+  return sessionPermits.has(tool);
+}
+function rememberSessionPermit(tool: string): boolean {
+  sessionPermits.add(tool);
+  return true;
+}
+function clearSessionPermits() {
+  sessionPermits.clear();
+}
 export async function refreshMcpTools() {
   // 单飞（single-flight）：并发调用只执行一次、共享同一结果。并行子代理/主代理
   // 可能同时触发刷新，避免两次 refresh 交错清空 mcpToolsCache 导致读到空缓存。
@@ -145,6 +159,8 @@ export interface EditConfirmRequest {
   edits?: Record<string, unknown>[]; // edit：待应用的编辑操作（确认后回传）
   tool: string;
   args: Record<string, unknown>;
+  /** 会话级权限记忆：勾选后本会话内该工具不再确认的提示文案（可选） */
+  rememberLabel?: string;
 }
 const editConfirm = ref<EditConfirmRequest | null>(null);
 let editConfirmResolver: ((ok: boolean) => void) | null = null;
@@ -823,12 +839,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const edits: Record<string, unknown>[] = [
         { op: "replace", old: oldText, new: newText, ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}) },
       ];
-      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘
-      if (getSettings().fileEditConfirm) {
+      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
+      if (getSettings().fileEditConfirm && !hasSessionPermit("replace_string")) {
         const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
         const ok = await requestEditConfirm({
           kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
           tool: "replace_string", args: { ...args },
+          rememberLabel: "本会话内不再询问 replace_string",
         });
         if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
@@ -846,12 +863,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!text) throw new Error("insert_string 需要 new_text 参数（要插入的内容）");
       const position = String(args.position || "before");
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
-      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘
-      if (getSettings().fileEditConfirm) {
+      // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
+      if (getSettings().fileEditConfirm && !hasSessionPermit("insert_string")) {
         const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
         const ok = await requestEditConfirm({
           kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
           tool: "insert_string", args: { ...args },
+          rememberLabel: "本会话内不再询问 insert_string",
         });
         if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
@@ -877,9 +895,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 删除文件（仅主目录内文件，不删除目录）
       const path = String(args.path || "");
       if (!path) throw new Error("delete_file 需要 path 参数");
-      // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除
-      if (getSettings().fileEditConfirm) {
-        const ok = await requestEditConfirm({ kind: "delete", path, tool: "delete_file", args: { ...args } });
+      // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除（会话内已允许则直接放行）
+      if (getSettings().fileEditConfirm && !hasSessionPermit("delete_file")) {
+        const ok = await requestEditConfirm({ kind: "delete", path, tool: "delete_file", args: { ...args }, rememberLabel: "本会话内不再询问 delete_file" });
         if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
       }
       const del = await invoke<string>("delete_file_agent", { path });
@@ -2749,6 +2767,9 @@ export const useChatStore = defineStore("chat", () => {
     getRoutedAuxConfig,
     editConfirm,
     resolveEditConfirm,
+    hasSessionPermit,
+    rememberSessionPermit,
+    clearSessionPermits,
     activePersonaId,
     setPersona,
     activeModeId,

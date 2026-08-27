@@ -2,12 +2,24 @@
 // P-A4 应用内 diff 确认：文件编辑类工具（replace_string/insert_string/delete_file）
 // 开启「文件编辑需确认」后，先在此弹窗展示 unified diff（或删除路径），
 // 用户点「应用」才真正写盘，「拒绝」则返回提示给 Agent。
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useChatStore } from "@/stores/chat";
 import { FileEdit, FileX2, Check, X } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const req = computed(() => chatStore.editConfirm);
+// 会话级权限记忆（§3.10 🟡）：勾选后本会话内该工具（replace_string/insert_string/delete_file）不再弹确认
+const remember = ref(false);
+function apply() {
+  const r = req.value;
+  if (!r) return;
+  if (remember.value && r.tool) chatStore.rememberSessionPermit(r.tool);
+  chatStore.resolveEditConfirm(true);
+}
+function reject() {
+  remember.value = false;
+  chatStore.resolveEditConfirm(false);
+}
 </script>
 
 <template>
@@ -34,10 +46,15 @@ const req = computed(() => chatStore.editConfirm);
         </template>
 
         <div class="dcd-actions">
-          <button class="dcd-btn dcd-btn--reject" @click="chatStore.resolveEditConfirm(false)">
+          <label v-if="req.rememberLabel" class="dcd-remember">
+            <input type="checkbox" v-model="remember" />
+            <span>{{ req.rememberLabel }}</span>
+          </label>
+          <span class="dcd-spacer"></span>
+          <button class="dcd-btn dcd-btn--reject" @click="reject">
             <X :size="14" /> 拒绝
           </button>
-          <button class="dcd-btn dcd-btn--apply" @click="chatStore.resolveEditConfirm(true)">
+          <button class="dcd-btn dcd-btn--apply" @click="apply">
             <Check :size="14" /> 应用
           </button>
         </div>
@@ -55,7 +72,10 @@ const req = computed(() => chatStore.editConfirm);
 .dcd-path { padding: 8px 16px; font-size: 12px; color: var(--text-secondary, #555); word-break: break-all; background: var(--bg-soft, #f5f5f5); border-bottom: 1px solid var(--border, #eee); }
 .dcd-hint { margin: 12px 16px 6px; font-size: 12px; color: var(--text-secondary, #888); }
 .dcd-diff { margin: 0 16px; flex: 1; min-height: 120px; max-height: 46vh; overflow: auto; font-size: 12px; line-height: 1.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #1e1e2e; color: #e6e6e6; border-radius: 8px; padding: 12px; white-space: pre; }
-.dcd-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 16px; }
+.dcd-actions { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
+.dcd-remember { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary, #666); cursor: pointer; user-select: none; }
+.dcd-remember input { cursor: pointer; }
+.dcd-spacer { flex: 1; }
 .dcd-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; border-radius: 8px; border: 1px solid var(--border, #ddd); cursor: pointer; font-size: 13px; font-weight: 600; }
 .dcd-btn--reject { background: var(--bg-input, #fff); color: var(--text-secondary, #666); }
 .dcd-btn--reject:hover { border-color: #c62828; color: #c62828; }
