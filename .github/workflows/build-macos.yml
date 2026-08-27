@@ -86,7 +86,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la release/
+          # alpha/beta/rc 预发布标签 → 标记为 prerelease
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in
+            *-alpha*|*-beta*|*-rc*) PRERELEASE="--prerelease" ;;
+          esac
           gh release create "$GITHUB_REF_NAME" release/*.dmg --generate-notes \
-            --repo "$GITHUB_REPOSITORY" \
+            --repo "$GITHUB_REPOSITORY" $PRERELEASE \
           || gh release upload "$GITHUB_REF_NAME" release/*.dmg \
             --repo "$GITHUB_REPOSITORY" --clobber

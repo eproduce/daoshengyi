@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/main/crates/tauri-config-schema/schema.json",
   "productName": "道生一",
-  "version": "0.1.0",
+  "version": "1.0.0-alpha.1",
   "identifier": "com.daoshengyi.app",
   "build": {
     "frontendDist": "../dist",
