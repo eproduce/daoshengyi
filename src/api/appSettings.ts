@@ -48,6 +48,10 @@ export interface AppSettingsPayload {
   memoryEnabled: boolean;
   /// 长期记忆 §3.2：相关记忆检索条数（默认 6）
   memoryRecallLimit: number;
+  /// 知识库 RAG 自动注入：每次对话前自动检索默认知识库并注入相关分块（默认关）
+  ragEnabled: boolean;
+  /// 知识库 RAG 自动注入：默认知识库名（空=未配置）
+  ragKb: string;
   /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
   fileEditConfirm: boolean;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）
@@ -74,6 +78,8 @@ let cache: AppSettingsPayload = {
   modelRouting: {},
   memoryEnabled: true,
   memoryRecallLimit: 6,
+  ragEnabled: false,
+  ragKb: "",
   fileEditConfirm: false,
   globalShortcutToggle: "CommandOrControl+Shift+Space",
   globalShortcutNewChat: "CommandOrControl+Shift+K",

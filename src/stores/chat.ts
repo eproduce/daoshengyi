@@ -94,6 +94,8 @@ let stopRequested = false;
 let stopWaiters: (() => void)[] = [];
 /// 当前正在流式生成的 request_id（供停止时取消 Rust 端生成，实现「立刻停止」）
 let activeStreamRequestId: string | null = null;
+/// 已做过知识库 RAG 自动注入的会话 id 集合（同一会话只注入一次，避免每轮重复灌入）
+const ragInjectedConvs = new Set<string>();
 function requestStop() {
   stopRequested = true;
   const ws = stopWaiters;
@@ -2178,6 +2180,28 @@ export const useChatStore = defineStore("chat", () => {
         new Promise<string>((resolve) => setTimeout(() => resolve(""), 15000)),
       ]);
       if (memText) volatileCtx.push(memText);
+      // 知识库 RAG 自动注入：开启且配置默认知识库时，会话首轮自动检索相关分块注入上下文
+      // （同一会话只注入一次，避免每轮重复灌入膨胀上下文；精细引用时模型可再手动 kb_search）——5 秒超时兜底
+      if (!ragInjectedConvs.has(convId)) {
+        const st = getSettings();
+        if (st.ragEnabled && st.ragKb) {
+          ragInjectedConvs.add(convId);
+          const ragText = await Promise.race([
+            (async () => {
+              const hits = await invoke<
+                { id: number; kb_name: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]
+              >("kb_search", { kbName: st.ragKb, query: (text || "").slice(0, 60), limit: 4 });
+              if (!hits || !hits.length) return "";
+              return (
+                `[知识库「${st.ragKb}」相关上下文（自动检索，供回答参考，非必须逐条引用）]\n` +
+                hits.map((h) => `- ${h.file}：${h.chunk.slice(0, 400)}`).join("\n")
+              );
+            })(),
+            new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
+          ]);
+          if (ragText) volatileCtx.push(ragText);
+        }
+      }
       // 自动摘要旧消息——30 秒超时兜底，避免阻塞主对话
       const summaries = await Promise.race([
         memory.maybeSummarize(convId, conv.messages, config),

@@ -84,6 +84,12 @@ pub struct AppSettings {
     /// 长期记忆 §3.2：相关记忆检索条数（默认 6，范围 1-20）
     #[serde(default = "default_recall_limit")]
     pub memory_recall_limit: i64,
+    /// 知识库 RAG 自动注入：开启后每次对话前自动检索默认知识库并注入相关分块（默认关）
+    #[serde(default)]
+    pub rag_enabled: bool,
+    /// 知识库 RAG 自动注入：默认知识库名（空=未配置）
+    #[serde(default)]
+    pub rag_kb: String,
     /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
     #[serde(default)]
     pub file_edit_confirm: bool,
@@ -138,6 +144,8 @@ impl Default for AppSettings {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            rag_enabled: false,
+            rag_kb: String::new(),
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
@@ -340,6 +348,8 @@ mod tests {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            rag_enabled: false,
+            rag_kb: String::new(),
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
@@ -380,6 +390,8 @@ mod tests {
             model_routing: std::collections::HashMap::new(),
             memory_enabled: true,
             memory_recall_limit: 6,
+            rag_enabled: false,
+            rag_kb: String::new(),
             file_edit_confirm: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),

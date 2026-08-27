@@ -12,9 +12,9 @@ import HealthPanel from "./HealthPanel.vue";
 import ScheduledTasks from "./ScheduledTasks.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database } from "lucide-vue-next";
 
-type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "permissions" | "shortcuts";
+type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "kb" | "permissions" | "shortcuts";
 const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
@@ -33,6 +33,7 @@ function verdictText(v: string) {
 onMounted(() => {
   // 打开时刷新一次状态（若后台仍在部署，进度/百分比已保存在 store 中自动恢复）
   ollamaStore.refreshStatus();
+  refreshKb();
 });
 
 const editingId = ref<string>(chatStore.activeProfileId);
@@ -172,6 +173,24 @@ function saveEditConfirm() {
   updateSettings({ fileEditConfirm: fileEditConfirm.value });
 }
 
+// 知识库 RAG 自动注入：开启后每次对话前自动检索默认知识库并注入相关分块（会话首轮）
+const kbList = ref<{ name: string; chunks: number }[]>([]);
+const ragEnabled = ref(getSettings().ragEnabled ?? false);
+const ragKb = ref(getSettings().ragKb ?? "");
+async function refreshKb() {
+  try {
+    kbList.value = await invoke<{ name: string; chunks: number }[]>("kb_list");
+    if (!kbList.value.some((k) => k.name === ragKb.value) && kbList.value.length > 0) {
+      ragKb.value = kbList.value[0].name;
+    }
+  } catch {
+    kbList.value = [];
+  }
+}
+function saveRag() {
+  updateSettings({ ragEnabled: ragEnabled.value, ragKb: ragKb.value });
+}
+
 // P-A12 多模型路由：任务类型 → Profile id（摘要/记忆辅助、编程子代理）
 const routeSummarize = ref(getSettings().modelRouting?.["summarize"] || "");
 const routeCoding = ref(getSettings().modelRouting?.["coding"] || "");
@@ -267,6 +286,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断</button>
           <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务</button>
           <button :class="['settings-tab', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'"><span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆</button>
+          <button :class="['settings-tab', { active: activeTab === 'kb' }]" @click="activeTab = 'kb'"><span class="settings-tab__icon"><Database :size="15" /></span>知识库</button>
           <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
           <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
           <button :class="['settings-tab', { active: activeTab === 'shortcuts' }]" @click="activeTab = 'shortcuts'"><span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键</button>
@@ -545,6 +565,29 @@ function handleDelete() {
 
       <!-- 长期记忆 -->
       <div v-show="activeTab === 'memory'"><MemoryPanel /></div>
+
+      <!-- 知识库 RAG 自动注入 -->
+      <div v-show="activeTab === 'kb'">
+        <h3><Database :size="17" /> 知识库</h3>
+        <p class="ollama-desc">RAG 知识库通过 Agent 工具（kb_create / kb_add / kb_search）建立；此处可开启「自动注入」：开启后每个会话首轮自动检索默认知识库的相关分块注入上下文，回答更贴合你的文档，无需手动检索。同一会话只注入一次，精细引用时仍可让 Agent 手动 kb_search。</p>
+        <div class="form-group approval-mode">
+          <label class="memory-config__toggle" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" v-model="ragEnabled" @change="saveRag" />
+            <span>知识库自动注入（会话首轮 RAG）</span>
+          </label>
+          <span class="form-hint">开启后，每个新会话的首条消息会自动检索「默认知识库」并将命中的分块作为上下文注入给模型。</span>
+        </div>
+        <div class="form-group">
+          <label>默认知识库</label>
+          <select v-model="ragKb" @change="saveRag">
+            <option value="">— 未配置 —</option>
+            <option v-for="k in kbList" :key="k.name" :value="k.name">{{ k.name }}（{{ k.chunks }} 分块）</option>
+          </select>
+          <span class="form-hint">选择后作为自动检索的知识库；可让 Agent 用 kb_create 新建知识库、kb_add 录入文档。</span>
+        </div>
+        <div v-if="kbList.length === 0" class="form-hint">暂无知识库。可在对话中让 Agent 调用「创建知识库 / 添加文档」来建立。</div>
+        <button class="btn-ghost" @click="refreshKb" style="margin-top: 4px">刷新知识库列表</button>
+      </div>
 
       <!-- P-A7 权限矩阵：工具级开关 + 路径白名单 -->
       <div v-show="activeTab === 'permissions'">
