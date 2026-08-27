@@ -32,6 +32,8 @@ const reasoningRef = ref<HTMLDivElement>();
 const modeDropdownRef = ref<HTMLDivElement>();
 // 当前 Agent 模式（§3.11：对话/任务/办公/研究/编码/速答）
 const currentMode = computed(() => MODES.find((m) => m.id === chatStore.activeModeId) || MODES[0]);
+// 模式记忆（Phase B）：各模式使用频次（下拉显示「常用 ×N」）
+const modeHist = computed(() => chatStore.readModeHist());
 
 defineProps<{ disabled: boolean; placeholder?: string }>();
 
@@ -458,7 +460,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           </button>
           <div v-if="showModeDropdown" ref="modeDropdownRef" class="ci-drop ci-drop-sm ci-drop-modes" @click.stop>
             <div v-for="m in MODES" :key="m.id" class="ci-drop-item" :class="{ on: chatStore.activeModeId === m.id }" @click="chatStore.setMode(m.id); showModeDropdown = false">
-              <span class="ci-drop-name">{{ m.emoji }} {{ m.name }}</span>
+              <span class="ci-drop-name">{{ m.emoji }} {{ m.name }}<span v-if="modeHist[m.id]" class="ci-drop-times">常用 ×{{ modeHist[m.id] }}</span></span>
               <span class="ci-drop-desc">{{ m.description }}</span>
               <span v-if="chatStore.activeModeId === m.id" class="ci-drop-check">✓</span>
             </div>
@@ -564,6 +566,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-drop-name { font-weight: 600; }
 .ci-drop-model { color: var(--text-muted); font-size: 10px; font-family: "SF Mono","Fira Code",monospace; }
 .ci-drop-desc { color: var(--text-muted, #888); font-size: 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-drop-times { margin-left: 6px; font-size: 10px; color: #f5a623; font-weight: 500; }
 .ci-drop-modes { min-width: 230px; max-height: 320px; overflow-y: auto; }
 .ci-drop-modes .ci-drop-item { display: grid; grid-template-columns: 1fr auto; row-gap: 1px; }
 .ci-drop-modes .ci-drop-name { grid-column: 1; }

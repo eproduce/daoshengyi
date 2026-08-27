@@ -34,14 +34,36 @@ let mcpToolsRefreshing: Promise<void> | null = null;
 // --- Agent 多模式（§3.11）：当前模式 id。模块级定义（供模块级 callMcpTool 做工具白名单拦截），
 // store 内 setMode 同步写入 localStorage。模式=行为约束提示词 + 工具白名单（modes-catalog）。 ---
 const MODE_KEY = "daoshengyi_mode";
+const MODE_HIST_KEY = "daoshengyi_mode_hist";
 function loadMode(): AgentModeId {
   try {
     const saved = localStorage.getItem(MODE_KEY);
     if (saved && getModeById(saved)) return saved as AgentModeId;
   } catch { /* ignore */ }
+  // 模式记忆（§3.11 Phase B）：未显式保存时，用历史使用频次最高的模式（默认对话）
+  try {
+    const hist: Record<string, number> = JSON.parse(localStorage.getItem(MODE_HIST_KEY) || "{}");
+    let best: AgentModeId = "chat";
+    let bestN = 0;
+    for (const [id, n] of Object.entries(hist)) {
+      if (n > bestN && getModeById(id)) { best = id as AgentModeId; bestN = n; }
+    }
+    if (bestN > 0) return best;
+  } catch { /* ignore */ }
   return "chat";
 }
 const activeModeId = ref<AgentModeId>(loadMode());
+/// 模式使用频次（供 UI 显示「常用」；不参与响应式，读取时解析 localStorage）
+function readModeHist(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(MODE_HIST_KEY) || "{}"); } catch { return {}; }
+}
+function bumpModeHist(id: AgentModeId) {
+  try {
+    const hist = readModeHist();
+    hist[id] = (hist[id] || 0) + 1;
+    localStorage.setItem(MODE_HIST_KEY, JSON.stringify(hist));
+  } catch { /* ignore */ }
+}
 
 // --- 会话级权限记忆（§3.10 🟡）：本会话内已允许的操作（按工具名），减少重复确认。 ---
 // 用户在某文件操作确认弹窗勾选「本会话内不再询问」后，该工具后续调用自动放行（仅本会话有效）。
@@ -1499,6 +1521,7 @@ export const useChatStore = defineStore("chat", () => {
   function setMode(id: AgentModeId) {
     activeModeId.value = id;
     try { localStorage.setItem(MODE_KEY, id); } catch { /* ignore */ }
+    bumpModeHist(id); // 模式记忆：记录使用频次
   }
 
   /// 辅助任务使用的模型配置：配置了 auxiliaryProfileId 则用对应 Profile，否则跟随主模型
@@ -2775,6 +2798,7 @@ export const useChatStore = defineStore("chat", () => {
     setPersona,
     activeModeId,
     setMode,
+    readModeHist,
     subagents,
     spawnSubagent,
     completeSubagent,
