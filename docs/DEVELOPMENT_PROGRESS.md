@@ -53,6 +53,18 @@
 - **前端**：`code_search` 内置工具返回格式改为 `[n] file:行号`；`ChatMessage.vue linkifyLocalPaths` 改用 `matchAll`——识别路径后紧跟的 `:数字` 一并捕获为 `data-line`，链接显示 `📄 文件名:行号`；点击打开时传 `line`（VSCode 跳行，无 VSCode 则打开文件）
 - 验证：cargo test 60（+1）+ npm test 206 + vue-tsc + vite build 全过。**待做**：定义/引用跳转（tree-sitter 语义级）
 
+### ✅ 外部编码 Agent 阶段三（§3.10 🟡：零外部依赖）
+- 彻底移除 `delegate_coding_agent`（Claude Code / Codex CLI 委派）：
+  - Rust lib.rs 删 `delegate_coding_agent` 命令 + `check_coding_agents`/`check_coding_agent` + `CodingAgentInfo`/`CodingAgentResult`/`parse_cli_tokens`/`which_path`（`run_sys_cmd` 保留，系统健康面板仍用）+ 命令注册
+  - 前端删 `BUILTIN_TOOLS.delegate_coding_agent` 定义 + 主提示词描述 + `callBuiltinTool` case + `CodingAgentResult` 类型
+  - 编码任务由内置能力承接：git / replace_string / run_tests / 子代理（subagent_delegate/subagent_parallel/subagent_broadcast 等，P-M1~M4 全链路）
+- 验证：cargo test 60 + npm test 206 + vue-tsc + vite build 全过（0 警告）
+
+### ✅ Agent 多模式 Phase B：模式记忆
+- chat.ts `setMode` 记录模式使用频次（localStorage `daoshengyi_mode_hist`）；`loadMode` 未显式保存时用历史最高频模式（默认对话）；`readModeHist` 导出
+- `ChatInput` 模式下拉显示「常用 ×N」标签
+- 验证：vue-tsc + vite build 全过
+
 ---
 
 ## 2026-08-27

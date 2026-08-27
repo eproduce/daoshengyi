@@ -114,16 +114,6 @@ function pendingServersPrompt(): string {
   );
 }
 
-/// 外部编码 Agent 委派结果（隐藏兜底：本机 Claude Code / Codex CLI）
-interface CodingAgentResult {
-  stdout: string;
-  stderr: string;
-  exit_code: number;
-  duration_sec: number;
-  tokens_in: number | null;
-  tokens_out: number | null;
-}
-
 /// 子代理运行记录（供可视化面板展示）
 export interface SubagentRecord {
   id: string;
@@ -255,7 +245,6 @@ function getMcpToolsPrompt(): string {
     "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
     "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
     "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
-    "\n- **delegate_coding_agent** (app): **外部编码 Agent 委派（隐藏兜底，慎用）**。参数 {\"agent_id\": \"claude 或 codex\", \"task\": \"任务描述\", \"cwd\": 可选工作目录, \"mode\": \"print 单次 | exec 自动批准 | review 代码评审\"}。**仅当内置编码能力（git/编辑/测试/规划）确实无法完成、且用户明确要求使用外部 Claude Code/Codex 时**才调用（需本机已安装对应 CLI）。**通常不使用**——优先用内置工具（replace_string/run_tests/git 等）完成编码任务。" +
     "\n\n## 长期记忆使用要点\n" +
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
@@ -965,28 +954,6 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return (
         `📋 计划进度更新：步骤 ${stepIdx + 1}「${plan.steps[stepIdx].text.slice(0, 30)}」→ ${label[status] || status}` +
         `（${done}/${plan.steps.length} 完成）`
-      );
-    }
-    case "delegate_coding_agent": {
-      // 外部编码 Agent 委派（隐藏兜底）：仅当内置编码能力不足、且用户明确要求时才调用
-      const agentId = String(args.agent_id ?? args.agent ?? "claude");
-      const task = String(args.task ?? "");
-      if (!task) throw new Error("delegate_coding_agent 需要 task 参数");
-      const mode = String(args.mode ?? "print");
-      const cwd = args.cwd ? String(args.cwd) : null;
-      const res = await invoke<CodingAgentResult>("delegate_coding_agent", {
-        agentId,
-        task,
-        cwd,
-        timeoutSecs: 300,
-        mode,
-        maxTurns: args.max_turns ? Number(args.max_turns) : null,
-        resumeSession: args.resume_session ? String(args.resume_session) : null,
-      });
-      const tok = res.tokens_in ? `，token ${res.tokens_in}/${res.tokens_out}` : "";
-      return (
-        `【外部编码 Agent ${agentId} · ${mode}】退出码 ${res.exit_code}（耗时 ${res.duration_sec.toFixed(1)}s${tok}）\n\n` +
-        `${res.stdout || res.stderr || "（无输出）"}`
       );
     }
     case "list_dir": {

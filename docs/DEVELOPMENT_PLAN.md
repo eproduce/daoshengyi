@@ -194,7 +194,7 @@
 ### 🟡 中等复杂度（需设计，本地可做）
 - **会话级权限记忆（✅ 已完成 2026-08-28）**：文件编辑确认弹窗加「本会话内不再询问」勾选——用户在 DiffConfirmDialog 勾选后，`replace_string`/`insert_string`/`delete_file` 本会话内自动放行（chat.ts 模块级 `sessionPermits` reactive Set + `hasSessionPermit`/`rememberSessionPermit`/`clearSessionPermits`，仅本会话有效不落盘）
 - **审计可视化面板（✅ 已完成 2026-08-28）**：新组件 `AuditPanel.vue`（设置「审计」Tab）——tool_audit 全记录列表（工具名/时间/时长/成功失败色点 + 参数/结果截断）、按工具名与状态筛选、点击展开回放完整参数+结果（JSON 美化）、导出 JSON/MD、按工具聚合统计、清空；后端补 `clear_tool_audit` 命令（tool_audit 表 data 由 command/git/test/内置工具 log_tool_call 自动记录）
-- 外部编码 Agent 阶段三：彻底移除 `delegate_coding_agent`，零外部依赖
+- **外部编码 Agent 阶段三（✅ 已完成 2026-08-28）**：彻底移除 `delegate_coding_agent` 零外部依赖——Rust 删 `delegate_coding_agent`/`check_coding_agents`/`check_coding_agent`/`CodingAgentInfo`/`CodingAgentResult`/`parse_cli_tokens`/`which_path`（保留 run_sys_cmd，系统健康仍用）+ 注册；前端删 BUILTIN_TOOLS 定义 / 主提示词描述 / callBuiltinTool case / CodingAgentResult 类型；编码任务由内置能力承接（git/编辑/测试/子代理 subagent_*）
 
 ### 🔵 远期（需云端/社区后端）
 - P-A10 插件/技能生态、P-A11 / 4.3 跨设备同步、云端工作流市场、团队协作共享

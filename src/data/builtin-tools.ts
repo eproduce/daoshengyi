@@ -130,10 +130,6 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "plan_update",
     desc: "**更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。",
   },
-  {
-    name: "delegate_coding_agent",
-    desc: "**外部编码 Agent 委派（隐藏兜底，慎用）**。参数 {\"agent_id\": \"claude 或 codex\", \"task\": \"任务描述\", \"cwd\": 可选工作目录, \"mode\": \"print 单次 | exec 自动批准 | review 代码评审\"}。**仅当内置编码能力（git/编辑/测试/规划）确实无法完成、且用户明确要求使用外部 Claude Code/Codex 时**才调用（需本机已安装对应 CLI）。**通常不使用**——优先用内置工具（replace_string/run_tests/git 等）完成编码任务。",
-  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);
