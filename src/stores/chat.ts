@@ -1102,9 +1102,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!root) throw new Error("code_search 需要 root 参数（项目目录绝对路径）");
       if (!query) throw new Error("code_search 需要 query 参数（自然语言描述要查的代码，如「处理用户登录」）");
       const limit = args.limit ? Number(args.limit) : null;
-      const hits = await invoke<{ id: number; root: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]>("code_search", { rootPath: root, query, limit });
+      const hits = await invoke<{ id: number; root: string; file: string; chunk: string; chunk_idx: number; created_at: number; start_line: number }[]>("code_search", { rootPath: root, query, limit });
       if (!hits.length) return `（项目「${root}」未检索到与「${query}」相关的代码。若尚未索引，先调 code_index 索引该项目；也可换更贴近代码语义的描述）`;
-      const out = hits.map((h, i) => `[${i + 1}] ${h.file}#${h.chunk_idx}\n\`\`\`\n${h.chunk.slice(0, 600)}\n\`\`\``).join("\n\n");
+      // 符号跳转：命中结果带 `文件:行号`（可点击打开文件并定位到该行）
+      const out = hits.map((h, i) => `[${i + 1}] ${h.file}:${h.start_line || 1}\n\`\`\`\n${h.chunk.slice(0, 600)}\n\`\`\``).join("\n\n");
       return `【项目「${root}」语义检索「${query}」】相关代码 ${hits.length} 处（按相似度）：\n\n${out}`;
     }
     case "code_roots": {

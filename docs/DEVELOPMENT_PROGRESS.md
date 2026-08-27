@@ -48,6 +48,11 @@
 - 新组件 `UndoPanel.vue`（设置「撤销」Tab）：`undo_history` 快照列表（编辑/新建/删除 徽标 + 路径 + 时间 + 「已不存在」标记）、按路径/操作筛选、点击展开**原始内容快照**（回滚依据）、一键回滚（`undo_by_id` + notify 提示 + 刷新，回滚后记录移除）、导出 JSON
 - 验证：vue-tsc + vite build 全过
 
+### ✅ 符号跳转（P-A3 语义索引待做项）
+- **后端**：db.rs `CodeChunkRow` 加 `start_line`（1-based）——`code_search` 排序后对每个命中分块实时计算其在源文件中的起始行号（`chunk_start_line`：chunk 首行 trim 与文件行逐行比对，文件不可读/找不到返回 1）+ 测试 +1；`open_file` 加 `line: Option<i64>`——有行号时优先 VSCode CLI `code --goto path:line`（status Err/非零回退系统默认应用打开）
+- **前端**：`code_search` 内置工具返回格式改为 `[n] file:行号`；`ChatMessage.vue linkifyLocalPaths` 改用 `matchAll`——识别路径后紧跟的 `:数字` 一并捕获为 `data-line`，链接显示 `📄 文件名:行号`；点击打开时传 `line`（VSCode 跳行，无 VSCode 则打开文件）
+- 验证：cargo test 60（+1）+ npm test 206 + vue-tsc + vite build 全过。**待做**：定义/引用跳转（tree-sitter 语义级）
+
 ---
 
 ## 2026-08-27

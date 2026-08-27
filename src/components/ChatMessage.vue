@@ -46,11 +46,22 @@ marked.setOptions({ breaks: true, gfm: true });
 import { LOCAL_FILE_RE } from "@/utils/local-file-re";
 
 function linkifyLocalPaths(s: string): string {
-  return s.replace(LOCAL_FILE_RE, (m) => {
-    const name = m.split("/").pop() || m;
-    const encoded = encodeURIComponent(m);
-    return `<a href="#" class="local-file-link" data-path="${encoded}">📄 ${name}</a>`;
-  });
+  // 符号跳转：路径后紧跟 `:行号`（如 code_search 的 `file:12`）时把行号一并捕获，
+  // 点击用 VSCode goto 定位到行；无行号则照常打开文件。
+  let out = "";
+  let last = 0;
+  for (const m of s.matchAll(LOCAL_FILE_RE)) {
+    const path = m[0];
+    const idx = m.index ?? 0;
+    const lineM = s.slice(idx + path.length).match(/^:(\d+)/);
+    const line = lineM ? lineM[1] : "";
+    out += s.slice(last, idx);
+    const name = path.split("/").pop() || path;
+    out += `<a href="#" class="local-file-link" data-path="${encodeURIComponent(path)}"${line ? ` data-line="${line}"` : ""}>📄 ${name}${line ? `:${line}` : ""}</a>`;
+    last = idx + path.length + (lineM ? lineM[0].length : 0);
+  }
+  out += s.slice(last);
+  return out;
 }
 
 function escapeHtml(s: string): string {
@@ -165,6 +176,7 @@ async function onContentClick(e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     const path = decodeURIComponent(link.getAttribute("data-path") || "");
+    const line = link.getAttribute("data-line") || "";
     if (!path) return;
     // 点击时二次校验：文件可能已被清理（临时截图），或路径被模型改写/编造。
     // 存在才打开，避免触发 open_file 报「退出码非零」这类误导性错误。
@@ -175,7 +187,7 @@ async function onContentClick(e: MouseEvent) {
       return;
     }
     try {
-      await invoke("open_file", { path });
+      await invoke("open_file", { path, ...(line ? { line: Number(line) } : {}) });
     } catch (err) {
       await notify(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`, "error");
     }

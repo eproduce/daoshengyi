@@ -996,9 +996,24 @@ fn file_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
-/// 用系统默认应用打开文件（macOS open / Windows start / Linux xdg-open）
+/// 用系统默认应用打开文件（macOS open / Windows start / Linux xdg-open）。
+/// 传 line 时优先尝试 VSCode CLI `code --goto path:line` 定位到行（符号跳转），失败回退系统打开。
 #[tauri::command]
-fn open_file(path: String) -> Result<(), String> {    #[cfg(target_os = "macos")]
+fn open_file(path: String, line: Option<i64>) -> Result<(), String> {
+    // 有行号：尝试 VSCode CLI 跳行（code 未安装时 status() 返回 Err → 回退系统打开）
+    if let Some(l) = line {
+        let goto = format!("{}:{}", path, l);
+        let code_ok = std::process::Command::new("code")
+            .arg("--goto")
+            .arg(&goto)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if code_ok {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(&path).status();
     #[cfg(target_os = "windows")]
     let status = std::process::Command::new("cmd").args(["/c", "start", "", &path]).status();

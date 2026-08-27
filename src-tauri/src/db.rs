@@ -1099,6 +1099,7 @@ impl Database {
                     CodeChunkRow {
                         id: row.get(0)?, root: row.get(1)?, file: row.get(2)?,
                         chunk: row.get(3)?, chunk_idx: row.get(4)?, created_at: row.get(5)?,
+                        start_line: 0,
                     },
                     score,
                 ))
@@ -1108,7 +1109,14 @@ impl Database {
         for r in rows { scored.push(r.map_err(|e| e.to_string())?); }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit as usize);
-        Ok(scored.into_iter().map(|(c, _)| c).collect())
+        // 符号跳转：为命中分块计算在源文件中的起始行号（供前端「打开文件跳行」）
+        Ok(scored
+            .into_iter()
+            .map(|(mut c, _)| {
+                c.start_line = chunk_start_line(&c.file, &c.chunk);
+                c
+            })
+            .collect())
     }
 
     /// 已索引的项目根目录列表
@@ -1528,6 +1536,29 @@ pub struct CodeChunkRow {
     pub chunk: String,
     pub chunk_idx: i64,
     pub created_at: i64,
+    /// 该 chunk 在源文件中的起始行号（1-based；文件不可读/找不到时为 1）——符号跳转用
+    pub start_line: i64,
+}
+
+/// 计算某 chunk 在源文件中的起始行号（1-based）：chunk 首行 trim 后与文件行逐行比对首次命中。
+/// 文件不可读或找不到返回 1（前端仍可打开文件，仅不跳行）。
+fn chunk_start_line(file: &str, chunk: &str) -> i64 {
+    let content = match std::fs::read_to_string(file) {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+    let head = chunk.lines().next().unwrap_or("").trim();
+    if head.is_empty() {
+        return 1;
+    }
+    let mut line: i64 = 1;
+    for l in content.lines() {
+        if l.trim() == head {
+            return line;
+        }
+        line += 1;
+    }
+    1
 }
 
 /// 可视化工作流持久化行
@@ -1947,6 +1978,20 @@ mod tests {
         db.code_clear("/proj").unwrap();
         assert!(db.code_search("/proj", &[0.9, 0.1, 0.2], 5).unwrap().is_empty(), "清空后检索为空");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn chunk_start_line_finds_and_falls_back() {
+        // 文件不可读 → 返回 1（不报错）
+        assert_eq!(chunk_start_line("/no/such/file.rs", "fn x() {}"), 1);
+        // 真实临时文件：找到 chunk 首行所在行号
+        let dir = std::env::temp_dir().join(format!("dsy_line_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let f = dir.join("a.rs");
+        std::fs::write(&f, "line1\nline2\nfn main() {}\nline4").unwrap();
+        assert_eq!(chunk_start_line(f.to_str().unwrap(), "fn main() {}"), 3);
+        assert_eq!(chunk_start_line(f.to_str().unwrap(), "不存在的行"), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- 可视化工作流持久化 + 运行历史 ---
