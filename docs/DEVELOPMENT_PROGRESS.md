@@ -8,6 +8,11 @@
 
 ## 2026-08-27
 
+### ✅ 弹窗统一改造 + 回复中断修复
+- **弹窗关不掉**：`ChatMessage.vue` 点「文件不存在」提示用 `window.alert`，Tauri 2 + macOS WKWebView 下 `alert/confirm` 有已知「弹窗关不掉/无响应」问题 → 新建 `src/utils/dialog.ts`（`notify` 用 `@tauri-apps/plugin-dialog` 的 `message`、`askConfirm` 用 `ask`，原生对话框可正常关闭；非 Tauri 回退 alert/confirm）；ChatMessage/ChatInput 的 8 处 `alert` → `notify`，chat.ts 危险命令审批 2 处 `window.confirm` → `askConfirm`
+- **回复中断（只思考无正文/工具没执行）**：日志 `[loop] 第 0 轮结束，toolCall=null，content 4508 / streamingContent 62 / reasoning 4289`——模型在思考里规划（4289 字符），正文输出含**未闭合的工具调用开标记**（visibleText 剥掉后只剩 62 字符残句），`hasCompleteToolCall` 为 false 不走格式修正重试、`isVagueBody` 判非空洞 → break → 中断 → 新增 `tool-call.ts hasToolCallIntent`（检测工具调用**开标记**：标准 `<tool_call`、DSML `<｜DSML｜tool_call｜` 含半截 `tool_`、伪卡片 `### 🔧 调用工具`，无论是否闭合）；主循环 `!tc` 分支在格式无效重试后插入「有意图但未闭合 → 注入修正指令重试」分支，避免「想调工具但标记不完整 → 工具没执行 → 回复中断」
+- 测试：新增 7 项（hasToolCallIntent 开标记/半截/夹杂正文/普通回复/空）→ npm test 183；vue-tsc + vite build 全过
+
 ### ✅ 修复：agent 生成 HTML 表格排版错位（行列数不齐）
 - **根因**：LLM 手工拼 HTML 表格时**行内 `<td>` 数量与表头不一致**（表头 5 列、数据行却有 6~7 个单元格），浏览器自动错位显示（截图：近两年缴费明细表格每行列数不一、列错位）
 - **修复**（提示词「文件导出规范」表格部分重写）：①表格文档优先 **CSV**（Excel 直接打开，行列最稳）；②**HTML 表格必须行列对齐**——每行 `<td>`/`<th>` 数量与表头完全一致，禁止行内单元格数不齐，跨列/跨行用 `colspan`/`rowspan` 显式声明并保持总列数不变，并给出最小 `<table>` 模板示例；③CSV 单元格含逗号/换行/中文标点用双引号包裹、每行列数一致、UTF-8；④如实说明无法生成二进制 xlsx/docx

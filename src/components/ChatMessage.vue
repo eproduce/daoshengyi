@@ -11,6 +11,7 @@ import { formatCost } from "@/utils/tokens";
 import AppLogo from "./AppLogo.vue";
 import { Brain, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
+import { notify } from "@/utils/dialog";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -170,13 +171,13 @@ async function onContentClick(e: MouseEvent) {
     let exists = false;
     try { exists = await invoke<boolean>("file_exists", { path }); } catch { exists = false; }
     if (!exists) {
-      alert(`文件不存在：${path}\n（可能是临时文件已被清理，或路径被改写——请以系统给出的真实保存路径为准）`);
+      await notify(`文件不存在：${path}\n（可能是临时文件已被清理，或路径被改写——请以系统给出的真实保存路径为准）`);
       return;
     }
     try {
       await invoke("open_file", { path });
     } catch (err) {
-      alert(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`);
+      await notify(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
     return;
   }

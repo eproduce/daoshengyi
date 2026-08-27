@@ -53,6 +53,21 @@ export function hasCompleteToolCall(buffer: string): boolean {
   );
 }
 
+/// 检测正文是否包含「工具调用意图」——出现工具调用**开标记**（无论是否闭合/完整）：
+/// 标准 `<tool_call`、DeepSeek DSML `<｜DSML｜tool_call｜`（含半截如 `<｜DSML｜tool_`）、
+/// 伪卡片「### 🔧 调用工具」。
+/// 用途：主循环发现 toolCall 解析失败但正文有明显调用意图（流式被截断/格式异常）时，
+/// 注入修正指令重试一轮，避免「模型想调工具但标记不完整 → 工具没执行、正文只剩残句 → 回复中断」。
+export function hasToolCallIntent(text: string): boolean {
+  if (!text) return false;
+  return (
+    /<\s*tool_call\b/i.test(text) ||
+    // DSML 开标记：匹配 tool_call 或半截 tool_（流式被截断时可能只有 tool_ 开头）
+    /<\s*[^>]*DSML[^>]*tool_[^>]*/i.test(text) ||
+    /###\s*🔧\s*调用工具/.test(text)
+  );
+}
+
 /// 从模型手写的伪卡片「### 🔧 调用工具：\`tool\` + 参数 JSON 代码块」中提取工具调用。
 /// 模型可能把历史消息里的 UI 卡片格式误当成工具调用格式写在正文里，
 /// 这里兜底识别，让工具仍能真正执行（否则卡片只是文本、工具不执行、回复中断）。

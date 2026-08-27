@@ -11,13 +11,14 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText, type ToolCall } from "@/utils/tool-call";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, hasToolCallIntent, visibleText, type ToolCall } from "@/utils/tool-call";
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
+import { askConfirm } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -1812,12 +1813,12 @@ export const useChatStore = defineStore("chat", () => {
       const st = getSettings();
       const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
       if (mode === "manual") {
-        const ok = window.confirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
+        const ok = await askConfirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
         if (!ok) return;
       } else if (mode === "smart") {
         const safe = await judgeCommandSafety(cmdStr);
         if (!safe) {
-          const ok = window.confirm(`⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`);
+          const ok = await askConfirm(`⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`);
           if (!ok) return;
         }
         // 判定安全 → 自动放行
@@ -2312,6 +2313,23 @@ export const useChatStore = defineStore("chat", () => {
                 "JSON 必须是合法对象且含 server、tool、arguments 三个字段；不要写卡片文本，不要输出空标记。",
             });
             continue; // 重新发起一轮流式
+          }
+          // 有工具调用**意图**但未形成完整可解析调用（开标记未闭合 / DSML 半截 / 流式截断）：
+          // 模型想调工具却因标记不完整没执行 → 正文只剩残句（用户看到「回复中断」）。
+          // 注入修正指令重试一轮，要求补全成完整合法的 <tool_call>。
+          if (hasToolCallIntent(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+            round++;
+            dbg(`[loop] 检测到工具调用意图但未闭合/解析失败，第 ${round} 轮注入修正指令重试`);
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
+                "请重新输出**完整合法**的工具调用：\n" +
+                "<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
+                "必须是完整的开/闭合标记、JSON 合法且含 server、tool、arguments 字段。若确实不需要工具，直接在正文给出完整答案。",
+            });
+            continue;
           }
           // 正文空洞（模型口头承诺要做某事、却未调用工具也未给实质内容，如
           // 「搜索与问题无关，我直接访问官网获取办事指南」）→ 注入指令要求真正执行

@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
 import { Settings } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
+import { notify } from "@/utils/dialog";
 
 const chatStore = useChatStore();
 
@@ -197,7 +198,7 @@ function handleAttachSelect(e: Event) {
 // 与「附件按钮」走同一条 Rust 路径（图片转 base64 / PDF 提取文本 / 文本读取），
 // PDF 额外记录磁盘 path 供分段浏览工具使用。
 function processFile(file: File) {
-  if (file.size > 20 * 1024 * 1024) { alert("附件不能超过 20MB"); return; }
+  if (file.size > 20 * 1024 * 1024) { notify("附件不能超过 20MB"); return; }
   const reader = new FileReader();
   reader.onload = async () => {
     try {
@@ -218,7 +219,7 @@ function processFile(file: File) {
         });
       }
     } catch (e) {
-      alert(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
+      notify(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
   reader.readAsDataURL(file);
@@ -255,7 +256,7 @@ async function triggerAttach() {
             // 图片大小检查（base64 长度 ≈ 原字节 * 4/3）
             const approxBytes = Math.floor(res.content.length * 3 / 4);
             if (approxBytes > 20 * 1024 * 1024) {
-              alert(`图片「${name}」超过 20MB，无法上传`);
+              notify(`图片「${name}」超过 20MB，无法上传`);
               continue;
             }
             attachedImages.value.push({
@@ -271,13 +272,13 @@ async function triggerAttach() {
             });
           }
         } catch (e) {
-          alert(`读取附件失败: ${e instanceof Error ? e.message : String(e)}`);
+          notify(`读取附件失败: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/cancelled|aborted|取消/i.test(msg)) return;
-      alert(`选择文件失败: ${msg}`);
+      notify(`选择文件失败: ${msg}`);
     }
     return;
   }
@@ -302,7 +303,7 @@ async function handleDroppedPath(path: string) {
       });
     }
   } catch (e) {
-    alert(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
+    notify(`附件处理失败: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

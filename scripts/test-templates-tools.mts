@@ -1,6 +1,6 @@
 // 临时测试：提示词模板数据 + ReAct 工具调用解析
 import { PROMPT_TEMPLATES } from "../src/data/prompt-templates.ts";
-import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, visibleText } from "../src/utils/tool-call.ts";
+import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, hasToolCallIntent, visibleText } from "../src/utils/tool-call.ts";
 import { withBrowserLock, browserLockIdle } from "../src/utils/browser-lock.ts";
 import { BUILTIN_TOOLS, BUILTIN_TOOL_NAMES, validBuiltinTools } from "../src/data/builtin-tools.ts";
 import { AGENT_ROLES, getRoleById, roleAllowedToolNames, invalidRoleTools } from "../src/data/roles-catalog.ts";
@@ -91,6 +91,15 @@ assert(hasCompleteToolCall(fakeCard), '识别伪卡片闭合（</details>）');
 const fakeParsed = parseToolCall(fakeCard);
 assert(fakeParsed?.tool === "directory_tree" && fakeParsed?.arguments?.path === "/Users/x/src", '从伪卡片提取工具调用', JSON.stringify(fakeParsed));
 assert(!hasCompleteToolCall('### 🔧 调用工具：`directory_tree`\n<details><summary>参数</summary>'), '伪卡片未闭合返回 false');
+
+// hasToolCallIntent：有调用开标记（无论闭合）即判定为「有调用意图」（修复「想调工具但标记不完整→回复中断」）
+assert(hasToolCallIntent('<tool_call>{"server":"a","tool":"b","arguments":{}}'), '标准开标记未闭合=有意图');
+assert(hasToolCallIntent('<｜DSML｜tool_call｜>{"name":"a","arguments":{}}'), 'DSML 开标记未闭合=有意图');
+assert(hasToolCallIntent('<｜DSML｜tool_'), 'DSML 半截开标记=有意图');
+assert(hasToolCallIntent('我先查看目录：<tool_call>{"server":"文件系统","tool":"list_directory","arguments":{"path":"/tmp"}}'), '正文夹杂开标记=有意图');
+assert(hasToolCallIntent('### 🔧 调用工具：`write_file`\n<details>'), '伪卡片开头=有意图');
+assert(!hasToolCallIntent('这是一段普通回复，没有任何工具调用。'), '普通回复无意图');
+assert(!hasToolCallIntent(''), '空文本无意图');
 
 const dsmlStripped = stripToolJson('先看<｜DSML｜tool_call｜>{"name":"x","arguments":{}}</｜DSML｜tool_call｜>然后继续');
 assert(!dsmlStripped.includes('DSML') && dsmlStripped.includes('先看'), 'stripToolJson 剥离 DSML 标记');
