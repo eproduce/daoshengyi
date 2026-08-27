@@ -60,14 +60,15 @@ CREATE INDEX IF NOT EXISTS idx_summaries_conv ON memory_summaries(conversation_i
 -- rowid 与 memory_facts.rowid 一一对应；由 Rust 侧在 save/delete 时同步维护。
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(fact_terms, tokenize='unicode61');
 
--- Phase 3 知识库 RAG：本地文件分块（kb_index 写入）+ FTS5 关键词检索
+-- Phase 3 知识库 RAG：本地文件分块（kb_index 写入）+ FTS5 关键词检索 + 语义向量（可选）
 CREATE TABLE IF NOT EXISTS kb_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kb_name TEXT NOT NULL,
     file TEXT NOT NULL,
     chunk TEXT NOT NULL,
     chunk_idx INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    embedding BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_kb_name ON kb_chunks(kb_name);
 CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(chunk_terms, tokenize='unicode61');
@@ -203,6 +204,8 @@ impl Database {
             .map_err(|e| format!("建表失败: {}", e))?;
         // 旧库迁移：加 embedding 列
         let _ = conn.execute("ALTER TABLE memory_facts ADD COLUMN embedding BLOB", []);
+        // 旧库迁移：kb_chunks 加 embedding 列（知识库语义向量）
+        let _ = conn.execute("ALTER TABLE kb_chunks ADD COLUMN embedding BLOB", []);
         // 旧库迁移：加 cost 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
         // 旧库迁移：加 attachments 列
@@ -835,12 +838,20 @@ impl Database {
         Ok(())
     }
 
-    /// 写入一个分块（自动建 FTS 索引）
-    pub fn kb_add_chunk(&self, kb_name: &str, file: &str, chunk: &str, chunk_idx: i64) -> Result<(), String> {
+    /// 写入一个分块（自动建 FTS 索引；embedding 可选，供语义向量检索）
+    pub fn kb_add_chunk(
+        &self,
+        kb_name: &str,
+        file: &str,
+        chunk: &str,
+        chunk_idx: i64,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let emb_bytes: Option<Vec<u8>> = embedding.map(|e| e.iter().flat_map(|f| f.to_le_bytes()).collect());
         conn.execute(
-            "INSERT INTO kb_chunks(kb_name, file, chunk, chunk_idx, created_at) VALUES (?1,?2,?3,?4,?5)",
-            params![kb_name, file, chunk, chunk_idx, chrono::Utc::now().timestamp_millis()],
+            "INSERT INTO kb_chunks(kb_name, file, chunk, chunk_idx, created_at, embedding) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![kb_name, file, chunk, chunk_idx, chrono::Utc::now().timestamp_millis(), emb_bytes],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
@@ -853,30 +864,66 @@ impl Database {
     }
 
     /// 检索知识库（FTS5 关键词，中文 unigram 分词）
-    pub fn kb_search(&self, kb_name: &str, query: &str, limit: i64) -> Result<Vec<KbChunk>, String> {
+    /// 混合检索：FTS5 关键词命中（最相关，bm25 序）在前，语义向量（query_vec 提供且分块
+    /// 有 embedding 时）按余弦补充召回未命中的分块（追加在后）；去重、截断 limit。
+    pub fn kb_search_hybrid(&self, kb_name: &str, query: &str, query_vec: Option<&[f32]>, limit: i64) -> Result<Vec<KbChunk>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // 1) FTS5 关键词结果（bm25 序）
+        let mut merged: Vec<KbChunk> = Vec::new();
         let q = fts_query(&cjk_terms(query));
-        if q.is_empty() {
-            return Ok(vec![]);
-        }
-        let sql = "SELECT kc.id, kc.kb_name, kc.file, kc.chunk, kc.chunk_idx, kc.created_at
-                   FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
-                   WHERE kb_chunks_fts MATCH ?1 AND kc.kb_name = ?2
-                   ORDER BY bm25(kb_chunks_fts) LIMIT ?3";
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![q, kb_name, limit], |r| {
-                Ok(KbChunk {
-                    id: r.get(0)?, kb_name: r.get(1)?, file: r.get(2)?,
-                    chunk: r.get(3)?, chunk_idx: r.get(4)?, created_at: r.get(5)?,
+        if !q.is_empty() {
+            let sql = "SELECT kc.id, kc.kb_name, kc.file, kc.chunk, kc.chunk_idx, kc.created_at
+                       FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
+                       WHERE kb_chunks_fts MATCH ?1 AND kc.kb_name = ?2
+                       ORDER BY bm25(kb_chunks_fts) LIMIT ?3";
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![q, kb_name, limit], |r| {
+                    Ok(KbChunk {
+                        id: r.get(0)?, kb_name: r.get(1)?, file: r.get(2)?,
+                        chunk: r.get(3)?, chunk_idx: r.get(4)?, created_at: r.get(5)?,
+                    })
                 })
-            })
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r.map_err(|e| e.to_string())?);
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                merged.push(r.map_err(|e| e.to_string())?);
+            }
         }
-        Ok(out)
+        // 2) 语义向量补充（分块有 embedding 时；只加关键词未命中的，按余弦序追加在后）
+        if let Some(vec) = query_vec {
+            let mut stmt = conn
+                .prepare("SELECT id, kb_name, file, chunk, chunk_idx, created_at, embedding FROM kb_chunks WHERE kb_name=?1 AND embedding IS NOT NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![kb_name], |row| {
+                    let emb_bytes: Vec<u8> = row.get(6)?;
+                    let emb: Vec<f32> = emb_bytes
+                        .chunks(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    let score = cosine_similarity(vec, &emb);
+                    Ok((
+                        KbChunk {
+                            id: row.get(0)?, kb_name: row.get(1)?, file: row.get(2)?,
+                            chunk: row.get(3)?, chunk_idx: row.get(4)?, created_at: row.get(5)?,
+                        },
+                        score,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut vec_scored: Vec<(KbChunk, f32)> = Vec::new();
+            for r in rows {
+                vec_scored.push(r.map_err(|e| e.to_string())?);
+            }
+            vec_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            for (c, _) in vec_scored {
+                if !merged.iter().any(|m| m.id == c.id) {
+                    merged.push(c);
+                }
+            }
+        }
+        merged.truncate(limit as usize);
+        Ok(merged)
     }
 
     /// 列出所有知识库及分块数
@@ -1108,16 +1155,16 @@ mod tests {
     #[test]
     fn kb_add_search_list_clear() {
         let (dir, db) = tmp_db();
-        db.kb_add_chunk("docs", "a.md", "华为技术有限公司成立于1987年", 0).unwrap();
-        db.kb_add_chunk("docs", "b.md", "DeepSeek 是一个大语言模型", 0).unwrap();
-        db.kb_add_chunk("notes", "c.md", "今天天气很好", 0).unwrap();
+        db.kb_add_chunk("docs", "a.md", "华为技术有限公司成立于1987年", 0, None).unwrap();
+        db.kb_add_chunk("docs", "b.md", "DeepSeek 是一个大语言模型", 0, None).unwrap();
+        db.kb_add_chunk("notes", "c.md", "今天天气很好", 0, None).unwrap();
 
-        let hits = db.kb_search("docs", "华为", 5).unwrap();
+        let hits = db.kb_search_hybrid("docs", "华为", None, 5).unwrap();
         assert!(hits.iter().any(|c| c.chunk.contains("华为")), "中文 unigram 命中");
         assert!(!hits.iter().any(|c| c.file == "b.md"), "无关文件不命中");
 
         // 跨库隔离：other 库查不到 docs 内容
-        assert!(db.kb_search("other", "华为", 5).unwrap().is_empty(), "跨库隔离");
+        assert!(db.kb_search_hybrid("other", "华为", None, 5).unwrap().is_empty(), "跨库隔离");
         // kb_list 汇总
         let list = db.kb_list().unwrap();
         let docs = list.iter().find(|k| k.name == "docs").unwrap();
@@ -1125,8 +1172,27 @@ mod tests {
         assert_eq!(list.len(), 2);
         // 清空后检索为空
         db.kb_clear("docs").unwrap();
-        assert!(db.kb_search("docs", "华为", 5).unwrap().is_empty(), "清空后检索为空");
+        assert!(db.kb_search_hybrid("docs", "华为", None, 5).unwrap().is_empty(), "清空后检索为空");
         assert_eq!(db.kb_list().unwrap().len(), 1);
+        cleanup(&dir);
+    }
+
+    // Phase 3 知识库语义向量：带 embedding 存储 + 混合检索（语义命中关键词未中的分块）
+    #[test]
+    fn kb_hybrid_semantic_recalls_similar_chunk() {
+        let (dir, db) = tmp_db();
+        // 关键词「华为」能命中 a；语义上「这家通信公司」也应召回 a（用接近向量模拟语义）
+        db.kb_add_chunk("docs", "a.md", "华为技术有限公司", 0, Some(&[0.9, 0.1, 0.1])).unwrap();
+        db.kb_add_chunk("docs", "b.md", "今天天气不错", 0, Some(&[0.1, 0.9, 0.1])).unwrap();
+        // 关键词命中 a
+        let kw = db.kb_search_hybrid("docs", "华为", None, 5).unwrap();
+        assert!(kw.iter().any(|c| c.file == "a.md"), "关键词命中 a");
+        // 语义查询向量偏向 a（与 a 的 embedding 接近），即使查询词不在 chunk 里也应召回 a
+        let sem = db.kb_search_hybrid("docs", "通讯设备制造巨头", Some(&[0.95, 0.1, 0.1]), 5).unwrap();
+        assert_eq!(sem.first().map(|c| c.file.as_str()), Some("a.md"), "语义优先召回 a");
+        // 混合：语义结果排在关键词结果前
+        let hy = db.kb_search_hybrid("docs", "华为", Some(&[0.95, 0.1, 0.1]), 5).unwrap();
+        assert!(hy.len() >= 1 && hy[0].file == "a.md", "混合检索去重且 a 在前");
         cleanup(&dir);
     }
 

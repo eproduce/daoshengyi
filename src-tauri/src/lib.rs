@@ -1249,7 +1249,7 @@ fn chunk_text(text: &str, size: usize) -> Vec<String> {
 /// 知识库索引：扫描目录（md/txt/代码/PDF），分块写入并建 FTS 索引（重建式：先清空同名知识库）。
 /// 支持 P-A8 沙箱：配置了路径白名单时只能索引白名单内目录。
 #[tauri::command]
-fn kb_index(db: State<Database>, kb_name: String, path: String) -> Result<String, String> {
+async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Result<String, String> {
     use base64::Engine as _;
     let allowed = sandbox_allowed_paths(db.inner());
     let expanded = expand_user_path(&path)?;
@@ -1267,7 +1267,7 @@ fn kb_index(db: State<Database>, kb_name: String, path: String) -> Result<String
 
     db.kb_clear(&kb_name)?;
     let mut files = 0usize;
-    let mut chunks = 0usize;
+    let mut collected: Vec<(String, String, i64)> = Vec::new(); // (rel, chunk, chunk_idx)
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
@@ -1299,26 +1299,84 @@ fn kb_index(db: State<Database>, kb_name: String, path: String) -> Result<String
                     if chunk.trim().is_empty() {
                         continue;
                     }
-                    db.kb_add_chunk(&kb_name, &rel, &chunk, i as i64)?;
-                    chunks += 1;
+                    collected.push((rel.clone(), chunk, i as i64));
                 }
             }
         }
     }
+
+    // 语义向量：探测一次 Ollama embedding 是否可用；可用则批量嵌入（每批 20）存储，否则回退纯关键词
+    let mut semantic = false;
+    let mut sem_note = String::new();
+    if !collected.is_empty() {
+        match ollama_embed_impl(vec![collected[0].1.clone()]).await {
+            Ok(_) => semantic = true,
+            Err(e) => sem_note = format!("，语义向量未启用：{}", e),
+        }
+    }
+    let mut chunks = 0usize;
+    if semantic {
+        let mut batch: Vec<String> = Vec::new();
+        let mut meta: Vec<&(String, String, i64)> = Vec::new();
+        for item in &collected {
+            batch.push(item.1.clone());
+            meta.push(item);
+            if batch.len() >= 20 {
+                match ollama_embed_impl(batch.clone()).await {
+                    Ok(vecs) => {
+                        for (m, v) in meta.iter().zip(vecs.into_iter()) {
+                            db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
+                            chunks += 1;
+                        }
+                    }
+                    Err(_) => {
+                        for m in meta.iter() {
+                            db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, None)?;
+                            chunks += 1;
+                        }
+                    }
+                }
+                batch.clear();
+                meta.clear();
+            }
+        }
+        if !batch.is_empty() {
+            if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
+                for (m, v) in meta.iter().zip(vecs.into_iter()) {
+                    db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
+                    chunks += 1;
+                }
+            } else {
+                for m in meta.iter() {
+                    db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, None)?;
+                    chunks += 1;
+                }
+            }
+        }
+    } else {
+        for (rel, chunk, idx) in &collected {
+            db.kb_add_chunk(&kb_name, rel, chunk, *idx, None)?;
+            chunks += 1;
+        }
+    }
+
     Ok(format!(
-        "知识库「{}」索引完成：{} 个文件 → {} 个分块（{}）",
+        "知识库「{}」索引完成：{} 个文件 → {} 个分块（{}）{}",
         kb_name,
         files,
         chunks,
-        root.display()
+        root.display(),
+        if semantic { "，语义向量已启用 ✅" } else { &sem_note }
     ))
 }
 
-/// 知识库检索（FTS5 关键词，中文 unigram）
+/// 知识库检索（混合：FTS5 关键词 + 语义向量，Ollama embedding 可用时）
 #[tauri::command]
-fn kb_search(db: State<Database>, kb_name: String, query: String, limit: Option<i64>) -> Result<Vec<db::KbChunk>, String> {
+async fn kb_search(db: State<'_, Database>, kb_name: String, query: String, limit: Option<i64>) -> Result<Vec<db::KbChunk>, String> {
     let lim = limit.unwrap_or(6).clamp(1, 20);
-    db.kb_search(&kb_name, &query, lim)
+    // 尝试语义：Ollama 在跑且模型已装时给查询生成向量 → 混合检索；否则纯 FTS5
+    let qvec = ollama_embed_impl(vec![query.clone()]).await.ok().and_then(|v| v.into_iter().next());
+    db.kb_search_hybrid(&kb_name, &query, qvec.as_deref(), lim)
 }
 
 /// 列出所有知识库及分块数
@@ -1503,12 +1561,11 @@ fn parse_embed_response(json: &serde_json::Value) -> Result<Vec<Vec<f32>>, Strin
     Ok(out)
 }
 
-/// 本地语义 embedding（P-A6）：用 Ollama 的 nomic-embed-text 生成向量，补 DeepSeek
-/// 无 embeddings 端点的语义检索短板（记忆向量检索 search_by_embedding 复用）。
+/// 本地语义 embedding 核心（P-A6）：用 Ollama 的 nomic-embed-text 生成向量，补 DeepSeek
+/// 无 embeddings 端点的语义检索短板（记忆向量检索 + 知识库分块向量共用）。
 /// 设计要点：**不自动拉模型**（避免静默下载大文件）——服务未运行或模型未安装时
-/// 返回明确错误，前端静默回退（语义检索暂不可用，FTS5 关键词检索不受影响）。
-#[tauri::command]
-async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+/// 返回明确错误，调用方静默回退（语义检索暂不可用，FTS5 关键词检索不受影响）。
+async fn ollama_embed_impl(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
     // 服务不可用（未运行）→ 快速失败（ollama_running 内部 2s 超时）
     if !ollama_running().await {
         return Err("Ollama 服务未运行".into());
@@ -1517,7 +1574,7 @@ async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
     let models = ollama_models().await.unwrap_or_default();
     if !embed_model_installed(&models) {
         return Err(format!(
-            "本地 embedding 模型 {} 未安装，可执行 `ollama pull {}` 后启用语义记忆检索",
+            "本地 embedding 模型 {} 未安装，可执行 `ollama pull {}` 后启用语义检索",
             EMBED_MODEL, EMBED_MODEL
         ));
     }
@@ -1542,6 +1599,12 @@ async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
     }
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     parse_embed_response(&json)
+}
+
+/// 本地语义 embedding（P-A6）：tauri 命令入口，复用 ollama_embed_impl。
+#[tauri::command]
+async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+    ollama_embed_impl(texts).await
 }
 
 /// 检测 Ollama 安装状态、服务状态与已部署模型
