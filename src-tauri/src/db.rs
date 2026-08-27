@@ -1318,6 +1318,13 @@ impl Database {
         Ok(result)
     }
 
+    /// 清空工具审计日志
+    pub fn clear_tool_audit(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM tool_audit", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // --- 会话内撤销：文件写/删操作快照与回滚 ---
 
     /// 记录一次可撤销的文件操作（写盘/删除前调用）。

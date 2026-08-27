@@ -39,6 +39,11 @@
 - **落地**：chat.ts 模块级 `sessionPermits` reactive Set（仅本会话有效，不落盘）+ `hasSessionPermit`/`rememberSessionPermit`/`clearSessionPermits`（store 导出）；`replace_string`/`insert_string`/`delete_file` 三个确认点在请求前检查会话允许集（命中直接放行），`EditConfirmRequest` 加 `rememberLabel` 提示文案；`DiffConfirmDialog` 加「本会话内不再询问」勾选——勾选后点「应用」先 `rememberSessionPermit(tool)` 再 `resolveEditConfirm(true)`，后续同工具不再弹确认
 - 验证：vue-tsc + vite build 全过
 
+### ✅ 审计可视化面板（§3.10 🟡）
+- **后端**：db.rs `clear_tool_audit`（清空）+ lib.rs `clear_tool_audit` 命令 + 注册；tool_audit 表数据由 `log_tool_call` 自动记录（command/git/test/内置工具审计，已接入）
+- **前端**：新组件 `AuditPanel.vue`（设置「审计」Tab）——最近 300 条工具调用列表（工具名徽标 + 时间 + 时长 + ✅/❌ 色点 + 参数截断）、按工具名关键词与状态（全部/成功/失败）筛选、点击展开回放完整参数与结果（参数 JSON 美化）、导出 JSON / Markdown、按工具聚合统计（点击快速筛选）、清空
+- 验证：cargo test 59 + vue-tsc + vite build 全过
+
 ---
 
 ## 2026-08-27

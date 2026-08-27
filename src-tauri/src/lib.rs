@@ -3739,6 +3739,12 @@ fn list_tool_audit(db: State<Database>, limit: i64) -> Result<Vec<db::ToolAuditR
     db.list_tool_audit(limit)
 }
 
+/// 清空工具审计日志
+#[tauri::command]
+fn clear_tool_audit(db: State<Database>) -> Result<(), String> {
+    db.clear_tool_audit()
+}
+
 /// 列出可撤销的文件操作（最近优先）
 #[tauri::command]
 fn list_undo(db: State<Database>, limit: i64) -> Result<Vec<db::UndoRow>, String> {
@@ -4229,6 +4235,7 @@ pub fn run() {
             mcp_call_tool,
             mcp_list_tools,
             list_tool_audit,
+            clear_tool_audit,
             list_undo,
             undo_by_id,
             fetch_community_plugins,

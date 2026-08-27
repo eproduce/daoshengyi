@@ -193,7 +193,7 @@
 
 ### 🟡 中等复杂度（需设计，本地可做）
 - **会话级权限记忆（✅ 已完成 2026-08-28）**：文件编辑确认弹窗加「本会话内不再询问」勾选——用户在 DiffConfirmDialog 勾选后，`replace_string`/`insert_string`/`delete_file` 本会话内自动放行（chat.ts 模块级 `sessionPermits` reactive Set + `hasSessionPermit`/`rememberSessionPermit`/`clearSessionPermits`，仅本会话有效不落盘）
-- 审计可视化面板（工具调用全记录 UI：筛选/回放/导出）
+- **审计可视化面板（✅ 已完成 2026-08-28）**：新组件 `AuditPanel.vue`（设置「审计」Tab）——tool_audit 全记录列表（工具名/时间/时长/成功失败色点 + 参数/结果截断）、按工具名与状态筛选、点击展开回放完整参数+结果（JSON 美化）、导出 JSON/MD、按工具聚合统计、清空；后端补 `clear_tool_audit` 命令（tool_audit 表 data 由 command/git/test/内置工具 log_tool_call 自动记录）
 - 外部编码 Agent 阶段三：彻底移除 `delegate_coding_agent`，零外部依赖
 
 ### 🔵 远期（需云端/社区后端）
