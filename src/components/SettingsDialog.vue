@@ -13,10 +13,11 @@ import ScheduledTasks from "./ScheduledTasks.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import ImGatewayPanel from "./ImGatewayPanel.vue";
 import AuditPanel from "./AuditPanel.vue";
+import UndoPanel from "./UndoPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database, MessagesSquare, ListChecks } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database, MessagesSquare, ListChecks, History } from "lucide-vue-next";
 
-type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "kb" | "im" | "audit" | "permissions" | "shortcuts";
+type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "kb" | "im" | "audit" | "undo" | "permissions" | "shortcuts";
 const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
@@ -291,6 +292,7 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'kb' }]" @click="activeTab = 'kb'"><span class="settings-tab__icon"><Database :size="15" /></span>知识库</button>
           <button :class="['settings-tab', { active: activeTab === 'im' }]" @click="activeTab = 'im'"><span class="settings-tab__icon"><MessagesSquare :size="15" /></span>即时聊天</button>
           <button :class="['settings-tab', { active: activeTab === 'audit' }]" @click="activeTab = 'audit'"><span class="settings-tab__icon"><ListChecks :size="15" /></span>审计</button>
+          <button :class="['settings-tab', { active: activeTab === 'undo' }]" @click="activeTab = 'undo'"><span class="settings-tab__icon"><History :size="15" /></span>撤销</button>
           <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
           <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
           <button :class="['settings-tab', { active: activeTab === 'shortcuts' }]" @click="activeTab = 'shortcuts'"><span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键</button>
@@ -575,6 +577,9 @@ function handleDelete() {
 
       <!-- 审计：工具调用全记录（筛选/回放/导出） -->
       <div v-show="activeTab === 'audit'"><AuditPanel /></div>
+
+      <!-- 撤销：文件操作回放（编辑/新建/删除快照，一键回滚） -->
+      <div v-show="activeTab === 'undo'"><UndoPanel /></div>
 
       <!-- 知识库 RAG 自动注入 -->
       <div v-show="activeTab === 'kb'">
