@@ -28,18 +28,16 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     id: "puppeteer",
     name: "浏览器自动化",
     icon: "Globe",
-    description: "网页交互、点击、截图（Puppeteer，默认用本机 Edge 内核）",
+    description: "网页交互、点击、截图（Puppeteer，自动选择本机已安装的 Chromium 系内核）",
     category: "网络",
     command: "npx",
     args: "-y @modelcontextprotocol/server-puppeteer",
     env: {
       // server-puppeteer 需要 Chrome/Chromium；puppeteer 缓存的旧版 Chrome for
-      // Testing 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），
-      // 故默认指定本机 Microsoft Edge（Chromium 内核）。可自行改路径。
-      PUPPETEER_EXECUTABLE_PATH: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      // 默认视口只有 800x600，窗口放大后页面只占窗口一部分。
-      // PUPPETEER_LAUNCH_OPTIONS 是 JSON，传给 puppeteer.launch()：把页面视口
-      // 与 Edge 窗口大小设成一致，让页面占满窗口。可自行调整尺寸。
+      // Testing 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88）。
+      // 浏览器可执行路径**由应用动态选择**（探测已装浏览器 + 系统默认 + 设置，
+      // 见 mcp.ts applyPuppeteerEnv / utils/browser-select.ts），此处不硬编码，
+      // 避免本机无 Edge 时启动失败。仅保留视口设置。
       PUPPETEER_LAUNCH_OPTIONS: '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}',
     },
     tags: ["浏览器", "自动化"],

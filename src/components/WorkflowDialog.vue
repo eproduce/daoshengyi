@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, markRaw } from "vue";
-import { VueFlow } from "@vue-flow/core";
+import { VueFlow, useVueFlow } from "@vue-flow/core";
 import WorkflowNodeView from "./WorkflowNodeView.vue";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -60,7 +60,7 @@ const selectedEdgeIsCondition = computed(() => {
   return (src as { data?: { wf?: WorkflowNode } } | undefined)?.data?.wf?.type === "condition";
 });
 
-function addNode(type: WorkflowNodeType) {
+function addNode(type: WorkflowNodeType, pos?: { x: number; y: number }) {
   const id = uuidv4();
   const wf: WorkflowNode = {
     id, type, label: `${TYPE_LABEL[type]}节点`,
@@ -70,8 +70,8 @@ function addNode(type: WorkflowNodeType) {
       : type === "condition" ? { expression: "{{user}} != \"\"" }
       : type === "code" ? { code: "return input.trim().toUpperCase();" }
       : {},
-    x: 60 + nodes.value.length * 30,
-    y: 60 + nodes.value.length * 30,
+    x: pos?.x ?? 60 + nodes.value.length * 30,
+    y: pos?.y ?? 60 + nodes.value.length * 30,
   };
   nodes.value.push({
     id, type: "wf", position: { x: wf.x, y: wf.y },
@@ -79,6 +79,31 @@ function addNode(type: WorkflowNodeType) {
   });
   selectedId.value = id;
   selectedEdgeId.value = null;
+}
+
+// ── 拖拽新增节点（vue-flow 标准模式）───────────────────────────────
+// 面板按钮 draggable=true，dragstart 时把节点类型写入 dataTransfer；
+// 画布 dragover.prevent 允许放置，drop 时用 screenToFlowCoordinate 把鼠标屏幕坐标
+// 转成画布坐标，在落点处创建节点。
+const dragType = ref<WorkflowNodeType | null>(null);
+const { screenToFlowCoordinate } = useVueFlow();
+const DRAG_MIME = "application/x-wf-node-type";
+function onPaletteDragStart(type: WorkflowNodeType, ev: DragEvent) {
+  dragType.value = type;
+  if (ev.dataTransfer) {
+    ev.dataTransfer.setData(DRAG_MIME, type);
+    ev.dataTransfer.effectAllowed = "copy";
+  }
+}
+function onPaletteDragEnd() { dragType.value = null; }
+function onCanvasDragOver(ev: DragEvent) { ev.preventDefault(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy"; }
+function onCanvasDrop(ev: DragEvent) {
+  ev.preventDefault();
+  const type = (dragType.value || ev.dataTransfer?.getData(DRAG_MIME) || "") as WorkflowNodeType;
+  if (!type || !("text llm tool condition code end".split(" ").includes(type))) return;
+  const { x, y } = screenToFlowCoordinate({ x: ev.clientX, y: ev.clientY });
+  addNode(type, { x, y });
+  dragType.value = null;
 }
 
 function connectEdge(params: { source: string; target: string; sourceHandle?: string | null }) {
@@ -116,7 +141,13 @@ watch(() => selectedWf.value?.label, (l) => {
 
 function buildGraph(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
-    nodes: nodes.value.map((n) => ({ ...(n.data.wf as WorkflowNode), id: n.id })),
+    // 序列化时剥离运行期状态（runStatus/runOutput），只保留可持久化的定义
+    nodes: nodes.value.map((n) => {
+      const wf = { ...(n.data.wf as WorkflowNode), id: n.id };
+      delete wf.runStatus;
+      delete wf.runOutput;
+      return wf;
+    }),
     edges: edges.value.map((e) => {
       const wfEdge = (e.data as { edge?: WorkflowEdge } | undefined)?.edge;
       return { id: e.id, source: e.source, target: e.target, label: wfEdge?.label };
@@ -130,6 +161,8 @@ async function run() {
   running.value = true;
   log.value = [];
   outputs.value = [];
+  // 重置所有节点运行状态为 waiting
+  for (const n of nodes.value) { (n.data as any).wf.runStatus = "waiting"; (n.data as any).wf.runOutput = ""; }
   const startedAt = Date.now();
   const runName = loadedWfName.value || wfName.value.trim() || "未命名工作流";
   const external: Record<string, string> = {};
@@ -151,6 +184,13 @@ async function run() {
         return data?.content || "（模型未返回内容）";
       },
       toolCall: async (tool, args) => callMcpTool("app", tool, args),
+    }, (ev) => {
+      // 实时刷新节点运行状态（供画布徽标 + 点击查看该步输出）
+      const n = nodes.value.find((x) => x.id === ev.nodeId);
+      if (n) {
+        (n.data as any).wf.runStatus = ev.status;
+        (n.data as any).wf.runOutput = ev.output || "";
+      }
     });
     log.value = res.log;
     outputs.value = res.outputs;
@@ -305,24 +345,35 @@ function loadTemplate(ev: Event) {
         <span v-if="loadedWfName" class="wf-toolbar__loaded">已载入：{{ loadedWfName }}</span>
       </div>
 
+      <div class="wf-external">
+        <span class="wf-external__label">外部输入（供 <code>&#123;&#123;user&#125;&#125;</code> 占位符引用）：</span>
+        <input v-model="externalInput" class="wf-external__input" placeholder="例：帮我分析这个项目的技术栈" />
+        <span class="wf-external__hint">运行前填写，节点配置里写 &#123;&#123;user&#125;&#125; 即可引用此输入。</span>
+      </div>
+
       <div class="wf-body">
-        <!-- 节点面板 -->
+        <!-- 节点面板（支持拖拽到画布或点击添加） -->
         <div class="wf-palette">
-          <button class="wf-palette__btn" @click="addNode('text')"><Plus :size="13" /> 文本</button>
-          <button class="wf-palette__btn" @click="addNode('llm')"><Plus :size="13" /> LLM</button>
-          <button class="wf-palette__btn" @click="addNode('tool')"><Plus :size="13" /> 工具</button>
-          <button class="wf-palette__btn" @click="addNode('condition')"><Plus :size="13" /> 条件</button>
-          <button class="wf-palette__btn" @click="addNode('code')"><Plus :size="13" /> 代码</button>
-          <button class="wf-palette__btn" @click="addNode('end')"><Plus :size="13" /> 结束</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('text')" @dragstart="onPaletteDragStart('text', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 文本</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('llm')" @dragstart="onPaletteDragStart('llm', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> LLM</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('tool')" @dragstart="onPaletteDragStart('tool', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 工具</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('condition')" @dragstart="onPaletteDragStart('condition', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 条件</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('code')" @dragstart="onPaletteDragStart('code', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 代码</button>
+          <button class="wf-palette__btn" draggable="true" @click="addNode('end')" @dragstart="onPaletteDragStart('end', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 结束</button>
           <select class="wf-palette__select" @change="loadTemplate">
             <option value="" disabled selected>📦 载入模板…</option>
             <option v-for="t in WORKFLOW_TEMPLATES" :key="t.id" :value="t.id">{{ t.icon }} {{ t.name }}（{{ t.description }}）</option>
           </select>
-          <div class="wf-palette__hint">外部输入用 <code>&#123;&#123;user&#125;&#125;</code>；上游输出用 <code>&#123;&#123;节点id&#125;&#125;</code> 引用。条件节点出边点选后设 true/false 分支；未激活分支自动跳过。</div>
+          <div class="wf-palette__hint">
+            <b>添加节点</b>：拖拽左侧按钮到画布（或直接点击，落在空白处）。<br />
+            <b>连线</b>：从节点底部圆点拖到下一个节点顶部。<br />
+            <b>外部输入</b>：顶部输入框填内容，节点里用 <code>&#123;&#123;user&#125;&#125;</code> 引用；上游输出用 <code>&#123;&#123;节点id&#125;&#125;</code>。<br />
+            <b>运行</b>：点右上角「运行」，过程见底部日志、结果见底部输出。
+          </div>
         </div>
 
         <!-- 画布 -->
-        <div class="wf-canvas">
+        <div class="wf-canvas" @dragover="onCanvasDragOver" @drop="onCanvasDrop">
           <VueFlow v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }" :node-types="nodeTypes" fit-view-on-init :min-zoom="0.1"
             @connect="connectEdge" @node-click="(e: any) => { selectedId = e.node.id; selectedEdgeId = null; }"
             @edge-click="(e: any) => { selectedEdgeId = e.edge.id; selectedId = null; }"
@@ -369,6 +420,20 @@ function loadTemplate(ev: Event) {
               <label class="wf-field"><span>内容</span><textarea v-model="selectedWf.config.text" rows="4" /></label>
             </template>
             <button class="wf-btn wf-btn--danger" @click="removeNode(selectedWf.id)"><Trash2 :size="13" /> 删除节点</button>
+            <!-- 运行状态 + 该步输出（节点级运行可视化） -->
+            <template v-if="selectedWf.runStatus && selectedWf.runStatus !== 'waiting'">
+              <div class="wf-field">
+                <span>运行状态：
+                  <b :class="'wf-status-' + selectedWf.runStatus">
+                    {{ selectedWf.runStatus === "running" ? "⏳ 执行中" : selectedWf.runStatus === "done" ? "✅ 成功" : selectedWf.runStatus === "error" ? "❌ 失败" : "⏭️ 跳过" }}
+                  </b>
+                </span>
+              </div>
+              <div class="wf-field" v-if="selectedWf.runOutput">
+                <span>本步输出</span>
+                <pre class="wf-run__pre wf-run__pre--node">{{ selectedWf.runOutput }}</pre>
+              </div>
+            </template>
           </template>
           <div v-else class="wf-inspector__empty">点击节点/连线编辑配置<br />拖拽连线连接上下游</div>
         </div>
@@ -412,6 +477,10 @@ function loadTemplate(ev: Event) {
 .wf-title { font-weight: 700; }
 .wf-head__actions { display: flex; gap: 8px; align-items: center; }
 .wf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border, #eee); flex-wrap: wrap; }
+.wf-external { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--border, #eee); background: var(--bg-soft, #f7f7f7); }
+.wf-external__label { font-size: 12px; color: var(--text-secondary, #666); white-space: nowrap; }
+.wf-external__input { flex: 1; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; }
+.wf-external__hint { font-size: 11px; color: var(--text-secondary, #999); white-space: nowrap; }
 .wf-toolbar__name { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; width: 170px; }
 .wf-toolbar__loaded { font-size: 12px; color: #2e7d32; font-weight: 600; }
 .wf-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }

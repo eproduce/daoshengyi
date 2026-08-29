@@ -22,6 +22,9 @@ export interface WorkflowNode {
   };
   x: number;
   y: number;
+  // 运行期状态（UI 展示用，不参与持久化语义）：waiting/running/done/error/skipped + 本步输出
+  runStatus?: "waiting" | "running" | "done" | "error" | "skipped";
+  runOutput?: string;
 }
 
 export interface WorkflowEdge {
@@ -44,11 +47,45 @@ export interface WorkflowRuntime {
 export interface WorkflowResult {
   outputs: { nodeId: string; label: string; value: string }[];
   log: string[];
+  /** 各节点输出的结构化值（JSON 对象/数组/字符串），供字段级引用与 UI 展示 */
+  nodeOutputs: Record<string, unknown>;
 }
 
 /** 把模板中的 {{nodeId}} 占位符替换为对应节点输出（未产生输出则替换为空串）。 */
 export function renderTemplate(template: string, outputs: Record<string, string>): string {
   return template.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (_, id: string) => outputs[id] ?? "");
+}
+
+/** 尝试把字符串解析为结构化值（JSON 对象/数组）；解析失败或非对象保持原字符串。 */
+function tryParseStructured(s: string): unknown {
+  const t = (s ?? "").trim();
+  if (!t) return s;
+  if ((t[0] !== "{" && t[0] !== "[") || t[t.length - 1] !== (t[0] === "{" ? "}" : "]")) return s;
+  try {
+    const v = JSON.parse(t);
+    return v !== null && typeof v === "object" ? v : s;
+  } catch { return s; }
+}
+
+/** 字段级模板渲染：支持 {{id}}（整块）与 {{id.field}}（对象字段，可多级 {{id.a.b}}）。
+ *  值可以是字符串或 JSON 对象/数组；对象字段不存在时替换为空串。 */
+export function renderTemplateEx(template: string, structured: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_, key: string) => {
+    const dot = key.indexOf(".");
+    if (dot === -1) {
+      const v = structured[key];
+      return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+    }
+    const rootId = key.slice(0, dot);
+    const path = key.slice(dot + 1).split(".");
+    let cur: unknown = structured[rootId];
+    for (const seg of path) {
+      if (cur && typeof cur === "object") {
+        cur = (cur as Record<string, unknown>)[seg];
+      } else { cur = undefined; break; }
+    }
+    return cur === undefined || cur === null ? "" : typeof cur === "object" ? JSON.stringify(cur, null, 2) : String(cur);
+  });
 }
 
 // ---------- 条件表达式求值器（纯函数、安全、可测试） ----------
@@ -313,11 +350,13 @@ function edgeActive(e: WorkflowEdge, outputs: Record<string, string>, byId: Map<
   return e.label === outputs[e.source];
 }
 
-/** 计算某节点的上游输入：只取激活入边，把上游节点输出按 {{id}} 注入到模板。 */
+/** 计算某节点的上游输入：只取激活入边，把上游节点输出按 {{id}}/{{id.field}} 注入到模板。
+ *  structured 为各节点的结构化值表（JSON 对象），供字段级引用；outputs 为字符串视图。 */
 function resolveInputs(
   node: WorkflowNode,
   edges: WorkflowEdge[],
   outputs: Record<string, string>,
+  structured: Record<string, unknown>,
   external: Record<string, string>,
   byId: Map<string, WorkflowNode>,
 ): string {
@@ -326,37 +365,48 @@ function resolveInputs(
     .map((e) => `[${e.source}]\n${outputs[e.source] ?? ""}`)
     .join("\n\n");
   const base = node.config.prompt ?? node.config.text ?? "";
-  // 外部输入（用户提供）也参与占位符替换
-  const withExternal = renderTemplate(base, { ...outputs, ...external });
+  // 外部输入（用户提供）也参与占位符替换；结构化表优先（支持 {{id.field}}）
+  const withExternal = renderTemplateEx(base, { ...structured, ...external });
   return ctx ? `${ctx}\n\n${withExternal}` : withExternal;
 }
 
-/** 深拷贝参数模板并对所有字符串值做占位符替换。 */
-function renderArgs(args: Record<string, unknown>, outputs: Record<string, string>): Record<string, unknown> {
+/** 深拷贝参数模板并对所有字符串值做占位符替换（支持 {{id.field}} 字段级，structured 为结构化值表）。 */
+function renderArgs(args: Record<string, unknown>, structured: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
-    if (typeof v === "string") out[k] = renderTemplate(v, outputs);
-    else if (Array.isArray(v)) out[k] = v.map((x) => (typeof x === "string" ? renderTemplate(x, outputs) : x));
-    else if (v && typeof v === "object") out[k] = renderArgs(v as Record<string, unknown>, outputs);
+    if (typeof v === "string") out[k] = renderTemplateEx(v, structured);
+    else if (Array.isArray(v)) out[k] = v.map((x) => (typeof x === "string" ? renderTemplateEx(x, structured) : x));
+    else if (v && typeof v === "object") out[k] = renderArgs(v as Record<string, unknown>, structured);
     else out[k] = v;
   }
   return out;
 }
 
+/** 执行步骤事件：供 UI 实时展示每个节点的运行状态。 */
+export interface WorkflowStepEvent {
+  nodeId: string;
+  status: "running" | "done" | "error" | "skipped";
+  output?: string;
+}
+
 /**
  * 执行工作流（拓扑顺序）。LLM/工具调用走注入的 runtime，便于测试与 UI。
  * external 为用户提供的输入（键名可在提示词/参数中用 {{key}} 引用）。
+ * onStep 可选回调：每个节点开始/结束/跳过时触发，供 UI 实时刷新节点状态与输出。
  */
 export async function executeWorkflow(
   graph: WorkflowGraph,
   external: Record<string, string>,
   rt: WorkflowRuntime,
+  onStep?: (ev: WorkflowStepEvent) => void,
 ): Promise<WorkflowResult> {
   const sorted = topoSort(graph);
   if ("error" in sorted) {
-    return { outputs: [], log: [`❌ ${sorted.error}`] };
+    return { outputs: [], log: [`❌ ${sorted.error}`], nodeOutputs: {} };
   }
   const outputs: Record<string, string> = { ...external };
+  // 各节点结构化值表（优先 JSON 对象，供 {{id.field}} 字段级引用；外部输入为字符串）
+  const structured: Record<string, unknown> = { ...external };
   const log: string[] = [];
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const skippedIds = new Set<string>();
@@ -369,10 +419,12 @@ export async function executeWorkflow(
       outputs[id] = "（分支未激活，跳过）";
       skippedIds.add(id);
       log.push(`⏭️ ${node.label}（${node.id}）条件分支未激活，跳过`);
+      onStep?.({ nodeId: id, status: "skipped", output: "（分支未激活，跳过）" });
       continue;
     }
-    const input = resolveInputs(node, graph.edges, outputs, external, byId);
+    const input = resolveInputs(node, graph.edges, outputs, structured, external, byId);
     try {
+      onStep?.({ nodeId: id, status: "running" });
       if (node.type === "text") {
         outputs[id] = input.trim();
       } else if (node.type === "llm") {
@@ -381,14 +433,16 @@ export async function executeWorkflow(
       } else if (node.type === "tool") {
         const tool = node.config.tool || "";
         if (!tool) throw new Error("工具节点未指定工具名");
-        const args = renderArgs(node.config.toolArgs || {}, outputs);
+        const args = renderArgs(node.config.toolArgs || {}, structured);
         outputs[id] = (await rt.toolCall(tool, args)).trim();
       } else if (node.type === "condition") {
         const expr = node.config.expression || "";
         if (!expr.trim()) throw new Error("条件节点未填写表达式");
         const val = evalCondition(expr, outputs);
         outputs[id] = val ? "true" : "false";
+        structured[id] = val ? "true" : "false";
         log.push(`🔀 ${node.label}（${node.id}）→ ${val ? "true" : "false"}`);
+        onStep?.({ nodeId: id, status: "done", output: val ? "true" : "false" });
         continue;
       } else if (node.type === "code") {
         const code = node.config.code || "";
@@ -397,11 +451,16 @@ export async function executeWorkflow(
       } else if (node.type === "end") {
         outputs[id] = input.trim();
       }
+      // 结构化值：尝试把输出解析为 JSON 对象/数组（LLM 输出 JSON、代码节点返回对象等）
+      structured[id] = tryParseStructured(outputs[id]);
       log.push(`✅ ${node.label}（${node.id}）→ ${(outputs[id] || "").slice(0, 120)}`);
+      onStep?.({ nodeId: id, status: "done", output: outputs[id] });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.push(`❌ ${node.label}（${node.id}）：${msg}`);
       outputs[id] = `（节点执行失败：${msg}）`;
+      structured[id] = outputs[id];
+      onStep?.({ nodeId: id, status: "error", output: `（节点执行失败：${msg}）` });
     }
   }
 
@@ -412,5 +471,6 @@ export async function executeWorkflow(
   return {
     outputs: terminal.map((n) => ({ nodeId: n.id, label: n.label, value: outputs[n.id] ?? "" })),
     log,
+    nodeOutputs: { ...structured },
   };
 }

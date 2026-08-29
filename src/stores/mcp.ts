@@ -2,7 +2,8 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
-import { initSettings, updateSettings, type McpServerPersist } from "@/api/appSettings";
+import { initSettings, getSettings, updateSettings, type McpServerPersist } from "@/api/appSettings";
+import { pickBrowserPath } from "@/utils/browser-select";
 
 interface McpServerConfig {
   id: string;
@@ -41,37 +42,97 @@ function migrateConfig<T extends { command: string; args: string; enabled: boole
   return c;
 }
 
-// ── Puppeteer 浏览器自动化：自动指定本机可用的浏览器 ─────────────────────────
-// server-puppeteer 需要 Chrome/Chromium。puppeteer 缓存的旧版 Chrome for Testing
-// 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），因此改用本机
-// Microsoft Edge（Chromium 内核，随系统更新）。通过 PUPPETEER_EXECUTABLE_PATH
-// 指定，与手动 env 配置共存（手动配置优先）。
+// ── Puppeteer 浏览器自动化：按已安装浏览器 + 系统默认浏览器选择内核 ─────────
+// server-puppeteer 需要 Chromium 系浏览器。puppeteer 缓存的旧版 Chrome for Testing
+// 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88），因此改用本机已安装的
+// Chromium 系浏览器（Chrome / Edge / Chromium / Brave），通过 PUPPETEER_EXECUTABLE_PATH
+// 指定。选择优先级（resolveBrowserPath）：
+//   1. 服务器 env 里用户手动指定的 PUPPETEER_EXECUTABLE_PATH
+//   2. 设置 browserEngine（用户显式选择的浏览器）
+//   3. 系统默认浏览器（若是 Chromium 系）
+//   4. 推荐序：chrome > edge > chromium > brave
+//   5. 兜底：维持旧 Edge 路径（跨机器都有 Edge 概率高）
+export interface BrowserInfo {
+  id: string;
+  name: string;
+  path: string;
+  is_default: boolean;
+}
+
 export const PUPPETEER_EDGE_PATH = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
 
 // server-puppeteer 默认视口 800x600 偏小，窗口放大后页面只占窗口一部分。
 // 通过 PUPPETEER_LAUNCH_OPTIONS（JSON，传给 puppeteer.launch()）把页面视口与
-// Edge 窗口大小设成一致（1440x900），让页面占满窗口。用户手动配置优先。
+// 窗口大小设成一致（1440x900），让页面占满窗口。用户手动配置优先。
 export const PUPPETEER_DEFAULT_LAUNCH_OPTIONS =
   '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}';
 
-function applyPuppeteerEnv<T extends { command: string; args: string; env?: Record<string, string> }>(c: T): T {
+let browsersCache: BrowserInfo[] | null = null;
+let browsersLoading: Promise<BrowserInfo[]> | null = null;
+
+/** 探测本机已安装浏览器（带缓存，多次调用只 invoke 一次）。Tauri 环境调用 Rust 命令。 */
+export function detectBrowsers(): Promise<BrowserInfo[]> {
+  if (browsersCache) return Promise.resolve(browsersCache);
+  if (browsersLoading) return browsersLoading;
+  const isTauri = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  if (!isTauri) {
+    browsersCache = [];
+    return Promise.resolve(browsersCache);
+  }
+  browsersLoading = invoke<BrowserInfo[]>("detect_browsers")
+    .then((list) => { browsersCache = list || []; return browsersCache; })
+    .catch(() => { browsersCache = []; return browsersCache; })
+    .finally(() => { browsersLoading = null; });
+  return browsersLoading;
+}
+
+/** 根据设置 browserEngine + 系统默认浏览器 + 推荐序，选出应使用的浏览器可执行路径。
+ *  返回 null 表示无可用浏览器（前端兜底用 Edge 路径）。选择逻辑见 utils/browser-select.ts。 */
+export async function resolveBrowserPath(engine: string): Promise<string | null> {
+  const list = await detectBrowsers();
+  return pickBrowserPath(list, engine);
+}
+
+/** 应用浏览器内核到 puppeteer 服务器 env。
+ *  puppeteer 服务器的 PUPPETEER_EXECUTABLE_PATH **始终**由多内核选择逻辑决定
+ *  （探测已装浏览器 + 设置 browserEngine + 系统默认 + 推荐序）——即使 catalog 里
+ *  硬编码了 Edge 路径（旧配置），只要本机探测到 Chrome/默认浏览器就会用探测结果，
+ *  避免「本机有 Chrome 却硬用不存在的 Edge 导致启动失败」。仅当探测失败才回退。
+ *  用户手动在 env 里配置的路径若真实存在，则优先尊重。 */
+async function applyPuppeteerEnv<T extends { command: string; args: string; env?: Record<string, string> }>(c: T): Promise<T> {
   const cmd = (c.command ?? "").toLowerCase();
   const args = c.args ?? "";
   const isPuppeteer = cmd.includes("npx") && /\bserver-puppeteer\b/.test(args);
   if (!isPuppeteer) return { ...c, env: c.env ?? {} };
   const env = { ...(c.env ?? {}) };
-  // 用户已显式指定浏览器则尊重；否则默认用本机 Edge
-  if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = PUPPETEER_EDGE_PATH;
+  // 若用户手动配置的路径真实存在 → 尊重；否则按多内核选择覆盖（含 catalog 硬编码的 Edge 路径）
+  const manualPath = env.PUPPETEER_EXECUTABLE_PATH;
+  const manualPathValid = manualPath ? await isFile(manualPath) : false;
+  if (!manualPathValid) {
+    try {
+      const engine = getSettings().browserEngine ?? "auto";
+      const path = await resolveBrowserPath(engine);
+      env.PUPPETEER_EXECUTABLE_PATH = path || PUPPETEER_EDGE_PATH;
+    } catch {
+      env.PUPPETEER_EXECUTABLE_PATH = PUPPETEER_EDGE_PATH;
+    }
+  }
   // 用户已显式配置启动参数则尊重；否则补默认视口=窗口大小，让页面占满窗口
   if (!env.PUPPETEER_LAUNCH_OPTIONS) env.PUPPETEER_LAUNCH_OPTIONS = PUPPETEER_DEFAULT_LAUNCH_OPTIONS;
   return { ...c, env };
 }
 
+/** 检查路径是否真实存在（判断 env 里的浏览器路径是否有效）。 */
+function isFile(p: string): Promise<boolean> {
+  return invoke<boolean>("file_exists", { path: p }).catch(() => false);
+}
+
 // 同步兜底：先读 localStorage 旧数据（作为迁移源）
+// 注意：浏览器内核 env 由 initFromRust 异步应用（能拿到最新探测结果与设置），此处仅做格式迁移
 function loadLegacy(): McpServerConfig[] {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
-    return s ? (JSON.parse(s) as McpServerConfig[]).map((c) => applyPuppeteerEnv(migrateConfig(c))) : [];
+    return s ? (JSON.parse(s) as McpServerConfig[]).map((c) => migrateConfig(c)) : [];
   } catch { return []; }
 }
 
@@ -110,7 +171,9 @@ export const useMcpStore = defineStore("mcp", () => {
       const legacy = localStorage.getItem(STORAGE_KEY);
       const settings = await initSettings();
       if (settings.mcpServers.length > 0) {
-        servers.value = settings.mcpServers.map((p) => applyPuppeteerEnv(migrateConfig(p))).map(toConfig);
+        // 浏览器内核 env 异步应用（探测已装浏览器 + 按设置/默认选择）
+        const applied = await Promise.all(settings.mcpServers.map((p) => applyPuppeteerEnv(migrateConfig(p))));
+        servers.value = applied.map(toConfig);
         if (legacy) localStorage.removeItem(STORAGE_KEY);
       } else if (legacy) {
         save();
@@ -169,6 +232,11 @@ export const useMcpStore = defineStore("mcp", () => {
       throw new Error("MCP 服务器需要在桌面应用中连接（当前为浏览器预览，Tauri API 不可用）");
     }
     try {
+      // 浏览器自动化服务器：连接前按最新设置重新应用浏览器内核 env（用户可能改过 browserEngine）
+      if (isBrowserServer(s.name, s.command) && !s.env?.PUPPETEER_EXECUTABLE_PATH) {
+        const applied = await applyPuppeteerEnv(s);
+        Object.assign(s, applied);
+      }
       const args = s.args.split(/\s+/).filter(a => a.length > 0);
       const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
         name: s.name, command: s.command, args, env: s.env || {},

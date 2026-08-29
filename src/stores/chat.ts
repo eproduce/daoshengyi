@@ -334,10 +334,10 @@ function getMcpToolsPrompt(): string {
     pending +
     "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。不确定时可先用 web_search 或 fetch_page 探索。" +
     "\n\n## 文件系统使用要点\n" +
-    "- 查看目录**优先用 list_directory 只列一层**（能看到该目录下的子目录/文件清单），不要用 directory_tree 递归列整个目录树。\n" +
+    "- 查看目录**优先用 list_dir 只列一层**（能看到该目录下的子目录/文件清单），不要用 directory_tree 递归列整个目录树。\n" +
     "- directory_tree 会递归展开全部子目录（含 .git、node_modules、target、build 等海量文件），结果巨大且会被截断，无法完整看到；禁止对含这些大目录的项目用它。\n" +
-    "- 正确做法：先 list_directory 看顶层 → 针对需要的子目录再用 list_directory 逐层深入 → 读关键文件用 read_multiple_files。\n" +
-    "- 分析用户本地目录/项目时，这些就是本地文件系统操作，不要联网搜索。\n" +
+    "- 正确做法：先 list_dir 看顶层 → 针对需要的子目录再用 list_dir 逐层深入 → 读关键文件用 read_file。\n" +
+    "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点\n" +
     "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、搜索、点击或操作页面时，**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
     "- 若浏览器工具不在上方工具列表（按需激活），直接用 `{\"server\":\"浏览器自动化\",\"tool\":\"puppeteer_navigate\",...}` 调用即可，系统会自动连接浏览器。\n" +
@@ -970,13 +970,55 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `（${done}/${plan.steps.length} 完成）`
       );
     }
-    case "list_dir": {
+    case "list_dir":
+    case "list_directory": {
+      // list_directory 是 filesystem MCP 风格名：模型常按提示词用它调内置列目录，
+      // 这里作为 list_dir 的兼容别名（同一实现）。
       const path = String(args.path || "");
       if (!path) throw new Error("list_dir 需要 path 参数");
-      const res = await invoke<{ dir: boolean; path: string; name: string; size?: number }[]>("read_file", { path });
-      if (!Array.isArray(res)) return `（${path} 不是目录）`;
-      return `目录 ${path} 内容（${res.length} 项）：\n` +
-        res.map(r => (r.dir ? `📁 ${r.name}/` : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`)).join("\n");
+      // Rust read_file：传入目录时返回格式化字符串（以「【目录】」开头，含 📁/📄 图标）；
+      // 传入文件时返回文件文本内容。list_dir 需要的是目录列表 → 直接原样返回 Rust 结果。
+      const res = await invoke<string>("read_file", { path });
+      if (typeof res === "string") {
+        // 兼容旧协议：若未来 Rust 返回结构化数组字符串（JSON），此处统一按字符串展示
+        return res.startsWith("【目录】") || res === "（空目录）"
+          ? res
+          : `（${path} 不是目录，或读取失败：${res.slice(0, 200)}）`;
+      }
+      // 兼容：若返回结构化数组（旧协议）则格式化
+      if (Array.isArray(res)) {
+        const arr = res as unknown as { dir: boolean; path: string; name: string; size?: number }[];
+        return `目录 ${path} 内容（${arr.length} 项）：\n` +
+          arr.map(r => (r.dir ? `📁 ${r.name}/` : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`)).join("\n");
+      }
+      return `（${path} 读取失败）`;
+    }
+    case "read_file": {
+      // 读取单个文本文件（filesystem MCP 风格名兼容；复用 Rust read_file，P-A8 沙箱生效）
+      const path = String(args.path || args.file || "");
+      if (!path) throw new Error("read_file 需要 path 参数");
+      const res = await invoke<string>("read_file", { path });
+      if (typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）") {
+        return `（${path} 是目录，请用 list_dir/list_directory 查看目录内容）`;
+      }
+      return `📄 ${path}\n\n\`\`\`\n${res.slice(0, 12000)}\n\`\`\``;
+    }
+    case "read_multiple_files": {
+      // 批量读取多个文件（filesystem MCP 风格名兼容；参数 paths 数组或 path 单个）
+      const paths = Array.isArray(args.paths) ? args.paths.map(String) : Array.isArray(args.files) ? args.files.map(String) : args.path ? [String(args.path)] : [];
+      if (!paths.length) throw new Error("read_multiple_files 需要 paths 数组参数");
+      const parts: string[] = [];
+      for (const p of paths) {
+        try {
+          const res = await invoke<string>("read_file", { path: p });
+          parts.push(typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）"
+            ? `（${p} 是目录）`
+            : `📄 ${p}\n\`\`\`\n${res.slice(0, 8000)}\n\`\`\``);
+        } catch (e: unknown) {
+          parts.push(`📄 ${p}\n❌ 读取失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return parts.join("\n\n---\n\n");
     }
     case "memory_save": {
       // 主动记忆：Agent 记住用户明确给出的重要信息/偏好/决策/待办（跨会话生效）
@@ -2491,15 +2533,19 @@ export const useChatStore = defineStore("chat", () => {
         }
 
         if (stopRequested) break; // 执行工具前再检查，避免停止后仍调工具（含子代理）
+        // 内置工具 server 兜底映射：模型常省略 server 字段或写 "default"，
+        // parseToolCall 会兜底成 "default" → 不映射成 "app" 就会误走 MCP 路径
+        // 报「Tool xxx not found」。与子代理循环（runSubagentLoop）保持一致。
+        const toolServer = tc.server && tc.server !== "default" ? tc.server : "app";
         // 实时显示"正在调用工具"
-        const serverName = tc.server && tc.server !== "default" ? `（${tc.server}）` : "";
+        const serverName = toolServer !== "app" ? `（${toolServer}）` : "";
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
         const argsStr = JSON.stringify(tc.arguments, null, 2);
         const startTool = Date.now();
-        dbg(`[tool] 开始执行 ${tc.server}/${tc.tool}，args=${argsStr.slice(0, 120)}`);
+        dbg(`[tool] 开始执行 ${toolServer}/${tc.tool}，args=${argsStr.slice(0, 120)}`);
         try {
           // 用户停止时立即中断（不等当前工具跑完），让「停止」即刻生效
-          const result = await callToolStoppable(tc.server, tc.tool, tc.arguments);
+          const result = await callToolStoppable(toolServer, tc.tool, tc.arguments);
           if (stopRequested) break; // 工具返回后被停止 → 不再回填继续下一轮
           dbg(`[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`);
           const clipped = formatToolResultPreview(tc.tool, result);
@@ -2509,7 +2555,7 @@ export const useChatStore = defineStore("chat", () => {
             `\n<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`;
           toolChain.push(card);
           toolCards.push({
-            name: tc.tool, server: tc.server || "app", status: "done",
+            name: tc.tool, server: toolServer, status: "done",
             durationMs: Date.now() - startTool,
             argsPreview: argsStr.slice(0, 300),
             resultPreview: clipped.slice(0, 300),
@@ -2531,7 +2577,7 @@ export const useChatStore = defineStore("chat", () => {
           const card = `> ❌ 工具调用失败: \`${err}\``;
           toolChain.push(card);
           toolCards.push({
-            name: tc.tool, server: tc.server || "app", status: "error",
+            name: tc.tool, server: toolServer, status: "error",
             durationMs: Date.now() - startTool,
             argsPreview: argsStr.slice(0, 300),
             error: err.slice(0, 300),

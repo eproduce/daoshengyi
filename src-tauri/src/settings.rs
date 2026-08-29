@@ -102,10 +102,14 @@ pub struct AppSettings {
     /// IM 网关配置（钉钉/飞书/企微）。敏感字段（token/secret）随整个对象整体加密落盘
     #[serde(default)]
     pub im_config: serde_json::Value,
+    /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave / webkit（仅识别，puppeteer 不支持）
+    #[serde(default = "default_browser_engine")]
+    pub browser_engine: String,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
 pub const DEFAULT_SHORTCUT_NEW_CHAT: &str = "CommandOrControl+Shift+K";
+pub const DEFAULT_BROWSER_ENGINE: &str = "auto";
 
 fn default_shortcut_toggle() -> String {
     DEFAULT_SHORTCUT_TOGGLE.to_string()
@@ -113,6 +117,10 @@ fn default_shortcut_toggle() -> String {
 
 fn default_shortcut_new_chat() -> String {
     DEFAULT_SHORTCUT_NEW_CHAT.to_string()
+}
+
+fn default_browser_engine() -> String {
+    DEFAULT_BROWSER_ENGINE.to_string()
 }
 
 fn default_true() -> bool {
@@ -153,6 +161,7 @@ impl Default for AppSettings {
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
+            browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
         }
     }
 }
@@ -373,6 +382,7 @@ mod tests {
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
+            browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -416,6 +426,7 @@ mod tests {
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
+            browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

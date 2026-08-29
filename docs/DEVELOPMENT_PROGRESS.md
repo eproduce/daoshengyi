@@ -2,7 +2,64 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-08-28**
+> **最后更新：2026-08-29**
+
+---
+
+## 2026-08-29
+
+### ✅ 修复：Puppeteer 仍用不存在的 Edge 路径（catalog 硬编码挡住多内核选择）
+- **现象**：本机只有 Google Chrome（默认浏览器）、无 Edge，但 puppeteer_navigate 报 `Tried to find the browser at the configured path (/Applications/Microsoft Edge.app/...), but no executable was found`
+- **根因**：`mcp-catalog.ts` 的 puppeteer 条目 `env` 里**硬编码了 Edge 路径** `PUPPETEER_EXECUTABLE_PATH`；而 `applyPuppeteerEnv` 逻辑是「env 已存在则尊重」→ catalog 的 Edge 被当作"用户配置"，**多内核选择逻辑根本没机会执行** → 永远用 Edge → 本机无 Edge 就启动失败
+- **修复**：
+  - `mcp.ts applyPuppeteerEnv`：对 puppeteer 服务器，`PUPPETEER_EXECUTABLE_PATH` **始终走多内核选择**——先 `isFile()` 校验现有路径是否真实存在，不存在则用 `resolveBrowserPath`（探测已装浏览器 + browserEngine 设置 + 系统默认 + 推荐序）覆盖；仅用户手动配置的真实路径才尊重
+  - `mcp-catalog.ts`：puppeteer 条目**移除硬编码 Edge 路径**，仅保留视口 `PUPPETEER_LAUNCH_OPTIONS`，描述改为「自动选择本机已安装的 Chromium 系内核」
+- **验证**：本机实测——仅 Chrome（默认）存在、Edge 缺失；swift `LSCopyDefaultApplicationURLForURL` 返回 `/Applications/Google Chrome.app`（证明 Rust `system_default_browser` 判定正确）→ `detect_browsers` 返回 chrome(is_default) → `applyPuppeteerEnv` 用 Chrome 路径。vue-tsc + npm test 226 全过
+
+### ✅ 修复：McpSettings 插件面板不适配深浅色（硬编码深色 → 主题变量）
+- **现象**：用户反馈插件面板颜色不协调（浅色主题下出现深色卡片块），且插件行文字疑似不可见
+- **根因**：McpSettings 样式多处**硬编码深色值**不随主题变化——尤其浏览器内核区块 `.mcp-browser` 用了**不存在的变量 `--bg-soft`**（main.css 无此变量），回退到硬编码 `#0d0d1a` 深色背景 + `#ddd` 浅色文字；`.mcp-input` 也是 `#0d0d1a`/`#ddd`/`#333` 硬编码深色。浏览器预览（Chromium）正常但**浅色主题下是一块突兀的深色卡片**
+- **修复**（McpSettings.vue 样式）：全部改为主题变量——`.mcp-browser` 背景 `var(--bg-secondary)`、label 文字 `var(--text-primary)`、hint/note 用 `var(--text-secondary)/var(--text-muted)`、chip 用 `var(--accent-bg)/var(--accent-color)`（默认浏览器 chip 用绿色半透明）、`--bg-soft` → 主题变量、`.mcp-input` 背景/文字/边框 → `var(--bg-secondary)/var(--text-primary)/var(--border-color)`、`.mcp-error` → `var(--danger-bg)/var(--danger-color)`、`.mcp-summary` → `var(--text-muted)`
+- **验证**：浏览器 computed style 确认——浅色主题下 browser 背景 `rgb(240,240,243)`（浅色）✅、label/input 文字 `rgb(26,26,46)`（深色）✅；深色主题天然适配（同一套变量）。vue-tsc + npm test 226 全过；HMR 已推送
+- **经验**：scoped 样式里的 `var(--xxx, 回退值)` 若变量在全局主题未定义会静默回退成硬编码色——写前先确认变量名存在于 main.css（`--bg-*`/`--text-*`/`--border-color`/`--accent-*` 等）
+
+### ✅ Puppeteer 浏览器多内核适配（Chromium 系：Chrome/Edge/Chromium/Brave + 系统默认浏览器判定）
+- **背景**：用户提出浏览器工具只适配了 Edge，希望按「操作系统已安装的浏览器 + 系统默认浏览器」选择可用内核，本期做 Chromium 系，WebKit(Safari) 预留远期
+- **Rust（lib.rs）**：新增 `detect_browsers` 命令——`browser_candidates()` 按平台探测已安装浏览器（macOS：/Applications 与 ~/Applications 的 Chrome/Edge/Chromium/Brave/Arc/Safari；Windows：Program Files 各路径；Linux：which google-chrome/chromium/microsoft-edge/brave-browser）+ `system_default_browser()` 判定系统默认浏览器（macOS 用 swift 内联调 `LSCopyDefaultApplicationURLForURL` 读 https 默认 handler，编译失败回退 `defaults read ...LSHandlers`；Linux `xdg-settings`；Windows 注册表 UserChoice）→ 返回 `BrowserInfo{id,name,path,is_default}[]`；注册命令
+- **设置项**：`browser_engine`（settings.rs AppSettings + Default + 2 测试字面量 + appSettings.ts 默认 "auto"）
+- **前端 mcp.ts**：`applyPuppeteerEnv` 改异步——优先用户手动 env → `resolveBrowserPath(engine)`（选择逻辑抽到 `utils/browser-select.ts` 纯函数 `pickBrowserPath`：显式选择 → 系统默认浏览器（排除 webkit）→ 推荐序 chrome>edge>chromium>brave → null）→ 兜底 Edge 路径；`loadLegacy` 改为同步仅迁移格式（浏览器 env 由 initFromRust 异步应用）；`connect` 连接浏览器服务器前按最新设置重新应用 env；`detectBrowsers` 带缓存单飞
+- **McpSettings.vue**：插件面板顶部新增「浏览器自动化内核」区——下拉（自动/Chrome/Edge/Chromium/Brave/WebKit预留）+ 重新检测按钮 + 已检测浏览器 chip 展示（默认浏览器高亮）+ 当前生效描述 + 说明；onMounted 读设置 + 探测
+- **测试**：Rust +0（编译验证）；前端 +9（pickBrowserPath：推荐序 chrome>edge>chromium>brave、默认浏览器优先、默认是 webkit 仍选 Chromium、显式选择、显式选未安装回退推荐序、空列表 null、仅 webkit null、推荐序常量）→ npm test 226；cargo test 60 + vue-tsc + vite build 全过
+- **踩坑**：①`applyPuppeteerEnv` 变异步后 `loadLegacy` 同步 .map 不兼容 → 改为加载时不注入浏览器（initFromRust await 异步应用）；②macOS 默认浏览器判定优先 swift 内联（LSCopyDefaultApplicationURLForURL 准确），编译失败回退 plist 文本匹配；③终端 cd 持久化坑——切目录后 vite build 找不到 index.html，需 exec zsh -c 强制切回
+- **待做**：WebKit(Safari) 内核需 playwright MCP（远期）；真实多机验证各平台路径
+
+### ✅ 工作流 UX 补齐（对标 Dify：外部输入框 + 拖拽新增节点 + 运行状态可视化 + 字段级引用）
+- **背景**：用户反馈工作流「运行过程/结果/输入在哪看」「没有拖拽新增节点」，并调研 Dify 工作流后确认「保留并补齐 UX，不做移除」
+- **外部输入框**：WorkflowDialog 顶部新增「外部输入（供 {{user}} 占位符引用）」输入框——此前代码有 `externalInput` 变量与注入逻辑但**界面无输入框**（疏漏），补齐后 `{{user}}` 真正可用
+- **拖拽新增节点**：vue-flow 标准模式——面板按钮 `draggable` + `@dragstart` 写 `dataTransfer`（`application/x-wf-node-type`）→ 画布 `@dragover.prevent` + `@drop` 用 `useVueFlow().screenToFlowCoordinate` 把鼠标屏幕坐标转画布坐标，在落点创建节点（点击添加仍保留）
+- **节点级运行状态可视化**（对标 Dify 调试体验）：`executeWorkflow` 新增可选 `onStep` 回调（`{nodeId, status: running/done/error/skipped, output}`），每个节点开始/结束/跳过时触发；WorkflowDialog 实时刷新节点状态（执行中橙色旋转 ◐ / 成功绿✓ / 失败红✗ / 跳过灰⏭ + 边框变色 + 跳过半透明）；点节点在配置面板显示「运行状态 + 本步输出」；运行前重置全部 waiting
+- **字段级变量引用**（对标 Dify 变量系统）：新增 `renderTemplateEx` 支持 `{{id.field}}`（可多级 `{{id.a.b}}`，对象 JSON 化、缺失字段空串）；引擎维护结构化值表 `structured`（节点输出尝试 `tryParseStructured` 解析 JSON 对象/数组），`resolveInputs`/`renderArgs` 改用结构化表 → LLM 节点输出 JSON 对象后下游可按字段引用（如 `{{解析.title}}`）；`WorkflowResult` 增加 `nodeOutputs` 结构化输出
+- **其他**：`WorkflowNode` 增加运行期字段 `runStatus`/`runOutput`（可选，`buildGraph` 序列化时剥离不落盘）；面板提示文字更新（添加节点/连线/外部输入/运行入口说明）
+- **测试**：Rust +0、前端 +11（renderTemplateEx 整块/单级/多级/缺失/数字；{{j.title}}/{{j.count}} 字段级引用；onStep 回调 running/done/error/下游继续；拖拽落点坐标）→ npm test 217；vue-tsc + vite build 全过
+- **踩坑**：①code 节点 `runCodeNode` 内部已吞异常 → 测试 error 状态需用 llmCall 抛错而非 code 节点；②`nodeOutputs` 应返回结构化表而非字符串表
+
+### ✅ 修复：内置文件系统工具报「未知内置工具」（前后端契约不匹配）
+- **现象**：模型调 `list_directory`/`read_multiple_files`/`read_file`（提示词「文件系统使用要点」引导的 filesystem MCP 风格名）配 server=app → 走内置分支 switch 无此 case → 报「未知内置工具」
+- **根因**：内置工具实现名是 `list_dir`（Rust `read_file` 返回**格式化字符串**如 `【目录】...`，前端 `list_dir` 却期望**结构化数组** `{dir,path,name,size}[]`，`Array.isArray(res)` 恒 false → 一律报「不是目录」；且提示词引导的名字与内置实现不一致）
+- **修复**（chat.ts）：`list_dir` 加 `list_directory` 别名；新增 `read_file`/`read_multiple_files` case（复用 Rust `read_file`）；三者**直接原样返回 Rust 字符串**（目录 `【目录】...` / 文件文本），不再期望数组；提示词「文件系统使用要点」统一改为内置名 `list_dir`/`read_file`；`builtin-tools.ts` 登记 `read_file`；modes-catalog 编码模式同步
+- **验证**：vue-tsc + npm test 206 + vite build 全过
+
+### ✅ 修复：内置工具调用报「MCP error Tool xxx not found」（主循环漏 default→app 映射）
+- **现象**：内置工具（fetch_page/web_search 等）调用报 `MCP error -32602: Tool xxx not found`
+- **根因**：`parseToolCall` 对模型省略 server 字段的工具调用兜底为 `"default"`；子代理循环（1275 行）有 `default→app` 映射，**主代理循环（2502 行）漏了** → `"default"` 不匹配 `callMcpTool` 的 `app/builtin` 分支 → 误走 MCP 执行路径 → MCP 服务器报工具不存在
+- **修复**：主循环新增 `const toolServer = tc.server && tc.server !== "default" ? tc.server : "app"`，调用与工具卡片 server 显示统一用映射值，与子代理循环一致
+- **验证**：vue-tsc + npm test 206 + vite build 全过
+
+### ✅ 修复：WKWebView 白屏（lookbehind 正则 + .at() 不兼容旧内核）
+- **现象**：Tauri 窗口白屏（浏览器预览正常）；随后控制台报 `SyntaxError: Invalid regular expression: invalid group specifier name`
+- **根因链**：①`devUrl` 用 `localhost`（macOS 解析为 IPv6 `::1`）而 Vite 只绑 IPv4 `127.0.0.1` → WKWebView 连不上；②`local-file-re.ts` 的 `LOCAL_FILE_RE` 用了 **lookbehind `(?<!...)`**（ES2018，旧 WebKit 不支持）→ 模块加载即 SyntaxError → 白屏；③`App.vue` 用 `.at(-1)`（ES2022）同类隐患
+- **修复**：①`tauri.conf.json` devUrl 改 `http://127.0.0.1:1420`（与 Vite 一致）；②`LOCAL_FILE_RE` 改「前缀捕获组」`(^|[^\w\/:])`，group1=前导字符 group2=路径，`ChatMessage.vue` 取 `m[2]`、`idx=m.index+m[1].length`（8 组对照测试证明新旧行为完全等价：句首/句中/~/URL 不误判/连续/中文前导/跨行）；③`App.vue` 的 `.at(-1)` 改 `length-1` 兼容写法
+- **验证**：vue-tsc + npm test 206 + vite build 全过；WKWebView 与 127.0.0.1:1420 建立 ESTABLISHED 连接
 
 ---
 

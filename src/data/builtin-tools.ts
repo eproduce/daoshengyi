@@ -60,7 +60,11 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "list_dir",
-    desc: "列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。",
+    desc: "列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。（兼容名：list_directory）",
+  },
+  {
+    name: "read_file",
+    desc: "读取本地文本文件内容。参数 {\"path\": \"文件绝对路径\"}。用于精读文件、查看代码/配置/文档的具体内容。（兼容名：read_file 也接受 read_multiple_files 批量读多个）",
   },
   {
     name: "git",

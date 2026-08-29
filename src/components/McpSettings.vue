@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, type Component } from "vue";
+import { ref, computed, onMounted, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { useMcpStore } from "@/stores/mcp";
+import { useMcpStore, detectBrowsers, type BrowserInfo } from "@/stores/mcp";
+import { initSettings, getSettings, updateSettings } from "@/api/appSettings";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
-import { Puzzle, Globe, Trash2, RefreshCw, Folder, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Circle } from "lucide-vue-next";
+import { Puzzle, Globe, Trash2, RefreshCw, Folder, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical, Circle, MonitorCog } from "lucide-vue-next";
 
 // mcp-catalog 的 icon 字段存 lucide 图标名，这里映射为组件动态渲染
 const mcpIcons: Record<string, Component> = { Folder, Globe, GitBranch, Github, Database, Server, CircleDot, Brain, Clock, FlaskConical };
@@ -15,6 +16,51 @@ const form = ref({ name: "", command: "", args: "", envText: "", enabled: true }
 const error = ref("");
 // 连接由 agent 自动控制（应用启动自动连接 + 发消息自动重连），
 // 此处不再提供手动连接/重新连接，仅展示状态。
+
+// --- 浏览器内核（Puppeteer 多内核适配） ---
+const browserEngine = ref("auto");
+const browsers = ref<BrowserInfo[]>([]);
+const browserLoaded = ref(false);
+
+const BROWSER_OPTIONS: { id: string; label: string }[] = [
+  { id: "auto", label: "自动（系统默认浏览器优先）" },
+  { id: "chrome", label: "Google Chrome" },
+  { id: "edge", label: "Microsoft Edge" },
+  { id: "chromium", label: "Chromium" },
+  { id: "brave", label: "Brave Browser" },
+  { id: "webkit", label: "Safari / WebKit（预留）" },
+];
+
+// 当前生效的浏览器路径描述（供展示）
+const activeBrowserDesc = computed(() => {
+  if (!browserLoaded.value) return "检测中…";
+  const byId = (id: string) => browsers.value.find((b) => b.id === id);
+  const eng = browserEngine.value;
+  let b = eng !== "auto" ? byId(eng) : undefined;
+  if (!b) b = browsers.value.find((x) => x.is_default && x.id !== "webkit");
+  if (!b && eng === "auto") b = byId("chrome") || byId("edge") || byId("chromium") || byId("brave");
+  if (!b) return "未检测到浏览器（将回退 Microsoft Edge）";
+  return `${b.name}${b.is_default ? "（默认）" : ""}`;
+});
+
+async function loadBrowsers() {
+  browsers.value = await detectBrowsers();
+  browserLoaded.value = true;
+}
+
+async function changeBrowser(e: Event) {
+  browserEngine.value = (e.target as HTMLSelectElement).value;
+  // 立即保存设置，后续连接浏览器服务器时按新选择应用
+  await updateSettings({ browserEngine: browserEngine.value });
+}
+
+onMounted(async () => {
+  try {
+    await initSettings();
+    browserEngine.value = getSettings().browserEngine ?? "auto";
+  } catch { /* 保持默认 */ }
+  await loadBrowsers();
+});
 
 /// 解析环境变量文本（每行 KEY=VALUE，# 开头为注释）
 function parseEnv(text: string): Record<string, string> {
@@ -165,6 +211,27 @@ function cancel() {
       </span>
     </div>
 
+    <!-- 浏览器内核（Puppeteer 多内核适配）：按已安装浏览器 + 系统默认选择 -->
+    <div class="mcp-browser">
+      <div class="mcp-browser__row">
+        <span class="mcp-browser__label"><MonitorCog :size="14" /> 浏览器自动化内核</span>
+        <select :value="browserEngine" class="mcp-browser__select" @change="changeBrowser">
+          <option v-for="o in BROWSER_OPTIONS" :key="o.id" :value="o.id">{{ o.label }}</option>
+        </select>
+        <button class="mcp-btn mcp-btn-sec" title="重新检测本机浏览器" @click="loadBrowsers"><RefreshCw :size="13" /> 检测</button>
+      </div>
+      <div class="mcp-browser__hint">
+        <template v-if="browserLoaded">
+          已检测到：
+          <span v-for="b in browsers" :key="b.id" class="mcp-browser__chip" :class="{ 'mcp-browser__chip--def': b.is_default }">{{ b.name }}{{ b.is_default ? "（默认）" : "" }}</span>
+          <span v-if="!browsers.length" class="mcp-browser__none">无（将回退 Microsoft Edge）</span>
+          · 当前生效：<b>{{ activeBrowserDesc }}</b>
+        </template>
+        <template v-else>正在检测本机已安装的浏览器…</template>
+        <div class="mcp-browser__note">浏览器自动化（puppeteer）使用上方选定的 Chromium 系内核；「自动」优先系统默认浏览器。WebKit/Safari 预留后续适配。</div>
+      </div>
+    </div>
+
     <!-- Tabs -->
     <div class="mcp-tabs">
       <button :class="['mcp-tab', { active: activeTab === 'servers' }]" @click="activeTab = 'servers'">
@@ -306,10 +373,35 @@ function cancel() {
 .mcp-panel { padding: 8px 0; }
 .mcp-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .mcp-header h3 { margin: 0; font-size: 15px; }
-.mcp-summary { font-size: 11px; color: #888; }
-.mcp-error { padding: 8px 12px; background: #3a0d0d; border-radius: 6px; color: #f87171; font-size: 12px; margin-bottom: 10px; }
+.mcp-summary { font-size: 11px; color: var(--text-muted); }
+.mcp-error { padding: 8px 12px; background: var(--danger-bg); border-radius: 6px; color: var(--danger-color); font-size: 12px; margin-bottom: 10px; }
+/* 浏览器内核（Puppeteer 多内核适配）——全部用主题变量，适配深浅色 */
+.mcp-browser { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); }
+.mcp-browser__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mcp-browser__label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-primary); }
+/* 浏览器内核下拉：现代化风格（去原生样式 + 自定义箭头 + 主题变量 + hover/focus 动效） */
+.mcp-browser__select {
+  width: 240px; margin-bottom: 0;
+  padding: 8px 32px 8px 12px;
+  border: 1.5px solid var(--border-color); border-radius: var(--radius-md, 12px);
+  background: var(--bg-secondary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+  color: var(--text-primary); font-size: 13px; font-family: inherit;
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  outline: none; cursor: pointer; transition: all .2s;
+}
+.mcp-browser__select:hover { border-color: var(--accent-color); }
+.mcp-browser__select:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, .15);
+}
+.mcp-browser__select option { background: var(--bg-elevated); color: var(--text-primary); }
+.mcp-browser__hint { margin-top: 8px; font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+.mcp-browser__chip { display: inline-block; padding: 1px 8px; margin-right: 6px; border-radius: 10px; background: var(--accent-bg); color: var(--accent-color); font-size: 11px; }
+.mcp-browser__chip--def { background: rgba(34, 197, 94, 0.15); color: #22c55e; font-weight: 600; }
+.mcp-browser__none { color: var(--danger-color); }
+.mcp-browser__note { margin-top: 4px; color: var(--text-muted); }
 .mcp-form { margin-bottom: 12px; }
-.mcp-input { width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid #333; border-radius: 6px; background: #0d0d1a; color: #ddd; font-size: 12px; box-sizing: border-box; font-family: inherit; }
+.mcp-input { width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; box-sizing: border-box; font-family: inherit; }
 .mcp-input:focus { outline: none; border-color: var(--accent-color); }
 .mcp-form-acts { display: flex; gap: 6px; margin-top: 4px; }
 .mcp-btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; }

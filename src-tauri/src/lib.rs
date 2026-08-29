@@ -1705,6 +1705,183 @@ fn ollama_installed() -> bool {
     ollama_bin().is_some()
 }
 
+// --- 浏览器检测（Puppeteer 多内核适配：按已安装浏览器 + 系统默认浏览器选择） ---
+
+#[derive(serde::Serialize)]
+struct BrowserInfo {
+    id: String,       // "chrome" | "edge" | "chromium" | "brave" | "arc" | "webkit"
+    name: String,     // 展示名
+    path: String,     // 可执行文件绝对路径
+    is_default: bool, // 是否是系统默认浏览器
+}
+
+/// 各平台浏览器候选路径（返回 id/name/绝对路径）。路径不存在的不返回。
+fn browser_candidates() -> Vec<BrowserInfo> {
+    let mut out: Vec<BrowserInfo> = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        let mac_browsers: &[(&str, &str, &str)] = &[
+            ("chrome", "Google Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            ("edge", "Microsoft Edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            ("chromium", "Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
+            ("brave", "Brave Browser", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            ("arc", "Arc", "/Applications/Arc.app/Contents/MacOS/Arc"),
+            ("webkit", "Safari", "/Applications/Safari.app/Contents/MacOS/Safari"),
+        ];
+        for (id, name, p) in mac_browsers {
+            if std::path::Path::new(p).exists() {
+                out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string(), is_default: false });
+            }
+        }
+        // 用户目录直装（~/Applications）
+        let home_apps: &[(&str, &str, &str)] = &[
+            ("chrome", "Google Chrome", "Google Chrome.app/Contents/MacOS/Google Chrome"),
+            ("edge", "Microsoft Edge", "Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            ("chromium", "Chromium", "Chromium.app/Contents/MacOS/Chromium"),
+            ("brave", "Brave Browser", "Brave Browser.app/Contents/MacOS/Brave Browser"),
+        ];
+        if let Some(home) = home_dir() {
+            for (id, name, rel) in home_apps {
+                let p = home.join("Applications").join(rel);
+                if p.exists() && !out.iter().any(|b| b.id == *id) {
+                    out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string_lossy().to_string(), is_default: false });
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let win_browsers: &[(&str, &str, &str)] = &[
+            ("chrome", "Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            ("chrome", "Google Chrome", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            ("edge", "Microsoft Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ("chromium", "Chromium", r"C:\Program Files\Chromium\Application\chromium.exe"),
+            ("brave", "Brave Browser", r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ];
+        for (id, name, p) in win_browsers {
+            if std::path::Path::new(p).exists() && !out.iter().any(|b| b.id == *id) {
+                out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string(), is_default: false });
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let linux_cmds: &[(&str, &str, &str)] = &[
+            ("chrome", "Google Chrome", "google-chrome"),
+            ("chrome", "Google Chrome", "google-chrome-stable"),
+            ("chromium", "Chromium", "chromium"),
+            ("chromium", "Chromium", "chromium-browser"),
+            ("edge", "Microsoft Edge", "microsoft-edge"),
+            ("brave", "Brave Browser", "brave-browser"),
+        ];
+        for (id, name, cmd) in linux_cmds {
+            if !out.iter().any(|b| b.id == *id) {
+                let p = run_sys_cmd("which", &[cmd]);
+                if !p.is_empty() {
+                    out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p, is_default: false });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 判定系统默认浏览器 id（macOS 读 https 协议默认 handler / Linux xdg / Windows 注册表）。
+/// 探测失败返回 None（不影响主流程，前端回退按推荐序）。
+fn system_default_browser() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        // LSCopyDefaultApplicationURLForURL：读 https:// 的默认处理程序
+        let script = "osascript -e 'set u to URL \"https://\"\n tell application \"System Events\" to get name of first application process whose unix id is 0' 2>/dev/null; true";
+        let _ = script;
+        // 用 swift 内联：LSCopyDefaultApplicationURLForURL 返回 bundle 路径，再映射到已知浏览器
+        let swift = r#"
+import Foundation
+import CoreServices
+if let url = CFURLCreateWithString(kCFAllocatorDefault, "https://" as CFString, nil) {
+  if let app = LSCopyDefaultApplicationURLForURL(url, .all, nil)?.takeRetainedValue() {
+    let path = (app as URL).path
+    let lower = path.lowercased()
+    if lower.contains("google chrome") { print("chrome"); exit(0) }
+    if lower.contains("microsoft edge") { print("edge"); exit(0) }
+    if lower.contains("chromium") { print("chromium"); exit(0) }
+    if lower.contains("brave") { print("brave"); exit(0) }
+    if lower.contains("arc.app") { print("arc"); exit(0) }
+    if lower.contains("safari.app") { print("webkit"); exit(0) }
+  }
+}
+exit(1)
+"#;
+        let tmp = std::env::temp_dir().join(format!("dsy_default_browser_{}.swift", std::process::id()));
+        if std::fs::write(&tmp, swift).is_ok() {
+            let exe = std::env::temp_dir().join(format!("dsy_default_browser_{}", std::process::id()));
+            let compile = std::process::Command::new("swiftc")
+                .args(["-O", tmp.to_str().unwrap_or(""), "-o", exe.to_str().unwrap_or("")])
+                .output();
+            let _ = std::fs::remove_file(&tmp);
+            if let Ok(o) = compile {
+                if o.status.success() {
+                    let run = std::process::Command::new(&exe).output();
+                    let _ = std::fs::remove_file(&exe);
+                    if let Ok(r) = run {
+                        if r.status.success() {
+                            let id = String::from_utf8_lossy(&r.stdout).trim().to_string();
+                            if !id.is_empty() { return Some(id); }
+                        }
+                    }
+                }
+            }
+        }
+        // 兜底：读 LaunchServices 注册表（无需编译）
+        let plist = run_sys_cmd("defaults", &["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
+        if !plist.is_empty() {
+            let lower = plist.to_lowercase();
+            if lower.contains("google chrome") { return Some("chrome".into()); }
+            if lower.contains("microsoft edge") { return Some("edge".into()); }
+            if lower.contains("chromium") { return Some("chromium".into()); }
+            if lower.contains("brave") { return Some("brave".into()); }
+            if lower.contains("arc") { return Some("arc".into()); }
+            if lower.contains("safari") { return Some("webkit".into()); }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let x = run_sys_cmd("xdg-settings", &["get", "default-web-browser"]);
+        let l = x.to_lowercase();
+        if l.contains("chrome") { return Some("chrome".into()); }
+        if l.contains("chromium") { return Some("chromium".into()); }
+        if l.contains("edge") { return Some("edge".into()); }
+        if l.contains("brave") { return Some("brave".into()); }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let reg = run_sys_cmd("reg", &["query", r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", "/v", "Progid"]);
+        let l = reg.to_lowercase();
+        if l.contains("chrome") { return Some("chrome".into()); }
+        if l.contains("edge") { return Some("edge".into()); }
+        if l.contains("chromium") { return Some("chromium".into()); }
+        if l.contains("brave") { return Some("brave".into()); }
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    { None }
+}
+
+/// 检测已安装浏览器 + 系统默认浏览器（Puppeteer 多内核适配）。
+#[tauri::command]
+fn detect_browsers() -> Vec<BrowserInfo> {
+    let mut list = browser_candidates();
+    if let Some(def) = system_default_browser() {
+        for b in list.iter_mut() {
+            if b.id == def { b.is_default = true; }
+        }
+    }
+    // 无任何 Chromium 系浏览器时，把 WebKit(Safari) 也算候选（前端会提示 puppeteer 不支持）
+    list
+}
+
 /// 检测是否有 Ollama 安装进程正在后台进行（避免重复触发安装导致互相抢锁卡死）
 fn ollama_installing() -> bool {
     let patterns: [&[&str]; 5] = [
@@ -4107,6 +4284,7 @@ pub fn run() {
             mcp_disconnect,
             mcp_call_tool,
             mcp_list_tools,
+            detect_browsers,
             list_tool_audit,
             clear_tool_audit,
             list_undo,

@@ -41,8 +41,10 @@ marked.setOptions({ breaks: true, gfm: true });
 
 // 识别本地文件路径 → 转成可点击链接（href="#" + data-path，点击拦截调系统打开）
 // 支持 ~/ 开头与中文目录；排除 markdown 链接/括号内；
-// (?<![\w\/:]) 负向后顾排除 URL：https://... 等外链路径（如 /finance.sina.com.cn/.../x.sh）
-// 会被当作本地文件，导致引用地址显示成「文件不存在」。URL 由 marked gfm autolink 正常渲染。
+// 用「前缀捕获组」排除 URL：group1 是前导字符，group2 是路径（兼容 WKWebView，
+// 不能用 lookbehind —— 旧 Safari 内核不支持，模块加载即 SyntaxError 白屏）。
+// URL（https://... 等外链路径，如 /finance.sina.com.cn/.../x.sh）前导是 / 或 :，
+// 落在 [\w\/:] 内 → 前缀组不匹配 → 不误判为本地文件。URL 由 marked gfm autolink 正常渲染。
 import { LOCAL_FILE_RE } from "@/utils/local-file-re";
 
 function linkifyLocalPaths(s: string): string {
@@ -51,8 +53,8 @@ function linkifyLocalPaths(s: string): string {
   let out = "";
   let last = 0;
   for (const m of s.matchAll(LOCAL_FILE_RE)) {
-    const path = m[0];
-    const idx = m.index ?? 0;
+    const path = m[2];
+    const idx = (m.index ?? 0) + (m[1] ?? "").length;
     const lineM = s.slice(idx + path.length).match(/^:(\d+)/);
     const line = lineM ? lineM[1] : "";
     out += s.slice(last, idx);

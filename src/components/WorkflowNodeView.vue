@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// 工作流自定义节点：显式渲染可拖拽连线 Handle（连接点）+ 类型徽标 + 名称。
+// 工作流自定义节点：显式渲染可拖拽连线 Handle（连接点）+ 类型徽标 + 名称 + 运行状态。
 // - 所有节点顶部有 target 连接点（连线入口）
 // - 非条件节点底部有 source 连接点（连线出口）
 // - 条件节点底部有两个 source 连接点：蓝「T」true 分支 / 红「F」false 分支，
 //   从对应连接点拖出的连线会自动带上分支标签（无需手动填）
+// - 运行状态 runStatus：waiting 待执行 / running 执行中 / done 成功 / error 失败 / skipped 跳过
 import { Handle, Position } from "@vue-flow/core";
 import type { WorkflowNode, WorkflowNodeType } from "@/utils/workflow-engine";
 
@@ -23,10 +24,19 @@ const TYPE_LABEL: Record<WorkflowNodeType, string> = {
 </script>
 
 <template>
-  <div class="wf-node" :style="{ '--c': COLORS[data?.wf?.type as WorkflowNodeType] || '#999' }">
+  <div class="wf-node" :class="`wf-node--${data?.wf?.runStatus || 'waiting'}`" :style="{ '--c': COLORS[data?.wf?.type as WorkflowNodeType] || '#999' }">
     <Handle type="target" :position="Position.Top" id="in" class="wf-handle" title="连线入口（上游）" />
     <div class="wf-node__body">
-      <span class="wf-node__badge">{{ TYPE_LABEL[(data?.wf?.type as WorkflowNodeType) || "text"] }}</span>
+      <div class="wf-node__row">
+        <span class="wf-node__badge">{{ TYPE_LABEL[(data?.wf?.type as WorkflowNodeType) || "text"] }}</span>
+        <!-- 运行状态徽标 -->
+        <span v-if="data?.wf?.runStatus && data?.wf?.runStatus !== 'waiting'" class="wf-node__run" :class="`wf-node__run--${data.wf.runStatus}`" :title="`运行：${data.wf.runStatus}`">
+          <span v-if="data.wf.runStatus === 'running'" class="wf-node__spin">◐</span>
+          <template v-else-if="data.wf.runStatus === 'done'">✓</template>
+          <template v-else-if="data.wf.runStatus === 'error'">✗</template>
+          <template v-else-if="data.wf.runStatus === 'skipped'">⏭</template>
+        </span>
+      </div>
       <span class="wf-node__label">{{ data?.wf?.label || "节点" }}</span>
     </div>
     <template v-if="data?.wf?.type === 'condition'">
@@ -53,8 +63,25 @@ const TYPE_LABEL: Record<WorkflowNodeType, string> = {
 }
 .wf-node:active { cursor: grabbing; }
 .wf-node__body { display: flex; flex-direction: column; gap: 2px; }
+.wf-node__row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .wf-node__badge { font-size: 10px; font-weight: 700; color: var(--c, #999); letter-spacing: .04em; text-transform: uppercase; }
 .wf-node__label { font-weight: 600; line-height: 1.4; word-break: break-word; }
+/* 运行状态徽标：执行中旋转 / 成功绿 / 失败红 / 跳过灰 */
+.wf-node__run {
+  font-size: 11px; font-weight: 700; line-height: 1; padding: 2px 5px; border-radius: 8px;
+  color: #fff; flex-shrink: 0;
+}
+.wf-node__run--running { background: #ff9800; }
+.wf-node__run--done { background: #2e7d32; }
+.wf-node__run--error { background: #c62828; }
+.wf-node__run--skipped { background: #757575; }
+.wf-node__spin { display: inline-block; animation: wf-spin 0.9s linear infinite; }
+@keyframes wf-spin { to { transform: rotate(360deg); } }
+/* 节点边框随运行状态变色 */
+.wf-node--running { border-color: #ff9800; box-shadow: 0 0 0 2px rgba(255,152,0,.25); }
+.wf-node--error { border-color: #c62828; box-shadow: 0 0 0 2px rgba(198,40,40,.2); }
+.wf-node--done { border-color: #2e7d32; }
+.wf-node--skipped { opacity: .55; }
 .wf-handle {
   width: 13px;
   height: 13px;

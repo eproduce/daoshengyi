@@ -60,6 +60,13 @@
   - `src/components/McpSettings.vue`：编辑表单支持 env（文本 `KEY=VALUE` 多行），`openAdd/openEdit/save/installPlugin` 处理 env
 - **验证**：`npm test`（35 项）+ `npx vite build` + `cargo check` 通过；已推送 GitHub
 
+### 2.1b Puppeteer 多内核适配（✅ 已完成，2026-08-29）
+- **目的**：从「只适配 Edge」升级为「按已安装浏览器 + 系统默认浏览器选择内核」——本期 Chromium 系（Chrome/Edge/Chromium/Brave），WebKit(Safari) 预留远期
+- **Rust**：新增 `detect_browsers` 命令（三平台路径探测 + `system_default_browser()` 判定：macOS swift `LSCopyDefaultApplicationURLForURL` / Linux xdg / Windows 注册表）
+- **前端**：设置项 `browser_engine`；选择逻辑抽纯函数 `utils/browser-select.ts pickBrowserPath`（显式选择 → 系统默认 → 推荐序 chrome>edge>chromium>brave → null）；`applyPuppeteerEnv` 改异步在 initFromRust/connect 时按最新设置应用
+- **UI**：McpSettings 插件面板顶部「浏览器自动化内核」下拉 + 已检测浏览器展示
+- 详细见进度文档 08-29
+
 ### 2.2 日期幻觉 + 编造数据 bug（用户 2026-08-17 报告，**已修复**，见进度文档 08-17）
 - 现象：模型日期幻觉；未调用工具时编造数据（如天气）
 - 修复要点：

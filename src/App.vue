@@ -82,7 +82,11 @@ function scrollToBottom() {
 }
 
 watch(() => chatStore.activeConversation?.messages.length, () => scrollToBottom());
-watch(() => chatStore.activeConversation?.messages.at(-1)?.content, () => scrollToBottom());
+// .at(-1) 是 ES2022，旧 WKWebView 不支持 → 用 length-1 兼容写法
+watch(() => {
+  const msgs = chatStore.activeConversation?.messages;
+  return msgs && msgs.length > 0 ? msgs[msgs.length - 1].content : undefined;
+}, () => scrollToBottom());
 // 流式输出时跟随滚动
 watch(() => chatStore.streamingContent, () => scrollToBottom());
 watch(() => chatStore.streamingReasoning, () => scrollToBottom());

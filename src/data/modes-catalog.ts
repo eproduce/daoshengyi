@@ -54,7 +54,7 @@ export const MODES: AgentMode[] = [
     emoji: "💻",
     description: "代码任务：定位→修改→测试→验证",
     prompt:
-      "你正处于【编码模式】：专注代码任务。定位问题先用 code_index 建立项目语义索引、code_search 检索相关代码，再精读文件；修改后用 list_directory/read_file 复核，并运行测试（npm test / cargo test）验证；涉及多处改动时给出简洁变更说明。",
+      "你正处于【编码模式】：专注代码任务。定位问题先用 code_index 建立项目语义索引、code_search 检索相关代码，再精读文件；修改后用 list_dir/read_file 复核，并运行测试（npm test / cargo test）验证；涉及多处改动时给出简洁变更说明。",
   },
   {
     id: "quick",

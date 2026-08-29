@@ -9,13 +9,14 @@ import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissio
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
-import { topoSort, renderTemplate, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
+import { topoSort, renderTemplate, renderTemplateEx, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
 import { shouldSkipAutoSearch } from "../src/utils/search-gate.ts";
 import { LOCAL_FILE_RE } from "../src/utils/local-file-re.ts";
 import { MODES, getModeById, isToolAllowedByMode } from "../src/data/modes-catalog.ts";
+import { pickBrowserPath, BROWSER_PRIORITY } from "../src/utils/browser-select.ts";
 
 let pass = 0;
 let fail = 0;
@@ -260,6 +261,12 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   const cyc = topoSort({ nodes: [{ id: "a" }, { id: "b" }] as never[], edges: [{ id: "e1", source: "a", target: "b" }, { id: "e2", source: "b", target: "a" }] });
   assert("error" in cyc, "环依赖被检测");
   assert(renderTemplate("你好 {{a}} 再见", { a: "世界" }) === "你好 世界 再见", "占位符替换");
+  // 字段级模板渲染（renderTemplateEx）：{{id}} 整块 / {{id.field}} 字段 / 多级 / 缺失字段为空
+  assert(renderTemplateEx("整块：{{a}}", { a: { title: "T", n: 1 } }) === "整块：{\n  \"title\": \"T\",\n  \"n\": 1\n}", "renderTemplateEx 整块对象 JSON 化");
+  assert(renderTemplateEx("标题 {{a.title}}", { a: { title: "T" } }) === "标题 T", "renderTemplateEx 单级字段");
+  assert(renderTemplateEx("深 {{a.x.y}}", { a: { x: { y: "Z" } } }) === "深 Z", "renderTemplateEx 多级字段");
+  assert(renderTemplateEx("缺 {{a.missing}}", { a: { title: "T" } }) === "缺 ", "renderTemplateEx 缺失字段为空");
+  assert(renderTemplateEx("数 {{b}}", { b: 42 }) === "数 42", "renderTemplateEx 数字值");
 
   // 执行链：text→llm→tool→end，注入 mock runtime
   const g = {
@@ -288,6 +295,47 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   const g2 = { nodes: [{ id: "t", type: "text", label: "T", config: { text: "{{user}}" }, x: 0, y: 0 }], edges: [] };
   const r2 = await executeWorkflow(g2, { user: "外部值" }, { llmCall: async () => "", toolCall: async () => "" });
   assert(r2.outputs[0].value === "外部值", "外部输入占位符替换", r2.outputs[0].value);
+
+  // ── 字段级引用（Dify 式 {{id.field}}）：LLM 输出 JSON 对象 → 下游按字段引用 ──
+  const g3 = {
+    nodes: [
+      { id: "j", type: "llm", label: "解析", config: { prompt: "输出 JSON" }, x: 0, y: 0 },
+      { id: "t2", type: "text", label: "引用", config: { text: "标题是{{j.title}}，数量{{j.count}}" }, x: 0, y: 100 },
+      { id: "e2", type: "end", label: "结束", config: {}, x: 0, y: 200 },
+    ],
+    edges: [
+      { id: "e4", source: "j", target: "t2" },
+      { id: "e5", source: "t2", target: "e2" },
+    ],
+  };
+  const r3 = await executeWorkflow(g3, {}, {
+    llmCall: async () => `{"title": "道生一", "count": 42}`,
+    toolCall: async () => "",
+  });
+  assert(r3.nodeOutputs.j && typeof r3.nodeOutputs.j === "object", "LLM 输出 JSON 解析为结构化对象", JSON.stringify(r3.nodeOutputs.j));
+  assert(r3.outputs[0].value.includes("标题是道生一") && r3.outputs[0].value.includes("数量42"), "{{j.title}}/{{j.count}} 字段级引用", r3.outputs[0].value);
+
+  // ── onStep 回调：实时节点状态（running/done/error）──
+  const g4 = {
+    nodes: [
+      { id: "a", type: "text", label: "A", config: { text: "hi" }, x: 0, y: 0 },
+      { id: "b", type: "llm", label: "B", config: { prompt: "x" }, x: 0, y: 100 },
+      { id: "c", type: "text", label: "C", config: { text: "never" }, x: 0, y: 200 },
+    ],
+    edges: [
+      { id: "ea", source: "a", target: "b" },
+      { id: "ec", source: "b", target: "c" },
+    ],
+  };
+  const steps: { nodeId: string; status: string }[] = [];
+  await executeWorkflow(g4, {}, {
+    llmCall: async () => { throw new Error("API 挂了"); },
+    toolCall: async () => "",
+  }, (ev) => steps.push({ nodeId: ev.nodeId, status: ev.status }));
+  assert(steps.some((s) => s.nodeId === "a" && s.status === "done"), "a 节点 done");
+  assert(steps.some((s) => s.nodeId === "b" && s.status === "running"), "b 节点先 running");
+  assert(steps.some((s) => s.nodeId === "b" && s.status === "error"), "b 节点 error", JSON.stringify(steps));
+  assert(steps.some((s) => s.nodeId === "c" && s.status === "done"), "b 失败后下游 c 仍正常执行", JSON.stringify(steps));
 }
 
 console.log("\n== Phase 3 工作流：条件表达式求值器 ==");
@@ -576,6 +624,29 @@ console.log("\n== Agent 多模式（modes-catalog） ==");
   for (const m of MODES.filter((x) => x.id !== "chat")) {
     assert(m.prompt.length > 10, `${m.name} 模式有行为提示词`);
   }
+}
+
+console.log("\n== Puppeteer 浏览器多内核选择（pickBrowserPath） ==");
+{
+  const chrome = { id: "chrome", name: "Google Chrome", path: "/Chrome", is_default: false };
+  const edge = { id: "edge", name: "Microsoft Edge", path: "/Edge", is_default: false };
+  const chromium = { id: "chromium", name: "Chromium", path: "/Chromium", is_default: false };
+  const brave = { id: "brave", name: "Brave", path: "/Brave", is_default: false };
+  const webkit = { id: "webkit", name: "Safari", path: "/Safari", is_default: false };
+  // 推荐序：无默认浏览器时 chrome > edge > chromium > brave
+  assert(pickBrowserPath([edge, chrome], "auto") === "/Chrome", "推荐序 chrome 优先于 edge");
+  assert(pickBrowserPath([brave, edge, chromium], "auto") === "/Edge", "推荐序 edge > chromium > brave", pickBrowserPath([brave, edge, chromium], "auto") ?? "null");
+  assert(pickBrowserPath([webkit], "auto") === null, "仅 webkit 无 Chromium 系 → null（前端回退 Edge）");
+  // 系统默认浏览器优先（排除 webkit）
+  assert(pickBrowserPath([chrome, { ...brave, is_default: true }], "auto") === "/Brave", "系统默认浏览器优先");
+  assert(pickBrowserPath([chrome, { ...webkit, is_default: true }], "auto") === "/Chrome", "默认是 webkit 时仍选 Chromium 系");
+  // 用户显式选择
+  assert(pickBrowserPath([chrome, edge], "edge") === "/Edge", "显式选 edge");
+  assert(pickBrowserPath([chrome], "brave") === "/Chrome", "显式选未安装浏览器 → 回退推荐序");
+  // 空列表
+  assert(pickBrowserPath([], "auto") === null, "空列表 → null");
+  // 推荐序常量
+  assert(BROWSER_PRIORITY.join(",") === "chrome,edge,chromium,brave", "推荐序常量");
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
