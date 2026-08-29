@@ -21,6 +21,7 @@ const error = ref("");
 const browserEngine = ref("auto");
 const browsers = ref<BrowserInfo[]>([]);
 const browserLoaded = ref(false);
+const browserChecking = ref(false);
 
 const BROWSER_OPTIONS: { id: string; label: string }[] = [
   { id: "auto", label: "自动（系统默认浏览器优先）" },
@@ -42,9 +43,16 @@ const activeBrowserDesc = computed(() => {
   return `${b.name}${b.is_default ? "（默认）" : ""}`;
 });
 
-async function loadBrowsers() {
-  browsers.value = await detectBrowsers();
-  browserLoaded.value = true;
+async function loadBrowsers(force = false) {
+  // force=true 强制重新探测（覆盖缓存），检测期间展示 loading 状态。
+  // 组件 v-show 挂载、打开设置面板即触发 onMounted，默认走缓存避免重复 invoke。
+  browserChecking.value = true;
+  try {
+    browsers.value = await detectBrowsers(force);
+    browserLoaded.value = true;
+  } finally {
+    browserChecking.value = false;
+  }
 }
 
 async function changeBrowser(e: Event) {
@@ -217,7 +225,9 @@ function cancel() {
         <select :value="browserEngine" class="mcp-browser__select" @change="changeBrowser">
           <option v-for="o in BROWSER_OPTIONS" :key="o.id" :value="o.id">{{ o.label }}</option>
         </select>
-        <button class="mcp-btn mcp-btn-sec" title="重新检测本机浏览器" @click="loadBrowsers"><RefreshCw :size="13" /> 检测</button>
+        <button class="mcp-btn mcp-btn-sec" title="重新检测本机浏览器" :disabled="browserChecking" @click="loadBrowsers(true)">
+          <RefreshCw :size="13" :class="{ 'mcp-browser__spin': browserChecking }" /> {{ browserChecking ? "检测中…" : "检测" }}
+        </button>
       </div>
       <div class="mcp-browser__hint">
         <template v-if="browserLoaded">
@@ -399,6 +409,9 @@ function cancel() {
 .mcp-browser__chip--def { background: rgba(34, 197, 94, 0.15); color: #22c55e; font-weight: 600; }
 .mcp-browser__none { color: var(--danger-color); }
 .mcp-browser__note { margin-top: 4px; color: var(--text-muted); }
+.mcp-browser__spin { animation: mcp-browser-spin 0.8s linear infinite; }
+@keyframes mcp-browser-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.mcp-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .mcp-form { margin-bottom: 12px; }
 .mcp-input { width: 100%; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; box-sizing: border-box; font-family: inherit; }
 .mcp-input:focus { outline: none; border-color: var(--accent-color); }

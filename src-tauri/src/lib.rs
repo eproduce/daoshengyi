@@ -1810,23 +1810,27 @@ if let url = CFURLCreateWithString(kCFAllocatorDefault, "https://" as CFString, 
 }
 exit(1)
 "#;
-        let tmp = std::env::temp_dir().join(format!("dsy_default_browser_{}.swift", std::process::id()));
-        if std::fs::write(&tmp, swift).is_ok() {
-            let exe = std::env::temp_dir().join(format!("dsy_default_browser_{}", std::process::id()));
-            let compile = std::process::Command::new("swiftc")
-                .args(["-O", tmp.to_str().unwrap_or(""), "-o", exe.to_str().unwrap_or("")])
-                .output();
-            let _ = std::fs::remove_file(&tmp);
-            if let Ok(o) = compile {
-                if o.status.success() {
-                    let run = std::process::Command::new(&exe).output();
-                    let _ = std::fs::remove_file(&exe);
-                    if let Ok(r) = run {
-                        if r.status.success() {
-                            let id = String::from_utf8_lossy(&r.stdout).trim().to_string();
-                            if !id.is_empty() { return Some(id); }
-                        }
-                    }
+        let tmp = std::env::temp_dir().join("dsy_default_browser.swift");
+        let exe = std::env::temp_dir().join("dsy_default_browser");
+        // 编译产物缓存到 temp 固定路径：swiftc -O 很慢（1~5s），只在 exe 缺失时编译一次，
+        // 后续检测直接运行已编译二进制（毫秒级），避免每次打开设置面板都卡顿。
+        if !exe.exists() {
+            if std::fs::write(&tmp, swift).is_ok() {
+                let compile = std::process::Command::new("swiftc")
+                    .args(["-O", tmp.to_str().unwrap_or(""), "-o", exe.to_str().unwrap_or("")])
+                    .output();
+                let _ = std::fs::remove_file(&tmp);
+                if let Ok(o) = compile {
+                    if !o.status.success() { let _ = std::fs::remove_file(&exe); }
+                }
+            }
+        }
+        if exe.exists() {
+            let run = std::process::Command::new(&exe).output();
+            if let Ok(r) = run {
+                if r.status.success() {
+                    let id = String::from_utf8_lossy(&r.stdout).trim().to_string();
+                    if !id.is_empty() { return Some(id); }
                 }
             }
         }

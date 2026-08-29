@@ -70,10 +70,11 @@ export const PUPPETEER_DEFAULT_LAUNCH_OPTIONS =
 let browsersCache: BrowserInfo[] | null = null;
 let browsersLoading: Promise<BrowserInfo[]> | null = null;
 
-/** 探测本机已安装浏览器（带缓存，多次调用只 invoke 一次）。Tauri 环境调用 Rust 命令。 */
-export function detectBrowsers(): Promise<BrowserInfo[]> {
-  if (browsersCache) return Promise.resolve(browsersCache);
-  if (browsersLoading) return browsersLoading;
+/** 探测本机已安装浏览器（带缓存，多次调用只 invoke 一次；force=true 时强制重新探测）。
+ *  Tauri 环境调用 Rust 命令；非 Tauri（浏览器调试）返回空数组。 */
+export function detectBrowsers(force = false): Promise<BrowserInfo[]> {
+  if (!force && browsersCache) return Promise.resolve(browsersCache);
+  if (!force && browsersLoading) return browsersLoading;
   const isTauri = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   if (!isTauri) {
     browsersCache = [];
