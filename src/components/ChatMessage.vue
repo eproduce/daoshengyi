@@ -96,6 +96,9 @@ function normalizeMath(s: string): string {
   const { text, restore } = protectCodeSpans(s);
   const mathBlocks: string[] = [];
   const out = text
+    // 全角竖线 ｜(U+FF5C) → 半角 | 且两侧补空格：模型常写全角竖线作表格列分隔符，
+    // GFM 只认半角 |；补空格让转出的 | 成为「两侧空白」的列分隔符，不被下方内容竖线转义误判
+    .replace(/\uff5c/g, " | ")
     // 中文（含全角标点）与 $ 紧贴 → 补空格，让 inline 公式能被识别
     .replace(new RegExp(`([${CJK_ADJACENT}])(\\$+)`, "g"), "$1 $2")
     .replace(new RegExp(`(\\$+)([${CJK_ADJACENT}])`, "g"), "$1 $2")
@@ -127,7 +130,64 @@ function normalizeMath(s: string): string {
     // 替换串 \\$$$1 = 字面反斜杠 + 字面$（$$）+ 捕获组1（$1），输出 \$100 这类。
     .replace(/\$(\d[\d,]*(?:\.\d+)?)/g, "\\$$$1")
     .replace(new RegExp(`${MATH_PH}m(\\d+)${MATH_PH}`, "g"), (_, i: string) => mathBlocks[Number(i)]);
-  return restore(out);
+  // 表格单元格裸数学自动包裹：恢复公式段后、恢复代码块前执行（含 $ 的单元格跳过）
+  return restore(wrapBareMathInTables(out));
+}
+
+// —— 表格单元格裸数学自动包裹 ——
+// 模型常直接写裸数学（x^n、1/x、∫…）而不用 $...$。对表格单元格里「纯数学且含强数学
+// 特征」的内容自动包 $...$ 让 KaTeX 渲染。只在表格行内做（误判面小）；含中文/已是公式
+// 的单元格跳过；单元格内的 markdown 转义竖线 \| 转成 KaTeX \vert（否则包进公式会被当成
+// 双竖线范数）。
+const MATH_FN_RE = /(?:^|[^A-Za-z])(?:ln|log|lg|sin|cos|tan|sec|csc|cot|exp|sinh|cosh|tanh|arcsin|arccos|arctan)(?=$|[^A-Za-z])/;
+function hasChinese(t: string): boolean {
+  return /[\u4e00-\u9fa5]/.test(t);
+}
+function isBareMath(t: string): boolean {
+  if (!t || t.length > 60) return false;
+  // 强数学特征：^ 上标、√ ∫ ∑ ∞ π、≠ ≤ ≥、−（U+2212）、希腊字母、数学函数词
+  return /[\^√∫∑∞π≠≤≥−]/.test(t) || /[\u0370-\u03ff]/.test(t) || MATH_FN_RE.test(t);
+}
+function wrapBareMathInTables(s: string): string {
+  const lines = s.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const next = lines[i + 1] ?? "";
+    const isSep = /^\s*\|?[\s:|-]+\|?\s*$/.test(next) && next.includes("|") && next.includes("-");
+    if (lines[i].includes("|") && isSep) {
+      out.push(lines[i]); out.push(next); i += 2;
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        out.push(wrapRowMath(lines[i])); i++;
+      }
+    } else { out.push(lines[i]); i++; }
+  }
+  return out.join("\n");
+}
+function wrapRowMath(row: string): string {
+  // 先占位转义竖线 \|，避免按 | split 时把转义竖线当列分隔符
+  const esc = row.replace(/\\\|/g, "\u0001");
+  return esc.split("|").map((cell) => {
+    const restored = cell.replace(/\u0001/g, "\\|");
+    const t = restored.trim();
+    if (!t || t.includes("$") || hasChinese(t)) return restored;
+    if (isBareMath(t)) {
+      // Unicode 数学符号 → KaTeX 命令（KaTeX 不认 √/∞/∑/≠/≤/≥/− 等裸 Unicode）；
+      // markdown 转义竖线 \| → KaTeX \vert（否则成双竖线范数）
+      const math = t
+        .replace(/\\\|/g, "\\vert ")
+        .replace(/−/g, "-")
+        .replace(/√\(([^()]*)\)/g, "\\sqrt{$1}")
+        .replace(/√/g, "\\sqrt ")
+        .replace(/∞/g, "\\infty")
+        .replace(/∑/g, "\\sum")
+        .replace(/≠/g, "\\neq")
+        .replace(/≤/g, "\\le")
+        .replace(/≥/g, "\\ge");
+      return restored.replace(t, `$${math}$`);
+    }
+    return restored;
+  }).join("|");
 }
 
 // 用 marked 的 renderer 在渲染时把路径替换为链接：renderer 输出直接拼进最终 HTML，
