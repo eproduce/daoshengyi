@@ -1709,7 +1709,7 @@ fn ollama_installed() -> bool {
 
 #[derive(serde::Serialize)]
 struct BrowserInfo {
-    id: String,       // "chrome" | "edge" | "chromium" | "brave" | "arc" | "webkit"
+    id: String,       // "chrome" | "edge" | "chromium" | "brave" | "arc"
     name: String,     // 展示名
     path: String,     // 可执行文件绝对路径
     is_default: bool, // 是否是系统默认浏览器
@@ -1726,7 +1726,6 @@ fn browser_candidates() -> Vec<BrowserInfo> {
             ("chromium", "Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
             ("brave", "Brave Browser", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             ("arc", "Arc", "/Applications/Arc.app/Contents/MacOS/Arc"),
-            ("webkit", "Safari", "/Applications/Safari.app/Contents/MacOS/Safari"),
         ];
         for (id, name, p) in mac_browsers {
             if std::path::Path::new(p).exists() {
@@ -1807,7 +1806,6 @@ if let url = CFURLCreateWithString(kCFAllocatorDefault, "https://" as CFString, 
     if lower.contains("chromium") { print("chromium"); exit(0) }
     if lower.contains("brave") { print("brave"); exit(0) }
     if lower.contains("arc.app") { print("arc"); exit(0) }
-    if lower.contains("safari.app") { print("webkit"); exit(0) }
   }
 }
 exit(1)
@@ -1841,7 +1839,6 @@ exit(1)
             if lower.contains("chromium") { return Some("chromium".into()); }
             if lower.contains("brave") { return Some("brave".into()); }
             if lower.contains("arc") { return Some("arc".into()); }
-            if lower.contains("safari") { return Some("webkit".into()); }
         }
         None
     }
@@ -1878,7 +1875,6 @@ fn detect_browsers() -> Vec<BrowserInfo> {
             if b.id == def { b.is_default = true; }
         }
     }
-    // 无任何 Chromium 系浏览器时，把 WebKit(Safari) 也算候选（前端会提示 puppeteer 不支持）
     list
 }
 

@@ -3,9 +3,11 @@
 // 输出：应使用的浏览器可执行路径（null = 无可用 Chromium 系，调用方回退 Edge）。
 // 选择优先级：
 //   1. 用户显式选择（browserEngine !== "auto"）且该浏览器已安装
-//   2. 系统默认浏览器（is_default，排除 webkit——puppeteer 不支持 Safari/WebKit）
+//   2. 系统默认浏览器（is_default）
 //   3. 推荐序：chrome > edge > chromium > brave
 
+// 注意：仅支持 Chromium 系（Chrome/Edge/Chromium/Brave）；Puppeteer 不支持 WebKit/Safari，
+// 故不探测 Safari，也无需在优先级中排除 webkit。
 export interface BrowserInfo {
   id: string;
   name: string;
@@ -24,8 +26,8 @@ export function pickBrowserPath(list: BrowserInfo[], engine: string): string | n
     const b = byId(engine);
     if (b) return b.path;
   }
-  // 2. 系统默认浏览器（仅 Chromium 系；webkit=Safari puppeteer 不支持）
-  const def = list.find((b) => b.is_default && b.id !== "webkit");
+  // 2. 系统默认浏览器
+  const def = list.find((b) => b.is_default);
   if (def) return def.path;
   // 3. 推荐序回退
   for (const id of BROWSER_PRIORITY) {

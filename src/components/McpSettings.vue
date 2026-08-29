@@ -28,7 +28,6 @@ const BROWSER_OPTIONS: { id: string; label: string }[] = [
   { id: "edge", label: "Microsoft Edge" },
   { id: "chromium", label: "Chromium" },
   { id: "brave", label: "Brave Browser" },
-  { id: "webkit", label: "Safari / WebKit（预留）" },
 ];
 
 // 当前生效的浏览器路径描述（供展示）
@@ -37,7 +36,7 @@ const activeBrowserDesc = computed(() => {
   const byId = (id: string) => browsers.value.find((b) => b.id === id);
   const eng = browserEngine.value;
   let b = eng !== "auto" ? byId(eng) : undefined;
-  if (!b) b = browsers.value.find((x) => x.is_default && x.id !== "webkit");
+  if (!b) b = browsers.value.find((x) => x.is_default);
   if (!b && eng === "auto") b = byId("chrome") || byId("edge") || byId("chromium") || byId("brave");
   if (!b) return "未检测到浏览器（将回退 Microsoft Edge）";
   return `${b.name}${b.is_default ? "（默认）" : ""}`;
@@ -228,7 +227,7 @@ function cancel() {
           · 当前生效：<b>{{ activeBrowserDesc }}</b>
         </template>
         <template v-else>正在检测本机已安装的浏览器…</template>
-        <div class="mcp-browser__note">浏览器自动化（puppeteer）使用上方选定的 Chromium 系内核；「自动」优先系统默认浏览器。WebKit/Safari 预留后续适配。</div>
+        <div class="mcp-browser__note">浏览器自动化（puppeteer）使用上方选定的 Chromium 系内核（Chrome/Edge/Chromium/Brave）；「自动」优先系统默认浏览器。</div>
       </div>
     </div>
 

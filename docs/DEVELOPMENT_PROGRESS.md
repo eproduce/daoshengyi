@@ -31,7 +31,8 @@
 - **McpSettings.vue**：插件面板顶部新增「浏览器自动化内核」区——下拉（自动/Chrome/Edge/Chromium/Brave/WebKit预留）+ 重新检测按钮 + 已检测浏览器 chip 展示（默认浏览器高亮）+ 当前生效描述 + 说明；onMounted 读设置 + 探测
 - **测试**：Rust +0（编译验证）；前端 +9（pickBrowserPath：推荐序 chrome>edge>chromium>brave、默认浏览器优先、默认是 webkit 仍选 Chromium、显式选择、显式选未安装回退推荐序、空列表 null、仅 webkit null、推荐序常量）→ npm test 226；cargo test 60 + vue-tsc + vite build 全过
 - **踩坑**：①`applyPuppeteerEnv` 变异步后 `loadLegacy` 同步 .map 不兼容 → 改为加载时不注入浏览器（initFromRust await 异步应用）；②macOS 默认浏览器判定优先 swift 内联（LSCopyDefaultApplicationURLForURL 准确），编译失败回退 plist 文本匹配；③终端 cd 持久化坑——切目录后 vite build 找不到 index.html，需 exec zsh -c 强制切回
-- **待做**：WebKit(Safari) 内核需 playwright MCP（远期）；真实多机验证各平台路径
+- **待做**：真实多机验证各平台路径
+- **⚠️ 更新（同日）**：用户确认不做 Safari/WebKit 兼容——已移除全部 WebKit 功能代码（McpSettings 下拉的「Safari/WebKit 预留」项、`browser-select.ts` 的 webkit 排除逻辑、`lib.rs` 的 Safari 探测路径/默认浏览器映射、`isBrowserServer` 正则中的 webkit、对应 3 条前端测试断言与注释）。仅保留 Chromium 系内核
 
 ### ✅ 工作流 UX 补齐（对标 Dify：外部输入框 + 拖拽新增节点 + 运行状态可视化 + 字段级引用）
 - **背景**：用户反馈工作流「运行过程/结果/输入在哪看」「没有拖拽新增节点」，并调研 Dify 工作流后确认「保留并补齐 UX，不做移除」

@@ -632,14 +632,11 @@ console.log("\n== Puppeteer 浏览器多内核选择（pickBrowserPath） ==");
   const edge = { id: "edge", name: "Microsoft Edge", path: "/Edge", is_default: false };
   const chromium = { id: "chromium", name: "Chromium", path: "/Chromium", is_default: false };
   const brave = { id: "brave", name: "Brave", path: "/Brave", is_default: false };
-  const webkit = { id: "webkit", name: "Safari", path: "/Safari", is_default: false };
   // 推荐序：无默认浏览器时 chrome > edge > chromium > brave
   assert(pickBrowserPath([edge, chrome], "auto") === "/Chrome", "推荐序 chrome 优先于 edge");
   assert(pickBrowserPath([brave, edge, chromium], "auto") === "/Edge", "推荐序 edge > chromium > brave", pickBrowserPath([brave, edge, chromium], "auto") ?? "null");
-  assert(pickBrowserPath([webkit], "auto") === null, "仅 webkit 无 Chromium 系 → null（前端回退 Edge）");
-  // 系统默认浏览器优先（排除 webkit）
+  // 系统默认浏览器优先
   assert(pickBrowserPath([chrome, { ...brave, is_default: true }], "auto") === "/Brave", "系统默认浏览器优先");
-  assert(pickBrowserPath([chrome, { ...webkit, is_default: true }], "auto") === "/Chrome", "默认是 webkit 时仍选 Chromium 系");
   // 用户显式选择
   assert(pickBrowserPath([chrome, edge], "edge") === "/Edge", "显式选 edge");
   assert(pickBrowserPath([chrome], "brave") === "/Chrome", "显式选未安装浏览器 → 回退推荐序");

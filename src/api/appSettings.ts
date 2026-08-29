@@ -60,7 +60,7 @@ export interface AppSettingsPayload {
   globalShortcutToggle: string;
   /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
   globalShortcutNewChat: string;
-  /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave / webkit
+  /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave
   browserEngine: string;
 }
 

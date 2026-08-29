@@ -102,7 +102,7 @@ pub struct AppSettings {
     /// IM 网关配置（钉钉/飞书/企微）。敏感字段（token/secret）随整个对象整体加密落盘
     #[serde(default)]
     pub im_config: serde_json::Value,
-    /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave / webkit（仅识别，puppeteer 不支持）
+    /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave
     #[serde(default = "default_browser_engine")]
     pub browser_engine: String,
 }

@@ -144,7 +144,7 @@ function toConfig(p: McpServerPersist): McpServerConfig {
 /// 判断是否为"重"服务器（浏览器自动化）：连接即启动真实浏览器窗口。
 /// 这类服务器只在模型明确需要时按需连接，避免日常对话也弹出浏览器。
 export function isBrowserServer(name: string, command: string): boolean {
-  return /puppeteer|playwright|browser|chrome|webkit|浏览器/.test(`${name} ${command}`.toLowerCase());
+  return /puppeteer|playwright|browser|chrome|浏览器/.test(`${name} ${command}`.toLowerCase());
 }
 
 export const useMcpStore = defineStore("mcp", () => {
