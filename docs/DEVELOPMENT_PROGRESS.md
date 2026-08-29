@@ -2,7 +2,37 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-08-29**
+> **最后更新：2026-08-30**
+
+---
+
+## 2026-08-30
+
+### ✅ 表格竖线渲染修复（normalizeMath 三层处理 + 系统提示引导）
+- **背景**：模型在 Markdown 表格单元格写数学公式 `$|G|$`（绝对值/集合/范数），`|` 是 GFM 表格列分隔符 → marked 切碎单元格（单元格只剩孤立 `$` 或内容错乱）；且此前的 lookbehind 正则曾导致 WKWebView 白屏（ES2018 不支持）
+- **修复**（ChatMessage.vue `normalizeMath`，全程禁用 lookbehind）：
+  1. `$...$`/`$$...$$` 内 `|` → `\vert `（KaTeX 渲染 `∣`；**必须带尾随空格**，否则 `\vertG` 被解析成不存在的命令 vertG）
+  2. `$` 外**紧贴非空白的** `|`（绝对值 `|x|`）→ `\|`（marked 表格内按转义竖线处理、不切分，显示仍为 `|`）
+  3. 列分隔符（`| A |` 两侧空白/行边界）保留；公式段/代码块用占位符（`\u0000m`/`\u0000b`）保护
+- **边界**：内容竖线**两侧空白**（`{x | x ∈ G}`、`| a |`）与列分隔符外观相同，预处理无法可靠区分 → 系统提示新增引导：表格单元格内**禁止字面 `|`**，用 `$...$` 公式或中文描述
+- **验证**：端到端脚本（normalizeMath + marked + katex）确认普通表格/`$`外绝对值/`$`内公式/普通段落全对；vue-tsc + npm test 224 全过
+
+### ✅ 浏览器工具路由容错（resolveToolServer）
+- **背景**：模型调用 `puppeteer_navigate` 报「未知内置工具」——tool_call 的 `server` 字段为空/`default`/`app` 时被映射到内置工具分支，而 puppeteer_* 不在内置工具清单（fetch_page/web_search/list_dir 等）
+- **修复**（chat.ts）：新增 `resolveToolServer()`——server 是 app/builtin/缺省时：①工具名在已连接 MCP 工具缓存中 → 路由到真实服务器；②`puppeteer_*`/`__connect__` 在缓存中找不到 → 找已启用浏览器服务器（`isBrowserServer`）路由过去；③未连接则由 callMcpTool 走按需激活（`enabled && !connected` 自动连接）。接入主 ReAct 循环 + 子代理循环 + callMcpTool 的 app 分支
+- **效果**：模型无需精确写对服务器名，只要工具名对（`puppeteer_*`）就能自动路由并触发连接；`__connect__` 也容错
+- **验证**：vue-tsc + npm test 224 全过
+
+### ✅ 设置面板下拉框统一 + 停止按钮线性图标
+- **下拉框**（main.css 全局 `select` 样式 + 6 个组件清理）：`appearance:none` 去默认外观 + 自定义 SVG 箭头 + 主题变量（深浅色自适应）；清理 SettingsDialog/MemoryPanel/AuditPanel/WorkflowDialog/ScheduledTasks/ImGatewayPanel 的硬编码 fallback（`#ddd`/`#fff`）与**覆盖箭头的 `background:` 简写**（改 `background-color`）
+- **停止按钮**（App.vue / ChatInput.vue）：emoji `⏹` → lucide `Square` / 内联 SVG 线性图标 + 红色警示交互（hover 填充/上浮/缩放）
+- **验证**：浏览器 computed style 确认所有下拉框统一（appearance:none + 箭头 + 主题色）；vue-tsc + npm test 224 全过
+
+### ✅ 借鉴 Hermes Agent：货币 $ 转义 + KaTeX LRU 缓存
+- **调研**：对比 OpenAI Codex（TUI，pulldown-cmark 事件流、**不渲染公式**，靠 `\|` 转义）与 Hermes Agent（桌面端 **remark-math + rehype-katex** AST 层，`normalizeProseMath` 转义货币 `$`、`katex-memo` LRU 缓存）——我们的 marked 自定义 katex tokenizer 扩展与 AST 层思路一致
+- **货币转义**（ChatMessage.vue `normalizeMath`）：公式段占位保护后，`$`+数字（`$5`/`$100`/`$1,000.50`）→ `\$`，避免被当公式起点。替换串 `"\\$$$1"` = 字面反斜杠 + `$$`（字面$）+ `$1`（捕获组）；注意 `"\\$$1"` 会解析成固定 `\$1` 丢失数字（踩坑）
+- **KaTeX LRU 缓存**（katex-marked.ts）：`renderKatex` 加 512 条 LRU（key=`displayMode:tex`），流式渲染只重渲染真正变化的新公式，避免每 delta 全量重渲染（数学密集回复性能优化）
+- **验证**：`$100`→`\$100`→渲染 `$100`、`$1,000.50` 正确、`$x^2$`/`$5x^2+3x$`/`$$...$$` 公式不受影响；vue-tsc + npm test 224 全过
 
 ---
 

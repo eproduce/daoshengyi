@@ -19,8 +19,25 @@ const inlineRule = /^(\${1,2})(?!\$)((?:\\.|[^\\\n\$])*?(?:\\.|[^\\\n\$]))\1(?=[
 // 块级：$$\n ... \n$$
 const blockRule = /^(\${1,2})\n((?:\\[^]|[^\\])+?)\n\1(?:\n|$)/;
 
+// KaTeX 渲染结果 LRU 缓存（借鉴 Hermes Agent katex-memo 思路）：流式渲染时同一公式会在
+// 每个 delta 反复渲染，缓存避免重复执行高开销的 renderToString，仅重渲染真正变化的新公式。
+const KATEX_CACHE_LIMIT = 512;
+const katexCache = new Map<string, string>();
 function renderKatex(tex: string, displayMode: boolean): string {
-  return katex.renderToString(tex, { throwOnError: false, displayMode });
+  const key = `${displayMode ? "b" : "i"}:${tex}`;
+  const hit = katexCache.get(key);
+  if (hit !== undefined) {
+    katexCache.delete(key); // LRU：命中后移到末尾
+    katexCache.set(key, hit);
+    return hit;
+  }
+  const html = katex.renderToString(tex, { throwOnError: false, displayMode });
+  katexCache.set(key, html);
+  if (katexCache.size > KATEX_CACHE_LIMIT) {
+    const oldest = katexCache.keys().next().value;
+    if (oldest !== undefined) katexCache.delete(oldest);
+  }
+  return html;
 }
 
 const inlineKatex: TokenizerExtension & RendererExtension = {

@@ -122,6 +122,10 @@ function normalizeMath(s: string): string {
       mathBlocks.push(m); return `${MATH_PH}m${mathBlocks.length - 1}${MATH_PH}`;
     })
     .replace(/[^\s|]\||\|(?=[^\s|])/g, (m) => (m.length === 2 ? m[0] + "\\|" : "\\|"))
+    // 货币/普通数字 $ 转义（公式段已被上方占位保护，不会被误伤）：$5 / $100 / $1,000.50
+    // → \$xxx，避免被当公式起点（借鉴 Hermes Agent normalizeProseMath 的货币转义）。
+    // 替换串 \\$$$1 = 字面反斜杠 + 字面$（$$）+ 捕获组1（$1），输出 \$100 这类。
+    .replace(/\$(\d[\d,]*(?:\.\d+)?)/g, "\\$$$1")
     .replace(new RegExp(`${MATH_PH}m(\\d+)${MATH_PH}`, "g"), (_, i: string) => mathBlocks[Number(i)]);
   return restore(out);
 }

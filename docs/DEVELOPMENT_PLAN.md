@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-27**（已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地）
+> **最后更新：2026-08-30**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地）
 
 ---
 
@@ -16,7 +16,7 @@
 | 密钥 | AES-256-GCM，密钥文件 `secret.key`（0600）于 app_data_dir |
 | 定位 | 本地优先 + 国产模型（DeepSeek）的 AI Agent 桌面客户端 |
 | 远程 | `https://github.com/eproduce/daoshengyi` 分支 main |
-| 测试 | `npm test`（前端 84 项）· `cargo test --lib`（Rust 40 项）· `vue-tsc --noEmit` |
+| 测试 | `npm test`（前端 224 项）· `cargo test --lib`（Rust 60 项）· `vue-tsc --noEmit` |
 
 ---
 
@@ -66,6 +66,14 @@
 - **前端**：设置项 `browser_engine`；选择逻辑抽纯函数 `utils/browser-select.ts pickBrowserPath`（显式选择 → 系统默认 → 推荐序 chrome>edge>chromium>brave → null）；`applyPuppeteerEnv` 改异步在 initFromRust/connect 时按最新设置应用
 - **UI**：McpSettings 插件面板顶部「浏览器自动化内核」下拉 + 已检测浏览器展示
 - 详细见进度文档 08-29
+
+### 2.1c 渲染与 UI 健壮性 + 工具路由容错（✅ 已完成，2026-08-29~30）
+- **浏览器工具路由容错**（chat.ts）：新增 `resolveToolServer`——模型把 `puppeteer_*`/`__connect__` 误填 server 为 app/builtin/缺省时自动路由到浏览器服务器（含未连接按需激活），不再报「未知内置工具」
+- **表格竖线渲染修复**（ChatMessage.vue normalizeMath）：`$` 内 `|` → `\vert`（KaTeX），`$` 外紧贴非空白的 `|` → `\|`，列分隔符保留；系统提示新增表格竖线规范引导（单元格内禁止字面 `|`）
+- **货币 `$` 转义**：`$5`/`$100`/`$1,000.50` → `\$`，避免误判公式（借鉴 Hermes Agent）
+- **KaTeX LRU 缓存**（katex-marked.ts）：流式渲染只重渲染变化公式（借鉴 Hermes Agent）
+- **UI**：设置面板下拉框全局统一（自定义箭头 + 主题变量）；停止按钮 emoji → 线性图标
+- 详细见进度文档 08-29~30
 
 ### 2.2 日期幻觉 + 编造数据 bug（用户 2026-08-17 报告，**已修复**，见进度文档 08-17）
 - 现象：模型日期幻觉；未调用工具时编造数据（如天气）
