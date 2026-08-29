@@ -7,17 +7,11 @@
 // - 运行状态 runStatus：waiting 待执行 / running 执行中 / done 成功 / error 失败 / skipped 跳过
 import { Handle, Position } from "@vue-flow/core";
 import type { WorkflowNode, WorkflowNodeType } from "@/utils/workflow-engine";
+import { WORKFLOW_NODE_COLORS } from "@/data/workflow-colors";
 
 defineProps<{ data?: { wf?: WorkflowNode } }>();
 
-const COLORS: Record<WorkflowNodeType, string> = {
-  text: "#4caf50",
-  llm: "#2196f3",
-  tool: "#ff9800",
-  condition: "#9c27b0",
-  code: "#00bcd4",
-  end: "#9e9e9e",
-};
+const COLORS = WORKFLOW_NODE_COLORS;
 const TYPE_LABEL: Record<WorkflowNodeType, string> = {
   text: "文本", llm: "LLM", tool: "工具", condition: "条件", code: "代码", end: "结束",
 };

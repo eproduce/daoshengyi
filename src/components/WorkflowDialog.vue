@@ -9,8 +9,9 @@ import { useChatStore } from "@/stores/chat";
 import { callMcpTool } from "@/stores/chat";
 import { executeWorkflow, type WorkflowNode, type WorkflowEdge, type WorkflowNodeType } from "@/utils/workflow-engine";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "@/data/workflow-templates";
+import { WORKFLOW_NODE_COLORS } from "@/data/workflow-colors";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Trash2, Download, Upload, Plus, X, Save, RotateCw } from "lucide-vue-next";
+import { Play, Trash2, Download, Upload, X, Save, RotateCw, Workflow, FileText, Bot, Wrench, GitBranch, Code2, Flag } from "lucide-vue-next";
 
 const emit = defineEmits<{ close: [] }>();
 const chatStore = useChatStore();
@@ -33,6 +34,8 @@ const runs = ref<{ id: number; wf_name: string; status: string; started_at: numb
 const loadedWfName = ref("");
 
 const TYPE_LABEL: Record<WorkflowNodeType, string> = { text: "文本", llm: "LLM", tool: "工具", condition: "条件", code: "代码", end: "结束" };
+// 拖拽影像用的节点类型图标（与左侧节点库按钮一致）
+const NODE_ICONS: Record<WorkflowNodeType, any> = { text: FileText, llm: Bot, tool: Wrench, condition: GitBranch, code: Code2, end: Flag };
 
 // 自定义节点：显式渲染可拖拽连线 Handle（条件节点 T/F 双出点自动带分支标签）
 // vue-flow 1.x 的 NodeTypesObject 与 SFC 组件 props 类型不兼容，用宽松断言
@@ -73,37 +76,75 @@ function addNode(type: WorkflowNodeType, pos?: { x: number; y: number }) {
     x: pos?.x ?? 60 + nodes.value.length * 30,
     y: pos?.y ?? 60 + nodes.value.length * 30,
   };
-  nodes.value.push({
+  // 用 vue-flow 的 addNodes 标准 API 而不是直接 push：确保与画布 store 同步、
+  // 事件通知与默认属性处理都走正规流程（直接 push 外部 ref 无法保证 store 一致性）
+  addNodes([{
     id, type: "wf", position: { x: wf.x, y: wf.y },
     data: { label: `${wf.label}`, wf },
-  });
+  }]);
   selectedId.value = id;
   selectedEdgeId.value = null;
 }
 
-// ── 拖拽新增节点（vue-flow 标准模式）───────────────────────────────
-// 面板按钮 draggable=true，dragstart 时把节点类型写入 dataTransfer；
-// 画布 dragover.prevent 允许放置，drop 时用 screenToFlowCoordinate 把鼠标屏幕坐标
-// 转成画布坐标，在落点处创建节点。
-const dragType = ref<WorkflowNodeType | null>(null);
-const { screenToFlowCoordinate } = useVueFlow();
-const DRAG_MIME = "application/x-wf-node-type";
-function onPaletteDragStart(type: WorkflowNodeType, ev: DragEvent) {
-  dragType.value = type;
-  if (ev.dataTransfer) {
-    ev.dataTransfer.setData(DRAG_MIME, type);
-    ev.dataTransfer.effectAllowed = "copy";
-  }
+// ── 拖拽新增节点（mouse 事件实现，WKWebView 兼容）────────────────────
+// 背景：Tauri 的 macOS 运行时是 WKWebView，其 HTML5 拖放（draggable + 自定义
+// DataTransfer MIME + drop）存在兼容性问题——dragstart 能触发、节点能"拖起来"，
+// 但 drop 经常不派发，表现为「放手就失效」。因此这里改用 mouse 事件自建拖拽：
+//   mousedown 记录类型 → mousemove 判断是否真的拖动了 → mouseup 若落在画布内建节点。
+// 仍保留 useVueFlow("workflow") 共享 store：screenToFlowCoordinate 依赖真实挂载的
+// viewport 才能把屏幕坐标转成画布坐标（顶层裸调 useVueFlow 会建一个独立的空 store）。
+const canvasRef = ref<HTMLElement | null>(null);
+const { screenToFlowCoordinate, addNodes } = useVueFlow("workflow");
+const dragState = ref<{ type: WorkflowNodeType } | null>(null);
+// 拖拽过程中的视觉反馈：跟随鼠标的半透明节点影像 + 画布是否可放置
+const dragPreview = ref<{ type: WorkflowNodeType; x: number; y: number } | null>(null);
+const overCanvas = ref(false);
+// 拖拽结束在画布内建过节点后，抑制随后的 click，避免重复添加
+let suppressClick = false;
+
+function onPaletteMouseDown(type: WorkflowNodeType, ev: MouseEvent) {
+  if (ev.button !== 0) return;
+  // 注意：这里不能 preventDefault——它会阻止随后的 click 事件，导致"点击添加"失效。
+  // 按钮文字选中问题交给 .wf-palette__btn { user-select: none } 处理。
+  dragState.value = { type };
+  const startX = ev.clientX, startY = ev.clientY;
+  let moved = false;
+  const onMove = (e: MouseEvent) => {
+    if (!moved && (Math.abs(e.clientX - startX) > 4 || Math.abs(e.clientY - startY) > 4)) moved = true;
+    if (moved) {
+      // 更新拖拽影像位置，并判断当前是否落在画布内（用于画布高亮提示）
+      dragPreview.value = { type, x: e.clientX + 12, y: e.clientY + 10 };
+      const el = canvasRef.value;
+      overCanvas.value = !!el && e.clientX >= el.getBoundingClientRect().left && e.clientX <= el.getBoundingClientRect().right
+        && e.clientY >= el.getBoundingClientRect().top && e.clientY <= el.getBoundingClientRect().bottom;
+    }
+  };
+  const onUp = (e: MouseEvent) => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    dragPreview.value = null;
+    overCanvas.value = false;
+    const st = dragState.value;
+    if (!st) return;
+    if (moved) {
+      const el = canvasRef.value;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+          const { x, y } = screenToFlowCoordinate({ x: e.clientX, y: e.clientY });
+          addNode(st.type, { x, y });
+          suppressClick = true;
+        }
+      }
+    }
+    dragState.value = null;
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
 }
-function onPaletteDragEnd() { dragType.value = null; }
-function onCanvasDragOver(ev: DragEvent) { ev.preventDefault(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy"; }
-function onCanvasDrop(ev: DragEvent) {
-  ev.preventDefault();
-  const type = (dragType.value || ev.dataTransfer?.getData(DRAG_MIME) || "") as WorkflowNodeType;
-  if (!type || !("text llm tool condition code end".split(" ").includes(type))) return;
-  const { x, y } = screenToFlowCoordinate({ x: ev.clientX, y: ev.clientY });
-  addNode(type, { x, y });
-  dragType.value = null;
+function onPaletteClick(type: WorkflowNodeType) {
+  if (suppressClick) { suppressClick = false; return; }
+  addNode(type);
 }
 
 function connectEdge(params: { source: string; target: string; sourceHandle?: string | null }) {
@@ -319,11 +360,16 @@ function loadTemplate(ev: Event) {
 
 <template>
   <div class="wf-overlay">
+    <!-- 拖拽过程中的节点影像：跟随鼠标，提示落点；颜色跟随节点类型色 -->
+    <div v-if="dragPreview" class="wf-drag-preview" :style="{ '--t': WORKFLOW_NODE_COLORS[dragPreview.type], left: dragPreview.x + 'px', top: dragPreview.y + 'px' }">
+      <component :is="NODE_ICONS[dragPreview.type]" :size="14" />
+      <span>{{ TYPE_LABEL[dragPreview.type] }}节点</span>
+    </div>
     <div class="wf-dialog">
       <header class="wf-head">
-        <span class="wf-title">⚙️ 可视化工作流</span>
+        <span class="wf-title"><Workflow :size="16" /> 可视化工作流</span>
         <div class="wf-head__actions">
-          <button class="wf-btn" @click="run" :disabled="running">
+          <button class="wf-btn wf-btn--run" @click="run" :disabled="running">
             <Play :size="14" /> {{ running ? "运行中…" : "运行" }}
           </button>
           <button class="wf-btn" @click="clearAll"><Trash2 :size="14" /> 清空</button>
@@ -354,12 +400,13 @@ function loadTemplate(ev: Event) {
       <div class="wf-body">
         <!-- 节点面板（支持拖拽到画布或点击添加） -->
         <div class="wf-palette">
-          <button class="wf-palette__btn" draggable="true" @click="addNode('text')" @dragstart="onPaletteDragStart('text', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 文本</button>
-          <button class="wf-palette__btn" draggable="true" @click="addNode('llm')" @dragstart="onPaletteDragStart('llm', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> LLM</button>
-          <button class="wf-palette__btn" draggable="true" @click="addNode('tool')" @dragstart="onPaletteDragStart('tool', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 工具</button>
-          <button class="wf-palette__btn" draggable="true" @click="addNode('condition')" @dragstart="onPaletteDragStart('condition', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 条件</button>
-          <button class="wf-palette__btn" draggable="true" @click="addNode('code')" @dragstart="onPaletteDragStart('code', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 代码</button>
-          <button class="wf-palette__btn" draggable="true" @click="addNode('end')" @dragstart="onPaletteDragStart('end', $event)" @dragend="onPaletteDragEnd"><Plus :size="13" /> 结束</button>
+          <div class="wf-palette__cap">节点库</div>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.text }" @mousedown="onPaletteMouseDown('text', $event)" @click="onPaletteClick('text')"><FileText :size="14" /> 文本</button>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.llm }" @mousedown="onPaletteMouseDown('llm', $event)" @click="onPaletteClick('llm')"><Bot :size="14" /> LLM</button>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.tool }" @mousedown="onPaletteMouseDown('tool', $event)" @click="onPaletteClick('tool')"><Wrench :size="14" /> 工具</button>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.condition }" @mousedown="onPaletteMouseDown('condition', $event)" @click="onPaletteClick('condition')"><GitBranch :size="14" /> 条件</button>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.code }" @mousedown="onPaletteMouseDown('code', $event)" @click="onPaletteClick('code')"><Code2 :size="14" /> 代码</button>
+          <button class="wf-palette__btn" :style="{ '--t': WORKFLOW_NODE_COLORS.end }" @mousedown="onPaletteMouseDown('end', $event)" @click="onPaletteClick('end')"><Flag :size="14" /> 结束</button>
           <select class="wf-palette__select" @change="loadTemplate">
             <option value="" disabled selected>📦 载入模板…</option>
             <option v-for="t in WORKFLOW_TEMPLATES" :key="t.id" :value="t.id">{{ t.icon }} {{ t.name }}（{{ t.description }}）</option>
@@ -372,9 +419,9 @@ function loadTemplate(ev: Event) {
           </div>
         </div>
 
-        <!-- 画布 -->
-        <div class="wf-canvas" @dragover="onCanvasDragOver" @drop="onCanvasDrop">
-          <VueFlow v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }" :node-types="nodeTypes" fit-view-on-init :min-zoom="0.1"
+        <!-- 画布：mouse 事件拖拽新增，drop 判定在 mouseup 时按画布矩形命中 -->
+        <div class="wf-canvas" ref="canvasRef" :class="{ 'wf-canvas--dragover': overCanvas }">
+          <VueFlow id="workflow" v-model:nodes="nodes" v-model:edges="edges" :default-edge-options="{ type: 'smoothstep' }" :node-types="nodeTypes" fit-view-on-init :min-zoom="0.1"
             @connect="connectEdge" @node-click="(e: any) => { selectedId = e.node.id; selectedEdgeId = null; }"
             @edge-click="(e: any) => { selectedEdgeId = e.edge.id; selectedId = null; }"
             @pane-click="selectedId = null; selectedEdgeId = null;">
@@ -471,50 +518,154 @@ function loadTemplate(ev: Event) {
 
 
 <style scoped>
-.wf-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-.wf-dialog { width: min(1100px, 94vw); height: min(760px, 92vh); background: var(--bg, #fff); color: var(--text, #222); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
-.wf-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border, #eee); }
-.wf-title { font-weight: 700; }
+/* ── 遮罩与容器 ─────────────────────────────── */
+.wf-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(8, 8, 18, 0.55);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.wf-dialog {
+  width: min(1180px, 94vw); height: min(780px, 92vh);
+  background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: wf-pop .16s ease-out;
+}
+@keyframes wf-pop { from { transform: scale(.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* ── 拖拽影像（跟随鼠标的节点预览，颜色跟随节点类型色 --t） ─────────── */
+.wf-drag-preview {
+  position: fixed; z-index: 1001; pointer-events: none;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border-radius: var(--radius-sm);
+  background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--t, var(--accent-color)); border-left: 3px solid var(--t, var(--accent-color));
+  box-shadow: var(--shadow-lg); font-size: 13px; font-weight: 600;
+  transform: translate(-50%, -50%);
+  opacity: .92; white-space: nowrap;
+}
+.wf-drag-preview svg { color: var(--t, var(--accent-color)); }
+.wf-canvas--dragover {
+  border-color: var(--accent-color);
+  box-shadow: inset 0 0 0 2px var(--accent-bg), 0 0 0 3px var(--accent-bg);
+}
+
+/* ── 头部 ───────────────────────────────────── */
+.wf-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, var(--accent-bg), transparent 65%);
+  border-bottom: 1px solid var(--border-color);
+}
+.wf-title { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; color: var(--text-primary); }
+.wf-title svg { color: var(--accent-color); }
 .wf-head__actions { display: flex; gap: 8px; align-items: center; }
-.wf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border, #eee); flex-wrap: wrap; }
-.wf-external { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--border, #eee); background: var(--bg-soft, #f7f7f7); }
-.wf-external__label { font-size: 12px; color: var(--text-secondary, #666); white-space: nowrap; }
-.wf-external__input { flex: 1; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; }
-.wf-external__hint { font-size: 11px; color: var(--text-secondary, #999); white-space: nowrap; }
-.wf-toolbar__name { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; width: 170px; }
-.wf-toolbar__loaded { font-size: 12px; color: #2e7d32; font-weight: 600; }
-.wf-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }
-.wf-btn:hover { border-color: #4c8dff; color: #4c8dff; }
+.wf-head__actions .wf-btn--run { background: var(--accent-color); border-color: var(--accent-color); color: #fff; }
+.wf-head__actions .wf-btn--run:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+.wf-head__actions .wf-btn--run:disabled { opacity: .6; }
+
+/* ── 工具栏 ─────────────────────────────────── */
+.wf-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; background: var(--bg-secondary); }
+.wf-toolbar__name { padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-elevated); color: var(--text-primary); font-size: 13px; width: 180px; transition: border-color .15s, box-shadow .15s; }
+.wf-toolbar__name:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-bg); }
+.wf-toolbar__loaded { font-size: 12px; color: var(--accent-color); font-weight: 600; background: var(--accent-bg); padding: 3px 8px; border-radius: 999px; }
+
+/* ── 通用按钮 ───────────────────────────────── */
+.wf-btn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-color);
+  background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; font-size: 13px;
+  transition: border-color .15s, color .15s, background .15s, box-shadow .15s, transform .05s;
+}
+.wf-btn:hover { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-bg); }
+.wf-btn:active { transform: scale(.97); }
 .wf-btn:disabled { opacity: .5; cursor: default; }
-.wf-btn--close { border: none; }
-.wf-btn--danger { color: #c62828; border-color: #c6282866; margin-top: 8px; }
+.wf-btn--close { border: none; background: transparent; }
+.wf-btn--danger { color: var(--danger-color); border-color: var(--danger-color); }
+.wf-btn--danger:hover { background: var(--danger-bg); color: var(--danger-color); border-color: var(--danger-color); }
 .wf-hidden { display: none; }
+
+/* ── 外部输入 ───────────────────────────────── */
+.wf-external { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border-color); background: var(--accent-bg); }
+.wf-external__label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-weight: 600; }
+.wf-external__input { flex: 1; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-elevated); color: var(--text-primary); font-size: 13px; transition: border-color .15s, box-shadow .15s; }
+.wf-external__input:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-bg); }
+.wf-external__hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+/* ── 主体三栏 ───────────────────────────────── */
 .wf-body { display: flex; flex: 1; min-height: 0; }
-.wf-palette { width: 130px; padding: 10px; border-right: 1px solid var(--border, #eee); display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-.wf-palette__btn { text-align: left; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; }
-.wf-palette__btn:hover { border-color: #4c8dff; color: #4c8dff; }
-.wf-palette__hint { font-size: 11px; color: var(--text-secondary, #888); line-height: 1.5; }
-.wf-palette__select { font-size: 12px; padding: 5px 26px 5px 8px; border-radius: 6px; border: 1px solid var(--border-color); background-color: var(--bg-secondary); color: var(--text-primary); max-width: 100%; }
-.wf-canvas { flex: 1; min-width: 0; }
-.wf-inspector { width: 260px; padding: 10px; border-left: 1px solid var(--border, #eee); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.wf-inspector__empty { font-size: 12px; color: var(--text-secondary, #888); text-align: center; margin-top: 40px; line-height: 1.8; }
-.wf-inspector__title { font-size: 12px; font-weight: 700; color: var(--text, #222); }
-.wf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary, #666); }
-.wf-field input, .wf-field textarea { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; font-family: inherit; }
-.wf-run { border-top: 1px solid var(--border, #eee); padding: 10px 14px; display: flex; gap: 16px; height: 180px; min-height: 0; }
+
+/* 节点面板 */
+.wf-palette { width: 150px; padding: 12px 10px; border-right: 1px solid var(--border-color); background: var(--bg-secondary); display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.wf-palette__cap { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); padding: 2px 4px 4px; }
+.wf-palette__btn {
+  text-align: left; padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color); border-left: 3px solid var(--t, var(--border-strong));
+  background: var(--bg-elevated); color: var(--text-primary); cursor: grab;
+  font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
+  user-select: none; -webkit-user-select: none;
+  box-shadow: var(--shadow-sm);
+  transition: transform .12s, box-shadow .12s, border-color .12s, background .12s;
+}
+.wf-palette__btn:active { cursor: grabbing; }
+.wf-palette__btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); border-color: var(--t, var(--border-strong)); color: var(--t, var(--text-primary)); background: var(--bg-hover); }
+.wf-palette__btn svg { flex-shrink: 0; color: var(--t, var(--text-secondary)); }
+.wf-palette__hint { font-size: 11px; color: var(--text-muted); line-height: 1.6; margin-top: 4px; }
+.wf-palette__select {
+  font-size: 12px; padding: 6px 26px 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color); background-color: var(--bg-elevated); color: var(--text-primary);
+  max-width: 100%; cursor: pointer;
+}
+
+/* 画布：点阵背景 + 内边框，视觉上更像专业画布 */
+.wf-canvas {
+  flex: 1; min-width: 0; margin: 10px; border-radius: var(--radius-md);
+  border: 1px solid var(--border-color); overflow: hidden; position: relative;
+  background-color: var(--bg-primary);
+  background-image: radial-gradient(var(--border-color) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.wf-canvas :deep(.vue-flow) { background: transparent; }
+
+/* 配置面板 */
+.wf-inspector { width: 270px; padding: 12px; border-left: 1px solid var(--border-color); background: var(--bg-secondary); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.wf-inspector__empty { font-size: 12px; color: var(--text-muted); text-align: center; margin-top: 48px; line-height: 2; }
+.wf-inspector__title { font-size: 12px; font-weight: 700; color: var(--text-primary); letter-spacing: .03em; }
+.wf-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.wf-field > span { font-weight: 600; }
+.wf-field input, .wf-field textarea {
+  padding: 7px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);
+  background: var(--bg-elevated); color: var(--text-primary); font-size: 13px; font-family: inherit;
+  transition: border-color .15s, box-shadow .15s;
+}
+.wf-field input:focus, .wf-field textarea:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-bg); }
+
+/* ── 运行区 ─────────────────────────────────── */
+.wf-run { border-top: 1px solid var(--border-color); padding: 10px 16px; display: flex; gap: 16px; height: 190px; min-height: 0; background: var(--bg-elevated); }
 .wf-run__log { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .wf-run__out { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; }
-.wf-run__hist { width: 240px; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; border-left: 1px solid var(--border, #eee); padding-left: 12px; }
-.wf-run__hist-item { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; }
-.wf-run__hist-status { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; flex-shrink: 0; margin-top: 1px; }
-.wf-run__hist-status.ok { background: #2e7d32; }
-.wf-run__hist-status.fail { background: #c62828; }
+.wf-run__hist { width: 250px; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; border-left: 1px solid var(--border-color); padding-left: 14px; }
+.wf-run__log > strong, .wf-run__out > strong, .wf-run__hist > strong { font-size: 12px; color: var(--text-secondary); }
+.wf-run__hist-item { display: flex; gap: 8px; align-items: flex-start; font-size: 11px; padding: 6px 8px; border-radius: var(--radius-sm); transition: background .15s; }
+.wf-run__hist-item:hover { background: var(--bg-hover); }
+.wf-run__hist-status { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; flex-shrink: 0; margin-top: 1px; }
+.wf-run__hist-status.ok { background: #22c55e; }
+.wf-run__hist-status.fail { background: var(--danger-color); }
 .wf-run__hist-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .wf-run__hist-body b { font-size: 11px; }
-.wf-run__hist-meta { color: var(--text-secondary, #999); font-size: 10px; }
-.wf-run__hist-sum { color: var(--text-secondary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
-.wf-run__pre { font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--bg-soft, #f5f5f5); border-radius: 6px; padding: 6px 8px; margin: 0; max-height: 110px; overflow-y: auto; color: var(--text, #222); }
-.wf-run__empty { font-size: 12px; color: var(--text-secondary, #888); }
+.wf-run__hist-meta { color: var(--text-muted); font-size: 10px; }
+.wf-run__hist-sum { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.wf-run__pre { font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--bg-secondary); border-radius: var(--radius-sm); padding: 8px 10px; margin: 0; max-height: 120px; overflow-y: auto; color: var(--text-primary); }
+.wf-run__empty { font-size: 12px; color: var(--text-muted); }
 .wf-run__out-item { display: flex; flex-direction: column; gap: 2px; }
 .wf-run__out-item b { font-size: 12px; }
+.wf-status-running { color: var(--accent-color); }
+.wf-status-done { color: #22c55e; }
+.wf-status-error { color: var(--danger-color); }
+.wf-status-skipped { color: var(--text-muted); }
+.wf-run__pre--node { max-height: 200px; }
 </style>

@@ -8,6 +8,18 @@
 
 ## 2026-08-30
 
+### ✅ 工作流拖拽新增修复 + 界面现代化 + 颜色统一（WorkflowDialog）
+- **背景**：用户反馈「拖拽是可以了，但是拖拽新增没有生效，而且界面很老旧」——点击添加可用，但把节点拖到画布放手不新增节点；界面停留在旧样式
+- **根因①（vue-flow store 不共享）**：`useVueFlow()` 在组件顶层（无 `<VueFlowProvider>`）调用时按 `storage.getId()` 分配 id 创建**独立空 store**；`<VueFlow>` 内部又是另一个 store → `screenToFlowCoordinate` 基于空 viewport 返回无效坐标，拖拽落点节点落在不可见位置。`addNode` 直接 `nodes.value.push` 外部 ref 也绕过 store 正规流程
+- **根因②（WKWebView HTML5 拖放不派发 drop）**：Tauri macOS 运行时是 WKWebView，`draggable` + 自定义 `DataTransfer` MIME 的拖放存在兼容性问题——dragstart 能触发（节点"拖得起来"），但 drop 经常不派发，表现为「放手就失效」
+- **修复**（WorkflowDialog.vue）：
+  1. `useVueFlow("workflow")` 与 `<VueFlow id="workflow">` 用**相同 id** 共享同一 store；`addNode` 改用 store 的 **`addNodes([...])`** 标准 API
+  2. **改用 mouse 事件自建拖拽**（跨 WebView 100% 可靠）：`mousedown` 记录类型 → `mousemove` 超 4px 判定拖动 → `mouseup` 落在画布矩形内则 `screenToFlowCoordinate` 换算坐标并 `addNode`；不用 preventDefault（否则会阻止 click 导致"点击添加"失效），按钮文字选中用 `user-select:none` 解决
+  3. **拖拽视觉反馈**：`mousedown/move` 时显示跟随鼠标的半透明**节点影像**（`.wf-drag-preview`，图标 + 类型名），移入画布时画布高亮（`.wf-canvas--dragover`）
+- **颜色统一**（新增 `src/data/workflow-colors.ts`）：palette 图例按钮、画布节点（`WorkflowNodeView`）、拖拽影像三处**共用 `WORKFLOW_NODE_COLORS`** 单一色板（text 绿 / llm 蓝 / tool 橙 / condition 紫 / code 青 / end 灰），彻底消除颜色漂移
+- **界面现代化**：全套 `.wf-*` 样式改用主题变量 + 阴影/圆角/过渡；头部 accent 渐变底、运行按钮主色高亮；palette 按钮带类型色左边条 + lucide 图标 + 拖拽抓取光标；画布点阵网格背景；inspector 卡片化；打开动画
+- **验证**：Playwright 真实鼠标/事件模拟确认拖拽全程（预览影像 → 画布高亮 → 落点创建）、点击添加、三处颜色 RGB 逐一一致；vue-tsc + npm test（19 + 224 + 25）全过
+
 ### ✅ 表格竖线渲染修复（normalizeMath 三层处理 + 系统提示引导）
 - **背景**：模型在 Markdown 表格单元格写数学公式 `$|G|$`（绝对值/集合/范数），`|` 是 GFM 表格列分隔符 → marked 切碎单元格（单元格只剩孤立 `$` 或内容错乱）；且此前的 lookbehind 正则曾导致 WKWebView 白屏（ES2018 不支持）
 - **修复**（ChatMessage.vue `normalizeMath`，全程禁用 lookbehind）：
