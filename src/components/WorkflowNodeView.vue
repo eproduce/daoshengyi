@@ -85,7 +85,27 @@ const TYPE_LABEL: Record<WorkflowNodeType, string> = {
   box-shadow: 0 0 4px rgba(0, 0, 0, .25);
   cursor: crosshair;
 }
-.wf-handle:hover { transform: scale(1.25); }
+/* hover 放大用伪元素实现（围绕 handle 中心原地放大，零偏移）：
+   vue-flow 用 transform: translate(...) 给 Handle 定位居中，若直接对 handle 本体
+   做 transform/scale，会与定位位移叠加导致端点偏移（用户反馈）。
+   伪元素 inset:-2px 外扩覆盖 handle 的 2px 白边并自带白边（box-sizing:border-box），
+   其中心 = handle 视觉中心，缩放原点即该中心 → 放大时中心纹丝不动；
+   同时避免原固定白环"腰斩"放大圆造成的偏移观感。 */
+.wf-handle::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: inherit;
+  box-shadow: 0 0 6px rgba(0, 0, 0, .25);
+  opacity: 0;
+  transform: scale(1);
+  pointer-events: none;
+  transition: opacity .12s ease, transform .12s ease;
+}
+.wf-handle:hover::after { opacity: 1; transform: scale(1.3); }
 .wf-handle--true { background: #2196f3; }
 .wf-handle--false { background: #e53935; }
 </style>
