@@ -388,7 +388,9 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span class="ci-slash-desc">{{ c.desc }}</span>
         </div>
       </div>
-      <button v-if="disabled" class="ci-send ci-stop" title="停止生成" @click="chatStore.stopStreaming()">⏹</button>
+      <button v-if="disabled" class="ci-send ci-stop" title="停止生成" @click="chatStore.stopStreaming()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+      </button>
       <button v-else class="ci-send" :disabled="!canSend()" @click="handleSend">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
@@ -506,8 +508,9 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-send { flex-shrink: 0; width: 32px; height: 32px; border: none; border-radius: 8px; background: var(--accent-color); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }
 .ci-send:disabled { opacity: .3; cursor: not-allowed; }
 .ci-send:not(:disabled):hover { background: var(--accent-hover); }
-.ci-stop { background: #ef4444; font-size: 15px; }
-.ci-stop:hover { background: #dc2626; }
+.ci-stop { background: var(--danger-color); font-size: 0; }
+.ci-stop:hover { background: #dc2626; transform: scale(1.06); }
+.ci-stop:active { transform: scale(0.94); }
 
 /* Slash 命令面板 */
 .ci-slash {

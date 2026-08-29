@@ -18,7 +18,7 @@ import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
 import type { ImageAttachment, FileAttachment } from "@/types";
-import { Download, Trash2, Moon, Sun, Settings, MessageSquarePlus, Terminal, FileText, Paperclip, AlarmClock, Stethoscope } from "lucide-vue-next";
+import { Download, Trash2, Moon, Sun, Settings, MessageSquarePlus, Terminal, FileText, Paperclip, AlarmClock, Stethoscope, Square } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
@@ -245,7 +245,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 
       <!-- 停止生成按钮 -->
       <div v-if="chatStore.isStreaming" class="stop-bar">
-        <button class="stop-btn" @click="handleStop">⏹ 停止生成</button>
+        <button class="stop-btn" @click="handleStop"><Square :size="14" /> 停止生成</button>
       </div>
 
       <!-- 切换模型配置提示 -->
@@ -405,12 +405,17 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   z-index: 10;
 }
 .stop-btn {
-  padding: 8px 20px; border: 1px solid var(--border-color);
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 18px; border: 1.5px solid var(--danger-color);
   border-radius: 24px; background: var(--bg-elevated);
-  color: var(--text-secondary); font-size: 13px; font-weight: 500;
+  color: var(--danger-color); font-size: 13px; font-weight: 500;
   cursor: pointer; box-shadow: var(--shadow-md); transition: all 0.2s;
 }
-.stop-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.stop-btn:hover {
+  background: var(--danger-color); color: #fff;
+  transform: translateY(-1px); box-shadow: var(--shadow-lg);
+}
+.stop-btn:active { transform: translateY(0); }
 
 /* 切换模型配置提示 overlay */
 .switch-overlay {

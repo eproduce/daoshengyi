@@ -165,7 +165,16 @@ function scheduleLabel(t: ScheduledTask): string {
 .tasks-form { display: flex; flex-direction: column; gap: 6px; background: #151528; border: 1px solid #2a2a45; border-radius: 8px; padding: 10px; }
 .tasks-input { padding: 6px 8px; border: 1px solid #333; border-radius: 6px; background: #0d0d1a; color: #ddd; font-size: 12px; }
 .tasks-form__row { display: flex; gap: 6px; }
-.tasks-select { flex: 1; }
+.tasks-select {
+  flex: 1;
+  /* 覆盖 .tasks-input 的硬编码暗色，统一走主题变量 + 全局 select 箭头 */
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
 .tasks-small { width: 110px; }
 .tasks-form__acts { display: flex; gap: 6px; }
 

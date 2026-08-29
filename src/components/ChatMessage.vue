@@ -94,6 +94,7 @@ function protectCodeSpans(s: string) {
 }
 function normalizeMath(s: string): string {
   const { text, restore } = protectCodeSpans(s);
+  const mathBlocks: string[] = [];
   const out = text
     // 中文（含全角标点）与 $ 紧贴 → 补空格，让 inline 公式能被识别
     .replace(new RegExp(`([${CJK_ADJACENT}])(\\$+)`, "g"), "$1 $2")
@@ -101,7 +102,27 @@ function normalizeMath(s: string): string {
     // \(...\) → $...$
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, body: string) => `$${body.trim()}$`)
     // \[...\] → 块级 $$...$$
-    .replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`);
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
+    // 表格单元格内公式的竖线转义：$|G|$ 里的 | 会被 marked 当表格列分隔符切碎单元格
+    // （表现为单元格只剩孤立 $）。先转成 LaTeX \vert（KaTeX 渲染为 |），既保住表格结构，
+    // 公式也能正确显示。\vert 后必须带空格（否则 \vertG 会被解析成不存在的命令 vertG）。
+    // 顺序：先 $$...$$ 再 $...$，避免 $$ 被 $ 规则误匹配。
+    .replace(/\$\$([\s\S]*?)\$\$/g, (_, body: string) => `$$${body.replace(/\|/g, "\\vert ") }$$`)
+    .replace(/\$([^$\n]+?)\$/g, (_, body: string) => `$${body.replace(/\|/g, "\\vert ") }$`)
+    // —— 内容竖线转义（$ 公式外）——
+    // 表格单元格里 $ 外的绝对值/集合竖线（如 |f'(x)|、|x|）若保持字面 |，会被 marked 当列
+    // 分隔符切碎表格。这里只转义「至少一侧紧贴非空白的竖线」（绝对值 |x| 这类写法）为 \|
+    // （marked 表格内按转义竖线处理、不切分，显示仍为 |）；两侧空白的竖线（真正的列分隔符
+    // `| A |`，以及 {x | x} 这类集合写法）保持不变，避免误伤表格结构。
+    // 步骤：
+    //   1. 占位保护公式段（$...$ / $$...$$，内部已是 \vert，无需再动）
+    //   2. 转义「紧贴非空白的竖线」为 \|（用捕获组+前瞻，不用 lookbehind，WKWebView 兼容）
+    //   3. 恢复公式段
+    .replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*?\$/g, (m) => {
+      mathBlocks.push(m); return `${MATH_PH}m${mathBlocks.length - 1}${MATH_PH}`;
+    })
+    .replace(/[^\s|]\||\|(?=[^\s|])/g, (m) => (m.length === 2 ? m[0] + "\\|" : "\\|"))
+    .replace(new RegExp(`${MATH_PH}m(\\d+)${MATH_PH}`, "g"), (_, i: string) => mathBlocks[Number(i)]);
   return restore(out);
 }
 

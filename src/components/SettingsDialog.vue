@@ -820,12 +820,7 @@ function handleDelete() {
 .approval-mode.active { border-color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, transparent); }
 .approval-mode-name { font-size: 13px; font-weight: 600; white-space: nowrap; }
 .approval-mode-desc { font-size: 11px; color: var(--text-muted); }
-.form-select {
-  width: 100%; padding: 8px 10px; border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-primary);
-  font-size: 13px; font-family: inherit; outline: none;
-}
-.form-select:focus { border-color: var(--accent-color); }
+.form-select { width: 100%; } /* 背景/边框/hover/focus 统一走全局 select 样式（main.css） */
 .form-textarea {
   padding: 10px 14px; border: 1.5px solid var(--border-color);
   border-radius: var(--radius-md); background: var(--bg-secondary);
@@ -833,16 +828,6 @@ function handleDelete() {
   outline: none; resize: vertical; transition: all .2s;
 }
 .form-textarea:focus {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
-}
-.form-select {
-  padding: 10px 14px; border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-secondary);
-  color: var(--text-primary); font-size: 13px; font-family: inherit;
-  outline: none; cursor: pointer; transition: all .2s;
-}
-.form-select:focus {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(99,102,241,.1);
 }

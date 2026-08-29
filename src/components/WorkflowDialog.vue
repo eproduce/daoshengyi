@@ -494,7 +494,7 @@ function loadTemplate(ev: Event) {
 .wf-palette__btn { text-align: left; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; }
 .wf-palette__btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .wf-palette__hint { font-size: 11px; color: var(--text-secondary, #888); line-height: 1.5; }
-.wf-palette__select { font-size: 12px; padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); max-width: 100%; }
+.wf-palette__select { font-size: 12px; padding: 5px 26px 5px 8px; border-radius: 6px; border: 1px solid var(--border-color); background-color: var(--bg-secondary); color: var(--text-primary); max-width: 100%; }
 .wf-canvas { flex: 1; min-width: 0; }
 .wf-inspector { width: 260px; padding: 10px; border-left: 1px solid var(--border, #eee); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .wf-inspector__empty { font-size: 12px; color: var(--text-secondary, #888); text-align: center; margin-top: 40px; line-height: 1.8; }

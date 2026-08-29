@@ -282,7 +282,7 @@ onMounted(load);
 .memory-panel { display: flex; flex-direction: column; gap: 12px; }
 .memory-desc { color: var(--text-secondary, #888); font-size: 12px; line-height: 1.6; margin: 0; }
 .memory-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.memory-filter { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; }
+.memory-filter { padding: 4px 28px 4px 8px; border-radius: 6px; border: 1px solid var(--border-color); background-color: var(--bg-secondary); color: var(--text-primary); font-size: 13px; }
 .memory-search { position: relative; display: inline-flex; align-items: center; }
 .memory-search__icon { position: absolute; left: 8px; color: #999; }
 .memory-search__input { padding: 4px 8px 4px 26px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; width: 160px; }

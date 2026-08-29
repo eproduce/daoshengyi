@@ -108,6 +108,39 @@ html, body {
 
 #app { height: 100%; }
 
+/* =========================== 统一下拉框 select =========================== */
+/* 全局去除浏览器默认 select 外观（默认箭头/内边距），统一为自定义箭头 + 主题变量，
+   覆盖设置面板及其子面板（MemoryPanel/AuditPanel/ImGatewayPanel/ScheduledTasks/
+   WorkflowDialog 等）的所有原生下拉框。组件如需紧凑尺寸，请用 background-color
+   而非 background 简写，以免覆盖背景箭头。 */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding: 8px 32px 8px 12px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm, 8px);
+  background-color: var(--bg-secondary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238888a0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s;
+}
+select:hover { border-color: var(--accent-color); }
+select:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, .12);
+}
+select:disabled { opacity: .6; cursor: not-allowed; }
+select option { background-color: var(--bg-elevated); color: var(--text-primary); }
+
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 10px; }

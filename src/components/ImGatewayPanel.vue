@@ -230,9 +230,14 @@ onUnmounted(() => {
 .im-form { display: flex; flex-direction: column; gap: 8px; background: var(--bg-soft, #f6f6f6); border-radius: 8px; padding: 10px; }
 .im-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .im-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary, #666); }
-.im-field input, .im-field select, .im-field textarea {
+.im-field input, .im-field textarea {
   padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd);
   background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; font-family: inherit;
+}
+/* select 单独处理：走主题变量 + background-color（不覆盖全局箭头），与设置面板统一 */
+.im-field select {
+  padding: 6px 28px 6px 8px; border-radius: 6px; border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary); color: var(--text-primary); font-size: 13px; font-family: inherit;
 }
 .im-actions { display: flex; gap: 8px; align-items: center; }
 .im-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }

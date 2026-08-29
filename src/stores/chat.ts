@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { MCP_CATALOG } from "@/data/mcp-catalog";
-import { useMcpStore } from "./mcp";
+import { useMcpStore, isBrowserServer } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
 import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, hasToolCallIntent, visibleText, type ToolCall } from "@/utils/tool-call";
@@ -216,7 +216,8 @@ function getMcpToolsPrompt(): string {
   const outputRule =
     "\n\n## 回答完整输出要求\n" +
     "无论你的思考（reasoning）过程多么详细，**最终答案必须完整、详细地呈现在回复正文中**：\n" +
-    "用结构化 Markdown（标题/列表/表格）给出完整的结论、分析与要点，不要只给一句简短结论，也不要把主要内容只写在思考里。\n";
+    "用结构化 Markdown（标题/列表/表格）给出完整的结论、分析与要点，不要只给一句简短结论，也不要把主要内容只写在思考里。\n" +
+    "**Markdown 表格规范**：表格单元格内**禁止出现字面竖线 `|`**（它是 Markdown 表格的列分隔符，会导致表格错位、内容被截断）。单元格内需要绝对值/集合/范数等竖线符号时：用 `$...$` 公式（如 `$|x|$`、`$|G|$`、`$\\{x \\mid x \\in G\\}$`，公式内的竖线会被正确渲染），或改用中文描述（如「x 的绝对值」「满足 … 的集合」），绝不要直接写 `|x|`。\n";
   // 工具调用唯一格式：模型误把历史消息里的 UI 卡片（### 🔧 调用工具 / <details>参数</details>）
   // 当成调用格式写在正文里，导致工具不执行、回复中断（日志：有闭合标记但解析失败/伪卡片）。
   const toolCallRule =
@@ -384,6 +385,29 @@ class BrowserNotNavigatedError extends Error {
   }
 }
 
+/// 解析工具调用的目标服务器：模型常省略 server 字段或写 "default"/"app"/"builtin"，
+/// 但 puppeteer_* 等 MCP/浏览器工具若被路由到 "app" 会误报「未知内置工具: xxx」。
+/// 容错规则（仅当 server 是 app/builtin/缺省时）:
+///   1. puppeteer_* 与 __connect__：优先用已连接工具缓存，其次找已启用的浏览器服务器
+///      （即使未连接也路由过去，由 callMcpTool 触发按需激活连接），避免误报未知内置工具；
+///   2. 其余工具：在已连接 MCP 工具缓存中按工具名匹配真实服务器；
+///   3. 匹配不到则保持默认（内置工具 → "app"）。
+function resolveToolServer(server: string | undefined, tool: string): string {
+  const s = server && server !== "default" ? server : "app";
+  if (s === "app" || s === "builtin") {
+    if (/^puppeteer_/i.test(tool) || tool === "__connect__") {
+      const fromCache = mcpToolsCache.find((t) => t.name === tool && t.server !== "app" && t.server !== "builtin");
+      if (fromCache) return fromCache.server;
+      const browserServer = useMcpStore().servers.find((srv) => srv.enabled && isBrowserServer(srv.name, srv.command));
+      if (browserServer) return browserServer.name;
+    } else {
+      const match = mcpToolsCache.find((t) => t.name === tool && t.server !== "app" && t.server !== "builtin");
+      if (match) return match.server;
+    }
+  }
+  return s;
+}
+
 export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
   // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
@@ -394,8 +418,12 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   if (!isToolAllowedByMode(mode, tool)) {
     return `⛔ 当前「${mode?.name || "速答"}」模式不允许调用工具「${tool}」。请直接作答，或切换到其他模式后再调用工具。`;
   }
-  // 内置工具（应用自带，无需 MCP 服务器）
+  // 内置工具（应用自带，无需 MCP 服务器）。容错：模型常把 MCP/浏览器工具（如 puppeteer_*）
+  // 误填 server 为 app/builtin 或缺省——若工具名能在已连接 MCP 工具缓存中找到，转发到其
+  // 真实服务器，避免误报「未知内置工具: xxx」。
   if (server === "app" || server === "builtin") {
+    const routed = resolveToolServer(server, tool);
+    if (routed !== server) return callMcpTool(routed, tool, args);
     return callBuiltinTool(tool, args);
   }
 
@@ -1314,7 +1342,7 @@ async function runSubagentLoop(
     const content = data.content || "";
     const tc = parseToolCall(content);
     if (tc && allowTools) {
-      const server = tc.server && tc.server !== "default" ? tc.server : "app";
+      const server = resolveToolServer(tc.server, tc.tool);
       msgs.push({
         role: "assistant",
         content: stripToolJson(content).trim() || `（调用工具 ${tc.tool}）`,
@@ -2535,8 +2563,9 @@ export const useChatStore = defineStore("chat", () => {
         if (stopRequested) break; // 执行工具前再检查，避免停止后仍调工具（含子代理）
         // 内置工具 server 兜底映射：模型常省略 server 字段或写 "default"，
         // parseToolCall 会兜底成 "default" → 不映射成 "app" 就会误走 MCP 路径
-        // 报「Tool xxx not found」。与子代理循环（runSubagentLoop）保持一致。
-        const toolServer = tc.server && tc.server !== "default" ? tc.server : "app";
+        // 报「Tool xxx not found」；反之，MCP/浏览器工具（puppeteer_*）若被写成
+        // app/builtin，则由 resolveToolServer 路由回真实服务器，避免误报「未知内置工具」。
+        const toolServer = resolveToolServer(tc.server, tc.tool);
         // 实时显示"正在调用工具"
         const serverName = toolServer !== "app" ? `（${toolServer}）` : "";
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
