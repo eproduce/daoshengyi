@@ -253,6 +253,16 @@ function getMcpToolsPrompt(): string {
     "\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地 Ollama + nomic-embed-text，重建式）。参数 {\"root\": \"项目目录绝对路径\"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。" +
     "\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {\"root\": \"项目目录绝对路径\", \"query\": \"自然语言描述要查的代码，如「处理用户登录」「解析配置文件」\", \"limit\": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。" +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
+    "\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {\"kb_name\": \"知识库名，如「个人」\"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。" +
+    "\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地 Ollama embedding 可用时叠加语义向量）。参数 {\"kb_name\": \"知识库名\", \"source\": \"来源/文档名（如 笔记.md）\", \"text\": \"要录入的完整文本内容\"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。" +
+    "\n- **kb_index** (app): 把本地目录/项目**索引成知识库**（重建式，支持 md/txt/代码/PDF，自动分块；同名知识库会重新索引）。参数 {\"kb_name\": \"知识库名\", \"path\": \"目录绝对路径\"}。**使用时机**：用户要求基于某目录/文档集做知识问答时，先 kb_index 建立索引。" +
+    "\n- **kb_search** (app): 在已索引的**知识库**中检索（关键词 + 中文分词；本地 Ollama embedding 可用时叠加语义向量）。参数 {\"kb_name\": \"知识库名\", \"query\": \"检索词\", \"limit\": 可选条数（默认 6）}。**使用时机**：问题涉及知识库内容时先检索再作答；检索不到可换关键词。" +
+    "\n- **kb_list** (app): 列出已建立的知识库及分块数。参数 {}。**使用时机**：不确定有哪些知识库时调用。" +
+    "\n\n## 知识库使用要点\n" +
+    "- 用户说「创建/新建知识库 XX」→ 先 kb_create 建库；需要录入内容时用 kb_add（一段文本/文档）或 kb_index（整个目录）。\n" +
+    "- 用户给了文件/文档路径要入库：先 read_file/list_dir 读取真实内容，再 kb_add 录入（source 填文件名），不要编造内容。\n" +
+    "- 问题需要知识库背景：先 kb_search 检索相关分块，基于真实命中内容作答，不要凭印象编造。\n" +
+    "- 知识库与长期记忆是两套体系：知识库存文档资料（按需检索），memory_save 存用户偏好/个人信息（自动注入）。\n" +
     "\n\n## 验证循环（编程任务强制要求）\n" +
     "- 你修改/生成代码后，**必须用 run_tests 运行测试验证**，不能假设改对了。\n" +
     "- 测试失败时：分析失败项/错误信息 → 修复代码 → **再次 run_tests**，如此循环直到测试通过（「通过才算完成」门禁）。\n" +
@@ -1160,10 +1170,25 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return `【知识库「${kbName}」检索「${query}」】命中 ${hits.length} 条：\n\n${out}`;
     }
     case "kb_list": {
-      // Phase 3 知识库 RAG：列出已建知识库
+      // Phase 3 知识库 RAG：列出已建知识库（含空库）
       const list = await invoke<{ name: string; chunks: number }[]>("kb_list");
-      if (!list.length) return "（尚未建立知识库，可用 kb_index 索引本地目录）";
+      if (!list.length) return "（尚未建立知识库，可用 kb_create 创建命名知识库或 kb_index 索引本地目录）";
       return "已建立知识库：\n" + list.map((k) => `- ${k.name}（${k.chunks} 分块）`).join("\n");
+    }
+    case "kb_create": {
+      // 创建命名知识库（空库注册，之后可 kb_add 录入 / kb_index 索引）
+      const kbName = String(args.kb_name || "").trim();
+      if (!kbName) throw new Error("kb_create 需要 kb_name 参数（知识库名）");
+      return await invoke<string>("kb_create", { kbName });
+    }
+    case "kb_add": {
+      // 向知识库录入一段文本/文档（自动分块 + FTS 索引 + 可选语义向量）
+      const kbName = String(args.kb_name || "").trim();
+      const source = String(args.source || "").trim();
+      const text = String(args.text || "").trim();
+      if (!kbName) throw new Error("kb_add 需要 kb_name 参数（知识库名）");
+      if (!text) throw new Error("kb_add 需要 text 参数（要录入的文本/文档内容）");
+      return await invoke<string>("kb_add", { kbName, source, text });
     }
     case "code_index": {
       // P-A3 项目语义索引：扫描项目代码文件并向量化（自然语言找代码的地基，重建式）

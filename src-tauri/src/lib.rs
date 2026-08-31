@@ -1230,6 +1230,7 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
         matches!(ext, "md" | "txt" | "markdown" | "json" | "py" | "ts" | "js" | "rs" | "vue" | "html" | "css" | "c" | "cpp" | "h" | "java" | "go" | "toml" | "yml" | "yaml" | "sh" | "csv" | "pdf")
     };
 
+    db.kb_create(&kb_name)?; // 注册知识库（让新库/空库在 kb_list 可见）
     db.kb_clear(&kb_name)?;
     let mut files = 0usize;
     let mut collected: Vec<(String, String, i64)> = Vec::new(); // (rel, chunk, chunk_idx)
@@ -1342,6 +1343,95 @@ async fn kb_search(db: State<'_, Database>, kb_name: String, query: String, limi
     // 尝试语义：Ollama 在跑且模型已装时给查询生成向量 → 混合检索；否则纯 FTS5
     let qvec = ollama_embed_impl(vec![query.clone()]).await.ok().and_then(|v| v.into_iter().next());
     db.kb_search_hybrid(&kb_name, &query, qvec.as_deref(), lim)
+}
+
+/// 创建命名知识库（空库注册；后续可用 kb_add 录入文档或 kb_index 索引目录）
+#[tauri::command]
+fn kb_create(db: State<Database>, kb_name: String) -> Result<String, String> {
+    let name = kb_name.trim().to_string();
+    if name.is_empty() {
+        return Err("kb_create 需要 kb_name 参数（知识库名）".into());
+    }
+    db.kb_create(&name)?;
+    Ok(format!(
+        "知识库「{}」已创建（当前 0 分块）。可用 kb_add 录入文本/文档，或 kb_index 索引本地目录。",
+        name
+    ))
+}
+
+/// 向知识库录入一段文本/文档（自动分块 + FTS 索引；本地 Ollama embedding 可用时叠加语义向量）
+#[tauri::command]
+async fn kb_add(db: State<'_, Database>, kb_name: String, source: String, text: String) -> Result<String, String> {
+    let name = kb_name.trim().to_string();
+    let src = if source.trim().is_empty() { "(手动录入)".to_string() } else { source.trim().to_string() };
+    let body = text.trim();
+    if name.is_empty() {
+        return Err("kb_add 需要 kb_name 参数（知识库名）".into());
+    }
+    if body.is_empty() {
+        return Err("kb_add 需要 text 参数（要录入的文本/文档内容）".into());
+    }
+    db.kb_create(&name)?; // 确保知识库存在
+    let chunks = chunk_text(body, 800);
+    if chunks.is_empty() {
+        return Err("kb_add：没有可录入的有效内容".into());
+    }
+    let mut added = 0usize;
+    let mut semantic = false;
+    if ollama_embed_impl(vec![chunks[0].clone()]).await.is_ok() {
+        semantic = true;
+    }
+    if semantic {
+        let mut batch: Vec<String> = Vec::new();
+        let mut meta: Vec<(String, usize)> = Vec::new(); // (source, chunk_idx)
+        for (i, c) in chunks.iter().enumerate() {
+            batch.push(c.clone());
+            meta.push((src.clone(), i));
+            if batch.len() >= 20 {
+                match ollama_embed_impl(batch.clone()).await {
+                    Ok(vecs) => {
+                        for ((s, idx), v) in meta.iter().zip(vecs.into_iter()) {
+                            db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
+                            added += 1;
+                        }
+                    }
+                    Err(_) => {
+                        for (s, idx) in &meta {
+                            db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, None)?;
+                            added += 1;
+                        }
+                    }
+                }
+                batch.clear();
+                meta.clear();
+            }
+        }
+        if !batch.is_empty() {
+            if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
+                for ((s, idx), v) in meta.iter().zip(vecs.into_iter()) {
+                    db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
+                    added += 1;
+                }
+            } else {
+                for (s, idx) in &meta {
+                    db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, None)?;
+                    added += 1;
+                }
+            }
+        }
+    } else {
+        for (i, c) in chunks.iter().enumerate() {
+            db.kb_add_chunk(&name, &src, c, i as i64, None)?;
+            added += 1;
+        }
+    }
+    Ok(format!(
+        "知识库「{}」已录入「{}」：{} 个分块（{}）",
+        name,
+        src,
+        added,
+        if semantic { "语义向量已启用 ✅" } else { "关键词索引" }
+    ))
 }
 
 /// 列出所有知识库及分块数
@@ -4452,6 +4542,8 @@ pub fn run() {
             run_tests,
             analyze_project,
             kb_index,
+            kb_create,
+            kb_add,
             kb_search,
             kb_list,
             kb_delete,

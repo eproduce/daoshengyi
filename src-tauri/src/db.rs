@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 CREATE INDEX IF NOT EXISTS idx_kb_name ON kb_chunks(kb_name);
 CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(chunk_terms, tokenize='unicode61');
 
+-- 知识库注册表（Phase 3）：让空库在 kb_list 可见、kb_create/kb_add 可创建命名知识库
+CREATE TABLE IF NOT EXISTS kb_meta (
+    name TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 -- 项目语义索引（P-A3 补全）：自然语言找代码（按 root 项目目录组织，向量余弦检索）
 CREATE TABLE IF NOT EXISTS code_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1064,6 +1071,19 @@ impl Database {
         Ok(())
     }
 
+    /// 注册一个命名知识库（空库可见；已存在则刷新 updated_at，幂等）
+    pub fn kb_create(&self, kb_name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO kb_meta(name, created_at, updated_at) VALUES (?1,?2,?3)
+             ON CONFLICT(name) DO UPDATE SET updated_at=?3",
+            params![kb_name, now, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// 检索知识库（FTS5 关键词，中文 unigram 分词）
     /// 混合检索：FTS5 关键词命中（最相关，bm25 序）在前，语义向量（query_vec 提供且分块
     /// 有 embedding 时）按余弦补充召回未命中的分块（追加在后）；去重、截断 limit。
@@ -1127,11 +1147,22 @@ impl Database {
         Ok(merged)
     }
 
-    /// 列出所有知识库及分块数
+    /// 列出所有知识库及分块数（含空库；旧库仅有分块无注册记录时自动回填注册，幂等迁移）
     pub fn kb_list(&self) -> Result<Vec<KbInfo>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let _ = conn.execute(
+            "INSERT INTO kb_meta(name, created_at, updated_at)
+             SELECT DISTINCT kb_name, ?1, ?1 FROM kb_chunks
+             WHERE kb_name NOT IN (SELECT name FROM kb_meta)",
+            params![now],
+        );
         let mut stmt = conn
-            .prepare("SELECT kb_name, COUNT(*) FROM kb_chunks GROUP BY kb_name ORDER BY kb_name")
+            .prepare(
+                "SELECT m.name,
+                        (SELECT COUNT(*) FROM kb_chunks c WHERE c.kb_name = m.name) AS chunks
+                 FROM kb_meta m ORDER BY m.name",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok(KbInfo { name: r.get(0)?, chunks: r.get(1)? }))
@@ -1143,9 +1174,13 @@ impl Database {
         Ok(out)
     }
 
-    /// 删除整个知识库
+    /// 删除整个知识库（分块 + 注册记录）
     pub fn kb_delete(&self, kb_name: &str) -> Result<(), String> {
-        self.kb_clear(kb_name)
+        self.kb_clear(kb_name)?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM kb_meta WHERE name=?1", params![kb_name])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
@@ -1783,10 +1818,36 @@ mod tests {
         let docs = list.iter().find(|k| k.name == "docs").unwrap();
         assert_eq!(docs.chunks, 2);
         assert_eq!(list.len(), 2);
-        // 清空后检索为空
+        // 清空后检索为空；知识库注册记录仍在（空库可见），notes 不受影响
         db.kb_clear("docs").unwrap();
         assert!(db.kb_search_hybrid("docs", "华为", None, 5).unwrap().is_empty(), "清空后检索为空");
-        assert_eq!(db.kb_list().unwrap().len(), 1);
+        let list = db.kb_list().unwrap();
+        assert_eq!(list.len(), 2, "清空后注册记录仍保留");
+        assert_eq!(list.iter().find(|k| k.name == "docs").unwrap().chunks, 0, "空库分块数为 0");
+        cleanup(&dir);
+    }
+
+    // Phase 3 知识库：kb_create 创建空库 → 列表可见 → kb_add 录入 → 检索 → kb_delete 移除
+    #[test]
+    fn kb_create_list_add_delete() {
+        let (dir, db) = tmp_db();
+        // 创建空库（kb_create 语义：无分块也应列出）
+        db.kb_create("个人").unwrap();
+        let list = db.kb_list().unwrap();
+        let kb = list.iter().find(|k| k.name == "个人").expect("空库应可见");
+        assert_eq!(kb.chunks, 0, "新建空库 0 分块");
+        // 同名幂等，不报错
+        db.kb_create("个人").unwrap();
+        // kb_add 录入（前端 kb_add 命令：先 kb_create 再逐分块 kb_add_chunk）
+        db.kb_add_chunk("个人", "笔记.md", "华为是一家通讯设备制造巨头", 0, None).unwrap();
+        db.kb_add_chunk("个人", "笔记.md", "我决定用道生一管理个人文档", 1, None).unwrap();
+        assert_eq!(db.kb_list().unwrap().iter().find(|k| k.name == "个人").unwrap().chunks, 2);
+        let hits = db.kb_search_hybrid("个人", "华为", None, 5).unwrap();
+        assert_eq!(hits.len(), 1, "录入后可检索");
+        // kb_delete 整库删除：分块与注册记录一并移除
+        db.kb_delete("个人").unwrap();
+        assert!(!db.kb_list().unwrap().iter().any(|k| k.name == "个人"), "删除后不再列出");
+        assert!(db.kb_search_hybrid("个人", "华为", None, 5).unwrap().is_empty());
         cleanup(&dir);
     }
 
