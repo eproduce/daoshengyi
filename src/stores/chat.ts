@@ -19,8 +19,9 @@ import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
-import { askConfirm } from "@/utils/dialog";
+import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
+import { discoverProjectInstructions } from "@/utils/agents-md";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
@@ -135,6 +136,8 @@ let stopWaiters: (() => void)[] = [];
 let activeStreamRequestId: string | null = null;
 /// 已做过知识库 RAG 自动注入的会话 id 集合（同一会话只注入一次，避免每轮重复灌入）
 const ragInjectedConvs = new Set<string>();
+// S2 项目指令发现：每个工作区目录只注入一次（避免每轮重复灌入项目指令）
+const projInjectedCwd = new Set<string>();
 function requestStop() {
   stopRequested = true;
   const ws = stopWaiters;
@@ -1979,8 +1982,20 @@ export const useChatStore = defineStore("chat", () => {
     const { command } = parseCommandLine(cmdStr); // 整条命令执行，args 不需拆
     if (!command) return;
 
-    // 危险命令审批：manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
-    if (isDangerous(cmdStr)) {
+    // S1 命令执行策略引擎：先查规则文件（deny 拦截 / allow 放行 / prompt 或未命中走现有三档审批）
+    let policy: { decision: string; matched: string | null } | null = null;
+    try {
+      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", { command: cmdStr });
+    } catch { /* 策略查询失败 → 按未命中处理（原有行为兜底） */ }
+    const policyDecision = policy?.decision ?? "none";
+    if (policyDecision === "deny") {
+      notify(`⛔ 命令被「命令执行策略」拦截：\n\n$ ${cmdStr}\n\n命中规则：\`${policy?.matched ?? "?"}\`\n\n可在 设置→权限→命令执行策略 中调整规则。`);
+      return;
+    }
+    // 危险命令审批：策略命中 allow 直接放行；prompt 或未命中但命中内置危险模式 → 走
+    // manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
+    const needsConfirm = policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+    if (needsConfirm) {
       const st = getSettings();
       const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
       if (mode === "manual") {
@@ -2321,6 +2336,21 @@ export const useChatStore = defineStore("chat", () => {
             new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
           ]);
           if (ragText) volatileCtx.push(ragText);
+        }
+      }
+      // S2 项目指令发现：会话内每个工作区目录只注入一次 AGENTS.md/道生一.md 内容（4 秒超时兜底）
+      const projCwd = getSettings().workspace;
+      if (projCwd && !projInjectedCwd.has(projCwd)) {
+        projInjectedCwd.add(projCwd);
+        const projInstr = await Promise.race([
+          discoverProjectInstructions(projCwd),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+        ]);
+        if (projInstr) {
+          volatileCtx.push(
+            `【项目指令】（来源 ${projInstr.path}，自动发现注入）\n${projInstr.content}\n` +
+            `[项目指令代表该项目的约定（编码规范/测试命令/目录说明），除非与用户当前明确指示冲突，否则应优先遵守。]`
+          );
         }
       }
       // 自动摘要旧消息——30 秒超时兜底，避免阻塞主对话

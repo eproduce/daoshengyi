@@ -6,6 +6,7 @@ import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings, updateSettings } from "@/api/appSettings";
+import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
 import HealthPanel from "./HealthPanel.vue";
@@ -37,6 +38,7 @@ onMounted(() => {
   // 打开时刷新一次状态（若后台仍在部署，进度/百分比已保存在 store 中自动恢复）
   ollamaStore.refreshStatus();
   refreshKb();
+  loadExecRules();
 });
 
 const editingId = ref<string>(chatStore.activeProfileId);
@@ -174,6 +176,35 @@ function savePermissions() {
 const fileEditConfirm = ref(getSettings().fileEditConfirm ?? false);
 function saveEditConfirm() {
   updateSettings({ fileEditConfirm: fileEditConfirm.value });
+}
+
+// S1 命令执行策略引擎：规则文件编辑（设置→权限 区块；规则持久化在 app_data/execpolicy.rules）
+const execRules = ref("");
+const execTestCmd = ref("");
+const execTestResult = ref("");
+async function loadExecRules() {
+  try { execRules.value = await invoke<string>("list_exec_rules"); } catch { /* 读取失败保持空 */ }
+}
+async function saveExecRules() {
+  try {
+    await invoke("save_exec_rules", { content: execRules.value });
+    notify("命令执行策略已保存");
+  } catch (e) { notify(`保存失败：${e}`); }
+}
+async function resetExecRules() {
+  try {
+    await invoke("reset_exec_rules");
+    await loadExecRules();
+    notify("已恢复默认命令执行策略");
+  } catch (e) { notify(`恢复失败：${e}`); }
+}
+async function testExecRule() {
+  if (!execTestCmd.value.trim()) { execTestResult.value = ""; return; }
+  try {
+    const r = await invoke<{ decision: string; matched: string | null }>("test_command_policy", { command: execTestCmd.value.trim() });
+    const label = r.decision === "allow" ? "✅ 放行" : r.decision === "deny" ? "⛔ 拦截" : r.decision === "prompt" ? "⚠️ 需确认" : "（未命中规则，走默认审批）";
+    execTestResult.value = `决策：${label}${r.matched ? `　命中规则：\`${r.matched}\`` : ""}`;
+  } catch (e) { execTestResult.value = `测试失败：${e}`; }
 }
 
 // 知识库 RAG 自动注入：开启后每次对话前自动检索默认知识库并注入相关分块（会话首轮）
@@ -635,6 +666,26 @@ function handleDelete() {
           ></textarea>
           <span class="form-hint">配置后 Agent 的 list_dir / 文件编辑 / git / 测试 / 项目分析等工具只能访问这些目录；留空 = 不限制。</span>
         </div>
+        <div class="form-group">
+          <label>命令执行策略（规则文件，持久化）</label>
+          <textarea
+            v-model="execRules"
+            rows="10"
+            spellcheck="false"
+            class="exec-rules-editor"
+            placeholder="allow | deny | prompt &lt;命令前缀&gt;&#10;如：allow git status&#10;    deny rm -rf"
+          ></textarea>
+          <div class="exec-rule-actions">
+            <input v-model="execTestCmd" placeholder="输入命令测试决策，如：git push --force origin main" @keyup.enter="testExecRule" />
+            <button class="btn-secondary" @click="testExecRule">测试</button>
+          </div>
+          <p v-if="execTestResult" class="form-hint">{{ execTestResult }}</p>
+          <div class="exec-rule-actions">
+            <button class="btn-primary" @click="saveExecRules">保存</button>
+            <button class="btn-secondary" @click="resetExecRules">恢复默认</button>
+          </div>
+          <span class="form-hint">语法：<code>allow | deny | prompt &lt;命令前缀&gt;</code>（按 token 前缀匹配，文件顺序优先、首条命中生效）。deny 直接拦截；allow 直接放行（即使命中内置危险模式）；prompt 必须确认。示例：<code>allow git status</code> 不再确认、<code>deny rm -rf</code> 直接拦截。未命中规则时按默认三档审批（manual/smart/yolo）。</span>
+        </div>
       </div>
 
       <!-- 主动推送（飞书 / 企业微信群机器人） -->
@@ -852,6 +903,31 @@ function handleDelete() {
   padding: 10px 14px; font-size: 12px; white-space: nowrap; flex-shrink: 0;
 }
 .form-hint--error { color: #f87171; }
+
+.exec-rules-editor {
+  width: 100%; box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  padding: 10px 12px; outline: none; resize: vertical; transition: all .2s;
+}
+.exec-rules-editor:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+}
+.exec-rule-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.exec-rule-actions input {
+  flex: 1; padding: 8px 10px; font-size: 12px; min-width: 0;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md); outline: none;
+}
+.exec-rule-actions input:focus { border-color: var(--accent-color); }
+.exec-rule-actions .btn-primary, .exec-rule-actions .btn-secondary { padding: 8px 16px; }
+.form-group code {
+  background: var(--bg-secondary); padding: 1px 5px; border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+}
 
 .toggle-row {
   display: flex; align-items: center; justify-content: space-between;

@@ -8,7 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node scripts/test-tokens.mts && node scripts/test-templates-tools.mts && node scripts/test-markdown-math.mts"
+    "test": "node scripts/test-tokens.mts && node scripts/test-templates-tools.mts && node scripts/test-markdown-math.mts && node scripts/test-agents-md.mts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.0",

@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-30**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存、**可视化工作流拖拽新增修复（WKWebView mouse 事件实现 + 节点影像/画布高亮 + 共享色板统一图例与节点颜色）**；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地）
+> **最后更新：2026-08-31**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存、**可视化工作流拖拽新增修复（WKWebView mouse 事件实现 + 节点影像/画布高亮 + 共享色板统一图例与节点颜色）**；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地；**08-31 新增 §3.12 Codex 能力整合计划**——深度研究 `openai/codex` 开源代码，产出 `docs/CODEX_CAPABILITY_ANALYSIS.md`（能力全景 + 差距矩阵 + 11 项技能归纳定义卡 + 落地路线）；**第一批落地：S1 命令执行策略引擎（execpolicy 规则文件替代正则黑名单）、S2 项目指令发现（AGENTS.md/道生一.md 自动注入）**）
 
 ---
 
@@ -261,6 +261,47 @@
 - **Phase B**：研究模式（检索优先）、编码模式深化（语义索引 + 自动测试循环）、模式记忆（记住用户
   常用模式）、模式图标高亮与快捷切换。
 - **Phase C（远期）**：自定义模式（用户可写自己的 mode）/ 模式市场 / 云端同步。
+
+---
+
+## 3.12 Codex 能力整合计划（2026-08-31 新增）
+
+> **背景**：对 `openai/codex` 开源代码（`codex-rs/` 工作区）做深度研究，产出 `docs/CODEX_CAPABILITY_ANALYSIS.md`。
+> 核心结论：道生一在**记忆 / 多 agent / 可视化工作流 / IM 网关**上已反超 Codex；真正缺口收敛为 7 项核心技能 + 4 项可选。
+> **原则**：只吸收机制（策略引擎 / 项目指令 / 渐进披露 / 协议外化），不复刻终端交互；按现有「内置工具 / 技能 / 模式 / 角色」四层体系归位；不引重型依赖（规则引擎自研轻量解析）。
+
+### 3.12.1 技能清单
+
+| # | 技能 | 差距本质 | 价值 | 优先级 |
+|---|------|---------|------|--------|
+| S1 | 命令执行策略引擎 | 审批从「正则黑名单」→「规则文件引擎（allow/deny/prompt + 持久化）」 | 高 | 🟢 |
+| S2 | 项目指令发现 | 从「全局技能」→「自动发现项目内 AGENTS.md/道生一.md」 | 高 | 🟢 |
+| S3 | 技能包结构化 | 从「单 prompt」→「SKILL.md + references 渐进式披露」 | 高 | 🟡 |
+| S4 | 会话深度操作 | fork / resume / queue（异步投递） | 中 | 🟡 |
+| S5 | 引擎协议外化 | mcp_server → app-server 式 thread/turn/approval 协议 | 中 | 🟡 |
+| S6 | 非交互执行 | 对外 `exec --jsonl` 入口（脚本/CI 可调） | 中 | 🟡 |
+| S7 | 交互式 PTY | 支持 dev server / REPL 等长驻交互进程 | 中 | 🟡 |
+| S8~S11 | 网络域名策略 / 自动代码审查 / 轨迹回放 / doctor 诊断 | 可选强化 | 中 | 🔵 |
+
+### 3.12.2 第一批落地（🟢，本日）
+
+**S1 命令执行策略引擎**（复用 `execute_command` / `DANGEROUS_PATTERNS` / `tool_audit`）：
+1. Rust 新建 `src-tauri/src/execpolicy.rs`：规则文件 `app_data/execpolicy.rules`（纯文本，每行一条规则）；
+   规则语法（自研轻量解析）：`allow <命令前缀>` / `deny <命令前缀>` / `prompt <命令前缀>` / `network allow|deny <域名>`（S8 预留）；
+   `parse_rule` / `evaluate_command` 纯函数（allow/deny/prompt 决策 + 前缀匹配 + 命中规则信息）+ 单测；内置默认 deny 规则（迁移现有 DANGEROUS_PATTERNS）。
+2. 命令：`check_command_policy(cmd)`（执行前决策）、`append_command_rule(rule)`（审批后持久化）、`list_exec_rules()` / `save_exec_rules()`（设置页编辑）。
+3. 前端 `runCommand`：执行前先查策略——deny 直接拦截、allow 放行（含危险模式）、prompt/未命中 走现有三档审批；`tool_audit` 记录命中规则。
+4. 设置新增「命令策略」Tab：查看/编辑规则文件 + 测试某条命令的决策 + 保存/重置。
+
+**S2 项目指令发现**（复用 volatileCtx 注入通道 / workspace 设置）：
+1. 前端 `src/utils/agents-md.ts`：`discoverProjectInstructions(cwd)` 纯函数——从 cwd 向上递归找 `AGENTS.md` 或 `道生一.md`（前者优先），读内容 + 大小剪裁（≤8KB），返回 `{ path, content }`；
+2. chat.ts `sendMessage`：会话首轮（`projInjectedCwd` 集合去重）发现并注入 volatileCtx「【项目指令】…」，提示模型优先遵守项目约定；
+3. 设置「命令策略」Tab 或独立说明：展示当前 workspace 命中的项目指令。
+
+### 3.12.3 后续批次
+- **第二批（🟡）**：S4 会话深度操作（fork/resume/queue）、S6 非交互执行（exec 子命令）、S7 交互式 PTY（portable-pty + 终端面板）。
+- **第三批（🟡~🔵）**：S3 技能包结构化（技能系统整体升级渐进式披露）、S5 引擎协议外化（app-server 化 MCP 协议）；S8~S11 按需。
+- 每项实现后回填本节的「✅ 已完成」标注并同步 `docs/CODEX_CAPABILITY_ANALYSIS.md`。
 
 ---
 

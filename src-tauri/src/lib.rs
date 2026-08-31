@@ -6,6 +6,12 @@ mod mcp;
 mod mcp_server;
 mod settings;
 mod im;
+mod execpolicy;
+
+use execpolicy::{
+    append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
+    test_command_policy,
+};
 
 use tauri::{Emitter, Manager, State};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -4244,6 +4250,12 @@ pub fn run() {
             set_prevent_sleep,
             debug_log,
             execute_command,
+            check_command_policy,
+            test_command_policy,
+            list_exec_rules,
+            save_exec_rules,
+            reset_exec_rules,
+            append_command_rule,
             git_operation,
             run_tests,
             analyze_project,
