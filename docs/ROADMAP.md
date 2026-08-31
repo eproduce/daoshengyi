@@ -92,7 +92,7 @@
 | S3 | 技能包结构化（SKILL.md + references 渐进式披露） | 🟡 待做 |
 | S4 | 会话深度操作（fork ✅ / resume、queue 待做） | 🟡 部分（fork 已落地） |
 | S5 | 引擎协议外化（app-server 化 MCP：thread/turn/approval） | 🟡 待做 |
-| S6 | 非交互执行（exec --jsonl） | 🟡 待做 |
+| S6 | 非交互执行（exec --json） | 🟡 ✅ 已落地（2026-08-31） |
 | S7 | 交互式 PTY（portable-pty） | 🟡 待做 |
 | S8~S11 | 网络域名策略 / 自动代码审查 / 轨迹回放 / doctor 诊断 | 🔵 可选 |
 

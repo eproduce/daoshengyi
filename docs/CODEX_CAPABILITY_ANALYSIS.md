@@ -229,6 +229,8 @@ Codex CLI 是 `codex-rs/` Rust 工作区，围绕一个核心引擎构建了多�
 
 ### S6 🟡 非交互执行（exec 技能）
 
+> **进度：✅ 已完成（2026-08-31）**——`daoshengyi --exec "<prompt>" [--json]` 子命令（main.rs 分发 + lib.rs `run_exec`：读活跃配置 → chat_once → stdout；--json 输出 turn_start/turn_complete/error JSONL 事件）；提取 `load_active_api_config` 供 IM 与 exec 复用。
+
 - **目标**：提供 `daoshengyi exec "prompt" [--jsonl]` 类对外非交互入口，供脚本/自动化复用引擎能力。
 - **触发**：脚本/CI/自动化调用道生一；用户想「不打开窗口跑一个任务」。
 - **依赖**：chatOnce、runSubagentLoop。

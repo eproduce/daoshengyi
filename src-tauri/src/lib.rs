@@ -1397,6 +1397,34 @@ fn workflow_runs(db: State<Database>, limit: Option<i64>) -> Result<Vec<db::Work
 static IM_GATEWAY_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
     std::sync::OnceLock::new();
 
+/// 读取当前活跃模型配置（供 IM 回复 / exec 非交互执行等复用）。
+/// 读数据库设置 → AES 解密 → 取 active profile（无则取第一个）。
+fn load_active_api_config(app_dir: &std::path::Path) -> Result<api::ApiConfig, String> {
+    let db = db::Database::new(app_dir.to_path_buf()).map_err(|e| e.to_string())?;
+    let cipher = settings::SecretCipher::new(app_dir)?;
+    let json = db.get_setting(SETTINGS_KEY)?.ok_or("未找到设置")?;
+    let mut st: settings::AppSettings =
+        serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
+    cipher.decrypt_settings(&mut st)?;
+    let profile = st
+        .profiles
+        .iter()
+        .find(|p| p.id == st.active_profile_id)
+        .or_else(|| st.profiles.first())
+        .ok_or("未配置模型（请先在设置中配置 API）")?;
+    Ok(api::ApiConfig {
+        base_url: profile.base_url.clone(),
+        api_key: profile.api_key.clone(),
+        model: profile.model.clone(),
+        max_tokens: profile.max_tokens,
+        temperature: profile.temperature,
+        thinking_enabled: profile.thinking_enabled,
+        reasoning_effort: profile.reasoning_effort.clone(),
+        system_prompt: String::new(),
+        enable_web_search: false,
+    })
+}
+
 /// IM 回复生成器：读当前活跃模型配置，调 chat_once 生成回复
 struct LlmReplyGen {
     app_dir: std::path::PathBuf,
@@ -1405,29 +1433,7 @@ struct LlmReplyGen {
 #[async_trait::async_trait]
 impl im::ReplyGenerator for LlmReplyGen {
     async fn reply(&self, history: Vec<(String, String)>, _user_text: &str) -> Result<String, String> {
-        let db = db::Database::new(self.app_dir.clone()).map_err(|e| e.to_string())?;
-        let cipher = settings::SecretCipher::new(&self.app_dir)?;
-        let json = db.get_setting(SETTINGS_KEY)?.ok_or("未找到设置")?;
-        let mut st: settings::AppSettings =
-            serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
-        cipher.decrypt_settings(&mut st)?;
-        let profile = st
-            .profiles
-            .iter()
-            .find(|p| p.id == st.active_profile_id)
-            .or_else(|| st.profiles.first())
-            .ok_or("未配置模型（请先在设置中配置 API）")?;
-        let config = api::ApiConfig {
-            base_url: profile.base_url.clone(),
-            api_key: profile.api_key.clone(),
-            model: profile.model.clone(),
-            max_tokens: profile.max_tokens,
-            temperature: profile.temperature,
-            thinking_enabled: profile.thinking_enabled,
-            reasoning_effort: profile.reasoning_effort.clone(),
-            system_prompt: String::new(),
-            enable_web_search: false,
-        };
+        let config = load_active_api_config(&self.app_dir)?;
         let sys = "你是「道生一」AI 助手，正在通过 IM（钉钉/飞书/企业微信）回答用户。\
 回答简洁、友好、直接给出结论；需要长内容时给要点；不要输出复杂排版。";
         let mut msgs = vec![api::ChatMessage {
@@ -1446,6 +1452,77 @@ impl im::ReplyGenerator for LlmReplyGen {
             Ok(content)
         }
     }
+}
+
+/// 非 GUI 模式的应用数据目录（与 tauri.conf.json identifier 一致，mcp_server 用同一路径）
+fn exec_app_data_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    return PathBuf::from(home).join("Library/Application Support/com.daoshengyi.app");
+    #[cfg(target_os = "windows")]
+    return PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("com.daoshengyi.app");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return PathBuf::from(home).join(".local/share/com.daoshengyi.app");
+}
+
+/// S6 非交互执行：`daoshengyi --exec "<prompt>" [--json]`（Codex 能力整合）
+/// 读活跃模型配置 → chat_once 生成最终答案 → stdout（默认纯文本；--json 输出 JSONL 事件）。
+pub fn run_exec(args: Vec<String>) -> i32 {
+    let rt = tokio::runtime::Runtime::new().expect("无法创建 tokio runtime");
+    let app_dir = exec_app_data_dir();
+    let prompt = args
+        .iter()
+        .position(|a| a == "--exec")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
+    let json_mode = args.iter().any(|a| a == "--json");
+    rt.block_on(async move {
+        if prompt.trim().is_empty() {
+            eprintln!("用法: daoshengyi --exec \"<提示词>\" [--json]");
+            return 1;
+        }
+        let config = match load_active_api_config(&app_dir) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("错误: {}", e);
+                return 1;
+            }
+        };
+        let sys = "你是「道生一」AI 助手（非交互执行模式）。直接、完整地回答用户的请求；可以给出结论、代码、要点，不要输出寒暄。";
+        let msgs = vec![
+            api::ChatMessage { role: "system".into(), content: serde_json::Value::String(sys.into()) },
+            api::ChatMessage { role: "user".into(), content: serde_json::Value::String(prompt.clone()) },
+        ];
+        if json_mode {
+            println!("{}", serde_json::json!({ "type": "turn_start", "prompt": prompt }));
+        }
+        match api::chat_once(config, msgs).await {
+            Ok(r) => {
+                let content = r.content.trim();
+                if json_mode {
+                    println!("{}", serde_json::json!({
+                        "type": "turn_complete",
+                        "content": content,
+                        "reasoning": r.reasoning_content,
+                        "cache_hit": r.cache_hit,
+                        "cache_miss": r.cache_miss,
+                    }));
+                } else {
+                    println!("{}", content);
+                }
+                0
+            }
+            Err(e) => {
+                if json_mode {
+                    println!("{}", serde_json::json!({ "type": "error", "error": e }));
+                } else {
+                    eprintln!("错误: {}", e);
+                }
+                1
+            }
+        }
+    })
 }
 
 /// 启动 IM 网关：读设置 im_config → 构建平台适配器 → 后台常驻轮询/长连接

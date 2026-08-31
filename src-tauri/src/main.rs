@@ -4,5 +4,9 @@ fn main() {
     if args.iter().any(|a| a == "--mcp-server") {
         std::process::exit(daoshengyi_lib::run_mcp_server());
     }
+    // S6 非交互执行：`daoshengyi --exec "<提示词>" [--json]`（供脚本/CI 复用引擎能力）
+    if args.iter().any(|a| a == "--exec") {
+        std::process::exit(daoshengyi_lib::run_exec(args));
+    }
     daoshengyi_lib::run()
 }
