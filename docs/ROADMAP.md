@@ -90,7 +90,7 @@
 | S1 | 命令执行策略引擎（execpolicy 规则文件替代正则黑名单） | 🟢 本日落地 |
 | S2 | 项目指令发现（AGENTS.md/道生一.md 自动注入） | 🟢 本日落地 |
 | S3 | 技能包结构化（SKILL.md + references 渐进式披露） | 🟡 待做 |
-| S4 | 会话深度操作（fork ✅ / resume、queue 待做） | 🟡 部分（fork 已落地） |
+| S4 | 会话深度操作（fork + queue 异步投递） | 🟡 ✅ 已完成（2026-08-31） |
 | S5 | 引擎协议外化（app-server 化 MCP：thread/turn/approval） | 🟡 待做 |
 | S6 | 非交互执行（exec --json） | 🟡 ✅ 已落地（2026-08-31） |
 | S7 | 交互式 PTY（portable-pty） | 🟡 ✅ 已落地（2026-08-31） |

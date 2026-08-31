@@ -1,11 +1,29 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
-import { Archive, Plus, GitBranch } from "lucide-vue-next";
+import { Archive, Plus, GitBranch, Send } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 // 是否显示归档视图（归档会话：恢复 / 导出 / 彻底删除）
 const showArchived = ref(false);
+// S4 queue：投递给历史会话的后台任务（内联输入行）
+const queueTarget = ref<string | null>(null);
+const queueText = ref("");
+function toggleQueue(convId: string) {
+  queueTarget.value = queueTarget.value === convId ? null : convId;
+  queueText.value = "";
+}
+async function submitQueue(convId: string) {
+  const t = queueText.value.trim();
+  if (!t) return;
+  const ok = await chatStore.queueTurn(convId, t);
+  queueText.value = "";
+  queueTarget.value = null;
+  if (ok) {
+    // 后台执行可能数秒完成，先刷新一次列表排序；完成事件到达后再刷新消息
+    setTimeout(() => chatStore.refreshConversation(convId), 1200);
+  }
+}
 </script>
 
 <template>
@@ -36,10 +54,15 @@ const showArchived = ref(false);
             </div>
           </div>
           <div class="history-item__btns">
+            <button class="history-item__btn" title="投递任务（后台执行）" @click.stop="toggleQueue(conv.id)"><Send :size="14" /></button>
             <button class="history-item__btn" title="分支（复制为新对话）" @click.stop="chatStore.forkConversation(conv.id)"><GitBranch :size="14" /></button>
             <button class="history-item__btn" title="导出为 Markdown" @click.stop="chatStore.downloadExport(conv.id, 'md')">⤓</button>
             <button class="history-item__btn" title="归档（隐藏，可恢复）" @click.stop="chatStore.archiveConversation(conv.id)"><Archive :size="14" /></button>
             <button class="history-item__delete" title="删除对话" @click.stop="chatStore.deleteConversation(conv.id)">✕</button>
+          </div>
+          <div v-if="queueTarget === conv.id" class="history-item__queue" @click.stop>
+            <input v-model="queueText" class="history-item__queue-input" placeholder="投递给此会话的任务内容…" @keyup.enter="submitQueue(conv.id)" />
+            <button class="history-item__queue-btn" @click="submitQueue(conv.id)">投递</button>
           </div>
         </div>
         <div v-if="chatStore.visibleConversations.length === 0" class="history-panel__empty">
@@ -81,6 +104,19 @@ const showArchived = ref(false);
   display: flex; flex-direction: column; height: 100%;
   background: var(--bg-sidebar);
 }
+
+.history-item__queue { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border-color); }
+.history-item__queue-input {
+  flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md); outline: none;
+}
+.history-item__queue-input:focus { border-color: var(--accent-color); }
+.history-item__queue-btn {
+  padding: 6px 12px; border: none; border-radius: var(--radius-md);
+  background: var(--accent-color); color: #fff; font-size: 12px; cursor: pointer;
+}
+.history-item__queue-btn:hover { background: var(--accent-hover); }
 
 .history-panel__header {
   display: flex; align-items: center; justify-content: space-between;

@@ -300,7 +300,11 @@
 
 ### 3.12.3 后续批次
 - **第二批（🟡）**：
-  - **S4 会话深度操作 — fork ✅ 已完成（2026-08-31）**：db.rs `fork_conversation`（全量复制 / 指定消息截断分支，新消息 id `{new_id}-{idx}` 防唯一冲突）+ `fork_conversation_cmd` + store `forkConversation` + ChatHistory 会话「分支」按钮 + ChatMessage 用户消息「从此分支」按钮；Rust 测试 +1（68 全绿）。resume（历史续聊一键入口）、queue（向历史会话异步投递，复用 IM 网关回复模型）待做。
+  - **S4 会话深度操作 ✅ 全部完成（2026-08-31）**：
+    - **fork**：db.rs `fork_conversation`（全量复制 / 指定消息截断分支，新消息 id `{new_id}-{idx}` 防唯一冲突）+ `fork_conversation_cmd` + store `forkConversation` + ChatHistory 会话「分支」按钮 + ChatMessage 用户消息「从此分支」按钮。
+    - **queue（异步投递）**：db.rs `append_message`（追加消息不清空、刷新 updated_at）+ `queue_turn` 命令（后台 `chat_once` 生成回复 → 追加 user/assistant 消息 → 事件 `queue-turn-done`/`queue-turn-error` 通知前端）+ store `queueTurn`/`refreshConversation` + ChatHistory 会话「投递」按钮 + 内联输入行。**坑**：后台任务不能持有 `State<Database>` 引用（生命周期逃逸 E0521），需独立 `Database::new(app_dir)`。
+    - resume：历史会话续聊由「点击会话 → selectConversation」直接覆盖，无需单独入口。
+    - Rust 测试 +2（fork / append_message）→ cargo 72 全绿。
   - **S6 非交互执行（exec）✅ 已完成（2026-08-31）**：`daoshengyi --exec "<prompt>" [--json]` 子命令——main.rs 分发 → lib.rs `run_exec`（读活跃模型配置 → `chat_once` → stdout；`--json` 输出 JSONL 事件 turn_start / turn_complete / error）；提取 `load_active_api_config` 公共函数（IM 回复与 exec 复用，消除 LlmReplyGen 重复）。实测 JSON / 纯文本双模式正常（模型真实回复）。
   - **S7 交互式 PTY（portable-pty + 终端面板）✅ 已完成（2026-08-31）**：新增 `src-tauri/src/pty.rs`——基于 `portable-pty`（新增依赖），命令 `pty_spawn`（`sh -c` 整条命令 + 可选 cwd）/ `pty_write` / `pty_poll`（按 offset 增量轮询）/ `pty_kill` / `pty_list`；后台线程持续读输出到缓冲。前端 `src/stores/pty.ts` + `src/components/PtyPanel.vue`（设置「终端」Tab：启动表单 / 多会话 tab / 终端输出区自动滚动 / 输入发送自动补 \n / 终止）。Rust 测试 +3（echo 捕获、输入回显、kill 移除）。
 - **第三批（🟡~🔵）**：S3 技能包结构化（技能系统整体升级渐进式披露）、S5 引擎协议外化（app-server 化 MCP 协议）；S8~S11 按需。

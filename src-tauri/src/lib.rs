@@ -3350,6 +3350,87 @@ fn fork_conversation_cmd(
     Ok(serde_json::json!({ "id": new_id, "title": new_title }))
 }
 
+/// S4 queue：向历史会话异步投递一条任务消息，后台用当前模型生成回复并追加到该会话。
+/// 完成/失败通过事件 `queue-turn-done` / `queue-turn-error` 通知前端刷新。
+#[tauri::command]
+async fn queue_turn(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    conversation_id: String,
+    text: String,
+) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("投递内容为空".into());
+    }
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_active_api_config(&app_dir)?;
+    let history = db.get_messages(&conversation_id)?;
+    let sys = "你是「道生一」AI 助手。用户向该历史会话投递了一条新任务，请结合会话上下文直接完成，回复简洁完整。";
+    let mut api_msgs = vec![api::ChatMessage {
+        role: "system".into(),
+        content: serde_json::Value::String(sys.into()),
+    }];
+    for m in history.iter().take(30) {
+        if m.role == "user" || m.role == "assistant" {
+            api_msgs.push(api::ChatMessage {
+                role: m.role.clone(),
+                content: serde_json::Value::String(m.content.clone()),
+            });
+        }
+    }
+    api_msgs.push(api::ChatMessage {
+        role: "user".into(),
+        content: serde_json::Value::String(text.clone()),
+    });
+    // 后台任务独立新建 Database（State 引用不能逃逸到 'static 任务）
+    let task_db = db::Database::new(app_dir.clone()).map_err(|e| e.to_string())?;
+    let cid = conversation_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let now = chrono::Utc::now().timestamp_millis();
+        let user_msg = db::MsgRow {
+            id: format!("q{}-u", now),
+            conversation_id: cid.clone(),
+            role: "user".into(),
+            content: text.clone(),
+            reasoning_content: None,
+            images: None,
+            attachments: None,
+            timestamp: now,
+            tokens: None,
+            duration: None,
+            cost: None,
+        };
+        match api::chat_once(config, api_msgs).await {
+            Ok(r) => {
+                let _ = task_db.append_message(&user_msg);
+                let _ = task_db.append_message(&db::MsgRow {
+                    id: format!("q{}-a", now + 1),
+                    conversation_id: cid.clone(),
+                    role: "assistant".into(),
+                    content: r.content,
+                    reasoning_content: Some(r.reasoning_content),
+                    images: None,
+                    attachments: None,
+                    timestamp: now + 1,
+                    tokens: None,
+                    duration: None,
+                    cost: Some(0.0),
+                });
+                let _ = app.emit("queue-turn-done", serde_json::json!({ "conversationId": cid }));
+            }
+            Err(e) => {
+                // 失败也把投递内容记录进会话，避免丢失
+                let _ = task_db.append_message(&user_msg);
+                let _ = app.emit(
+                    "queue-turn-error",
+                    serde_json::json!({ "conversationId": cid, "error": e }),
+                );
+            }
+        }
+    });
+    Ok("已投递到该会话，后台执行中".into())
+}
+
 #[tauri::command]
 fn search_conversations_cmd(db: State<Database>, query: String) -> Result<Vec<db::SearchResult>, String> {
     db.search(&query)
@@ -4301,6 +4382,7 @@ pub fn run() {
             save_conversation,
             delete_conversation_cmd,
             fork_conversation_cmd,
+            queue_turn,
             search_conversations_cmd,
             export_conversation_cmd,
             accumulate_usage,

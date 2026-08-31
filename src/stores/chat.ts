@@ -1817,6 +1817,36 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // S4 queue：向历史会话投递任务，后台执行完成后自动刷新该会话
+  async function queueTurn(convId: string, text: string) {
+    try {
+      const msg = await invoke<string>("queue_turn", { conversationId: convId, text });
+      notify(msg, "info");
+      return true;
+    } catch (e) {
+      notify(`投递失败：${e}`);
+      return false;
+    }
+  }
+
+  // 重新从后端加载某会话的全部消息（queue 后台回复落地后刷新用）
+  async function refreshConversation(convId: string) {
+    try {
+      const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: convId });
+      const conv = conversations.value.find((c) => c.id === convId);
+      if (conv) {
+        conv.messages = msgs.map((m) => ({
+          id: m.id, role: m.role as MessageRole, content: m.content,
+          reasoning_content: m.reasoning_content,
+          images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
+          attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
+          timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
+        }));
+        conv.updatedAt = Date.now();
+      }
+    } catch { /* 忽略 */ }
+  }
+
   function selectConversation(id: string) {
     if (conversations.value.some((c) => c.id === id)) {
       activeConversationId.value = id;
@@ -2868,6 +2898,18 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) { console.warn("[道生一] 导出失败:", e); }
   }
 
+  // S4 queue：后台投递完成/失败事件 → 刷新对应会话（后台回复落地后即时可见）
+  if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    listen<any>("queue-turn-done", (e) => {
+      const cid = e.payload?.conversationId;
+      if (cid) refreshConversation(cid);
+    });
+    listen<any>("queue-turn-error", (e) => {
+      const cid = e.payload?.conversationId;
+      if (cid) refreshConversation(cid);
+    });
+  }
+
   return {
     conversations,
     activeConversationId,
@@ -2899,6 +2941,8 @@ export const useChatStore = defineStore("chat", () => {
     createConversation,
     deleteConversation,
     forkConversation,
+    queueTurn,
+    refreshConversation,
     selectConversation,
     archiveConversation,
     unarchiveConversation,

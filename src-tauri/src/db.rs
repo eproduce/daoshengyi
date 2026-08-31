@@ -359,6 +359,22 @@ impl Database {
         Ok(())
     }
 
+    /// 追加一条消息到会话末尾（S4 queue 异步投递用；不清空原消息），并刷新会话 updated_at
+    pub fn append_message(&self, m: &MsgRow) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE conversations SET updated_at=?1 WHERE id=?2",
+            params![m.timestamp, m.conversation_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn delete_conversation(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM conversations WHERE id=?1", params![id])
@@ -1720,6 +1736,23 @@ mod tests {
         // 无效消息 id / 无效源会话 报错
         assert!(db.fork_conversation("c1", Some("nope"), "c4", "x").is_err());
         assert!(db.fork_conversation("nope", None, "c5", "x").is_err());
+        cleanup(&dir);
+    }
+
+    // S4 queue：追加消息保留原消息、刷新会话 updated_at
+    #[test]
+    fn append_message_keeps_existing_and_updates_time() {
+        let (dir, db) = tmp_db();
+        let conv = ConvRow { id: "c1".into(), title: "t".into(), model: "m".into(), created_at: 1, updated_at: 1 };
+        let msgs = vec![MsgRow { id: "m1".into(), conversation_id: "c1".into(), role: "user".into(), content: "hi".into(), reasoning_content: None, images: None, attachments: None, timestamp: 1, tokens: None, duration: None, cost: None }];
+        db.save_conversation(&conv, &msgs).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        db.append_message(&MsgRow { id: "a1".into(), conversation_id: "c1".into(), role: "assistant".into(), content: "yo".into(), reasoning_content: None, images: None, attachments: None, timestamp: now, tokens: Some(5), duration: None, cost: None }).unwrap();
+        let all = db.get_messages("c1").unwrap();
+        assert_eq!(all.len(), 2, "追加后保留原消息");
+        assert_eq!(all[1].content, "yo");
+        let list = db.list_conversations().unwrap();
+        assert!(list[0].updated_at >= now, "会话 updated_at 被刷新");
         cleanup(&dir);
     }
 
