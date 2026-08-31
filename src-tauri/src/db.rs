@@ -1,3 +1,11 @@
+//! SQLite 持久化层：统一管理所有本地数据。
+//!
+//! 数据表：conversations / messages（会话与消息）、memory_facts + FTS5 / memory_summaries /
+//! memory_episodic（长期记忆分层）、kb_chunks + FTS5（知识库 RAG）、code_chunks（代码语义索引）、
+//! usage_agg / usage_agg_daily（用量累计）、tool_audit（审计）、undo_history（撤销）、
+//! scheduled_tasks（定时任务）、workflows / workflow_runs（可视化工作流）、app_settings（配置）。
+//! 内置 FTS5 中文 unigram 分词、向量余弦检索、事实去重合并与衰减遗忘、会话分支/投递等能力。
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

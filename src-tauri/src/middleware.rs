@@ -1,3 +1,5 @@
+//! 系统消息注入：为发给模型的 messages 前置注入应用身份、当前日期等系统信息。
+
 use crate::api::ChatMessage;
 
 const APP_NAME: &str = "道生一";

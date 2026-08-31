@@ -20,47 +20,82 @@
 - **流式输出** — Rust SSE 流式渲染，分块不丢字，逐字显示
 - **深度思考展示** — 展开/折叠模型的推理过程（reasoning_content）
 - **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点；本地 Ollama 一键接入
-- **日期防幻觉** — 自动注入当天日期，回答"今天/今年"类问题不胡诌
+- **多模型路由** — 按任务类型（对话 / 编程 / 摘要）自动选用不同 Profile
+- **日期防幻觉** — 自动注入当天日期，回答“今天/今年”类问题不胡诌
 - **缓存命中率统计** — 解析模型 `usage.prompt_cache_hit/miss_tokens`，顶栏实时显示 `缓存 xx%`
-- **数学公式渲染** — KaTeX 渲染 `$...$` / `$$...$$` / `\(...\)` 等 LaTeX 公式，兼容中文紧贴与全角标点写法
-- **Markdown 增强** — 加粗/斜体/列表/标题 + 本地文件路径自动转可点击链接（系统应用打开）
+- **数学公式渲染** — KaTeX 渲染 `$...$` / `$$...$$` / `\(...\)` 等 LaTeX 公式，兼容中文紧贴与全角标点
+- **Markdown 增强** — 高亮/列表/标题 + 本地文件路径自动转可点击链接（系统应用打开）
 
-### 🛠 Agent 工具调用（ReAct 循环）
-- **LLM 自主决策** — 由大模型根据任务自行选择工具，无需手动触发
-- **内置工具**：
-  - `fetch_page` 网页抓取（HTML → 文本，快且稳）
-  - `web_search` 网络搜索
-  - `describe_image` 本地视觉模型描述图片
-  - `ocr_image` 本地 OCR 提取图片文字
-- **MCP 服务器扩展**：
-  - 🌍 浏览器自动化（Puppeteer：打开/点击/输入/截图/抓动态页）
-  - 🧠 记忆（语义检索历史事实）
-  - 📁 文件系统（读写本地文件）
-  - **按需连接** — 对话开始按需连接、任务完成自动断开；浏览器等重服务器**不日常弹窗**，仅模型明确需要时经 `__connect__` 懒激活
-- **过程透明** — 工具调用卡片实时展示（参数折叠、结果摘要），思考过程可见
+### 🛠 Agent 工具调用（流式工具循环）
+- **自主决策** — 模型流式中检测 `<tool_call>` 自动调用工具、结果回填、多轮迭代（上限 20 轮），思考过程跨轮累积展示
+- **内置工具（20+）**：
+  - 网页：`fetch_page` 抓取、`web_search` 多源搜索（百度/必应/360/搜狗 + 自动抓正文）
+  - 视觉：`describe_image` / `ocr_image`（本地 Ollama / macOS Vision）
+  - 文件：`read_file` / `write_file` / `replace_string` / `insert_string` / `create_file` / `delete_file` / `list_dir`（unified diff 预览 + 撤销）
+  - 代码：`analyze_project` / `code_index` / `code_search`（语义找代码）/ `run_tests` / `git`
+  - 知识：`kb_index` / `kb_search`（RAG 混合检索）/ `pdf_read`
+  - 记忆：`memory_save` / `memory_recall` / `memory_forget`
+  - 协作：`subagent_delegate` / `subagent_parallel`（并行 + 角色 + 仲裁）
+  - 规划：`plan_task` / `plan_update`（任务进度卡片）
+  - 推送：`send_im`（飞书 / 企业微信 / 钉钉）
+- **MCP 客户端** — stdio 连接 + 插件市场 + 按需懒激活（浏览器自动化 / 文件系统等）；工具路由容错自动激活
+- **过程透明** — 工具调用卡片实时展示（参数折叠、结果摘要）
 
-### 🖼 本地视觉 & OCR
-- **一键部署 Ollama** — 无需 Homebrew：官方 zip 直装（`~/Applications/Ollama.app`）+ 断点续传 + 连通性预检 + 自动配置 API Profile
-- **分层识别** — macOS Vision **OCR**（精确提取文字）+ Ollama `llava-phi3` 语义描述，合并注入主模型
-- **截图链路** — 浏览器截图 → 保存临时文件 → `describe_image` / `ocr_image` 分析
+### 🧑‍💻 编程代理
+- **验证循环** — 自动检测测试框架（npm / cargo / pytest）运行测试，失败迭代修复直到通过
+- **多文件精确编辑** — replace / insert / delete 三原语 + unified diff 预览 + 应用内确认 + 会话内撤销
+- **Git 集成** — status / diff / commit / push 等（白名单子命令 + 拒绝破坏性参数）
+- **代码库理解** — 技术栈识别、结构统计、语义索引「自然语言找代码」+ 符号跳行
+- **任务规划** — Plan → Act → Observe → 修正 循环（进度卡片）
 
-### 💾 本地记忆与知识
-- **记忆系统** — 事实提取 + 关键词/语义检索 + 自动摘要旧消息
-- **技能库** — 内置技能市场 + 导入导出 + 系统提示词注入
-- **提示词模板** — 8 个角色模板一键应用
+### 👥 多 Agent 协作
+- **子代理委派** — `subagent_delegate` 单任务独立上下文；`subagent_parallel` 并行执行（并发 ≤4）
+- **角色分工** — planner / executor / verifier / reviewer / researcher 五种角色，工具集约束双保险
+- **汇总仲裁** — 并行完成后评审角色汇总仲裁，主代理统一呈现
+- **浏览器锁** — 多子代理操作同一浏览器自动串行化，避免状态竞争
+
+### 🔀 可视化工作流
+- **DAG 编辑器** — VueFlow 拖拽画布：文本 / LLM / 工具 / 条件分支 / 代码节点
+- **模板库** — 研究助手 / 文案润色 / 日报生成 / Bug 分流 等内置模板
+- **持久化** — 工作流保存 / 载入 + 运行历史记录
+
+### 📡 IM 网关与主动推送
+- **主动推送** — `send_im` 推送到飞书 / 企业微信 / 钉钉群机器人（支持钉钉加签）
+- **IM 网关** — 钉钉 / 飞书长连接双向收发：收到消息 → 调用 agent → 回发结果（设置「即时聊天」）
+
+### 💬 会话管理
+- **会话分支（fork）** — 全量复制或从某条消息起分支为新对话（历史「⛓」/ 消息旁「分支」）
+- **异步投递（queue）** — 向历史会话投递任务，后台执行完成后自动刷新（历史「✉」）
+- **归档 / 导出** — 会话归档隐藏、导出 Markdown
+- **撤销操作** — 文件编辑 / 新建 / 删除自动快照，一键回滚（撤销气泡 + 回放面板）
+
+### 🎭 多模式
+- **6 种运行模式** — 对话 / 任务 / 办公 / 研究 / 编码 / 速答（模式 = 系统提示词 + 工具白名单），输入框一键切换、记忆常用模式
+- **人格 × 模式 × 角色** 三层正交 — 决定「我是谁 / 我怎么做 / 子代理角色」
 
 ### 🖥 生产力能力
-- **`/run <命令>`** — 直接执行终端命令，返回输出与退出码（含超时处理）
+- **`/run <命令>`** — 直接执行终端命令（shell 语义 + 超时 + 危险命令审批）
 - **`/read <路径>`** — 读取本地文件内容供 AI 分析
-- **对话历史** — SQLite 持久化、切换/删除、导出 Markdown、失败重试
-- **Token/费用统计** — 本地估算 + 价格表，顶部实时显示
+- **交互式终端（PTY）** — 设置「终端」Tab 启动 / 交互 dev server、REPL 等长驻进程
+- **非交互执行（CLI）** — `daoshengyi --exec "<prompt>" [--json]` 供脚本 / CI 调用引擎
+- **定时任务** — 设置「定时任务」定时执行命令 / 推送
+- **Token / 费用统计** — 本地估算 + 价格表，历史累计（含已删除会话）
+
+### 🧠 长期记忆与知识库
+- **记忆系统** — 事实提取 + 去重合并 + FTS5 中文全文检索 + Ollama 语义向量 + 衰减遗忘
+- **记忆分层** — 事实（semantic）+ 会话摘要 + 跨会话主题聚合（episodic）
+- **用户画像** — 偏好 / 身份稳定注入，主动记忆工具（save / recall / forget）
+- **记忆管理** — 可视化面板：事实列表 / 编辑 / 智能复习
+- **知识库 RAG** — 本地目录索引（kb_index）+ 混合检索 + 对话自动注入
 
 ### 🔒 安全与体验
+- **命令执行策略引擎** — 规则文件（`allow/deny/prompt <命令前缀>`）持久化审批决策，设置「权限」可编辑 / 测试
+- **权限矩阵** — 禁用工具 + 路径白名单 + 会话级权限记忆 + 文件编辑确认
+- **审计面板** — 工具调用全记录（参数 / 结果 / 耗时）+ 筛选 + 导出
 - **API Key 加密落盘** — AES-256-GCM，密钥文件权限 0600
 - **本地优先** — 数据、密钥、记忆全部存储在本机
-- **Markdown + 代码高亮 + 数学公式**、亮/暗主题一键切换
-- **中文系统菜单栏** — 道生一/文件/编辑/视图/窗口/工具 6 个菜单，快捷键直达核心功能
-- **关于弹窗** — 品牌图标、版本、技术栈与 GitHub 链接
+- **系统托盘 / 全局快捷键** — 托盘图标 + `Ctrl+Shift+Space` 显隐 / `Ctrl+Shift+K` 新对话（可配置）
+- **中文系统菜单栏** — 6 个菜单，快捷键直达核心功能
 
 ## 技术栈
 
@@ -71,10 +106,12 @@
 | 类型系统 | TypeScript |
 | 状态管理 | Pinia |
 | 桌面框架 | Tauri 2（Rust） |
-| 后端能力 | reqwest、SQLite（rusqlite）、AES-256-GCM |
+| 后端能力 | reqwest、tokio、SQLite（rusqlite）、AES-256-GCM、portable-pty、tokio-tungstenite |
+| 工作流 | VueFlow（DAG 可视化工作流） |
 | Markdown | marked + highlight.js + KaTeX（数学公式） |
-| 本地视觉 | Ollama（llava-phi3） |
+| 本地视觉 / 向量 | Ollama（llava-phi3 / nomic-embed-text） |
 | 本地 OCR | macOS Vision（`ocr_tool.swift`） |
+| 图标 | lucide-vue-next |
 
 ## 🚀 快速开始
 
@@ -135,6 +172,34 @@ npm run tauri build
 - 输入框输入 `/run ls -la` 执行命令
 - 输入框输入 `/read src/App.vue` 读取文件
 
+### 6. 命令执行策略（S1）
+
+「设置 → 权限 → 命令执行策略」维护规则文件（`allow|deny|prompt <命令前缀>`）：
+- `deny rm -rf` 直接拦截；`allow git status` 不再确认；`prompt` 必须确认
+- 未命中规则时走默认三档审批（manual / smart / yolo）
+- 可「测试」任意命令的决策结果
+
+### 7. 项目指令（S2）
+
+在项目根（或任意层级）放 `AGENTS.md` 或 `道生一.md`，对话时会自动发现并注入该项目的编码规范 / 测试命令 / 目录说明（就近优先，优先于通用约定）。
+
+### 8. 会话分支与投递（S4）
+
+- **分支**：对话历史点 ⛓ 复制整个会话；用户消息旁点「分支」从此消息起新对话
+- **投递**：对话历史点 ✉ 向该会话投递任务，后台执行完成后自动刷新
+
+### 9. 交互式终端（PTY，S7）
+
+「设置 → 终端」启动长驻 / 交互进程（`npm run dev`、`python3`、`node -i` 等），实时查看输出并输入指令。
+
+### 10. 非交互执行（CLI，S6）
+
+```bash
+daoshengyi --exec "用一句话介绍自己"      # 纯文本输出
+daoshengyi --exec "整理待办" --json       # JSONL 事件流（脚本 / CI 用）
+daoshengyi --mcp-server                   # 以 MCP 服务器暴露能力（供 Claude Desktop 等）
+```
+
 ## 📁 项目结构
 
 ```
@@ -143,38 +208,58 @@ daoshengyi/
 │   ├── api/                    # API 请求层（agent / appSettings / search）
 │   ├── assets/styles/          # 全局样式
 │   ├── components/             # 组件
-│   │   ├── AboutDialog.vue     # 关于道生一弹窗
-│   │   ├── ChatHistory.vue     # 对话历史侧边栏
-│   │   ├── ChatInput.vue       # 消息输入框
-│   │   ├── ChatMessage.vue     # 消息气泡（流式 + Markdown + KaTeX + 深度思考）
+│   │   ├── AppLogo.vue         # 品牌 Logo
+│   │   ├── ChatHistory.vue     # 对话历史侧边栏（分支 / 投递 / 归档）
+│   │   ├── ChatInput.vue       # 消息输入框（模式切换）
+│   │   ├── ChatMessage.vue     # 消息气泡（流式 + Markdown + KaTeX + 思考 + 分支）
 │   │   ├── McpSettings.vue     # MCP 服务器设置
-│   │   ├── QuickBar.vue        # 快捷指令栏
-│   │   ├── SettingsDialog.vue  # API/模型设置
-│   │   └── SkillManager.vue    # 技能管理
-│   ├── composables/useTheme.ts # 主题管理
-│   ├── data/                   # 静态数据（MCP 市场 / 提示词模板 / 技能库）
-│   ├── stores/                 # Pinia 状态（chat / mcp / memory / ollama / skill / ui）
+│   │   ├── SettingsDialog.vue  # 设置（API/插件/Ollama/用量/诊断/定时/推送/记忆/知识库/即时聊天/审计/撤销/权限/快捷键/终端）
+│   │   ├── SkillManager.vue    # 技能管理
+│   │   ├── MemoryPanel.vue     # 记忆管理面板
+│   │   ├── AuditPanel.vue      # 审计面板
+│   │   ├── UndoPanel.vue       # 撤销回放面板
+│   │   ├── ImGatewayPanel.vue  # IM 网关面板
+│   │   ├── HealthPanel.vue     # 运行时诊断
+│   │   ├── UsageStats.vue      # 用量统计
+│   │   ├── ScheduledTasks.vue  # 定时任务
+│   │   ├── PtyPanel.vue        # 交互式终端（PTY）
+│   │   ├── TaskPlanCard.vue    # 任务进度卡片
+│   │   ├── WorkflowDialog.vue  # 可视化工作流
+│   │   ├── SubagentPanel.vue   # 子代理进度面板
+│   │   ├── DiffConfirmDialog.vue # 文件编辑 diff 确认
+│   │   └── ...                 # 其他（AboutDialog / QuickBar / 等）
+│   ├── data/                   # 静态数据（内置工具 / MCP 市场 / 提示词 / 技能 / 模式 / 角色 / 工作流模板）
+│   ├── stores/                 # Pinia 状态（chat / mcp / memory / ollama / skill / ui / pty）
+│   ├── utils/                  # 工具（tool-call / permissions / model-routing / workflow-engine / agents-md / 记忆 / 搜索门等）
 │   ├── types/index.ts          # TypeScript 类型定义
-│   ├── utils/                  # 工具（hljs / tokens / tool-call / katex-marked）
 │   ├── App.vue                 # 主布局
 │   └── main.ts                 # 入口（含事件监听）
 ├── src-tauri/                  # Tauri 2 后端
 │   ├── src/
-│   │   ├── main.rs             # Rust 入口
-│   │   ├── lib.rs              # Tauri 命令与 Ollama 部署 / OCR / 日志
+│   │   ├── main.rs             # Rust 入口（--mcp-server / --exec 分发）
+│   │   ├── lib.rs              # Tauri 命令注册与核心命令（60+）
 │   │   ├── api.rs              # SSE 流式 / 非流式请求 / 缓存命中解析
-│   │   ├── db.rs               # SQLite 持久化
+│   │   ├── db.rs               # SQLite 持久化（会话/记忆/知识库/工作流/审计/撤销）
+│   │   ├── execpolicy.rs       # 命令执行策略引擎（S1）
+│   │   ├── pty.rs              # 交互式终端 PTY（S7）
+│   │   ├── im.rs               # IM 网关（钉钉 / 飞书 / 企业微信）
 │   │   ├── mcp.rs              # MCP stdio 连接与工具调用
+│   │   ├── mcp_server.rs       # MCP 服务器模式（暴露记忆 / 搜索能力）
 │   │   ├── middleware.rs       # 系统消息注入
-│   │   ├── search.rs           # 网络搜索
+│   │   ├── search.rs           # 多源网络搜索
 │   │   └── settings.rs         # 配置 + AES-256-GCM 加密
 │   ├── ocr_tool.swift          # macOS Vision OCR 源码
 │   ├── build.rs                # 自动编译 OCR 工具（增量）
 │   ├── Cargo.toml
 │   ├── tauri.conf.json         # Tauri 配置（含 OCR 资源打包）
 │   └── capabilities/           # 权限配置
-├── docs/ROADMAP.md             # 开发路线图
-├── scripts/                    # 测试脚本（tokens / 模板 / 工具）
+├── docs/
+│   ├── ROADMAP.md              # 开发路线图
+│   ├── DEVELOPMENT_PLAN.md     # 开发计划（含 §3.12 Codex 能力整合）
+│   ├── DEVELOPMENT_PROGRESS.md # 开发进度
+│   ├── IM_GATEWAY.md           # IM 网关设计
+│   └── CODEX_CAPABILITY_ANALYSIS.md # Codex 开源能力研究与技能整合分析
+├── scripts/                    # 测试脚本（tokens / 模板 / 工具 / 项目指令 / 数学公式）
 ├── index.html
 ├── package.json
 ├── vite.config.ts

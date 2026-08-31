@@ -1,8 +1,11 @@
+//! MCP（Model Context Protocol）客户端：stdio 连接外部 MCP 服务器并调用其工具。
+//!
+//! 提供 JSON-RPC 2.0 请求/响应类型、stdio 子进程管理、initialize / tools/list / tools/call
+//! 握手流程，以及服务器 env 透传与按需连接（浏览器等重服务器懒激活）。
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-
-// --- JSON-RPC 2.0 基础类型 ---
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRpcRequest {

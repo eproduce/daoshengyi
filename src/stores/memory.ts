@@ -1,3 +1,8 @@
+// 长期记忆系统 store：跨会话记住用户偏好 / 事实 / 决策 / 待办。
+// - 事实提取（LLM 输出 JSON → memory_facts）+ 摘要压缩 + 用户画像沉淀
+// - 检索：FTS5 关键词 + Ollama 语义向量 混合，对话时自动注入
+// - 主动记忆工具（memory_save / recall / forget）、智能复习、跨会话主题汇总（episodic）
+// - 分层：事实（semantic）/ 会话摘要 / 主题聚合（episodic）
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
 import { getSettings } from "@/api/appSettings";

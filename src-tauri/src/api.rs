@@ -1,3 +1,9 @@
+//! LLM API 请求层：与 OpenAI 兼容端点通信。
+//!
+//! - `stream_chat`：SSE 流式对话（分块解码 + 缓存命中统计）
+//! - `chat_once`：非流式单轮请求（供子代理 / IM 回复 / 非交互 exec 等使用）
+//! - `ApiConfig` / `ChatMessage` / `ChatOnceResult` 等共享类型
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

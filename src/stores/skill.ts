@@ -1,3 +1,5 @@
+// 技能库 store：管理已启用技能（Skill）与内置技能目录（SkillCatalogItem）。
+// 技能 = 一段系统提示词注入（专家指令），支持市场安装 / 导入导出 / 启用状态持久化。
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import type { Skill, SkillCatalogItem } from "@/types";

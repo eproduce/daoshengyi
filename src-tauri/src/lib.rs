@@ -1,3 +1,15 @@
+//! 道生一 Rust 后端：Tauri 命令注册中心 + 核心能力。
+//!
+//! 职责：
+//! - 注册 60+ Tauri 命令（对话 / 记忆 / 文件 / 代码 / 知识库 / 工作流 / MCP / IM / PTY / 策略等）
+//! - 系统菜单栏构建与 `menu://action` 事件转发、全局快捷键 / 系统托盘
+//! - 后台线程：定时任务调度、长期记忆维护（衰减/遗忘）
+//! - 非 GUI 模式入口：`run_mcp_server`（MCP 服务器）、`run_exec`（非交互执行，S6）
+//!
+//! 子模块：`api`(LLM 请求) / `db`(SQLite) / `search`(多源搜索) / `mcp`(MCP 客户端) /
+//! `mcp_server`(MCP 服务器) / `settings`(加密配置) / `im`(IM 网关) /
+//! `execpolicy`(命令执行策略, S1) / `pty`(交互式终端, S7)。
+
 mod api;
 mod middleware;
 mod db;
