@@ -242,6 +242,8 @@ Codex CLI 是 `codex-rs/` Rust 工作区，围绕一个核心引擎构建了多�
 
 ### S7 🟡 交互式 PTY 进程
 
+> **进度：✅ 已完成（2026-08-31）**——`src-tauri/src/pty.rs`（portable-pty 依赖）+ `pty_spawn/write/poll/kill/list` 命令 + 前端 `PtyPanel.vue`（设置「终端」Tab：启动表单、多会话 tab、自动滚动输出、输入自动补 \n、终止）；Rust 测试 +3。
+
 - **目标**：让 `execute_command` 支持**交互式长驻进程**（dev server、REPL、watch、数据库 CLI），而非仅一次性命令。
 - **触发**：agent 需要启动 dev server、进入 REPL、或与长驻进程交互时。
 - **依赖**：execute_command、run_shell_command。

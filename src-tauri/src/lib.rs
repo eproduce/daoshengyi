@@ -7,11 +7,13 @@ mod mcp_server;
 mod settings;
 mod im;
 mod execpolicy;
+mod pty;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
     test_command_policy,
 };
+use pty::{pty_kill, pty_list, pty_poll, pty_spawn, pty_write};
 
 use tauri::{Emitter, Manager, State};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -4341,6 +4343,11 @@ pub fn run() {
             set_prevent_sleep,
             debug_log,
             execute_command,
+            pty_spawn,
+            pty_write,
+            pty_poll,
+            pty_kill,
+            pty_list,
             check_command_policy,
             test_command_policy,
             list_exec_rules,
