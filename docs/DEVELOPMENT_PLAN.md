@@ -299,7 +299,9 @@
 3. 设置「命令策略」Tab 或独立说明：展示当前 workspace 命中的项目指令。
 
 ### 3.12.3 后续批次
-- **第二批（🟡）**：S4 会话深度操作（fork/resume/queue）、S6 非交互执行（exec 子命令）、S7 交互式 PTY（portable-pty + 终端面板）。
+- **第二批（🟡）**：
+  - **S4 会话深度操作 — fork ✅ 已完成（2026-08-31）**：db.rs `fork_conversation`（全量复制 / 指定消息截断分支，新消息 id `{new_id}-{idx}` 防唯一冲突）+ `fork_conversation_cmd` + store `forkConversation` + ChatHistory 会话「分支」按钮 + ChatMessage 用户消息「从此分支」按钮；Rust 测试 +1（68 全绿）。resume（历史续聊一键入口）、queue（向历史会话异步投递，复用 IM 网关回复模型）待做。
+  - **S6 非交互执行（exec 子命令）、S7 交互式 PTY（portable-pty + 终端面板）待做**。
 - **第三批（🟡~🔵）**：S3 技能包结构化（技能系统整体升级渐进式披露）、S5 引擎协议外化（app-server 化 MCP 协议）；S8~S11 按需。
 - 每项实现后回填本节的「✅ 已完成」标注并同步 `docs/CODEX_CAPABILITY_ANALYSIS.md`。
 

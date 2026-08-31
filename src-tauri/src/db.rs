@@ -366,6 +366,77 @@ impl Database {
         Ok(())
     }
 
+    /// 会话分支（S4，Codex 能力整合）：把源会话复制为新会话。
+    /// `at_message_id` 指定则只保留到该消息（含）为止（「从此处分支」）；None = 全量复制。
+    /// 新消息 id 用 `{new_id}-{idx}` 避免与源会话消息 id 冲突（messages.id 全局唯一）。
+    pub fn fork_conversation(
+        &self,
+        source_id: &str,
+        at_message_id: Option<&str>,
+        new_id: &str,
+        new_title: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let src: Option<(String, i64, i64)> = conn
+            .query_row(
+                "SELECT model, created_at, updated_at FROM conversations WHERE id=?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some((model, _created, _updated)) = src else {
+            return Err(format!("会话不存在: {}", source_id));
+        };
+        let msgs = {
+            // 先释放 self.conn 的锁（get_messages 会再次加锁）
+            drop(conn);
+            self.get_messages(source_id)?
+        };
+        // 截断到 at_message_id（含）或全量
+        let mut keep: Vec<MsgRow> = Vec::new();
+        if let Some(mid) = at_message_id {
+            for m in &msgs {
+                keep.push(m.clone());
+                if m.id == mid {
+                    break;
+                }
+            }
+            if keep.is_empty() || keep.last().map(|m| m.id.as_str()) != Some(mid) {
+                return Err(format!("未找到消息: {}", mid));
+            }
+        } else {
+            keep = msgs;
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?1,?2,?3,?4,?5)",
+            params![new_id, new_title, model, now, now],
+        )
+        .map_err(|e| e.to_string())?;
+        for (i, m) in keep.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    format!("{}-{}", new_id, i),
+                    new_id,
+                    m.role,
+                    m.content,
+                    m.reasoning_content,
+                    m.images,
+                    m.attachments,
+                    m.timestamp,
+                    m.tokens,
+                    m.duration,
+                    m.cost,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     // --- 用量历史累计（删除会话不冲减，跨会话保留统计） ---
 
     /// 累加一次 LLM 消耗（每条 assistant 消息生成时调用一次；重试会再次调用，
@@ -1616,6 +1687,40 @@ mod tests {
 
     fn cleanup(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // S4 会话分支：全量复制 + 按消息截断 + 错误分支
+    #[test]
+    fn fork_conversation_full_and_truncated() {
+        let (dir, db) = tmp_db();
+        let conv = ConvRow { id: "c1".into(), title: "原会话".into(), model: "deepseek".into(), created_at: 1, updated_at: 1 };
+        let msgs = vec![
+            MsgRow { id: "m1".into(), conversation_id: "c1".into(), role: "user".into(), content: "你好".into(), reasoning_content: None, images: None, attachments: None, timestamp: 1, tokens: None, duration: None, cost: None },
+            MsgRow { id: "m2".into(), conversation_id: "c1".into(), role: "assistant".into(), content: "你好！".into(), reasoning_content: None, images: None, attachments: None, timestamp: 2, tokens: Some(10), duration: Some(1.0), cost: Some(0.001) },
+            MsgRow { id: "m3".into(), conversation_id: "c1".into(), role: "user".into(), content: "第二问".into(), reasoning_content: None, images: None, attachments: None, timestamp: 3, tokens: None, duration: None, cost: None },
+        ];
+        db.save_conversation(&conv, &msgs).unwrap();
+
+        // 全量分支
+        db.fork_conversation("c1", None, "c2", "原会话（分支）").unwrap();
+        let c2 = db.get_messages("c2").unwrap();
+        assert_eq!(c2.len(), 3, "全量分支保留全部消息");
+        assert_eq!(c2[0].content, "你好");
+        assert_ne!(c2[0].id, "m1", "分支消息 id 不与源冲突");
+
+        // 截断分支：保留到 m2（含）
+        db.fork_conversation("c1", Some("m2"), "c3", "原会话（分支2）").unwrap();
+        let c3 = db.get_messages("c3").unwrap();
+        assert_eq!(c3.len(), 2, "截断到 m2 只保留 2 条");
+        assert_eq!(c3[1].content, "你好！");
+
+        // 源会话不受影响
+        assert_eq!(db.get_messages("c1").unwrap().len(), 3);
+
+        // 无效消息 id / 无效源会话 报错
+        assert!(db.fork_conversation("c1", Some("nope"), "c4", "x").is_err());
+        assert!(db.fork_conversation("nope", None, "c5", "x").is_err());
+        cleanup(&dir);
     }
 
     // Phase 3 知识库 RAG：写入/检索/隔离/列表/清空

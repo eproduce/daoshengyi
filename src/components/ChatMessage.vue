@@ -10,7 +10,7 @@ import { useChatStore } from "@/stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { formatCost } from "@/utils/tokens";
 import AppLogo from "./AppLogo.vue";
-import { Brain, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User } from "lucide-vue-next";
+import { Brain, Copy, RotateCw, CheckCircle2, Loader2, XCircle, User, GitBranch } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
 
@@ -221,6 +221,13 @@ async function verifyFileLinks() {
 
 async function copyAll() { await chatStore.copyToClipboard(props.message.content); copied.value = true; setTimeout(() => copied.value = false, 2000); }
 
+// S4 会话分支：从当前用户消息起，把会话复制为新对话并切换过去
+async function forkFromThis() {
+  const convId = chatStore.activeConversationId;
+  if (!convId) return;
+  await chatStore.forkConversation(convId, props.message.id);
+}
+
 // 工具活动卡片展开状态（按工具名）
 const toolOpen = ref<Set<string>>(new Set());
 function toggleTool(name: string) {
@@ -340,6 +347,7 @@ watch(() => props.message.streaming, (s) => { if (!s) highlighted = false; });
         </div>
         <div v-else-if="message.role === 'user' && message.content" class="msg-actions">
           <button class="msg-act-btn" @click="copyAll"><Copy v-if="!copied" :size="14" />{{ copied ? '已复制' : '复制' }}</button>
+          <button class="msg-act-btn" title="从此消息分支为新对话" @click="forkFromThis"><GitBranch :size="14" /> 分支</button>
         </div>
       </div>
     </div>

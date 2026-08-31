@@ -1789,6 +1789,34 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // S4 会话分支：把会话复制为新会话并切换到它（atMessageId 可选——指定则只保留到该消息，形成「从此分支」）
+  async function forkConversation(id: string, atMessageId?: string) {
+    const src = conversations.value.find((c) => c.id === id);
+    if (!src) return null;
+    const newId = uuidv4();
+    const newTitle = `${src.title}（分支）`;
+    try {
+      await invoke("fork_conversation_cmd", { id, atMessageId: atMessageId ?? null, newId, newTitle });
+      const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: newId });
+      conversations.value.push({
+        id: newId, title: newTitle, model: src.model,
+        createdAt: Date.now(), updatedAt: Date.now(),
+        messages: msgs.map((m) => ({
+          id: m.id, role: m.role as MessageRole, content: m.content,
+          reasoning_content: m.reasoning_content,
+          images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
+          attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
+          timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
+        })),
+      });
+      activeConversationId.value = newId;
+      return newId;
+    } catch (e) {
+      notify(`分支失败：${e}`);
+      return null;
+    }
+  }
+
   function selectConversation(id: string) {
     if (conversations.value.some((c) => c.id === id)) {
       activeConversationId.value = id;
@@ -2870,6 +2898,7 @@ export const useChatStore = defineStore("chat", () => {
     reloadProfilesFromRust,
     createConversation,
     deleteConversation,
+    forkConversation,
     selectConversation,
     archiveConversation,
     unarchiveConversation,

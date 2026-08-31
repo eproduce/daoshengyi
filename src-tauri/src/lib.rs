@@ -3258,6 +3258,19 @@ fn delete_conversation_cmd(db: State<Database>, id: String) -> Result<(), String
     db.delete_conversation(&id)
 }
 
+/// S4 会话分支：复制会话为新会话（at_message_id 可选——指定则只保留到该消息，形成「从此分支」）
+#[tauri::command]
+fn fork_conversation_cmd(
+    db: State<Database>,
+    id: String,
+    at_message_id: Option<String>,
+    new_id: String,
+    new_title: String,
+) -> Result<serde_json::Value, String> {
+    db.fork_conversation(&id, at_message_id.as_deref(), &new_id, &new_title)?;
+    Ok(serde_json::json!({ "id": new_id, "title": new_title }))
+}
+
 #[tauri::command]
 fn search_conversations_cmd(db: State<Database>, query: String) -> Result<Vec<db::SearchResult>, String> {
     db.search(&query)
@@ -4208,6 +4221,7 @@ pub fn run() {
             get_messages,
             save_conversation,
             delete_conversation_cmd,
+            fork_conversation_cmd,
             search_conversations_cmd,
             export_conversation_cmd,
             accumulate_usage,

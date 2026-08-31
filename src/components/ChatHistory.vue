@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useChatStore } from "@/stores/chat";
-import { Archive, Plus } from "lucide-vue-next";
+import { Archive, Plus, GitBranch } from "lucide-vue-next";
 
 const chatStore = useChatStore();
 // 是否显示归档视图（归档会话：恢复 / 导出 / 彻底删除）
@@ -36,6 +36,7 @@ const showArchived = ref(false);
             </div>
           </div>
           <div class="history-item__btns">
+            <button class="history-item__btn" title="分支（复制为新对话）" @click.stop="chatStore.forkConversation(conv.id)"><GitBranch :size="14" /></button>
             <button class="history-item__btn" title="导出为 Markdown" @click.stop="chatStore.downloadExport(conv.id, 'md')">⤓</button>
             <button class="history-item__btn" title="归档（隐藏，可恢复）" @click.stop="chatStore.archiveConversation(conv.id)"><Archive :size="14" /></button>
             <button class="history-item__delete" title="删除对话" @click.stop="chatStore.deleteConversation(conv.id)">✕</button>

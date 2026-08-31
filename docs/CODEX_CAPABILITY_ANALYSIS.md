@@ -200,6 +200,8 @@ Codex CLI 是 `codex-rs/` Rust 工作区，围绕一个核心引擎构建了多�
 
 ### S4 🟡 会话深度操作（fork / resume / queue 技能）
 
+> **进度：fork ✅ 已完成（2026-08-31）**——db.rs `fork_conversation`（全量复制 / 指定消息截断分支）+ `fork_conversation_cmd` + store `forkConversation` + ChatHistory「分支」按钮 + ChatMessage 用户消息「从此分支」按钮（Rust 测试 68 全绿）。resume / queue 待做。
+
 - **目标**：补上会话级深度操作——分支（fork）、续聊（resume）、异步投递（queue）。
 - **触发**：用户想「从这条消息另起一个分支」；「上次那个会话继续」；「把这条任务投给某个会话后台跑」。
 - **依赖**：conversations/messages 表、ChatHistory、会话归档导出。
