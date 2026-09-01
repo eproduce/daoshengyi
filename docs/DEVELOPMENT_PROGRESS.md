@@ -2,7 +2,35 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-01**
+> **最后更新：2026-09-02**
+
+---
+
+## 2026-09-02
+
+### ✅ 设置面板暗色模式白底浅字修复 + 撤销气泡遮挡技能库按钮修复
+- **背景**：①设置面板部分 tab（记忆/撤销/审计/即时聊天等）在暗色模式下仍为白色背景、文字浅淡看不清；②对话界面右下角的「撤销」悬浮气泡遮挡输入区右下角的「技能库」按钮
+- **根因**：
+  1. **主题变量缺失**：`main.css` 主题变量未定义 `--bg-input` / `--text` / `--border` / `--bg-soft` / `--bg` 这些别名，而 MemoryPanel / UndoPanel / AuditPanel / ImGatewayPanel / DiffConfirmDialog 等大量使用 `var(--bg-input, #fff)`、`var(--text, #222)`、`var(--border, #ddd)` 回退写法 → 永远回退到浅色默认 → 暗色下白底浅字
+  2. **MemoryPanel 硬编码**：`.memory-stats__type` / `.memory-profile__chip` / `.memory-badge` 直接写死 `#fff` / `#f0f0f0` / `#333` / `#555`
+  3. **撤销气泡定位**：UndoBubble `position: fixed; right:18px; bottom:18px` 正好悬浮在输入条区域内，盖住右下角「技能库」按钮
+- **修复**：
+  1. `main.css`：light / dark 两个主题块各补 5 个别名变量（`--bg-input` / `--bg-soft` / `--text` / `--border` / `--bg`），一次性修复所有用回退写法的组件
+  2. `MemoryPanel.vue`：3 处硬编码白底/浅字改为主题变量（`var(--bg-input)` / `var(--bg-soft)` / `var(--text)` / `var(--text-secondary)`）
+  3. `UndoBubble.vue`：气泡 `bottom: 18px → 96px`（输入条约 82px 高，上移到输入条上方，不再遮挡技能库按钮）
+- **验证**：浏览器（Vite 1420 端口）暗色主题下实测——记忆 / 撤销 / 审计 三个 tab 的输入框、按钮、统计区均为暗色背景、浅灰文字，白底问题消失；get_errors 无错误；撤销气泡位置经代码核算在输入条上方
+
+### ✅ 暗色主题遗漏补修：黑字按钮 / 白底输入框（2026-09-02 第二轮）
+- **背景**：首轮补别名变量后，用户反馈「有些按钮在暗色背景下文字是黑色的，快看不到了」；浏览器 computed-style 全量扫描确认仍有遗漏
+- **根因（扫描定位 16 处低对比度）**：
+  1. **4 个按钮类缺显式 color**：`.memory-btn` / `.im-btn` / `.ap-btn` / `.up-btn` 用 `var(--bg-input, #fff)` 作背景（补变量后 dark 下变深），但**无 color 声明** → 继承默认黑字 → 深底黑字
+  2. **无样式定义的按钮类**：`.btn-ghost`（知识库「刷新知识库列表」、PtyPanel「终止」）全项目无定义 → 浏览器默认浅底黑字；PtyPanel `.btn-secondary`（「启动」）因 SettingsDialog 样式 scoped 不穿透子组件 → 同样浏览器默认
+  3. **无样式的 textarea**：SettingsDialog 权限 tab「禁用工具/路径白名单」2 个 textarea 无 class → 浏览器默认白底黑字
+- **修复**：
+  1. `.memory-btn` / `.im-btn` / `.ap-btn` / `.up-btn` 各补 `color: var(--text)`
+  2. SettingsDialog 补 `.btn-ghost` 主题样式（transparent 底 + `var(--text-secondary)` 字 + hover 变主色）；PtyPanel 补 `.btn-secondary` / `.btn-ghost` 主题样式（`var(--bg-secondary)` + `var(--text-primary)`）
+  3. SettingsDialog 权限 tab 2 个 textarea 补 `class="form-textarea"`（复用已有主题样式）
+- **验证**：浏览器复扫低对比度元素 16 → 2（仅剩 `im-btn--danger` / `ap-btn--danger` 刻意的红色 danger 语义色，非 bug）；权限 / 终端 / 即时聊天 三个 tab 截图实测——按钮与输入框均为深色底 + 浅色字；get_errors 无错误
 
 ---
 

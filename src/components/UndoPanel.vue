@@ -98,7 +98,7 @@ onMounted(refresh);
 .up-desc { font-size: 12px; color: var(--text-secondary, #777); margin: 0; line-height: 1.6; }
 .up-toolbar { display: flex; gap: 8px; align-items: center; }
 .up-input { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; min-width: 200px; }
-.up-btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 12px; }
+.up-btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text); cursor: pointer; font-size: 12px; }
 .up-btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .up-count { font-size: 12px; color: var(--text-secondary, #888); }
 .up-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }

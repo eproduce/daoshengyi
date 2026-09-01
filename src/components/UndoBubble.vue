@@ -62,7 +62,7 @@ const label = computed(() => {
 .undo-bubble {
   position: fixed;
   right: 18px;
-  bottom: 18px;
+  bottom: 96px; /* 上移到输入条上方，避免遮挡右下角「技能库」按钮 */
   z-index: 1500;
   display: inline-flex;
   align-items: center;

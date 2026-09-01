@@ -655,6 +655,7 @@ function handleDelete() {
             v-model="disabledTools"
             rows="5"
             placeholder="如：write_file&#10;subagent_delegate&#10;puppeteer_screenshot"
+            class="form-textarea"
             @change="savePermissions"
           ></textarea>
           <span class="form-hint">在此列出的工具会被直接拦截（提示「已在权限矩阵中禁用」）。常见用途：禁用 write_file/delete_file 防止 Agent 改文件、禁用浏览器工具防止弹窗。</span>
@@ -665,6 +666,7 @@ function handleDelete() {
             v-model="allowedPaths"
             rows="5"
             placeholder="如：/Users/wanghuan/op&#10;~/Pictures"
+            class="form-textarea"
             @change="savePermissions"
           ></textarea>
           <span class="form-hint">配置后 Agent 的 list_dir / 文件编辑 / git / 测试 / 项目分析等工具只能访问这些目录；留空 = 不限制。</span>
@@ -968,6 +970,12 @@ function handleDelete() {
   border: 1px solid var(--border-color);
 }
 .btn-secondary:hover { background: var(--bg-hover); }
+.btn-ghost {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all .2s;
+}
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
 .btn-danger { background: var(--danger-bg); color: var(--danger-color); }
 .btn-danger:hover { background: rgba(239,68,68,.15); }
 

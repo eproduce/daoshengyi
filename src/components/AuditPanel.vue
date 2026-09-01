@@ -134,7 +134,7 @@ onMounted(refresh);
 .ap-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .ap-input { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; min-width: 180px; }
 .ap-select { padding: 6px 28px 6px 8px; border-radius: 6px; border: 1px solid var(--border-color); background-color: var(--bg-secondary); color: var(--text-primary); font-size: 13px; }
-.ap-btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 12px; }
+.ap-btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text); cursor: pointer; font-size: 12px; }
 .ap-btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .ap-btn--danger { color: #c62828; border-color: #c6282866; }
 .ap-stats { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -240,7 +240,7 @@ onUnmounted(() => {
   background-color: var(--bg-secondary); color: var(--text-primary); font-size: 13px; font-family: inherit;
 }
 .im-actions { display: flex; gap: 8px; align-items: center; }
-.im-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); cursor: pointer; font-size: 13px; }
+.im-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text); cursor: pointer; font-size: 13px; }
 .im-btn:hover { border-color: #4c8dff; color: #4c8dff; }
 .im-btn:disabled { opacity: .5; cursor: default; }
 .im-btn--primary { background: #2e7d32; color: #fff; border-color: #2e7d32; }

@@ -122,6 +122,14 @@ onUnmounted(stopPolling);
 <style scoped>
 .pty-panel { display: flex; flex-direction: column; gap: 10px; }
 .pty-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-secondary, .btn-ghost {
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  font-size: 12px; cursor: pointer; transition: all .2s;
+}
+.btn-secondary { background: var(--bg-secondary); color: var(--text-primary); padding: 8px 16px; }
+.btn-secondary:hover { background: var(--bg-hover); }
+.btn-ghost { background: transparent; color: var(--text-secondary); padding: 5px 10px; }
+.btn-ghost:hover { background: var(--bg-hover); color: var(--danger-color); }
 .pty-input {
   flex: 1; min-width: 180px; padding: 8px 10px; font-size: 12px;
   background: var(--bg-secondary); color: var(--text-primary);
