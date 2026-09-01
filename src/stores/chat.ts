@@ -241,7 +241,8 @@ function getMcpToolsPrompt(): string {
     "- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\", \"allow_tools\": true, \"role\": \"可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）\"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。" +
     "\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {\"tasks\": [{\"goal\": \"子任务1\", \"context\": \"可选\", \"allow_tools\": true, \"role\": \"可选角色\"}, ...], \"concurrency\": 可选并发数（默认最多 4）, \"synth\": 可选，true 时并行完成后用评审角色汇总仲裁}. **使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。" +
     "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
-    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**" +
+    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**\n" +
+    "**长文件/完整 HTML 严禁一次性塞进 content**（内容过长会超过单次输出长度限制，工具调用写到一半被截断、文件根本不会写入）：必须分段写入——先 write_file 写开头骨架，再用 insert_string 在末尾占位标记前逐段追加，详见「文件导出规范」的「长文件必须分段写入」。**" +
     "\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {\"path\": \"文件绝对路径\", \"old_text\": \"要替换的原文（须与文件内容完全一致）\", \"new_text\": \"新文本（可为空=删除该段）\", \"occurrence\": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。" +
     "\n- **insert_string** (app): **在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {\"path\": \"文件绝对路径\", \"anchor\": \"锚点文本（须唯一且与文件内容完全一致）\", \"position\": \"before 之前 | after 之后（默认 before）\", \"new_text\": \"要插入的内容\"}。适合在函数/代码块末尾、配置项列表中添加新条目。" +
     "\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {\"path\": \"绝对路径或以 ~/ 开头\", \"content\": \"文件内容\"}。文件已存在时不会覆盖，返回提示。" +
@@ -334,6 +335,11 @@ function getMcpToolsPrompt(): string {
     "- **HTML 表格必须行列对齐**：每一行 `<tr>` 内的单元格数量必须与表头**完全一致**（表头 5 列则每行都恰好 5 个 `<td>`/`<th>`），**禁止行内单元格数不齐**（浏览器会错位显示、排版错乱）；需要跨列/跨行时用 `colspan`/`rowspan` 显式声明并保持总列数不变。最小结构示例：`<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><thead><tr><th>列1</th><th>列2</th></tr></thead><tbody><tr><td>值</td><td>值</td></tr></tbody></table>`。\n" +
     "- **CSV 单元格规范**：含逗号、换行或中文标点的单元格用双引号包裹（如 `\"某,单位\"`），每行列数一致；文件用 UTF-8 编码。\n" +
     "- 当前无法直接生成二进制 .xlsx/.docx，**不要假装生成了 Excel/Word 文件**，如实说明已生成 CSV/HTML 及打开方式。\n" +
+    "- **长文件/完整 HTML 必须分段写入（防止工具调用被截断）**：完整 HTML / 长报告 / 长脚本**禁止一次性塞进单个 write_file 的 content**——内容过长会超过单次输出长度限制，`<tool_call>` 写到一半被截断、`</tool_call>` 不完整，工具根本不会执行、文件不会写入；再次重试同样会被截断。正确做法（**分段写入**）：\n" +
+    "  ① 先用 `write_file` 写文件**开头部分**（含根结构，末尾放一个唯一占位标记如 `<!--MORE-->`；HTML 的 `<html>`/`</html>` 根标签必须在本段内完整闭合，保证文件始终合法）；\n" +
+    "  ② 再用 `insert_string` **逐段追加**：参数 `{\"path\": 同一路径, \"anchor\": \"<!--MORE-->\", \"position\": \"before\", \"new_text\": \"<下一段内容>\\n<!--MORE-->\"}`——把下一段插到占位标记前，并在段尾重新放一个 `<!--MORE-->` 占位；\n" +
+    "  ③ 重复 ② 直到内容写完，**最后一次 `new_text` 不要留 `<!--MORE-->` 占位**，让文件以完整内容收尾。\n" +
+    "  每次工具调用的内容控制在 **≤ 2500 字符**；宁可多分几段，也不要一次塞完整份文件。\n" +
     "- 禁止使用社区 filesystem MCP 服务器的写入类工具（write_file / write_text_file 等）。";
   const pending = pendingServersPrompt();
 
@@ -592,7 +598,7 @@ function isVagueBody(s: string): boolean {
   // 短正文 + 第一人称/过渡词/延续词引导的「过程声明」（我/将/直接/继续/尝试/再…
   // 访问/获取/查…）或「结果无关」→ 空洞。纯建议（如「可访问官网查看最新政策」无
   // 引导词）不算空洞。
-  return /(我|将|准备|接下来|让我|直接|先|去|继续|尝试|再).{0,12}(访问|获取|查看|打开|查询|搜索|查)/.test(sc)
+  return /(我|将|准备|接下来|让我|直接|先|去|继续|尝试|再|重新).{0,12}(访问|获取|查看|打开|查询|搜索|查|输出|写|写入|整理|生成|拼|创建|保存|补全|重新输出)/.test(sc)
     || /无关|与问题不相关/.test(sc);
 }
 
@@ -2628,15 +2634,27 @@ export const useChatStore = defineStore("chat", () => {
           // 注入修正指令重试一轮，要求补全成完整合法的 <tool_call>。
           if (hasToolCallIntent(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
             round++;
-            dbg(`[loop] 检测到工具调用意图但未闭合/解析失败，第 ${round} 轮注入修正指令重试`);
+            // write_file 大 content 截断：模型把整份 HTML 塞进一个 write_file 的 content，
+            // 超过单次输出上限被截断（有 write_file 开标记且已输出不少 content 但仍无 </tool_call>）。
+            // 这种场景重试一次性大输出只会再截断 → 必须引导改为分段写入。
+            const isBigWriteFile = /write_file/.test(roundResult.content) &&
+              /"content"\s*:/.test(roundResult.content) &&
+              roundResult.content.length > 2000;
+            dbg(`[loop] 检测到工具调用意图但未闭合/解析失败（大 write_file 截断=${isBigWriteFile}），第 ${round} 轮注入修正指令重试`);
             rustMsgs.push({ role: "assistant", content: roundResult.content });
             rustMsgs.push({
               role: "user",
-              content:
-                "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
-                "请重新输出**完整合法**的工具调用：\n" +
-                "<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
-                "必须是完整的开/闭合标记、JSON 合法且含 server、tool、arguments 字段。若确实不需要工具，直接在正文给出完整答案。",
+              content: isBigWriteFile
+                ? "⚠️ 你上一条 **write_file 调用因 content 过长被截断**，`</tool_call>` 未闭合，文件没有写入；再一次性输出仍会被截断。\n" +
+                  "**改用分段写入（禁止一次塞整份文件）**：\n" +
+                  "① 先 `write_file` 写文件**开头部分**，末尾放唯一占位标记 `<!--MORE-->`（HTML 根标签 `<html>`/`</html>` 在本段内闭合，保证文件合法）；\n" +
+                  "② 用 `insert_string` 逐段追加：`{\"path\": 同一路径, \"anchor\": \"<!--MORE-->\", \"position\": \"before\", \"new_text\": \"<下一段>\\n<!--MORE-->\"}`；\n" +
+                  "③ 重复 ② 直到写完，最后一次 `new_text` 不要留 `<!--MORE-->`，让文件完整收尾。\n" +
+                  "每次工具调用的内容 ≤ 2500 字符。不要重试一次性大输出。"
+                : "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
+                  "请重新输出**完整合法**的工具调用：\n" +
+                  "<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
+                  "必须是完整的开/闭合标记、JSON 合法且含 server、tool、arguments 字段。若确实不需要工具，直接在正文给出完整答案。",
             });
             continue;
           }

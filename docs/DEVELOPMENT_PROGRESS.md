@@ -2,7 +2,33 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-08-30**
+> **最后更新：2026-09-01**
+
+---
+
+## 2026-09-01
+
+### ✅ 扫描版/图片型 PDF 读取不到内容修复（OCR 自动兜底）
+- **背景**：用户上传体检报告 PDF（扫描件/图片型，数值表格是图片不是文字层），agent 生成的网页里「实际值」全标「待补充」，并声称「原始报告仅标注血常规 26 项全部正常，具体数值未提供」
+- **根因**：①`read_attachment` 的 PDF 分支用 `pdf_extract::extract_text_from_mem` 提取文字——扫描件 PDF 提取不到数值表格（只有零星文字层/水印）；②前端只注入前 2500 字符预览 + 提示 `pdf_read` 分段读取；③`read_pdf_part`（pdf_read 底层）同样用 `pdf_extract::extract_text`，也读不到扫描件 → agent 拿不到数值，只能标「待补充」
+- **修复**：
+  1. **`ocr_tool.swift` 支持 PDF**：`import PDFKit`，PDF 输入时用 `PDFDocument` 逐页 `page.thumbnail(of:for:)` 以 ~2.5x（≈250 DPI）渲染成位图 → `NSBitmapImageRep` → Vision `VNRecognizeTextRequest`（zh-Hans+en-US）OCR，每页前带「【第 N 页】」标记；图片输入保持原行为
+  2. **`read_attachment` 自动 OCR 兜底**（改 async + 注入 AppHandle）：PDF 提取文本 `< 80 字符`（判定扫描件）时调 `run_ocr` 对整份 PDF 识别，返回全文 +「（注：该 PDF 为扫描件，以上内容由本地 OCR 识别）」标记；失败/非 macOS 回退原文本
+  3. **`read_pdf_part` 同样兜底**（改 async + AppHandle）：文字层过短时先 OCR 全文再分段，保证 `pdf_read` 工具对扫描件可用 → agent 可分段读完整份报告
+  4. **新增 `pdf_ocr` 命令** + 提取公共 `run_ocr(app, paths)` helper，`ocr_image_file` 重构复用
+  5. **CI**：build-macos.yml swiftc 编译加 `-framework PDFKit -framework AppKit`（Swift 自动链接保险）
+- **验证**：`swiftc -O` 编译无警告；实测含中文截图图片 OCR 正常（原功能未破坏）、sips 转出的图片型 PDF OCR 输出带「【第 1 页】」的完整识别文字；`cargo check` 通过；`tauri dev` 自动重建重启
+- **经验**：扫描件 PDF 用 `pdf_extract` 必然提取不到文字，必须「渲染页面 → OCR」兜底；附件读取（read_attachment）与按需分段读取（pdf_read）两条路径都要兜底，模型才能读到完整内容
+
+### ✅ write_file 大 content 工具调用被截断修复（分段写入引导）
+- **背景**：agent 把整份体检报告 HTML 塞进一个 `write_file` 的 `content` 一次性写入，回复正文出现「工具调用被截断了，我需要重新输出完整的 HTML 内容…」——文件从未真正写入
+- **根因**：模型单次输出有 token 上限，超大 content 的 `<tool_call>{"server":"app","tool":"write_file","arguments":{"content":"<完整HTML>"}}</tool_call>` 写到一半被截断、`</tool_call>` 未闭合 → `hasCompleteToolCall` false → 工具不执行；重试仍再截断（死循环）。且 agent 那段「我要重新输出完整 HTML」是空洞过程声明，`isVagueBody` 动作词列表（访问/获取/查看…）不含「输出/写/整理」没拦住
+- **修复**（chat.ts）：
+  1. **提示词强制分段写入**：fileRule「文件导出规范」新增「长文件必须分段写入」——禁止一次性塞进单个 write_file 的 content；正确做法：①write_file 写开头骨架（末尾放唯一占位 `<!--MORE-->`，HTML 根标签先闭合）；②insert_string 逐段追加 `{anchor:"<!--MORE-->", position:"before", new_text:"<下一段>\n<!--MORE-->"}`；③最后一次不留占位收尾；每次 ≤2500 字符。write_file 内置工具描述也加同款提示
+  2. **截断针对性修正指令**：主循环 hasToolCallIntent 分支新增 `isBigWriteFile` 检测（含 write_file + `"content":` 且已输出 >2000 字符仍无闭合 = 大 content 截断）→ 注入分段写入指令（而非让它重试一次性大输出）
+  3. **isVagueBody 动作词扩充**：引导词加「重新」，动作词加「输出|写|写入|整理|生成|拼|创建|保存|补全|重新输出」——拦截「我要重新输出完整 HTML」这类空洞声明
+- **验证**：npm test 全过、vue-tsc --noEmit 0 错误、Vite HMR 自动热更新
+- **经验**：模型单次输出有上限，任何「一次塞整份大文件」的 write_file 必然被截断，必须在提示词层强制「骨架 + insert_string 分段追加」；截断时不能只让模型重试，要针对性引导改策略
 
 ---
 
