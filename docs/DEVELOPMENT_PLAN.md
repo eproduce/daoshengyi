@@ -2,7 +2,7 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
-> **最后更新：2026-08-31**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存、**可视化工作流拖拽新增修复（WKWebView mouse 事件实现 + 节点影像/画布高亮 + 共享色板统一图例与节点颜色）**；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地；**08-31 新增 §3.12 Codex 能力整合计划**——深度研究 `openai/codex` 开源代码，产出 `docs/CODEX_CAPABILITY_ANALYSIS.md`（能力全景 + 差距矩阵 + 11 项技能归纳定义卡 + 落地路线）；**第一批落地：S1 命令执行策略引擎（execpolicy 规则文件替代正则黑名单）、S2 项目指令发现（AGENTS.md/道生一.md 自动注入）；**09-02 新增 §3.13 OpenClaw 能力整合计划**——深研 `openclaw/openclaw`（388k star）+ ClawHub 插件市场，产出 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`（架构差距矩阵 + 借鉴落地优先级 P1~P10），原则「模仿机制、不抄袭实现」，首批 O1 智能上下文压缩 / O2 SSRF 防护 / O3 会话级工具集**）
+> **最后更新：2026-08-31**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存、**可视化工作流拖拽新增修复（WKWebView mouse 事件实现 + 节点影像/画布高亮 + 共享色板统一图例与节点颜色）**；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地；**08-31 新增 §3.12 Codex 能力整合计划**——深度研究 `openai/codex` 开源代码，产出 `docs/CODEX_CAPABILITY_ANALYSIS.md`（能力全景 + 差距矩阵 + 11 项技能归纳定义卡 + 落地路线）；**第一批落地：S1 命令执行策略引擎（execpolicy 规则文件替代正则黑名单）、S2 项目指令发现（AGENTS.md/道生一.md 自动注入）；**09-02 新增 §3.13 OpenClaw 能力整合计划**——深研 `openclaw/openclaw`（388k star）+ ClawHub 插件市场，产出 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`（架构差距矩阵 + 借鉴落地优先级 P1~P10），原则「模仿机制、不抄袭实现」，首批 O1 智能上下文压缩 / O2 SSRF 防护 / O3 会话级工具集；**同日预研官方技能库（ClawHub 5400+/27 类），产出 `docs/OPENCLAW_SKILLS_INTEGRATION.md` 并补充 7 个精选技能（commit-msg / pr-summary / academic-research / rss-brief / session-wrap-up / secrets-scan / knowledge-notes）到 `src/data/skills-catalog.ts`，待明早 10:00 开发启动后实测与落地 §3.13 首批**）
 
 ---
 
