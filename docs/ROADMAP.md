@@ -2,7 +2,7 @@
 
 > 参考 OpenAI Codex（编程 Agent 标杆产品）的能力模型，结合道生一「本地优先 + 国产模型（DeepSeek）」的产品定位制定。
 >
-> 最后更新：2026-08-31（新增 §3.1 Codex 能力整合现状核对 + §4.6 整合路线：S1 命令策略引擎 / S2 项目指令发现 首批落地，详见开发计划 §3.12 与 `docs/CODEX_CAPABILITY_ANALYSIS.md`）
+> 最后更新：2026-09-02（新增 §3.2 OpenClaw 能力整合对照——借鉴机制不抄袭实现，详见开发计划 §3.13 与 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`）
 
 ---
 
@@ -97,6 +97,27 @@
 | S8~S11 | 网络域名策略 / 自动代码审查 / 轨迹回放 / doctor 诊断 | 🔵 可选 |
 
 详见开发计划 §3.12 的详细实现要点与落地顺序。
+
+### 3.2 OpenClaw 能力整合对照（2026-09-02 新增）
+
+> 深研 `openclaw/openclaw`（388k star）与 ClawHub 插件市场，详见 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`；落地计划见开发计划 §3.13。原则：**模仿机制、不抄袭实现**——只吸收 compaction 提炼 / SSRF 策略判定 / 会话级工具 / 配对审批 / 安全自检 / 插件注册表等机制，按道生一自身架构自研，不复刻 OpenClaw 的 API / 终端 / Node 生态。
+
+| OpenClaw 能力 | 道生一现状 | 借鉴机制（自研落地） | 优先级 |
+|--------------|-----------|---------------------|--------|
+| 插件化运行时 + ClawHub 市场 | ❌ 无自身插件 SDK | 最小插件契约（manifest + stdio 外部进程插件 + 内置工具注册表） | 🔵 远期 |
+| OS 级执行沙箱 | ⚠️ 宿主直跑 + execpolicy | 可选 sandbox-exec 轻量隔离 | 🔵 远期 |
+| 多渠道 IM + 配对审批 | ⚠️ 3 平台直连推送 | 未知发送者配对码审批 | 🟡 |
+| Companion 设备 / 语音 / 相机 | ❌ 单机桌面 | 待插件化后以插件扩展 | 🔵 远期 |
+| 团队部署 / 共享网关 | ❌ 单用户 | 暂不做（产品定位不符） | — |
+| CLI / TUI / Control UI | ⚠️ 桌面 + 少量 slash + exec | 已有 `--exec --json`，可补 slash 体系 | 🔵 |
+| 智能上下文压缩 | ❌ 粗暴裁剪 | LLM 提炼摘要后压缩 | 🟢 |
+| 会话管理工具集 | ⚠️ fork/queue/subagent | session_spawn/resume/yield 命名会话工具 | 🟢 |
+| 安全审计 + Doctor | ⚠️ HealthPanel 基础诊断 | security_check 配置审计并入 HealthPanel | 🟡 |
+| SSRF 防护 | ❌ 直连 | hostname allowlist + 内网 IP 阻断 | 🟢 |
+| 结构化不可信内容边界 | ⚠️ 提示词层防注入 | 外部内容包裹标记 + 严格模式开关 | 🟡 |
+| 语音 / 图像 / 视频生成 | ❌ 仅 OCR/视觉描述 | 远期按需 | 🔵 |
+
+详见开发计划 §3.13 的实现要点与落地顺序。
 
 ---
 
