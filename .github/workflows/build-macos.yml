@@ -48,8 +48,8 @@ jobs:
       - name: Compile OCR tool (universal)
         working-directory: src-tauri
         run: |
-          swiftc -O ocr_tool.swift -o ocr_tool-arm64 -target arm64-apple-macos13.0
-          swiftc -O ocr_tool.swift -o ocr_tool-x64 -target x86_64-apple-macos13.0
+          swiftc -O ocr_tool.swift -o ocr_tool-arm64 -framework PDFKit -framework AppKit -target arm64-apple-macos13.0
+          swiftc -O ocr_tool.swift -o ocr_tool-x64 -framework PDFKit -framework AppKit -target x86_64-apple-macos13.0
           lipo -create -output ocr_tool ocr_tool-arm64 ocr_tool-x64
           file ocr_tool
 

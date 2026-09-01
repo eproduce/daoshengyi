@@ -917,8 +917,9 @@ struct AttachmentContent {
 /// 读取附件内容（统一入口）：图片转 base64，PDF/Excel 提取文本，其余按文本读取。
 /// 用「扩展名 + magic bytes」双判断分流，扩展名缺失时也能正确识别 PDF/图片；
 /// 文本读取带 GBK 回退，非 UTF-8 中文文件也能读。
+/// 扫描件 PDF（文字层为空/过短，如体检报告）自动用本地 OCR 渲染每页识别文字兜底。
 #[tauri::command]
-fn read_attachment(path: String) -> Result<AttachmentContent, String> {
+async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<AttachmentContent, String> {
     let p = std::path::Path::new(&path);
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
@@ -940,6 +941,20 @@ fn read_attachment(path: String) -> Result<AttachmentContent, String> {
     if ext == "pdf" || bytes.starts_with(b"%PDF") {
         let text = pdf_extract::extract_text_from_mem(&bytes)
             .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
+        // 扫描件 PDF：文字层为空/过短（体检报告、扫描书页等图片型 PDF）→
+        // 用本地 OCR（macOS Vision）把每页渲染成图像识别文字，让模型能读到全部内容
+        if text.trim().chars().count() < 80 && cfg!(target_os = "macos") {
+            if let Ok(ocr) = run_ocr(&app, &[path.clone()]).await {
+                let ocr = ocr.trim();
+                if !ocr.is_empty() {
+                    return Ok(AttachmentContent {
+                        kind: "text".into(),
+                        mime: "application/pdf".into(),
+                        content: format!("{ocr}\n（注：该 PDF 为扫描件，以上内容由本地 OCR 识别）"),
+                    });
+                }
+            }
+        }
         return Ok(AttachmentContent { kind: "text".into(), mime: "application/pdf".into(), content: text });
     }
 
@@ -1146,11 +1161,20 @@ fn extract_pdf_text(data: String) -> Result<String, String> {
         .map_err(|e| format!("PDF 文本提取失败: {}", e))
 }
 
-/// 分段读取 PDF：提取全文后返回 [offset, offset+length) 的字符区间（按 char 切，避免 UTF-8 边界问题）
+/// 分段读取 PDF：提取全文后返回 [offset, offset+length) 的字符区间（按 char 切，避免 UTF-8 边界问题）。
+/// 扫描件 PDF（文字层过短）自动用本地 OCR 识别全文后再分段，保证 pdf_read 工具对扫描件也可用。
 #[tauri::command]
-fn read_pdf_part(path: String, offset: i64, length: i64) -> Result<String, String> {
+async fn read_pdf_part(app: tauri::AppHandle, path: String, offset: i64, length: i64) -> Result<String, String> {
     let text = pdf_extract::extract_text(&path)
         .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
+    let text = if text.trim().chars().count() < 80 && cfg!(target_os = "macos") {
+        match run_ocr(&app, &[path.clone()]).await {
+            Ok(ocr) if !ocr.trim().is_empty() => ocr,
+            _ => text,
+        }
+    } else {
+        text
+    };
     let chars: Vec<char> = text.chars().collect();
     let start = (offset.max(0) as usize).min(chars.len());
     let len = (length.max(0) as usize).min(chars.len() - start);
@@ -2826,19 +2850,30 @@ fn save_temp_image(data: String, path: Option<String>) -> Result<String, String>
     Ok(target.to_string_lossy().to_string())
 }
 
-/// 用本地 OCR（macOS Vision）提取本地图片文件中的文字。
-#[tauri::command]
-async fn ocr_image_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
+/// 调本地 OCR 工具（macOS Vision）识别一个或多个图片/PDF 文件，返回识别文字。
+/// 工具支持图片（Vision OCR）与 PDF（PDFKit 渲染每页后再 OCR）。
+async fn run_ocr(app: &tauri::AppHandle, paths: &[String]) -> Result<String, String> {
     if !cfg!(target_os = "macos") {
         return Ok(String::new());
     }
-    let tool = ocr_tool_path(&app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
-    let out = tokio::process::Command::new(&tool)
-        .arg(&path)
-        .output()
-        .await
-        .map_err(|e| format!("执行 OCR 失败: {}", e))?;
+    let tool = ocr_tool_path(app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let mut cmd = tokio::process::Command::new(&tool);
+    cmd.args(paths);
+    let out = cmd.output().await.map_err(|e| format!("执行 OCR 失败: {}", e))?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// 用本地 OCR（macOS Vision）提取本地图片文件中的文字。
+#[tauri::command]
+async fn ocr_image_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    run_ocr(&app, &[path]).await
+}
+
+/// 用本地 OCR（macOS Vision）提取 PDF 全文（扫描件 PDF 无文字层时，渲染每页识别）。
+/// 供模型主动调用或诊断使用。
+#[tauri::command]
+async fn pdf_ocr(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    run_ocr(&app, &[path]).await
 }
 
 /// 定位 ocr_tool 二进制（dev: <项目根>/src-tauri/ocr_tool；打包: resource 目录）
@@ -4567,6 +4602,7 @@ pub fn run() {
             read_attachment,
             extract_pdf_text,
             read_pdf_part,
+            pdf_ocr,
             save_temp_attachment,
             ollama_status,
             ollama_setup,
