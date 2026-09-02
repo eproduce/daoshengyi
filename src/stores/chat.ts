@@ -2560,9 +2560,15 @@ export const useChatStore = defineStore("chat", () => {
 
       // 构建 Rust 格式消息
       const maxCtx = config.maxContextMessages || 50;
+      const histAll = conv.messages.filter(m => m.role !== "system" && !m.streaming);
+      const histStart = Math.max(0, histAll.length - maxCtx);
+      const hist = histAll.slice(histStart);
       const rustMsgs: { role: string; content: unknown }[] = [];
-      if (sp) rustMsgs.push({ role: "system", content: sp });
-      conv.messages.filter(m => m.role !== "system" && !m.streaming).slice(-maxCtx).forEach(m => {
+      // O1 智能上下文压缩：记录每条历史对应的原始会话消息序号（用于定位已被摘要覆盖的最老段）
+      const rustOrig: (number | null)[] = [];
+      if (sp) { rustMsgs.push({ role: "system", content: sp }); rustOrig.push(null); }
+      hist.forEach((m, i) => {
+        rustOrig.push(histStart + i);
         // DeepSeek 不支持图片：所有带图片的消息（含历史残留的图片消息）一律只发文本，
         // 避免收到 image_url 报 400；支持图片的模型才发送多模态。
         if (m.images?.length && !isDS) {
@@ -2582,14 +2588,37 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
 
-      // 发送前上下文总长保护：历史里若残留超大消息（如早期 directory_tree 全量结果
-      // 被持久化进 SQLite），主动从最早的非 system 消息开始裁剪，保证请求不超模型
-      // 上限、工具循环不会因总长超限提前 break 导致回复中断
+      // 发送前上下文总长保护 + O1 智能上下文压缩：历史里若残留超大消息
+      //（如早期 directory_tree 全量结果被持久化进 SQLite），先尝试删除
+      //「已被自动摘要覆盖（compaction）」的最老段——摘要已作为【对话摘要】
+      // 注入本次补充上下文作补偿，避免粗暴砍掉还有价值的原文；仍不够再回退
+      // 粗暴裁剪（保底不超模型上限，不因总长超限 break 导致回复中断）。
       const MAX_SEND_CHARS = 1_200_000;
-      while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && rustMsgs.length > 2) {
-        const idx = rustMsgs.findIndex(m => m.role !== "system");
-        if (idx === -1) break;
-        rustMsgs.splice(idx, 1);
+      if (totalMsgChars(rustMsgs) > MAX_SEND_CHARS) {
+        // 收集已被摘要覆盖的原始消息序号（summaries 表：会话自动摘要，落库复用、不重算）
+        const covered = new Set<number>();
+        try {
+          const sums = await invoke<{ msg_range_start: number; msg_range_end: number }[]>("get_summaries", { convId }).catch(() => [] as { msg_range_start: number; msg_range_end: number }[]);
+          for (const s of sums) for (let i = s.msg_range_start; i <= s.msg_range_end; i++) covered.add(i);
+        } catch { /* 忽略 */ }
+        // 优先删除已被摘要覆盖的最老段（摘要已在 volatileCtx 补偿，保留其余原文）
+        let pruned = true;
+        while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && pruned && rustMsgs.length > 2) {
+          pruned = false;
+          for (let i = 1; i < rustMsgs.length; i++) { // 0 是 system，保留
+            if (covered.has(rustOrig[i] as number)) {
+              rustMsgs.splice(i, 1); rustOrig.splice(i, 1);
+              pruned = true;
+              break;
+            }
+          }
+        }
+        // 覆盖段删尽仍超长 → 回退粗暴裁剪（从最早非 system 删，保底不超限）
+        while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && rustMsgs.length > 2) {
+          const idx = rustMsgs.findIndex(m => m.role !== "system");
+          if (idx === -1) break;
+          rustMsgs.splice(idx, 1); rustOrig.splice(idx, 1);
+        }
       }
       // 裁剪后重算输入 token（用于费用计算）
       inputTokens = rustMsgs.reduce((sum, m) => {
