@@ -3488,6 +3488,12 @@ fn fork_conversation_cmd(
     Ok(serde_json::json!({ "id": new_id, "title": new_title }))
 }
 
+/// O3 会话级工具集：确保会话行存在（session_spawn 先建子会话占位，queue_turn 再投递）。返回是否新建。
+#[tauri::command]
+fn ensure_conversation_cmd(db: State<Database>, id: String, title: String, model: String) -> Result<bool, String> {
+    db.ensure_conversation(&id, &title, &model)
+}
+
 /// S4 queue：向历史会话异步投递一条任务消息，后台用当前模型生成回复并追加到该会话。
 /// 完成/失败通过事件 `queue-turn-done` / `queue-turn-error` 通知前端刷新。
 #[tauri::command]
@@ -4535,6 +4541,7 @@ pub fn run() {
             save_conversation,
             delete_conversation_cmd,
             fork_conversation_cmd,
+            ensure_conversation_cmd,
             queue_turn,
             search_conversations_cmd,
             export_conversation_cmd,

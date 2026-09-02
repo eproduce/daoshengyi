@@ -142,6 +142,18 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "plan_update",
     desc: "**更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。",
   },
+  {
+    name: "session_spawn",
+    desc: "**创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {\"prompt\": \"后台任务的完整指令\", \"name\": \"可选子会话名（默认 子任务）\"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。查进度用 session_status；取结果用 session_resume。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。",
+  },
+  {
+    name: "session_status",
+    desc: "**查询后台子会话的执行进度/最近结果**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。返回 执行中/已完成 + 消息数 + 最近结果前 600 字。",
+  },
+  {
+    name: "session_resume",
+    desc: "**等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。",
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

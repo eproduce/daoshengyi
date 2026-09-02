@@ -138,6 +138,11 @@ let activeStreamRequestId: string | null = null;
 const ragInjectedConvs = new Set<string>();
 // S2 项目指令发现：每个工作区目录只注入一次（避免每轮重复灌入项目指令）
 const projInjectedCwd = new Set<string>();
+// O3 会话级工具集：正在后台执行中的子会话 id 集合（session_spawn 投递后标记，queue-turn-done/error 到达时清除）
+const sessionBusy = new Set<string>();
+function markSessionDone(cid: string) {
+  sessionBusy.delete(cid);
+}
 function requestStop() {
   stopRequested = true;
   const ws = stopWaiters;
@@ -274,6 +279,13 @@ function getMcpToolsPrompt(): string {
     "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
     "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
     "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
+    "\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {\"prompt\": \"后台任务的完整指令\", \"name\": \"可选子会话名（默认 子任务）\"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。" +
+    "\n- **session_status** (app): **查询后台子会话的执行进度/最近结果**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。返回 执行中/已完成 + 消息数 + 最近结果前 600 字。" +
+    "\n- **session_resume** (app): **等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。" +
+    "\n\n## 后台子会话使用要点\n" +
+    "- 用户需要**长时间/独立**的任务（如长研究、批量抓取、多步代码改造）且不想阻塞当前对话时，可用 session_spawn 投到后台执行。\n" +
+    "- spawn 后 session_status 查进度；需要结果时 session_resume（会等待完成并取回全文）。若子会话结果与主任务无关，也可不 resume，直接告知用户子会话已就绪、可点击查看。\n" +
+    "- 子会话与主会话相互独立（各自上下文）；需要基于子会话结果继续时务必 resume 取回，不要凭猜测描述其结果。" +
     "\n\n## 长期记忆使用要点\n" +
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
@@ -652,6 +664,90 @@ function notifyUndoChanged() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event("undo-changed"));
 }
 
+// --- O3 会话级工具集：后台子会话（复用 S4 queue_turn 后台执行 + ensure_conversation_cmd） ---
+
+/** session_spawn：建后台子会话并投递任务（不切换当前会话） */
+async function toolSessionSpawn(args: Record<string, unknown>): Promise<string> {
+  const prompt = String(args.prompt ?? "").trim();
+  if (!prompt) return "❌ session_spawn 需要 prompt 参数（后台任务的完整指令）。";
+  const chat = useChatStore();
+  const name = String(args.name ?? "子任务").slice(0, 40);
+  const id = uuidv4();
+  const now = Date.now();
+  const conv = {
+    id,
+    title: `🧵 ${name}`,
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+    model: (chat.currentConfig as { model?: string } | undefined)?.model ?? "",
+  } as (typeof chat.conversations)[number];
+  chat.conversations.unshift(conv);
+  // 确保后端有会话行（queue_turn 后台写消息依赖该行，否则子会话不会出现在列表）
+  try {
+    await invoke("ensure_conversation_cmd", { id, title: conv.title, model: conv.model });
+  } catch { /* 已存在/失败忽略 */ }
+  sessionBusy.add(id);
+  try {
+    await invoke("queue_turn", { conversationId: id, text: prompt });
+  } catch (e) {
+    sessionBusy.delete(id);
+    return `❌ session_spawn 投递失败：${e}。子会话仍保留在左侧列表（${conv.title}），可点击手动继续。`;
+  }
+  return (
+    `✅ 已创建后台子会话「${conv.title}」并投递任务。\n` +
+    `- session_id: ${id}\n` +
+    "- 它独立执行、不阻塞当前对话；完成后结果自动写入该会话（左侧历史可见，可点击查看/续聊）。\n" +
+    `- 查询进度：session_status，参数 {"session_id": "${id}"}\n` +
+    `- 把结果取回本对话继续分析：session_resume，参数 {"session_id": "${id}"}（会等待完成）`
+  );
+}
+
+/** session_status：查询子会话执行进度/最近结果 */
+async function toolSessionStatus(id: string): Promise<string> {
+  const chat = useChatStore();
+  try {
+    await chat.refreshConversation(id);
+  } catch { /* 会话可能已删除 */ }
+  const conv = chat.conversations.find((c) => c.id === id);
+  if (!conv) return `❌ 找不到会话 ${id}（可能已被删除）。`;
+  const msgs = conv.messages;
+  const last = msgs[msgs.length - 1];
+  const done = !!last && last.role === "assistant";
+  const running = sessionBusy.has(id) || (!done && msgs.length > 0);
+  const state = running ? "⏳ 执行中…" : done ? "✅ 已完成" : "已创建（尚未产出回复）";
+  const lastText = done && typeof last.content === "string" ? last.content.slice(0, 600) : "";
+  return (
+    `子会话「${conv.title}」状态：${state}\n` +
+    `- session_id: ${id}\n` +
+    `- 消息数：${msgs.length}\n` +
+    (done ? `- 最近结果（前 600 字）：\n${lastText}` : "- 尚无可用结果")
+  );
+}
+
+/** session_resume：等待子会话完成并把完整结果取回（最长约 4 分钟，用户可随时停止） */
+async function toolSessionResume(id: string): Promise<string> {
+  const chat = useChatStore();
+  const deadline = Date.now() + 240_000;
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (;;) {
+    if (stopRequested) throw new AgentStoppedError();
+    try {
+      await chat.refreshConversation(id);
+    } catch { /* 忽略 */ }
+    const conv = chat.conversations.find((c) => c.id === id);
+    if (!conv) return `❌ 找不到会话 ${id}（可能已被删除），无法取回结果。`;
+    const last = conv.messages[conv.messages.length - 1];
+    if (last && last.role === "assistant" && typeof last.content === "string" && last.content.trim().length > 0) {
+      return `【子会话「${conv.title}」结果】\n${last.content}`;
+    }
+    if (Date.now() > deadline) {
+      return "⏱️ 等待子会话完成超时（4 分钟）。子会话仍在后台继续执行，可用 session_status 查询进度，稍后再次 session_resume 取回结果。";
+    }
+    await pause(1500);
+  }
+}
+
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
   // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
@@ -1016,6 +1112,19 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `📋 计划进度更新：步骤 ${stepIdx + 1}「${plan.steps[stepIdx].text.slice(0, 30)}」→ ${label[status] || status}` +
         `（${done}/${plan.steps.length} 完成）`
       );
+    }
+    case "session_spawn": {
+      return await toolSessionSpawn(args);
+    }
+    case "session_status": {
+      const id = String(args.session_id ?? "");
+      if (!id) throw new Error("session_status 需要 session_id 参数（session_spawn 返回的 id）");
+      return await toolSessionStatus(id);
+    }
+    case "session_resume": {
+      const id = String(args.session_id ?? "");
+      if (!id) throw new Error("session_resume 需要 session_id 参数（session_spawn 返回的 id）");
+      return await toolSessionResume(id);
     }
     case "list_dir":
     case "list_directory": {
@@ -2945,11 +3054,11 @@ export const useChatStore = defineStore("chat", () => {
   if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
     listen<any>("queue-turn-done", (e) => {
       const cid = e.payload?.conversationId;
-      if (cid) refreshConversation(cid);
+      if (cid) { markSessionDone(cid); refreshConversation(cid); }
     });
     listen<any>("queue-turn-error", (e) => {
       const cid = e.payload?.conversationId;
-      if (cid) refreshConversation(cid);
+      if (cid) { markSessionDone(cid); refreshConversation(cid); }
     });
   }
 

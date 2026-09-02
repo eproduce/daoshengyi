@@ -397,6 +397,29 @@ impl Database {
         Ok(())
     }
 
+    /// O3 会话级工具集：确保会话行存在（不存在则插入空会话）。返回是否新建。
+    /// 供 session_spawn 先建「🧵 子会话」占位，再由 queue_turn 后台投递写入消息。
+    pub fn ensure_conversation(&self, id: &str, title: &str, model: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let exists: i64 = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1)",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists != 0 {
+            return Ok(false);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![id, title, model, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     /// 会话分支（S4，Codex 能力整合）：把源会话复制为新会话。
     /// `at_message_id` 指定则只保留到该消息（含）为止（「从此处分支」）；None = 全量复制。
     /// 新消息 id 用 `{new_id}-{idx}` 避免与源会话消息 id 冲突（messages.id 全局唯一）。
@@ -1796,6 +1819,20 @@ mod tests {
         assert_eq!(all[1].content, "yo");
         let list = db.list_conversations().unwrap();
         assert!(list[0].updated_at >= now, "会话 updated_at 被刷新");
+        cleanup(&dir);
+    }
+
+    // O3 会话级工具集：ensure_conversation 空会话占位（幂等，供 session_spawn 复用）
+    #[test]
+    fn ensure_conversation_idempotent() {
+        let (dir, db) = tmp_db();
+        assert!(db.ensure_conversation("s1", "🧵 子任务", "deepseek").unwrap(), "首次应新建");
+        // 已存在 → 不再新建、标题不变
+        assert!(!db.ensure_conversation("s1", "🧵 改名", "deepseek").unwrap(), "已存在不应重复插入");
+        let list = db.list_conversations().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "🧵 子任务", "已存在时保留原标题");
+        assert!(db.get_messages("s1").unwrap().is_empty(), "占位会话暂无消息");
         cleanup(&dir);
     }
 
