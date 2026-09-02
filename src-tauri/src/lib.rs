@@ -20,6 +20,7 @@ mod settings;
 mod im;
 mod execpolicy;
 mod pty;
+mod ssrf;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -3838,9 +3839,24 @@ struct PageContent {
     url: String,
 }
 
+/// 从 app_settings 读取 SSRF 策略（缺省走默认：拒绝内网/保留地址）
+fn ssrf_policy(db: &Database) -> ssrf::SsrfPolicy {
+    let mut p = ssrf::SsrfPolicy::default();
+    if let Ok(Some(json)) = db.get_setting(SETTINGS_KEY) {
+        if let Ok(s) = serde_json::from_str::<settings::AppSettings>(&json) {
+            p.deny_private = s.ssrf_deny_private;
+            p.allow_hosts = s.ssrf_allow_hosts;
+            p.allow_private_hosts = s.ssrf_allow_private_hosts;
+        }
+    }
+    p
+}
+
 #[tauri::command]
-async fn fetch_page(url: String) -> Result<PageContent, String> {
+async fn fetch_page(db: State<'_, Database>, url: String) -> Result<PageContent, String> {
     eprintln!("[fetch_page] 请求: {}", url);
+    // O2 SSRF 防护：URL 由 agent/用户提供，先按策略拦截内网/保留地址（命中返回明确错误）
+    ssrf::check_url(&url, &ssrf_policy(&db))?;
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .timeout(std::time::Duration::from_secs(15))

@@ -62,6 +62,12 @@ export interface AppSettingsPayload {
   globalShortcutNewChat: string;
   /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave
   browserEngine: string;
+  /// O2 SSRF 防护：是否拒绝抓取内网/保留地址（fetch_page 等出站请求前校验，默认 true）
+  ssrfDenyPrivate: boolean;
+  /// O2 SSRF 白名单：完全放行的 hostname（精确或子域）
+  ssrfAllowHosts: string[];
+  /// O2 SSRF 白名单：允许访问私有地址的 hostname（环回仍拦）
+  ssrfAllowPrivateHosts: string[];
 }
 
 let cache: AppSettingsPayload = {
@@ -89,6 +95,9 @@ let cache: AppSettingsPayload = {
   globalShortcutToggle: "CommandOrControl+Shift+Space",
   globalShortcutNewChat: "CommandOrControl+Shift+K",
   browserEngine: "auto",
+  ssrfDenyPrivate: true,
+  ssrfAllowHosts: [],
+  ssrfAllowPrivateHosts: [],
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

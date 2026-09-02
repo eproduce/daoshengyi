@@ -105,6 +105,15 @@ pub struct AppSettings {
     /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave
     #[serde(default = "default_browser_engine")]
     pub browser_engine: String,
+    /// O2 SSRF 防护：是否拒绝抓取内网/保留地址（fetch_page 等出站请求前校验，默认 true）
+    #[serde(default = "default_true")]
+    pub ssrf_deny_private: bool,
+    /// O2 SSRF 白名单：完全放行的 hostname（精确或子域，命中即使解析到私有地址也放行）
+    #[serde(default)]
+    pub ssrf_allow_hosts: Vec<String>,
+    /// O2 SSRF 白名单：允许访问私有地址的 hostname（环回/链路本地/未指定仍拦）
+    #[serde(default)]
+    pub ssrf_allow_private_hosts: Vec<String>,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -162,6 +171,9 @@ impl Default for AppSettings {
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
+            ssrf_deny_private: true,
+            ssrf_allow_hosts: Vec::new(),
+            ssrf_allow_private_hosts: Vec::new(),
         }
     }
 }
@@ -383,6 +395,9 @@ mod tests {
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
+            ssrf_deny_private: true,
+            ssrf_allow_hosts: Vec::new(),
+            ssrf_allow_private_hosts: Vec::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -427,6 +442,9 @@ mod tests {
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
+            ssrf_deny_private: true,
+            ssrf_allow_hosts: Vec::new(),
+            ssrf_allow_private_hosts: Vec::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
