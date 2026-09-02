@@ -32,6 +32,14 @@
   3. SettingsDialog 权限 tab 2 个 textarea 补 `class="form-textarea"`（复用已有主题样式）
 - **验证**：浏览器复扫低对比度元素 16 → 2（仅剩 `im-btn--danger` / `ap-btn--danger` 刻意的红色 danger 语义色，非 bug）；权限 / 终端 / 即时聊天 三个 tab 截图实测——按钮与输入框均为深色底 + 浅色字；get_errors 无错误
 
+### ✅ 中文拼音输入法按 Enter 误发送修复（2026-09-02）
+- **背景**：用户反馈「中文拼音输入的时候按 Enter 键会错误地发送还没输入完成的内容」——输入法组词/候选阶段按 Enter 确认拼音时，`@keydown` 把 Enter 当成了发送快捷键
+- **根因**：`ChatInput.vue` 的 `<textarea>` 只绑了 `@keydown="handleKeydown"`，`handleKeydown` 中 Enter 分支（`if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }`）没有检查输入法组合状态，也未监听 composition 事件 → 拼音上屏的 Enter 被误判为发送
+- **修复**（`ChatInput.vue`）：
+  1. 新增 `composing` ref，textarea 模板补 `@compositionstart="composing = true" @compositionend="composing = false"`
+  2. `handleKeydown` 顶部定义 `const imeEnter = composing.value || e.isComposing;`，**slash 命令 Enter 分支与发送 Enter 分支都加 `!imeEnter`**（原生 `e.isComposing` + composition 事件双保险，兼容部分 webview 中 isComposing 不可靠的情况）
+- **验证**：浏览器（Vite 1420 端口）Playwright 实测——模拟 compositionstart + isComposing 的 keydown Enter，输入文本完整保留、未触发发送（bugPresent=false）；正常输入不受影响；get_errors 无错误
+
 ---
 
 ## 2026-09-01

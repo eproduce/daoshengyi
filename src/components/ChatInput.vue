@@ -23,6 +23,8 @@ const attachedImages = ref<ImageAttachment[]>([]);
 const attachedFiles = ref<FileAttachment[]>([]);
 const textareaRef = ref<HTMLTextAreaElement>();
 const attachInputRef = ref<HTMLInputElement>();
+// 输入法组合状态：拼音等 IME 在组词/上屏阶段按 Enter 是确认拼音，不得触发发送
+const composing = ref(false);
 const showModelDropdown = ref(false);
 const showReasoningDropdown = ref(false);
 const showModeDropdown = ref(false);
@@ -49,8 +51,10 @@ function handleSend() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 输入法组合中（拼音候选/组词/上屏）按 Enter：仅确认输入法内容，不发送、不执行 slash
+  const imeEnter = composing.value || e.isComposing;
   if (slashOpen.value && slashFiltered.value.length) {
-    if (e.key === "Enter") { e.preventDefault(); commitSlash(); return; }
+    if (e.key === "Enter" && !imeEnter) { e.preventDefault(); commitSlash(); return; }
     if (e.key === "Tab") { e.preventDefault(); slashActive.value = (slashActive.value + 1) % slashFiltered.value.length; return; }
     if (e.key === "ArrowDown") { e.preventDefault(); slashActive.value = Math.min(slashActive.value + 1, slashFiltered.value.length - 1); return; }
     if (e.key === "ArrowUp") { e.preventDefault(); slashActive.value = Math.max(slashActive.value - 1, 0); return; }
@@ -58,7 +62,7 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (e.key === "Escape") {
     slashOpen.value = false;
   }
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  if (e.key === "Enter" && !e.shiftKey && !imeEnter) { e.preventDefault(); handleSend(); }
 }
 
 function canSend(): boolean {
@@ -375,7 +379,8 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         :placeholder="placeholder || '输入消息，Enter 发送，Shift+Enter 换行；输入 / 弹出命令'"
         :disabled="disabled" rows="1"
         @input="autoResize; updateSlash()" @keydown="handleKeydown" @keyup="updateSlash"
-        @click="updateSlash" @paste="handlePaste"></textarea>
+        @click="updateSlash" @paste="handlePaste"
+        @compositionstart="composing = true" @compositionend="composing = false"></textarea>
       <!-- Slash 命令面板（输入 / 弹出） -->
       <div v-if="slashOpen && slashFiltered.length" class="ci-slash">
         <div class="ci-slash-head">命令 <span class="ci-slash-hint">Enter 执行 · Tab 选择 · Esc 关闭</span></div>
