@@ -25,6 +25,11 @@ const textareaRef = ref<HTMLTextAreaElement>();
 const attachInputRef = ref<HTMLInputElement>();
 // 输入法组合状态：拼音等 IME 在组词/上屏阶段按 Enter 是确认拼音，不得触发发送
 const composing = ref(false);
+// 最近一次 IME 组合结束时间戳（毫秒）。WebKit(WKWebView/Safari)下拼音候选按 Enter 确认时，
+// keydown 常在 compositionend 之后才派发且无组合标记（isComposing=false/keyCode=13），无法直接识别，
+// 只能靠「紧跟组合结束的极短时间窗内吞掉一次 Enter」来区分——该 Enter 实为输入法确认上屏，不是发送。
+let lastImeEndAt = 0;
+function onCompositionEnd() { composing.value = false; lastImeEndAt = Date.now(); }
 const showModelDropdown = ref(false);
 const showReasoningDropdown = ref(false);
 const showModeDropdown = ref(false);
@@ -51,8 +56,9 @@ function handleSend() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  // 输入法组合中（拼音候选/组词/上屏）按 Enter：仅确认输入法内容，不发送、不执行 slash
-  const imeEnter = composing.value || e.isComposing;
+  // 输入法组合中（拼音候选/组词/上屏）按 Enter：仅确认输入法内容，不发送、不执行 slash。
+  // 三重判定兼容不同内核：①composition 事件标记 ②KeyboardEvent.isComposing ③WebKit 传统 keyCode 229（IME 处理中的按键）。
+  const imeEnter = composing.value || e.isComposing || e.keyCode === 229;
   if (slashOpen.value && slashFiltered.value.length) {
     if (e.key === "Enter" && !imeEnter) { e.preventDefault(); commitSlash(); return; }
     if (e.key === "Tab") { e.preventDefault(); slashActive.value = (slashActive.value + 1) % slashFiltered.value.length; return; }
@@ -62,7 +68,14 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (e.key === "Escape") {
     slashOpen.value = false;
   }
-  if (e.key === "Enter" && !e.shiftKey && !imeEnter) { e.preventDefault(); handleSend(); }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // 组合中(候选/预编辑)的 Enter：仅上屏，不发送
+    if (imeEnter) return;
+    // WebKit 候选确认 Enter 在 compositionend 后以无标记 keydown 到达 → 组合刚结束 200ms 内吞掉一次（只吞一次）
+    if (lastImeEndAt !== 0 && Date.now() - lastImeEndAt < 200) { lastImeEndAt = 0; return; }
+    handleSend();
+  }
 }
 
 function canSend(): boolean {
@@ -130,6 +143,13 @@ function autoResize() {
   if (!el) return;
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 200) + "px";
+}
+
+// 输入框 input 事件：若 WebView 未派发 compositionstart、但 input 携带 isComposing（预编辑中），同步置位 composing
+function onInput(e: Event) {
+  if ((e as InputEvent).isComposing) composing.value = true;
+  autoResize();
+  updateSlash();
 }
 
 function toggleModelDropdown() { showModelDropdown.value = !showModelDropdown.value; }
@@ -378,9 +398,9 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
       <textarea ref="textareaRef" v-model="inputText" class="ci-text"
         :placeholder="placeholder || '输入消息，Enter 发送，Shift+Enter 换行；输入 / 弹出命令'"
         :disabled="disabled" rows="1"
-        @input="autoResize; updateSlash()" @keydown="handleKeydown" @keyup="updateSlash"
+        @input="onInput" @keydown="handleKeydown" @keyup="updateSlash"
         @click="updateSlash" @paste="handlePaste"
-        @compositionstart="composing = true" @compositionend="composing = false"></textarea>
+        @compositionstart="composing = true" @compositionend="onCompositionEnd"></textarea>
       <!-- Slash 命令面板（输入 / 弹出） -->
       <div v-if="slashOpen && slashFiltered.length" class="ci-slash">
         <div class="ci-slash-head">命令 <span class="ci-slash-hint">Enter 执行 · Tab 选择 · Esc 关闭</span></div>

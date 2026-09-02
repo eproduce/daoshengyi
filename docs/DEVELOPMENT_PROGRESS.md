@@ -2,7 +2,7 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-02**
+> **最后更新：2026-09-03**
 
 ---
 
@@ -39,6 +39,15 @@
   1. 新增 `composing` ref，textarea 模板补 `@compositionstart="composing = true" @compositionend="composing = false"`
   2. `handleKeydown` 顶部定义 `const imeEnter = composing.value || e.isComposing;`，**slash 命令 Enter 分支与发送 Enter 分支都加 `!imeEnter`**（原生 `e.isComposing` + composition 事件双保险，兼容部分 webview 中 isComposing 不可靠的情况）
 - **验证**：浏览器（Vite 1420 端口）Playwright 实测——模拟 compositionstart + isComposing 的 keydown Enter，输入文本完整保留、未触发发送（bugPresent=false）；正常输入不受影响；get_errors 无错误
+
+### ✅ 中文拼音误发送修复·第二轮加强（2026-09-03，WKWebView 候选 Enter 时序）
+- **背景**：第一轮修复后用户实测 **macOS 系统「简体拼音」候选列表开着按 Enter** 仍误发送——说明 isComposing + composition 事件拦截不住这个场景
+- **根因**：Tauri 桌面是 **WKWebView（Safari 内核）**，拼音候选按 Enter 确认上屏时，`keydown Enter` 常在 `compositionend` **之后**才派发、且无组合标记（`isComposing=false`、`keyCode=13`），JS 收到的就是一个「普通 Enter」，无法从事件自身区分
+- **修复**（`ChatInput.vue` 三重判定 + 时间窗，全部无损）：
+  1. IME 判定扩为 `composing.value || e.isComposing || e.keyCode === 229`——229 是 WebKit 对「输入法处理中按键」的传统标记，覆盖 isComposing 不可靠的内核
+  2. `@input` 改命名函数 `onInput`：`InputEvent.isComposing` 为 true 时同步置位 composing（覆盖 WebView 只派 input 不派 compositionstart 的情况）
+  3. **时间窗**：`onCompositionEnd` 记录 `lastImeEndAt`；发送分支若距上次组合结束 **<200ms** 则吞掉这一次 Enter（`lastImeEndAt` 置 0 只吞一次）——候选确认 Enter 的残余 keydown 即落在此窗内，不发送；正常发送不受影响
+- **验证**：浏览器四场景实测全过——①候选确认残余 Enter（compositionend 后紧接 keyCode13 Enter）被吞 ②正常 Enter 仍发送 ③keyCode 229 拦截 ④isComposing=true 拦截；vue-tsc / npm test 全绿；用户桌面实测「候选状态按 Enter 不发消息」确认修复
 
 ---
 
