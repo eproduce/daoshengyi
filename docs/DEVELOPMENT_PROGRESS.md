@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-09-03
+
+### ✅ O1 / O2 / O3 OpenClaw 能力整合首批 🟢 落地（全部推送 GitHub，main @ 360b53f）
+- **O2 SSRF 防护**（新建 `src-tauri/src/ssrf.rs` 纯函数自研，commit 1d4d858）：
+  - `SsrfPolicy`（`deny_private` 默认 true + `allow_hosts` / `allow_private_hosts` 白名单；存 app_settings 三字段 `ssrf_*`，serde default 兼容旧配置，前端 appSettings.ts 同步）
+  - 纯函数：`is_private_ip`（IPv4 私有/环回/链路本地/未指定/广播 + IPv6 环回/ULA/链路本地 `fe80::/10` 位运算/未指定/组播）、`extract_host`（去 scheme/userinfo/端口/IPv6 括号）、`host_match`（子域通配）、`check_url`（IP 字面量直接判；域名 DNS 解析后按 IP 校验，缓解 DNS rebinding；allow_private_hosts 命中仍拦环回/链路本地最危险段）
+  - 接入 `fetch_page` 命令（加 db State + `ssrf_policy(db)` 读配置）：命中返回「目标地址 X 为内网/保留地址，已按 SSRF 策略拦截」
+  - 单测 6 项（保留段/白名单/deny 关闭/域名解析 localhost 拦截）→ cargo test 80 全绿
+  - 注：`Ipv4Addr::is_reserved` / `Ipv6Addr::is_link_local` 均为 unstable/改名 API → 用稳定方法 + 位运算替代
+- **O3 会话级工具集**（复用 S4 queue_turn + fork 基建，commit 5f43303）：
+  - 后端：db.rs `ensure_conversation`（幂等建空会话行 + 单测）、lib.rs `ensure_conversation_cmd` 注册
+  - 前端：模块级 `sessionBusy` Set + `markSessionDone`（queue-turn-done/error 到达清除）；`callBuiltinTool` 加 3 个内置工具——`session_spawn`（建 🧵 命名子会话并投递 queue_turn，不切换当前会话，返回 session_id）、`session_status`（执行中/已完成 + 消息数 + 最近结果前 600 字）、`session_resume`（轮询等待最长约 4 分钟取回完整结果，用户停止时可中断）；builtin-tools.ts + getMcpToolsPrompt 提示词同步（含「后台子会话使用要点」）；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊
+- **O1 智能上下文压缩**（commit 360b53f）：
+  - 超长裁剪处（MAX_SEND_CHARS=120 万字符）由「粗暴从最早删」改为**两级**：先拉该会话 summaries 覆盖范围，优先删除「已被自动摘要覆盖（compaction）」的最老段——摘要已作为【对话摘要】注入 volatileCtx 作补偿，避免粗暴砍掉还有价值的原文；无覆盖或删尽仍超长，回退粗暴裁剪保底
+  - 压缩产物复用既有 `summaries` 表（conversation_id / msg_range / created_at，与设计的 conversation_compactions 同构）落库复用、不重算；摘要 LLM 提炼由既有 maybeSummarize 承担，不额外烧 token
+  - 构建历史时并行 `rustOrig` 记录每条历史对应原始消息序号，用于定位覆盖段
+- **验证**：vue-tsc / npm test / cargo test 80 全绿；按 O1→O2→O3 顺序逐一推送 GitHub
+
+---
+
 ## 2026-09-02
 
 ### ✅ 设置面板暗色模式白底浅字修复 + 撤销气泡遮挡技能库按钮修复
