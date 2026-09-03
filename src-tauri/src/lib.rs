@@ -1510,14 +1510,21 @@ fn workflow_run_add(
     started_at: i64,
     finished_at: i64,
     summary: String,
+    trace: Option<String>,
 ) -> Result<i64, String> {
-    db.wf_run_add(wf_id, &wf_name, &status, started_at, finished_at, &summary)
+    db.wf_run_add(wf_id, &wf_name, &status, started_at, finished_at, &summary, trace.as_deref().unwrap_or(""))
 }
 
 /// 工作流运行历史
 #[tauri::command]
 fn workflow_runs(db: State<Database>, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
     db.wf_runs(limit.unwrap_or(10).clamp(1, 100))
+}
+
+/// 指定工作流的运行历史（含 trace，供 workflow_improve 自优化复盘）
+#[tauri::command]
+fn workflow_runs_for(db: State<Database>, wf_id: i64, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
+    db.wf_runs_for(wf_id, limit.unwrap_or(10).clamp(1, 100))
 }
 
 // --- IM 网关（钉钉/飞书/企微，docs/IM_GATEWAY.md，2026-08-28 落地） ---
@@ -4616,6 +4623,7 @@ pub fn run() {
             workflow_delete,
             workflow_run_add,
             workflow_runs,
+            workflow_runs_for,
             im_start,
             im_stop,
             im_status,

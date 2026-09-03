@@ -9,7 +9,7 @@ import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissio
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
-import { topoSort, renderTemplate, renderTemplateEx, executeWorkflow, evalCondition, runCodeNode } from "../src/utils/workflow-engine.ts";
+import { topoSort, renderTemplate, renderTemplateEx, executeWorkflow, evalCondition, runCodeNode, validateWorkflowGraph } from "../src/utils/workflow-engine.ts";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
@@ -423,6 +423,77 @@ console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过
   };
   const r4 = await executeWorkflow(g4, {}, { llmCall: async () => "", toolCall: async () => "" });
   assert(r4.outputs[0].value.includes("T") && !r4.outputs[0].value.includes("F"), "合流 end 只收激活分支", r4.outputs[0].value);
+}
+
+console.log("\n== Phase 3 工作流：validateWorkflowGraph（workflow_create 前置校验） ==");
+{
+  const g = { nodes: [{ id: "t", type: "text", label: "T", config: { text: "hi" }, x: 0, y: 0 }], edges: [] };
+  assert(validateWorkflowGraph(g) === null, "合法工作流返回 null");
+  assert(validateWorkflowGraph({ nodes: [], edges: [] }) !== null, "空节点被拒");
+  assert(validateWorkflowGraph({ nodes: [{ id: "t", type: "text", label: "T", config: {} }], edges: [] }) === null, "text 节点无需必填 config");
+  assert(validateWorkflowGraph({ nodes: [{ id: "t", type: "llm", label: "L", config: { prompt: "" } }], edges: [] }) !== null, "LLM 节点缺提示词被拒");
+  assert(validateWorkflowGraph({ nodes: [{ id: "t", type: "tool", label: "X", config: {} }], edges: [] }) !== null, "工具节点缺工具名被拒");
+  assert(validateWorkflowGraph({ nodes: [{ id: "t", type: "condition", label: "C", config: {} }], edges: [] }) !== null, "条件节点缺表达式被拒");
+  assert(validateWorkflowGraph({
+    nodes: [
+      { id: "a", type: "text", label: "A", config: { text: "x" } },
+      { id: "b", type: "text", label: "B", config: { text: "y" } },
+    ],
+    edges: [{ id: "e", source: "a", target: "missing" }],
+  }) !== null, "悬空引用被拒");
+  const cyc = {
+    nodes: [
+      { id: "a", type: "text", label: "A", config: { text: "x" } },
+      { id: "b", type: "text", label: "B", config: { text: "y" } },
+    ],
+    edges: [
+      { id: "e1", source: "a", target: "b" },
+      { id: "e2", source: "b", target: "a" },
+    ],
+  };
+  assert(validateWorkflowGraph(cyc) !== null, "环被拒");
+  assert(validateWorkflowGraph({
+    nodes: [
+      { id: "x", type: "text", label: "A", config: { text: "1" } },
+      { id: "x", type: "text", label: "B", config: { text: "2" } },
+    ],
+    edges: [],
+  }) !== null, "重复 id 被拒");
+  assert(validateWorkflowGraph({ nodes: [{ id: "t", type: "bogus", label: "X", config: {} } as never], edges: [] }) !== null, "非法类型被拒");
+}
+
+console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improve 复盘） ==");
+{
+  // 正常执行：所有节点进 trace，标记 done + 耗时 + 输出
+  const gOk = {
+    nodes: [
+      { id: "t", type: "text", label: "T", config: { text: "hi" }, x: 0, y: 0 },
+      { id: "e", type: "end", label: "E", config: {}, x: 0, y: 100 },
+    ],
+    edges: [{ id: "e1", source: "t", target: "e" }],
+  };
+  const rOk = await executeWorkflow(gOk, {}, { llmCall: async () => "", toolCall: async () => "" });
+  assert(rOk.trace.length === 2, "两个节点都有轨迹", JSON.stringify(rOk.trace));
+  assert(rOk.trace.every((x) => x.status === "done" && typeof x.durationMs === "number" && x.nodeId), "done 节点带耗时与 id");
+  assert(rOk.trace.find((x) => x.nodeId === "t")?.output === "hi", "text 节点轨迹带输出");
+  // 失败节点标记 error 并带错误说明
+  const gErr = { nodes: [{ id: "llm", type: "llm", label: "L", config: { prompt: "boom" }, x: 0, y: 0 }], edges: [] };
+  const rErr = await executeWorkflow(gErr, {}, {
+    llmCall: async () => { throw new Error("模拟失败"); },
+    toolCall: async () => "",
+  });
+  assert(rErr.trace.length === 1 && rErr.trace[0].status === "error", "失败节点标记 error", JSON.stringify(rErr.trace));
+  assert((rErr.trace[0].output || "").includes("执行失败"), "失败节点轨迹带错误说明");
+  // 未激活分支 → skipped
+  const gSkip = {
+    nodes: [
+      { id: "c", type: "condition", label: "C", config: { expression: "true" }, x: 0, y: 0 },
+      { id: "only", type: "text", label: "Only", config: { text: "x" }, x: 0, y: 100 },
+    ],
+    edges: [{ id: "e1", source: "c", target: "only", label: "false" }],
+  };
+  const rSkip = await executeWorkflow(gSkip, {}, { llmCall: async () => "", toolCall: async () => "" });
+  assert(rSkip.trace.some((x) => x.status === "skipped"), "未激活分支节点标记 skipped", JSON.stringify(rSkip.trace));
 }
 
 console.log("\n== Phase 3 工作流：内置模板库 ==");

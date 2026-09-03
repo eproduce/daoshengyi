@@ -2,7 +2,24 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-03**
+> **最后更新：2026-09-04**
+
+---
+
+## 2026-09-04
+
+### ✅ 工作流接入 Agent Phase 2：运行轨迹采集 + 自优化（workflow_improve）
+> 接 09-03 Phase 1（workflow_list / workflow_create / workflow_run）。目标：让 agent 能基于真实运行历史**复盘失败并自我优化**工作流。
+- **轨迹采集（引擎层）**：`workflow-engine.ts` `executeWorkflow` 返回新增 `trace`（逐节点 `{nodeId,label,type,status:done|error|skipped,durationMs,output}`，含耗时统计）——执行处打点：跳过分支、condition 提前 continue、done 尾、catch 错误各 push 一条。
+- **持久化（Rust）**：
+  - `workflow_runs` 表加 `trace TEXT DEFAULT ''` 列 + `Database::new` 迁移（`ALTER TABLE ... ADD COLUMN` 幂等）；`WorkflowRunRow` 加 `trace`；`wf_run_add` 增 `trace` 参数。
+  - 新增 `wf_runs_for(wf_id, limit)`（按工作流取历史，供自优化读取失败轨迹）+ lib.rs 命令 `workflow_runs_for`（`workflow_run_add` 命令同步加 `trace: Option<String>`）。
+- **执行端接入 trace**：chat.ts `workflow_run` 与 WorkflowDialog `recordRun` 都记录 trace（输出截 400 字符防撑库）。
+- **自优化工具 `workflow_improve`**（内置工具 + 提示词同步 + callBuiltinTool case）：
+  - 定位工作流 → 拉最近 ≤6 次运行（含失败/被跳过节点摘要）→ 让辅助/编程模型（`getRoutedAuxConfig("coding")`，chat_once、temperature 0.2、thinking off）产出改进后的工作流 JSON（提示词强约束：修复失败节点/换工具/加分支/细化提示词；无问题则原样返回）→ `extractJsonBlock` 提取 → `validateWorkflowGraph` 校验 → 与现图比对，**未变则不动**，变了才 `workflow_save` 覆盖保存并记录一条 `status='improved'` 历史（新旧节点数/新增移除）。
+  - 改动说明结构化返回：新增/移除节点列表。
+- **测试**：Rust 更新 workflow_run_history 用例（trace 回读 + wf_runs_for 过滤/倒序/删流不影响）→ cargo test 80；前端 +6（trace：正常 done+耗时、error 带错误、skipped 分支）→ npm test 全绿；vite build 通过；tauri dev 自动重建（30s）无错误、应用运行正常
+- **注**：workflow_improve 是「覆盖保存 + 运行历史留痕」模式（无跨版本回滚）；保存后用 workflow_run 验证效果。**待做**：Phase 3「任务类型 ↔ 工作流」记忆（episodic 提炼 + 向量检索 + 自动建议）
 
 ---
 
@@ -23,6 +40,15 @@
   - 压缩产物复用既有 `summaries` 表（conversation_id / msg_range / created_at，与设计的 conversation_compactions 同构）落库复用、不重算；摘要 LLM 提炼由既有 maybeSummarize 承担，不额外烧 token
   - 构建历史时并行 `rustOrig` 记录每条历史对应原始消息序号，用于定位覆盖段
 - **验证**：vue-tsc / npm test / cargo test 80 全绿；按 O1→O2→O3 顺序逐一推送 GitHub
+
+### ✅ 推送与 IM 聊天合并 + 工作流接入 Agent（Phase 1，2026-09-03 续）
+- **推送/IM 合并**：`send_im`（webhook 推送）与 IM 网关的配置/入口重叠 → 合并为单一「即时聊天」面板 + 统一 `im_config` 数据模型——`ImConfig` 去掉 `#[serde(rename_all="camelCase")]`（修复与前端 snake_case 键不匹配的隐藏 bug：真凭据下 `from_value().unwrap_or_default()` 会整份回退 Default、网关读不到配置）+ 新增 `feishu_webhook/wecom_webhook/dingtalk_webhook/dingtalk_secret` 四字段（`#[serde(default)]`）；`settings.rs decrypt_settings` 末尾做旧平铺字段→im_config 幂等迁移（`mem::take` + 清空，仅 im_config 已解成对象时迁移防解密失败误吞）；`ImGatewayPanel` 加「主动推送（Webhook）」区块；`SettingsDialog` 删「推送」Tab（按钮/脚本/Send 图标/SettingsTabId 的 push 全清）；`chat.ts send_im` 从 imConfig 读 webhook（旧平铺字段过渡回退），错误提示改「设置 → 即时聊天」。cargo test 80 / npm test / vite build 全绿
+- **工作流接入 Agent（Phase 1）**：可视化工作流从「用户手动搭的画布」变成「agent 可执行 / 可生成的可复用技能」——
+  - `workflow-engine.ts` 新增 `validateWorkflowGraph` 纯函数（节点数 / 类型 / label / 缺配置 / 重复或悬空引用 / 自环 / 环拓扑检测）
+  - `builtin-tools.ts` + `getMcpToolsPrompt` 注入 3 个内置工具：`workflow_list`（列已存工作流）、`workflow_create`（agent 把多步骤/可复用任务抽象成 DAG JSON，`validateWorkflowGraph` 校验通过后 `workflow_save` 落库）、`workflow_run`（按名/id 执行，复用 `executeWorkflow`——LLM 节点走 chat_once（`store.getAuxConfig()`）、工具节点走 `callMcpTool`，与 WorkflowDialog 同款运行时；执行后 `workflow_run_add` 记录历史）
+  - `callBuiltinTool` 加 3 个 case；提示词加「工作流使用要点」（多步骤且可能重复 → 先 workflow_create 固化、之后 workflow_run 复用；一次性任务不建）
+  - 测试 +10（validateWorkflowGraph 合法/空/缺配置/悬空引用/环/重复 id/非法类型）→ npm test 通过；vite build 全绿
+- **待做（下一步）**：Phase 2 工作流运行轨迹采集 + `workflow_improve` 自优化 + 版本化；Phase 3 「任务类型↔工作流」记忆（episodic 提炼 + 向量检索 + 自动建议）——设计见上文会话「工作流融入 agent 模式」
 
 ---
 

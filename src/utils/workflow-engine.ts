@@ -49,6 +49,18 @@ export interface WorkflowResult {
   log: string[];
   /** 各节点输出的结构化值（JSON 对象/数组/字符串），供字段级引用与 UI 展示 */
   nodeOutputs: Record<string, unknown>;
+  /** 逐节点执行轨迹（nodeId/类型/状态/耗时/输出），供 UI 展示与 workflow_improve 自优化复盘 */
+  trace: WorkflowTraceEntry[];
+}
+
+/** 单节点执行轨迹条目 */
+export interface WorkflowTraceEntry {
+  nodeId: string;
+  label: string;
+  type: string;
+  status: "done" | "error" | "skipped";
+  durationMs: number;
+  output: string;
 }
 
 /** 把模板中的 {{nodeId}} 占位符替换为对应节点输出（未产生输出则替换为空串）。 */
@@ -408,6 +420,7 @@ export async function executeWorkflow(
   // 各节点结构化值表（优先 JSON 对象，供 {{id.field}} 字段级引用；外部输入为字符串）
   const structured: Record<string, unknown> = { ...external };
   const log: string[] = [];
+  const trace: WorkflowTraceEntry[] = [];
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const skippedIds = new Set<string>();
 
@@ -419,10 +432,12 @@ export async function executeWorkflow(
       outputs[id] = "（分支未激活，跳过）";
       skippedIds.add(id);
       log.push(`⏭️ ${node.label}（${node.id}）条件分支未激活，跳过`);
+      trace.push({ nodeId: id, label: node.label, type: node.type, status: "skipped", durationMs: 0, output: "（分支未激活，跳过）" });
       onStep?.({ nodeId: id, status: "skipped", output: "（分支未激活，跳过）" });
       continue;
     }
     const input = resolveInputs(node, graph.edges, outputs, structured, external, byId);
+    const t0 = Date.now();
     try {
       onStep?.({ nodeId: id, status: "running" });
       if (node.type === "text") {
@@ -442,6 +457,7 @@ export async function executeWorkflow(
         outputs[id] = val ? "true" : "false";
         structured[id] = val ? "true" : "false";
         log.push(`🔀 ${node.label}（${node.id}）→ ${val ? "true" : "false"}`);
+        trace.push({ nodeId: id, label: node.label, type: node.type, status: "done", durationMs: Date.now() - t0, output: val ? "true" : "false" });
         onStep?.({ nodeId: id, status: "done", output: val ? "true" : "false" });
         continue;
       } else if (node.type === "code") {
@@ -454,12 +470,14 @@ export async function executeWorkflow(
       // 结构化值：尝试把输出解析为 JSON 对象/数组（LLM 输出 JSON、代码节点返回对象等）
       structured[id] = tryParseStructured(outputs[id]);
       log.push(`✅ ${node.label}（${node.id}）→ ${(outputs[id] || "").slice(0, 120)}`);
+      trace.push({ nodeId: id, label: node.label, type: node.type, status: "done", durationMs: Date.now() - t0, output: outputs[id] ?? "" });
       onStep?.({ nodeId: id, status: "done", output: outputs[id] });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.push(`❌ ${node.label}（${node.id}）：${msg}`);
       outputs[id] = `（节点执行失败：${msg}）`;
       structured[id] = outputs[id];
+      trace.push({ nodeId: id, label: node.label, type: node.type, status: "error", durationMs: Date.now() - t0, output: outputs[id] });
       onStep?.({ nodeId: id, status: "error", output: `（节点执行失败：${msg}）` });
     }
   }
@@ -472,5 +490,36 @@ export async function executeWorkflow(
     outputs: terminal.map((n) => ({ nodeId: n.id, label: n.label, value: outputs[n.id] ?? "" })),
     log,
     nodeOutputs: { ...structured },
+    trace,
   };
+}
+
+/** 校验工作流图是否合法（供 workflow_create 对 LLM 生成的图做前置校验）。
+ *  返回错误文案；合法返回 null。检查：节点数 / 类型 / label / 缺配置 / 重复或悬空引用 / 边自环 / 环（拓扑）。 */
+export function validateWorkflowGraph(graph: WorkflowGraph): string | null {
+  if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return "至少需要 1 个节点";
+  if (!Array.isArray(graph.edges)) return "edges 必须是数组";
+  const ids = new Set<string>();
+  for (const n of graph.nodes) {
+    if (!n.id || typeof n.id !== "string") return "存在缺少 id 的节点";
+    if (ids.has(n.id)) return `节点 id 重复：${n.id}`;
+    ids.add(n.id);
+  }
+  const TYPES: WorkflowNodeType[] = ["text", "llm", "tool", "condition", "code", "end"];
+  for (const n of graph.nodes) {
+    if (!TYPES.includes(n.type)) return `节点 ${n.id} 类型不合法：${n.type}`;
+    if (!n.label || !String(n.label).trim()) return `节点 ${n.id} 缺少 label`;
+    if (n.type === "tool" && !n.config?.tool) return `工具节点 ${n.id} 未指定工具名（config.tool）`;
+    if (n.type === "llm" && !n.config?.prompt?.trim()) return `LLM 节点 ${n.id} 未填写提示词（config.prompt）`;
+    if (n.type === "condition" && !n.config?.expression?.trim()) return `条件节点 ${n.id} 未填写表达式（config.expression）`;
+    if (n.type === "code" && !n.config?.code?.trim()) return `代码节点 ${n.id} 未填写代码（config.code）`;
+  }
+  for (const e of graph.edges) {
+    if (!ids.has(e.source)) return `连线 ${e.id} 源节点 ${e.source} 不存在`;
+    if (!ids.has(e.target)) return `连线 ${e.id} 目标节点 ${e.target} 不存在`;
+    if (e.source === e.target) return `连线 ${e.id} 不能自环`;
+  }
+  const sorted = topoSort(graph);
+  if ("error" in sorted) return sorted.error;
+  return null;
 }

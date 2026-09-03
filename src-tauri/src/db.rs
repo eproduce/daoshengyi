@@ -158,7 +158,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     status TEXT NOT NULL,
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
-    summary TEXT
+    summary TEXT,
+    trace TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_wf_runs_started ON workflow_runs(started_at);
 
@@ -282,6 +283,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
         // 旧库迁移：加 attachments 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []);
+        // 旧库迁移：workflow_runs 加 trace 列（运行节点轨迹，供 workflow_improve 自优化）
+        let _ = conn.execute("ALTER TABLE workflow_runs ADD COLUMN trace TEXT", []);
         // 用量累计表迁移：首次创建时从现有 messages 一次性聚合历史数据，
         // 之后仅通过 accumulate_usage 增量累加（删除会话不清零，统计跨会话保留）
         let agg_exists: bool = conn
@@ -1357,7 +1360,7 @@ impl Database {
         Ok(())
     }
 
-    /// 记录一次工作流运行
+    /// 记录一次工作流运行（trace 为该次逐节点轨迹 JSON，供自优化复盘）
     pub fn wf_run_add(
         &self,
         wf_id: Option<i64>,
@@ -1366,11 +1369,12 @@ impl Database {
         started_at: i64,
         finished_at: i64,
         summary: &str,
+        trace: &str,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO workflow_runs(wf_id, wf_name, status, started_at, finished_at, summary) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![wf_id, wf_name, status, started_at, finished_at, summary],
+            "INSERT INTO workflow_runs(wf_id, wf_name, status, started_at, finished_at, summary, trace) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![wf_id, wf_name, status, started_at, finished_at, summary, trace],
         )
         .map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
@@ -1380,7 +1384,7 @@ impl Database {
     pub fn wf_runs(&self, limit: i64) -> Result<Vec<WorkflowRunRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, wf_id, wf_name, status, started_at, finished_at, summary FROM workflow_runs ORDER BY started_at DESC LIMIT ?1")
+            .prepare("SELECT id, wf_id, wf_name, status, started_at, finished_at, summary, trace FROM workflow_runs ORDER BY started_at DESC LIMIT ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![limit], |r| {
@@ -1392,6 +1396,32 @@ impl Database {
                     started_at: r.get(4)?,
                     finished_at: r.get(5)?,
                     summary: r.get(6)?,
+                    trace: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+
+    /// 指定工作流的运行历史（按开始时间倒序，limit 条；供 workflow_improve 读取失败轨迹）
+    pub fn wf_runs_for(&self, wf_id: i64, limit: i64) -> Result<Vec<WorkflowRunRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, wf_id, wf_name, status, started_at, finished_at, summary, trace FROM workflow_runs WHERE wf_id=?1 ORDER BY started_at DESC LIMIT ?2")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![wf_id, limit], |r| {
+                Ok(WorkflowRunRow {
+                    id: r.get(0)?,
+                    wf_id: r.get(1)?,
+                    wf_name: r.get(2)?,
+                    status: r.get(3)?,
+                    started_at: r.get(4)?,
+                    finished_at: r.get(5)?,
+                    summary: r.get(6)?,
+                    trace: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1733,6 +1763,7 @@ pub struct WorkflowRunRow {
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub summary: String,
+    pub trace: String,
 }
 
 /// 知识库分块（Phase 3 RAG）
@@ -2266,17 +2297,24 @@ mod tests {
     fn workflow_run_history_records_and_lists() {
         let (dir, db) = tmp_db();
         let id = db.wf_save("流程A", "{}").unwrap();
-        db.wf_run_add(Some(id), "流程A", "success", 1000, 2000, "输出：你好").unwrap();
-        db.wf_run_add(None, "临时流程", "failed", 3000, 4000, "执行异常").unwrap();
+        db.wf_run_add(Some(id), "流程A", "success", 1000, 2000, "输出：你好", "").unwrap();
+        db.wf_run_add(None, "临时流程", "failed", 3000, 4000, "执行异常", "").unwrap();
         let runs = db.wf_runs(10).unwrap();
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].wf_name, "临时流程"); // 按开始时间倒序
         assert_eq!(runs[0].status, "failed");
         assert_eq!(runs[1].wf_name, "流程A");
         assert_eq!(runs[1].summary, "输出：你好");
+        // trace 列存取 + 按工作流过滤（workflow_improve 用）
+        db.wf_run_add(Some(id), "流程A", "failed", 5000, 6000, "输出异常", "[{nodeId:n1,status:error}]").unwrap();
+        assert_eq!(db.wf_runs(10).unwrap()[0].trace, "[{nodeId:n1,status:error}]", "trace 应可回读");
+        let wf_runs = db.wf_runs_for(id, 10).unwrap();
+        assert_eq!(wf_runs.len(), 2, "wf_runs_for 只返回该工作流运行");
+        assert!(wf_runs.iter().all(|r| r.wf_id == Some(id)));
+        assert_eq!(wf_runs[0].summary, "输出异常", "wf_runs_for 倒序取最新");
         // 删除工作流不影响历史（wf_name 快照）
         db.wf_delete(id).unwrap();
-        assert_eq!(db.wf_runs(10).unwrap().len(), 2);
+        assert_eq!(db.wf_runs(10).unwrap().len(), 3);
         cleanup(&dir);
     }
 }

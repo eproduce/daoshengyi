@@ -239,7 +239,8 @@ async function run() {
     const summary = (res.outputs.length
       ? res.outputs.slice(0, 2).map((o) => `[${o.label}] ${o.value.slice(0, 80)}`).join("；")
       : (res.log[0] || "").slice(0, 160)) || "（无输出）";
-    await recordRun(runName, "success", startedAt, Date.now(), summary);
+    const traceStr = JSON.stringify((res.trace || []).map((t) => ({ ...t, output: (t.output || "").slice(0, 400) })));
+    await recordRun(runName, "success", startedAt, Date.now(), summary, traceStr);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     log.value = [`❌ 执行异常：${msg}`];
@@ -303,9 +304,9 @@ async function deleteCurrentWf() {
     log.value = [`❌ 删除失败：${e instanceof Error ? e.message : String(e)}`];
   }
 }
-async function recordRun(wfName: string, status: string, startedAt: number, finishedAt: number, summary: string) {
+async function recordRun(wfName: string, status: string, startedAt: number, finishedAt: number, summary: string, trace?: string) {
   try {
-    await invoke("workflow_run_add", { wfId: loadedWfId.value, wfName, status, startedAt, finishedAt, summary });
+    await invoke("workflow_run_add", { wfId: loadedWfId.value, wfName, status, startedAt, finishedAt, summary, trace: trace ?? "" });
     await refreshWorkflows();
   } catch { /* 历史记录失败不影响运行结果展示 */ }
 }

@@ -154,6 +154,22 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "session_resume",
     desc: "**等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。",
   },
+  {
+    name: "workflow_list",
+    desc: "列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。",
+  },
+  {
+    name: "workflow_run",
+    desc: "**按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {\"name\": \"工作流名称或 id\", \"input\": \"可选外部输入（节点里以 {{user}} 引用）\"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。",
+  },
+  {
+    name: "workflow_create",
+    desc: "**把多步骤/可复用任务抽象成工作流并保存**。参数 {\"name\": \"工作流名称\", \"graph\": {\"nodes\": [{\"id\":\"n1\",\"type\":\"text|llm|tool|condition|code|end\",\"label\":\"节点名\",\"config\":{...}}], \"edges\": [{\"id\":\"e1\",\"source\":\"n1\",\"target\":\"n2\"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。",
+  },
+  {
+    name: "workflow_improve",
+    desc: "**基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {\"name\": \"工作流名称或 id\", \"note\": \"可选改进诉求\"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。",
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

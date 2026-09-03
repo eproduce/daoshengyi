@@ -22,10 +22,19 @@ import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 import { discoverProjectInstructions } from "@/utils/agents-md";
+import { executeWorkflow, validateWorkflowGraph, type WorkflowGraph } from "@/utils/workflow-engine";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
   try { await invoke("debug_log", { msg }); } catch { /* 日志失败不影响主流程 */ }
+}
+
+/// 从模型输出中提取 JSON 对象文本（去 markdown 围栏；取首个 { 到末个 }）
+function extractJsonBlock(s: string): string {
+  const t = s.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const start = t.indexOf("{");
+  const end = t.lastIndexOf("}");
+  return start >= 0 && end > start ? t.slice(start, end + 1) : t;
 }
 
 // --- MCP 工具辅助 ---
@@ -277,6 +286,10 @@ function getMcpToolsPrompt(): string {
     "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
     "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
     "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
+    "\n- **workflow_list** (app): 列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。" +
+    "\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {\"name\": \"工作流名称或 id\", \"input\": \"可选外部输入（节点里以 {{user}} 引用）\"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。" +
+    "\n- **workflow_create** (app): **把多步骤/可复用任务抽象成工作流并保存**。参数 {\"name\": \"工作流名称\", \"graph\": {\"nodes\": [{\"id\":\"n1\",\"type\":\"text|llm|tool|condition|code|end\",\"label\":\"节点名\",\"config\":{...}}], \"edges\": [{\"id\":\"e1\",\"source\":\"n1\",\"target\":\"n2\"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。" +
+    "\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {\"name\": \"工作流名称或 id\", \"note\": \"可选改进诉求\"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。" +
     "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
     "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
     "\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {\"prompt\": \"后台任务的完整指令\", \"name\": \"可选子会话名（默认 子任务）\"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。" +
@@ -286,7 +299,12 @@ function getMcpToolsPrompt(): string {
     "- 用户需要**长时间/独立**的任务（如长研究、批量抓取、多步代码改造）且不想阻塞当前对话时，可用 session_spawn 投到后台执行。\n" +
     "- spawn 后 session_status 查进度；需要结果时 session_resume（会等待完成并取回全文）。若子会话结果与主任务无关，也可不 resume，直接告知用户子会话已就绪、可点击查看。\n" +
     "- 子会话与主会话相互独立（各自上下文）；需要基于子会话结果继续时务必 resume 取回，不要凭猜测描述其结果。" +
-    "\n\n## 长期记忆使用要点\n" +
+    "\n\n## 工作流使用要点\n" +
+    "- 多步骤且**可能重复**的任务（同一流程还要做几遍，如每月研究简报、批量报告、常规文档处理）→ 先抽象成可复用工作流：workflow_create 保存，之后 workflow_run 一键复用；不确定有没有现成的先 workflow_list。\n" +
+    "- workflow_run 适合「流程固定、输入变化」的任务；一次性的独特任务不必建工作流，直接逐步执行即可。\n" +
+    "- 工作流运行不理想/有失败节点 → 用 workflow_improve 基于运行历史自动优化（会分析失败/被跳过节点并出改进版）。\n" +
+    "- 复杂任务先用 plan_task 展示步骤给用户；流程稳定后可用 workflow_create 固化为工作流，让同类任务执行更快更稳。\n" +
+    "\n## 长期记忆使用要点\n" +
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
     "- **遗忘**：用户要求删除某条记忆时调用 memory_forget。\n" +
@@ -809,15 +827,186 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!isWecom && !isFeishu && !isDingtalk) throw new Error("send_im 需要 platform 参数：feishu（飞书）/ wecom（企业微信）/ dingtalk（钉钉）");
       const cfg = getSettings();
       const plat = isWecom ? "wecom" : isFeishu ? "feishu" : "dingtalk";
-      const webhook = isWecom ? cfg.wecomWebhook : isFeishu ? cfg.feishuWebhook : cfg.dingtalkWebhook;
+      // Webhook 统一从 IM 配置读取（旧版平铺字段仅作过渡期回退）
+      const imCfg = (cfg.imConfig || {}) as Record<string, unknown>;
+      const legacy = isWecom ? cfg.wecomWebhook : isFeishu ? cfg.feishuWebhook : cfg.dingtalkWebhook;
+      const webhookKey = isWecom ? "wecom_webhook" : isFeishu ? "feishu_webhook" : "dingtalk_webhook";
+      const webhook = (imCfg[webhookKey] as string) || legacy || "";
       if (!webhook) {
-        throw new Error(`未配置${isWecom ? "企业微信" : isFeishu ? "飞书" : "钉钉"} Webhook，请先在「设置 → 推送」中填写群机器人 Webhook 地址。`);
+        throw new Error(`未配置${isWecom ? "企业微信" : isFeishu ? "飞书" : "钉钉"} Webhook，请先在「设置 → 即时聊天」中填写群机器人 Webhook 地址。`);
       }
+      const secret = plat === "dingtalk" ? ((imCfg["dingtalk_secret"] as string) || cfg.dingtalkSecret || "") : "";
       const result = await invoke<string>("send_im_message", {
         platform: plat, text, webhook,
-        secret: plat === "dingtalk" ? cfg.dingtalkSecret || "" : "",
+        secret,
       });
       return result;
+    }
+    case "workflow_list": {
+      const list = await invoke<{ id: number; name: string }[]>("workflow_list");
+      if (!list.length) return "（暂无已保存的工作流。可让用户在可视化工作流编辑器里搭建，或用 workflow_create 直接生成。）";
+      return "已保存的工作流：\n" + list.map((w) => `- ${w.name}（id=${w.id}）`).join("\n");
+    }
+    case "workflow_create": {
+      // 让 agent 把多步骤/可复用任务抽象成工作流并保存（引擎校验环/悬空引用/缺配置后落库）
+      const name = String(args.name || "").trim();
+      if (!name) throw new Error("workflow_create 需要 name 参数（工作流名称）");
+      let graph: WorkflowGraph;
+      if (typeof args.graph === "string") {
+        try { graph = JSON.parse(args.graph) as WorkflowGraph; } catch { throw new Error("graph 必须是合法 JSON"); }
+      } else if (args.graph && typeof args.graph === "object") {
+        graph = args.graph as WorkflowGraph;
+      } else {
+        throw new Error("workflow_create 需要 graph 参数（含 nodes 与 edges 的工作流对象）");
+      }
+      const verr = validateWorkflowGraph(graph);
+      if (verr) throw new Error(`工作流不合法：${verr}`);
+      const id = await invoke<number>("workflow_save", { name, graph: JSON.stringify(graph) });
+      return `✅ 已保存工作流「${name}」（id=${id}）：${graph.nodes.length} 节点 / ${graph.edges.length} 连线。同类任务之后可用 workflow_run 按名称执行。`;
+    }
+    case "workflow_run": {
+      // 让 agent 按名称/ id 执行已保存工作流（与可视化编辑器一致的运行时：LLM→chat_once、工具→callMcpTool）
+      const nameOrId = String(args.name ?? args.id ?? "").trim();
+      if (!nameOrId) throw new Error("workflow_run 需要 name 参数（工作流名称或 id）");
+      let wf: { id: number; name: string; graph: string } | null = null;
+      if (/^\d+$/.test(nameOrId)) {
+        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: Number(nameOrId) });
+      } else {
+        const list = await invoke<{ id: number; name: string }[]>("workflow_list");
+        const hit = list.find((x) => x.name === nameOrId);
+        if (hit) wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: hit.id });
+      }
+      if (!wf) throw new Error(`未找到工作流「${nameOrId}」，可先 workflow_list 查看已有工作流，或 workflow_create 新建`);
+      let graph: WorkflowGraph;
+      try { graph = JSON.parse(wf.graph) as WorkflowGraph; } catch { throw new Error("工作流数据损坏，无法解析"); }
+      const verr = validateWorkflowGraph(graph);
+      if (verr) throw new Error(`工作流「${wf.name}」不合法：${verr}`);
+      const external: Record<string, string> = {};
+      const input = args.input ?? args.user;
+      if (input !== undefined && input !== null && String(input).trim()) external["user"] = String(input);
+      const { useChatStore } = await import("./chat");
+      const store = useChatStore();
+      const config = store.getAuxConfig();
+      if (!config.baseUrl || !config.apiKey) throw new Error("未配置 API 地址/Key，无法执行工作流 LLM 节点");
+      const startedAt = Date.now();
+      const res = await executeWorkflow(graph, external, {
+        llmCall: async (prompt, opts) => {
+          const data = await invoke<{ content?: string }>("chat_once", {
+            config: {
+              base_url: config.baseUrl, api_key: config.apiKey,
+              model: opts?.model || config.model,
+              max_tokens: config.maxTokens, temperature: 0.3,
+              thinking_enabled: config.thinkingEnabled ?? false,
+              reasoning_effort: config.reasoningEffort ?? "low",
+              system_prompt: "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
+              enable_web_search: false,
+            },
+            messages: [{ role: "user", content: prompt }],
+          });
+          return data?.content || "（模型未返回内容）";
+        },
+        toolCall: async (tool, toolArgs) => callMcpTool("app", tool, toolArgs),
+      });
+      const failed = res.log.some((l) => l.startsWith("❌") || l.includes("执行失败"));
+      const traceStr = JSON.stringify((res.trace || []).map((t) => ({ ...t, output: (t.output || "").slice(0, 400) })));
+      try {
+        const summary = (res.outputs.length
+          ? res.outputs.slice(0, 2).map((o) => `[${o.label}] ${o.value.slice(0, 80)}`).join("；")
+          : (res.log[0] || "").slice(0, 160)) || "（无输出）";
+        await invoke("workflow_run_add", {
+          wfId: wf.id, wfName: wf.name, status: failed ? "failed" : "success",
+          startedAt, finishedAt: Date.now(), summary: summary.slice(0, 200),
+          trace: traceStr,
+        });
+      } catch { /* 记录运行历史失败不影响执行 */ }
+      const logTail = res.log.slice(-10).join("\n");
+      const outText = res.outputs.map((o) => `[${o.label}] ${o.value}`).join("\n\n---\n\n");
+      return `【工作流「${wf.name}」${failed ? "执行完成（存在失败节点，请查看日志）" : "执行成功"}】\n${logTail}${outText ? `\n\n—— 最终输出 ——\n${outText}` : ""}`;
+    }
+    case "workflow_improve": {
+      // Phase 2：基于该工作流最近运行历史（含失败节点轨迹）让 LLM 产出改进图，校验后保存新版本
+      const nameOrId = String(args.name ?? args.id ?? "").trim();
+      if (!nameOrId) throw new Error("workflow_improve 需要 name 参数（工作流名称或 id）");
+      let wf: { id: number; name: string; graph: string } | null = null;
+      if (/^\d+$/.test(nameOrId)) {
+        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: Number(nameOrId) });
+      } else {
+        const list = await invoke<{ id: number; name: string }[]>("workflow_list");
+        const hit = list.find((x) => x.name === nameOrId);
+        if (hit) wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: hit.id });
+      }
+      if (!wf) throw new Error(`未找到工作流「${nameOrId}」`);
+      let graph: WorkflowGraph;
+      try { graph = JSON.parse(wf.graph) as WorkflowGraph; } catch { throw new Error("工作流数据损坏"); }
+      const note = String(args.note ?? "").trim();
+      // 读取最近运行历史（含失败轨迹）
+      let runsText = "（暂无运行记录）";
+      try {
+        const runs = await invoke<{ status: string; started_at: number; summary: string; trace: string }[]>("workflow_runs_for", { wfId: wf.id, limit: 6 });
+        if (runs.length) {
+          runsText = runs.map((r) => {
+            let line = `- [${r.status}] ${new Date(r.started_at).toLocaleString("zh-CN")} ${(r.summary || "").slice(0, 200)}`;
+            if (r.trace) {
+              try {
+                const arr = JSON.parse(r.trace) as { nodeId?: string; type?: string; status?: string }[];
+                const bad = (Array.isArray(arr) ? arr : []).filter((x) => x.status === "error" || x.status === "skipped");
+                if (bad.length) line += ` | 问题节点：${bad.map((x) => `${x.nodeId}(${x.type}:${x.status})`).join(", ")}`;
+              } catch { /* 轨迹解析失败忽略 */ }
+            }
+            return line;
+          }).join("\n");
+        }
+      } catch { /* 读历史失败不影响优化 */ }
+      const { useChatStore } = await import("./chat");
+      const store = useChatStore();
+      const config = store.getRoutedAuxConfig("coding");
+      if (!config.baseUrl || !config.apiKey) throw new Error("未配置 API 地址/Key，无法优化工作流");
+      const prompt =
+        "你是「道生一」的工作流优化器。请基于最近几次运行记录改进下面的工作流（有向无环图）。\n" +
+        `【当前工作流 JSON】\n${JSON.stringify(graph)}\n\n` +
+        `【最近运行记录】\n${runsText}\n\n` +
+        (note ? `【用户改进诉求】\n${note}\n\n` : "") +
+        "要求：\n" +
+        "1. 节点类型 text/llm/tool/condition/code/end；节点 id 用小写字母数字（如 n1、n2）；上游输出用 {{节点id}} 引用；LLM 节点提示词与 tool 节点参数可含 {{上游id}}。\n" +
+        "2. 针对失败/被跳过的节点修复：工具反复失败就换工具或改参数、加条件分支容错；LLM 输出不稳就拆细节点或给更明确提示词。\n" +
+        "3. 不要为改而改：若最近运行全部成功且无明显问题，或你判断无法可靠改进，就原样返回当前 JSON。\n" +
+        "4. **只输出改进后的工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）。";
+      const data = await invoke<{ content?: string }>("chat_once", {
+        config: {
+          base_url: config.baseUrl, api_key: config.apiKey, model: config.model,
+          max_tokens: 6000, temperature: 0.2,
+          thinking_enabled: false, reasoning_effort: "low",
+          system_prompt: "你是严谨的工程 Agent。只按用户要求输出合法 JSON，不要附加任何说明。",
+          enable_web_search: false,
+        },
+        messages: [{ role: "user", content: prompt }],
+      });
+      const raw = (data?.content || "").trim();
+      let improved: WorkflowGraph;
+      try {
+        improved = JSON.parse(extractJsonBlock(raw)) as WorkflowGraph;
+      } catch {
+        throw new Error("模型未返回合法 JSON，未做改动：\n" + raw.slice(0, 300));
+      }
+      const verr = validateWorkflowGraph(improved);
+      if (verr) throw new Error(`改进后的工作流不合法（未保存）：${verr}`);
+      if (JSON.stringify(improved) === JSON.stringify(graph)) {
+        return `【工作流优化】「${wf.name}」无需改动（模型判定当前版本已合适或运行正常）。`;
+      }
+      const newId = await invoke<number>("workflow_save", { name: wf.name, graph: JSON.stringify(improved) });
+      const oldLabels = new Set(graph.nodes.map((n) => n.label));
+      const newLabels = new Set(improved.nodes.map((n) => n.label));
+      const added = improved.nodes.filter((n) => !oldLabels.has(n.label)).map((n) => `${n.type}「${n.label}」`);
+      const removed = graph.nodes.filter((n) => !newLabels.has(n.label)).map((n) => `${n.type}「${n.label}」`);
+      try {
+        const summary = `自优化：${graph.nodes.length}→${improved.nodes.length} 节点${added.length ? `；新增 ${added.slice(0, 4).join("、")}` : ""}${removed.length ? `；移除 ${removed.slice(0, 4).join("、")}` : ""}`;
+        await invoke("workflow_run_add", { wfId: newId, wfName: wf.name, status: "improved", startedAt: Date.now(), finishedAt: Date.now(), summary: summary.slice(0, 200), trace: "" });
+      } catch { /* 记录失败不影响 */ }
+      const diff: string[] = [];
+      if (added.length) diff.push(`新增节点：${added.slice(0, 6).join("、")}`);
+      if (removed.length) diff.push(`移除节点：${removed.slice(0, 6).join("、")}`);
+      if (!diff.length) diff.push("结构未变（连线/参数级调整）");
+      return `【工作流优化】「${wf.name}」已保存新版本（${graph.nodes.length} → ${improved.nodes.length} 节点）：\n- ${diff.join("\n- ")}\n建议用 workflow_run 运行一次验证效果。`;
     }
     case "describe_image": {
       const path = String(args.path || "");
