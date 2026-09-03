@@ -23,6 +23,7 @@ import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 import { discoverProjectInstructions } from "@/utils/agents-md";
 import { executeWorkflow, validateWorkflowGraph, workflowKeywords, scoreTaskAgainstWorkflow, type WorkflowGraph } from "@/utils/workflow-engine";
+import { markExternalToolResult } from "@/utils/untrusted";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
@@ -1741,7 +1742,7 @@ async function runSubagentLoop(
       if (stopRequested) throw new AgentStoppedError(); // 工具返回后
       msgs.push({
         role: "user",
-        content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。`,
+        content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。`,
       });
       continue;
     }
@@ -3098,7 +3099,7 @@ export const useChatStore = defineStore("chat", () => {
             : "";
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n${truncateToolResult(result)}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
+            content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
           });
         } catch (e: unknown) {
           if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环，不当作工具失败

@@ -21,6 +21,7 @@ mod im;
 mod execpolicy;
 mod pty;
 mod ssrf;
+mod security;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -1723,6 +1724,50 @@ async fn im_status(
     state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
 ) -> Result<im::ImStatus, String> {
     Ok(state.inner().lock().await.snapshot())
+}
+
+/// O6 安全审计自检：doctor 式核查 execpolicy 兜底 / 路径白名单 / 密钥权限 /
+/// SSRF 防护 / 命令审批模式 / IM 网关白名单（HealthPanel「安全审计」区块展示）
+#[tauri::command]
+fn security_check(
+    app: tauri::AppHandle,
+    db: State<Database>,
+    cipher: State<settings::SecretCipher>,
+) -> Result<Vec<security::SecurityCheck>, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    // 读取并解密设置
+    let mut st: settings::AppSettings = {
+        let json = db.get_setting(SETTINGS_KEY)?.unwrap_or_default();
+        serde_json::from_str(&json).unwrap_or_default()
+    };
+    cipher.decrypt_settings(&mut st).map_err(|e| e.to_string())?;
+    // execpolicy 规则文本（缺失回退默认内容）
+    let rules_text =
+        std::fs::read_to_string(execpolicy::rules_path(&app_dir)).unwrap_or_else(|_| execpolicy::DEFAULT_RULES.to_string());
+    // 密钥文件权限（unix：组/其他无权限位即视为 0600 级）
+    #[cfg(unix)]
+    let key_mode_ok = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(app_dir.join("secret.key"))
+            .map(|m| m.permissions().mode() & 0o077 == 0)
+            .unwrap_or(false)
+    };
+    #[cfg(not(unix))]
+    let key_mode_ok = true;
+    let key_loadable = settings::SecretCipher::new(&app_dir).is_ok();
+    // IM 网关白名单
+    let im_cfg: im::ImConfig = serde_json::from_value(st.im_config.clone()).unwrap_or_default();
+    let inp = security::SecurityInput {
+        rules_text: &rules_text,
+        allowed_paths: &st.allowed_paths,
+        ssrf_deny_private: st.ssrf_deny_private,
+        approval_mode: &st.approval_mode,
+        key_mode_ok,
+        key_loadable,
+        im_enabled: im_cfg.enabled,
+        im_whitelist_empty: im_cfg.whitelist.is_empty(),
+    };
+    Ok(security::run_checks(&inp))
 }
 
 // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
@@ -4624,6 +4669,7 @@ pub fn run() {
             workflow_run_add,
             workflow_runs,
             workflow_runs_for,
+            security_check,
             im_start,
             im_stop,
             im_status,

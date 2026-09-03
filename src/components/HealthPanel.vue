@@ -16,6 +16,13 @@ interface Diag {
 }
 
 const diag = ref<Diag | null>(null);
+interface SecurityCheck {
+  id: string;
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+const security = ref<SecurityCheck[] | null>(null);
 const error = ref("");
 const loading = ref(false);
 
@@ -23,9 +30,14 @@ async function refresh() {
   loading.value = true;
   error.value = "";
   try {
-    diag.value = await invoke<Diag>("system_diagnostics");
+    const [d, s] = await Promise.all([
+      invoke<Diag>("system_diagnostics"),
+      invoke<SecurityCheck[]>("security_check"),
+    ]);
+    diag.value = d;
+    security.value = s;
   } catch (e) {
-    error.value = `获取诊断失败: ${e instanceof Error ? e.message : String(e)}`;
+    error.value = `获取诊断/安全审计失败: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     loading.value = false;
   }
@@ -61,6 +73,20 @@ function fmtMem(mb: number): string {
       <div class="health-cell"><span class="health-label">运行时长</span>{{ diag.uptime }}</div>
     </div>
 
+    <!-- 安全审计（O6：doctor 式配置自检） -->
+    <div v-if="security" class="health-sec">
+      <div class="health-log__title">安全审计
+        <template v-if="security.some((c) => !c.ok)">（{{ security.filter((c) => !c.ok).length }} 项需关注）</template>
+      </div>
+      <div v-for="c in security" :key="c.id" class="health-sec__row" :class="c.ok ? 'ok' : 'warn'">
+        <span class="health-sec__dot">{{ c.ok ? "✅" : "⚠️" }}</span>
+        <div class="health-sec__body">
+          <b>{{ c.name }}</b>
+          <span class="health-sec__detail">{{ c.detail }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- 日志查看 -->
     <div class="health-log">
       <div class="health-log__title">应用日志（尾部）</div>
@@ -91,6 +117,18 @@ function fmtMem(mb: number): string {
 .mini-bar__fill { height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); border-radius: 3px; }
 
 .health-log { display: flex; flex-direction: column; min-height: 0; }
+.health-sec { display: flex; flex-direction: column; gap: 6px; }
+.health-sec__row {
+  display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
+  border: 1px solid #2a2a45; border-radius: 8px; font-size: 12px; line-height: 1.6;
+}
+.health-sec__row.ok { background: #0f2016; border-color: #1f4d2e; }
+.health-sec__row.warn { background: #2a1f0a; border-color: #6b4a12; }
+.health-sec__dot { font-size: 12px; line-height: 1.5; }
+.health-sec__body { display: flex; flex-direction: column; color: #ddd; }
+.health-sec__body b { font-size: 12px; color: #eee; }
+.health-sec__detail { font-size: 11px; color: #9aa; }
+.health-sec__row.warn .health-sec__body b { color: #ffd479; }
 .health-log__title { font-size: 12px; color: #bbb; margin-bottom: 6px; }
 .health-log__body {
   flex: 1; background: #0d0d1a; border: 1px solid #2a2a45; border-radius: 8px;
