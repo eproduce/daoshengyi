@@ -17,9 +17,9 @@ import AuditPanel from "./AuditPanel.vue";
 import UndoPanel from "./UndoPanel.vue";
 import PtyPanel from "./PtyPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Send, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database, MessagesSquare, ListChecks, History, Terminal as TerminalIcon } from "lucide-vue-next";
+import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database, MessagesSquare, ListChecks, History, Terminal as TerminalIcon } from "lucide-vue-next";
 
-type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "push" | "memory" | "kb" | "im" | "audit" | "undo" | "permissions" | "shortcuts" | "pty";
+type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "memory" | "kb" | "im" | "audit" | "undo" | "permissions" | "shortcuts" | "pty";
 const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
@@ -147,20 +147,6 @@ function onAuxProfileChange(e: Event) {
   const v = (e.target as HTMLSelectElement).value;
   auxiliaryProfileId.value = v;
   updateSettings({ auxiliaryProfileId: v });
-}
-
-// 主动推送 Webhook（飞书 / 企业微信 / 钉钉群机器人，加密落盘）
-const feishuWebhook = ref(getSettings().feishuWebhook || "");
-const wecomWebhook = ref(getSettings().wecomWebhook || "");
-const dingtalkWebhook = ref(getSettings().dingtalkWebhook || "");
-const dingtalkSecret = ref(getSettings().dingtalkSecret || "");
-function savePushWebhooks() {
-  updateSettings({
-    feishuWebhook: feishuWebhook.value.trim(),
-    wecomWebhook: wecomWebhook.value.trim(),
-    dingtalkWebhook: dingtalkWebhook.value.trim(),
-    dingtalkSecret: dingtalkSecret.value.trim(),
-  });
 }
 
 // P-A7 权限矩阵：禁用工具 + 路径白名单（每行一个，@change 即时保存）
@@ -327,7 +313,6 @@ function handleDelete() {
           <button :class="['settings-tab', { active: activeTab === 'undo' }]" @click="activeTab = 'undo'"><span class="settings-tab__icon"><History :size="15" /></span>撤销</button>
           <button :class="['settings-tab', { active: activeTab === 'pty' }]" @click="activeTab = 'pty'"><span class="settings-tab__icon"><TerminalIcon :size="15" /></span>终端</button>
           <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
-          <button :class="['settings-tab', { active: activeTab === 'push' }]" @click="activeTab = 'push'"><span class="settings-tab__icon"><Send :size="15" /></span>推送</button>
           <button :class="['settings-tab', { active: activeTab === 'shortcuts' }]" @click="activeTab = 'shortcuts'"><span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键</button>
         </nav>
 
@@ -690,50 +675,6 @@ function handleDelete() {
             <button class="btn-secondary" @click="resetExecRules">恢复默认</button>
           </div>
           <span class="form-hint">语法：<code>allow | deny | prompt &lt;命令前缀&gt;</code>（按 token 前缀匹配，文件顺序优先、首条命中生效）。deny 直接拦截；allow 直接放行（即使命中内置危险模式）；prompt 必须确认。示例：<code>allow git status</code> 不再确认、<code>deny rm -rf</code> 直接拦截。未命中规则时按默认三档审批（manual/smart/yolo）。</span>
-        </div>
-      </div>
-
-      <!-- 主动推送（飞书 / 企业微信群机器人） -->
-      <div v-show="activeTab === 'push'">
-        <div class="form-group">
-          <label>飞书群机器人 Webhook</label>
-          <input
-            v-model="feishuWebhook"
-            type="password"
-            placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
-            @change="savePushWebhooks"
-          />
-          <span class="form-hint">飞书群 → 设置 → 群机器人 → 添加「自定义机器人」→ 复制 Webhook 地址</span>
-        </div>
-        <div class="form-group">
-          <label>企业微信群机器人 Webhook</label>
-          <input
-            v-model="wecomWebhook"
-            type="password"
-            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
-            @change="savePushWebhooks"
-          />
-          <span class="form-hint">企业微信群 → 添加「群机器人」→ 复制 Webhook 地址。之后可让 Agent 调用 send_im 主动推送，或配定时任务用 curl 定时推送。</span>
-        </div>
-        <div class="form-group">
-          <label>钉钉群机器人 Webhook</label>
-          <input
-            v-model="dingtalkWebhook"
-            type="password"
-            placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
-            @change="savePushWebhooks"
-          />
-          <span class="form-hint">钉钉群 → 设置 → 机器人 → 添加「自定义」→ 复制 Webhook 地址</span>
-        </div>
-        <div class="form-group">
-          <label>钉钉加签密钥（可选）</label>
-          <input
-            v-model="dingtalkSecret"
-            type="password"
-            placeholder="SEC...（钉钉安全设置选「加签」时才需填写）"
-            @change="savePushWebhooks"
-          />
-          <span class="form-hint">钉钉机器人安全设置若选「加签」，填 SEC 开头的密钥；选「自定义关键词」则留空</span>
         </div>
       </div>
 

@@ -21,8 +21,9 @@ use tokio::sync::Mutex;
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
 /// IM 平台配置（存在 settings.im_config，整体 AES 加密落盘）
+/// 统一承载两类能力：接收（应用凭据 + 长连接）与主动推送（群机器人 Webhook）。
+/// 字段名与前端 imConfig 对象的 snake_case 键一一对应（勿加 camelCase 重命名）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImConfig {
     pub platform: String,       // "dingtalk" | "feishu" | "wecom"
     pub enabled: bool,
@@ -43,6 +44,15 @@ pub struct ImConfig {
     pub wecom_corp_secret: String,
     pub wecom_agent_id: String,
     pub wecom_touser: String, // 默认接收人（空=用 chat_id 参数）
+    // 群机器人 Webhook（主动推送用，可选；未配置应用凭据时 send_im 走此路径）
+    #[serde(default)]
+    pub feishu_webhook: String,
+    #[serde(default)]
+    pub wecom_webhook: String,
+    #[serde(default)]
+    pub dingtalk_webhook: String,
+    #[serde(default)]
+    pub dingtalk_secret: String,
 }
 
 impl ImConfig {

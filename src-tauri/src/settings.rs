@@ -284,6 +284,29 @@ impl SecretCipher {
                 }
             }
         }
+        // 迁移：旧版平铺 webhook 字段并入 im_config（幂等；此后平铺字段清空）。
+        // 仅在 im_config 已解成对象时迁移，避免解密失败时误吞旧字段。
+        if settings.im_config.is_object() {
+            let flat_feishu = std::mem::take(&mut settings.feishu_webhook);
+            let flat_wecom = std::mem::take(&mut settings.wecom_webhook);
+            let flat_dingtalk = std::mem::take(&mut settings.dingtalk_webhook);
+            let flat_dingtalk_secret = std::mem::take(&mut settings.dingtalk_secret);
+            if let Some(obj) = settings.im_config.as_object_mut() {
+                for (flat, key) in [
+                    (flat_feishu, "feishu_webhook"),
+                    (flat_wecom, "wecom_webhook"),
+                    (flat_dingtalk, "dingtalk_webhook"),
+                    (flat_dingtalk_secret, "dingtalk_secret"),
+                ] {
+                    if !flat.is_empty() {
+                        let existing = obj.get(key).and_then(|v| v.as_str()).unwrap_or("");
+                        if existing.is_empty() {
+                            obj.insert(key.to_string(), serde_json::json!(flat));
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

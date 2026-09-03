@@ -23,6 +23,10 @@ interface ImConfigObj {
   wecom_corp_secret?: string;
   wecom_agent_id?: string;
   wecom_touser?: string;
+  feishu_webhook?: string;
+  wecom_webhook?: string;
+  dingtalk_webhook?: string;
+  dingtalk_secret?: string;
 }
 interface ImStatus {
   running: boolean;
@@ -52,6 +56,10 @@ const wCorpId = ref(raw.wecom_corp_id || "");
 const wCorpSecret = ref(raw.wecom_corp_secret || "");
 const wAgentId = ref(raw.wecom_agent_id || "");
 const wTouser = ref(raw.wecom_touser || "");
+const fWebhook = ref(raw.feishu_webhook || "");
+const wWebhook = ref(raw.wecom_webhook || "");
+const dWebhook = ref(raw.dingtalk_webhook || "");
+const dSecret = ref(raw.dingtalk_secret || "");
 
 const status = ref<ImStatus | null>(null);
 const busy = ref(false);
@@ -76,6 +84,10 @@ function buildConfig(): Record<string, unknown> {
     wecom_corp_secret: wCorpSecret.value,
     wecom_agent_id: wAgentId.value,
     wecom_touser: wTouser.value,
+    feishu_webhook: fWebhook.value,
+    wecom_webhook: wWebhook.value,
+    dingtalk_webhook: dWebhook.value,
+    dingtalk_secret: dSecret.value,
   };
 }
 
@@ -172,6 +184,15 @@ onUnmounted(() => {
         <div class="im-field"><span>默认接收人 touser（可选，留空用会话 id）</span><input v-model="wTouser" placeholder="如 @all 或成员 UserID" /></div>
       </template>
 
+      <div class="im-subsection">
+        <span class="im-subsection__title">📣 主动推送（群机器人 Webhook，可选）</span>
+        <span class="im-subsection__hint">与「接收」相互独立：只填 Webhook 即可让 Agent 用 send_im 单向推送，无需应用凭据、无需启动网关。</span>
+        <div class="im-field"><span>飞书群机器人 Webhook</span><input v-model="fWebhook" type="password" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></div>
+        <div class="im-field"><span>企业微信群机器人 Webhook</span><input v-model="wWebhook" type="password" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." /></div>
+        <div class="im-field"><span>钉钉群机器人 Webhook</span><input v-model="dWebhook" type="password" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." /></div>
+        <div class="im-field"><span>钉钉加签密钥（可选）</span><input v-model="dSecret" type="password" placeholder="SEC...（钉钉安全设置选「加签」时填写）" /></div>
+      </div>
+
       <div class="im-field">
         <span>白名单 chat_id（每行一个；留空=全部会话）</span>
         <textarea v-model="whitelist" rows="3" placeholder="如：cid12345&#10;oc_xxxxx" />
@@ -228,6 +249,9 @@ onUnmounted(() => {
 .im-title { font-size: 15px; font-weight: 700; margin: 0; }
 .im-desc { font-size: 12px; color: var(--text-secondary, #777); line-height: 1.6; margin: 0; }
 .im-form { display: flex; flex-direction: column; gap: 8px; background: var(--bg-soft, #f6f6f6); border-radius: 8px; padding: 10px; }
+.im-subsection { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px; border: 1px dashed var(--border, #ddd); border-radius: 8px; }
+.im-subsection__title { font-size: 13px; font-weight: 700; color: var(--text, #222); }
+.im-subsection__hint { font-size: 11px; color: var(--text-secondary, #999); line-height: 1.5; }
 .im-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .im-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary, #666); }
 .im-field input, .im-field textarea {
