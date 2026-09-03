@@ -170,6 +170,14 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "workflow_improve",
     desc: "**基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {\"name\": \"工作流名称或 id\", \"note\": \"可选改进诉求\"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。",
   },
+  {
+    name: "workflow_suggest",
+    desc: "**按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {\"task\": \"任务描述\", \"limit\": \"可选条数默认 3\"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。",
+  },
+  {
+    name: "workflow_remember",
+    desc: "**沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {\"task_type\": \"任务类型描述如 月度研究/日报生成\", \"workflow_name\": \"工作流名\"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。",
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

@@ -22,7 +22,7 @@ import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 import { discoverProjectInstructions } from "@/utils/agents-md";
-import { executeWorkflow, validateWorkflowGraph, type WorkflowGraph } from "@/utils/workflow-engine";
+import { executeWorkflow, validateWorkflowGraph, workflowKeywords, scoreTaskAgainstWorkflow, type WorkflowGraph } from "@/utils/workflow-engine";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
@@ -290,6 +290,8 @@ function getMcpToolsPrompt(): string {
     "\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {\"name\": \"工作流名称或 id\", \"input\": \"可选外部输入（节点里以 {{user}} 引用）\"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。" +
     "\n- **workflow_create** (app): **把多步骤/可复用任务抽象成工作流并保存**。参数 {\"name\": \"工作流名称\", \"graph\": {\"nodes\": [{\"id\":\"n1\",\"type\":\"text|llm|tool|condition|code|end\",\"label\":\"节点名\",\"config\":{...}}], \"edges\": [{\"id\":\"e1\",\"source\":\"n1\",\"target\":\"n2\"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。" +
     "\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {\"name\": \"工作流名称或 id\", \"note\": \"可选改进诉求\"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。" +
+    "\n- **workflow_suggest** (app): **按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {\"task\": \"任务描述\", \"limit\": \"可选条数默认 3\"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。" +
+    "\n- **workflow_remember** (app): **沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {\"task_type\": \"任务类型描述如 月度研究/日报生成\", \"workflow_name\": \"工作流名\"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。" +
     "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
     "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
     "\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {\"prompt\": \"后台任务的完整指令\", \"name\": \"可选子会话名（默认 子任务）\"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。" +
@@ -304,6 +306,7 @@ function getMcpToolsPrompt(): string {
     "- workflow_run 适合「流程固定、输入变化」的任务；一次性的独特任务不必建工作流，直接逐步执行即可。\n" +
     "- 工作流运行不理想/有失败节点 → 用 workflow_improve 基于运行历史自动优化（会分析失败/被跳过节点并出改进版）。\n" +
     "- 复杂任务先用 plan_task 展示步骤给用户；流程稳定后可用 workflow_create 固化为工作流，让同类任务执行更快更稳。\n" +
+    "- 接任务先判断是否命中处理模式：记忆里有「某类任务→工作流」或 workflow_suggest 命中 → 直接 workflow_run 复用；全新但以后会重复的流程 → 完成后 workflow_create 固化 + workflow_remember 记住映射。\n" +
     "\n## 长期记忆使用要点\n" +
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
@@ -1007,6 +1010,46 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (removed.length) diff.push(`移除节点：${removed.slice(0, 6).join("、")}`);
       if (!diff.length) diff.push("结构未变（连线/参数级调整）");
       return `【工作流优化】「${wf.name}」已保存新版本（${graph.nodes.length} → ${improved.nodes.length} 节点）：\n- ${diff.join("\n- ")}\n建议用 workflow_run 运行一次验证效果。`;
+    }
+    case "workflow_suggest": {
+      // Phase 3：按任务文本在已保存工作流中做相关度建议（关键词打分，供复用/沉淀判断）
+      const task = String(args.task || args.query || "").trim();
+      if (!task) throw new Error("workflow_suggest 需要 task 参数（要匹配的任务描述）");
+      const list = await invoke<{ id: number; name: string; graph: string }[]>("workflow_list");
+      if (!list.length) return "（暂无已保存的工作流，可用 workflow_create 抽象沉淀首个流程）";
+      const scored = list
+        .map((w) => {
+          let g: WorkflowGraph | null = null;
+          try { g = JSON.parse(w.graph) as WorkflowGraph; } catch { /* 忽略坏数据 */ }
+          return { w, g, score: g ? scoreTaskAgainstWorkflow(g, task) : 0 };
+        })
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Math.min(Number(args.limit ?? 3) || 3, 5));
+      if (!scored.length) return "（未找到与当前任务相关的工作流——若是全新且以后会重复的流程，可 workflow_create 抽象后 workflow_remember 记住）";
+      return "可按需复用的相关工作流（相关度从高到低）：\n" + scored.map((s, i) => {
+        const labels = (s.g?.nodes || []).map((n) => n.label).filter(Boolean);
+        const chain = labels.slice(0, 6).join(" → ");
+        return `${i + 1}. ${s.w.name}（id=${s.w.id}，相关度 ${(s.score * 100).toFixed(0)}%）${chain ? `\n   流程：${chain}${labels.length > 6 ? " …" : ""}` : ""}`;
+      }).join("\n");
+    }
+    case "workflow_remember": {
+      // Phase 3：把「某类任务 → 已沉淀工作流」沉淀为记忆（type=workflow，跨会话自动注入）
+      const taskType = String(args.task_type ?? args.taskType ?? "").trim();
+      const workflowName = String(args.workflow_name ?? args.workflowName ?? "").trim();
+      if (!taskType || !workflowName) throw new Error("workflow_remember 需要 task_type（任务类型描述）与 workflow_name（工作流名）");
+      const list = await invoke<{ id: number; name: string }[]>("workflow_list");
+      const hit = list.find((w) => w.name === workflowName);
+      if (!hit) throw new Error(`工作流「${workflowName}」不存在，先用 workflow_create 创建再记住`);
+      const fact = `任务类型「${taskType}」可复用已沉淀工作流「${workflowName}」（id=${hit.id}），同类任务直接用 workflow_run 执行`;
+      const row = {
+        id: uuidv4(), conversation_id: null, fact, fact_type: "workflow",
+        importance: 6, access_count: 0, last_accessed: null, created_at: Date.now(),
+      };
+      const res = await invoke<string>("save_fact", { fact: row });
+      return res.startsWith("merged:")
+        ? `✅ 已更新处理模式记忆（并入已有条目）。以后遇到「${taskType}」类任务会自动想起工作流「${workflowName}」。`
+        : `✅ 已记住处理模式：${taskType} → 工作流「${workflowName}」。以后同类任务会自动想起，直接 workflow_run 复用。`;
     }
     case "describe_image": {
       const path = String(args.path || "");

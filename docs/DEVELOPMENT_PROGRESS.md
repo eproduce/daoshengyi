@@ -21,6 +21,18 @@
 - **测试**：Rust 更新 workflow_run_history 用例（trace 回读 + wf_runs_for 过滤/倒序/删流不影响）→ cargo test 80；前端 +6（trace：正常 done+耗时、error 带错误、skipped 分支）→ npm test 全绿；vite build 通过；tauri dev 自动重建（30s）无错误、应用运行正常
 - **注**：workflow_improve 是「覆盖保存 + 运行历史留痕」模式（无跨版本回滚）；保存后用 workflow_run 验证效果。**待做**：Phase 3「任务类型 ↔ 工作流」记忆（episodic 提炼 + 向量检索 + 自动建议）
 
+### ✅ 工作流接入 Agent Phase 3：任务类型 ↔ 工作流的处理模式记忆
+> 接 09-04 Phase 2。目标：让 agent「处理某类任务时自动想起对应工作流」——把「任务类型 → 已沉淀工作流」的映射变成**跨会话记忆**，同类任务不再从零规划。
+- **纯函数（workflow-engine.ts，可测）**：`workflowKeywords(graph)`（聚合节点类型/label/工具名/提示词/文本片段成可检索文本）、`queryTokens(text)`（ASCII 小写词 + 中文整段/2/3 字窗）、`scoreTaskAgainstWorkflow(graph, task)`（命中查询词加权占比 0..1，长词加权）。
+- **新内置工具（builtin-tools + 提示词同步 + callBuiltinTool case）**：
+  - `workflow_suggest(task, limit?)`：对已保存工作流按任务文本打分排序，返回候选 + 相关度 % + 流程链（label → …）；未命中提示「全新且会重复→create+remember」。
+  - `workflow_remember(task_type, workflow_name)`：校验工作流存在后，把 `任务类型「X」可复用已沉淀工作流「Y」…` 存为**长期记忆事实（fact_type='workflow'，重要度 6）**——复用既有记忆体系：对话首轮相关记忆自动注入 → 以后遇到同类任务系统自动想起；6 避开用户画像高重要度(≥7)过滤，不污染画像。
+- **提示词引导**（工作流使用要点新增）：接任务先判断是否命中处理模式（记忆里有「任务→工作流」或 workflow_suggest 命中 → workflow_run；全新可重复 → create + remember）。
+- **记忆 UI**：`memory-format.ts` TYPE_LABEL 增 `workflow: "工作流"`（面板/注入来源标注友好显示）。
+- **测试 +6**（workflowKeywords 聚合 / queryTokens 中文词窗+ascii / 同类任务得分高 / 无关 0 / 部分命中居中）→ npm test 245 全绿；vite build 通过
+- **经验**：queryTokens 只产整段 + 2/3 字窗，4 字词不成独立 token——测试断言别要求完整 4 字词，改用 2 字窗/ascii 词断言；跨任务匹配打分用「共享词窗加权占比」足够（工作流数量小，无需先向量化）。
+- **待做（远期）**：工作流 embedding 向量检索（数量大了再上）；会话结束把「成功工具序列」自动提炼成候选工作流（episodic→graph）；workflow_improve 跨版本回滚。
+
 ---
 
 ## 2026-09-03

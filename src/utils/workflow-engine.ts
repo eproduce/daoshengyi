@@ -523,3 +523,50 @@ export function validateWorkflowGraph(graph: WorkflowGraph): string | null {
   if ("error" in sorted) return sorted.error;
   return null;
 }
+
+/** 从工作流图提取可检索的关键词文本（节点类型/label/工具/提示词/文本片段），供任务匹配与记忆。 */
+export function workflowKeywords(graph: WorkflowGraph): string {
+  const parts: string[] = [];
+  for (const n of graph.nodes) {
+    parts.push(n.type, n.label || "");
+    const c = n.config || {};
+    if (c.tool) parts.push(c.tool);
+    if (c.text) parts.push(String(c.text));
+    if (c.prompt) parts.push(String(c.prompt));
+    if (c.expression) parts.push(String(c.expression));
+    if (c.code) parts.push(String(c.code).slice(0, 200));
+    if (c.model) parts.push(String(c.model));
+  }
+  return parts.join(" ");
+}
+
+/** 抽取文本的检索词：ASCII 小写单词 + 中文连续串（整串 + 2/3 字窗口）。 */
+export function queryTokens(text: string): string[] {
+  const out = new Set<string>();
+  const s = String(text || "");
+  for (const m of s.toLowerCase().matchAll(/[a-z][a-z0-9_-]*/g)) out.add(m[0]);
+  const cjk = s.replace(/[^\u4e00-\u9fa5]+/g, " ");
+  for (const seg of cjk.split(/\s+/)) {
+    if (!seg) continue;
+    if (seg.length <= 2) { out.add(seg); continue; }
+    out.add(seg);
+    for (let i = 0; i + 2 < seg.length; i++) out.add(seg.slice(i, i + 3));
+    for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));
+  }
+  return [...out];
+}
+
+/** 计算任务文本与工作流的相关分（0..1）：命中查询词占比，长词/实体加权。供 workflow_suggest。 */
+export function scoreTaskAgainstWorkflow(graph: WorkflowGraph, taskText: string): number {
+  const kwSet = new Set(queryTokens(workflowKeywords(graph)));
+  const taskToks = queryTokens(taskText);
+  if (!taskToks.length) return 0;
+  let hit = 0;
+  let weight = 0;
+  for (const t of taskToks) {
+    const w = t.length >= 4 ? 3 : t.length >= 3 ? 2 : t.length >= 2 ? 1.5 : 1;
+    weight += w;
+    if (kwSet.has(t)) hit += w;
+  }
+  return weight ? hit / weight : 0;
+}

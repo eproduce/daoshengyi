@@ -9,7 +9,7 @@ import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissio
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
 import { formatFactLine, formatMemoriesBlock, pickForgetCandidates, factTypeLabel } from "../src/utils/memory-format.ts";
-import { topoSort, renderTemplate, renderTemplateEx, executeWorkflow, evalCondition, runCodeNode, validateWorkflowGraph } from "../src/utils/workflow-engine.ts";
+import { topoSort, renderTemplate, renderTemplateEx, executeWorkflow, evalCondition, runCodeNode, validateWorkflowGraph, workflowKeywords, queryTokens, scoreTaskAgainstWorkflow } from "../src/utils/workflow-engine.ts";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
@@ -494,6 +494,28 @@ console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improv
   };
   const rSkip = await executeWorkflow(gSkip, {}, { llmCall: async () => "", toolCall: async () => "" });
   assert(rSkip.trace.some((x) => x.status === "skipped"), "未激活分支节点标记 skipped", JSON.stringify(rSkip.trace));
+}
+
+console.log("\n== Phase 3 工作流：任务匹配建议（workflow_suggest 纯函数） ==");
+{
+  const g = {
+    nodes: [
+      { id: "t", type: "text", label: "研究课题", config: { text: "研究课题" }, x: 0, y: 0 },
+      { id: "l", type: "llm", label: "规划提纲", config: { prompt: "为研究课题规划一份提纲" }, x: 0, y: 100 },
+      { id: "s", type: "tool", label: "搜索", config: { tool: "web_search", toolArgs: { query: "{{t}}" } }, x: 0, y: 200 },
+    ],
+    edges: [{ id: "e1", source: "t", target: "l" }, { id: "e2", source: "l", target: "s" }],
+  };
+  const kw = workflowKeywords(g);
+  assert(kw.includes("规划提纲") && kw.includes("研究课题") && kw.includes("web_search"), "workflowKeywords 聚合 label/prompt/tool");
+  const toks = queryTokens("帮我做一份研究简报 关于DeepSeek");
+  assert(toks.includes("研究") && toks.includes("简报") && toks.includes("deepseek"), "queryTokens 提取中文词窗与 ascii 词", JSON.stringify(toks));
+  const sHit = scoreTaskAgainstWorkflow(g, "我想做一个研究课题的规划");
+  assert(sHit > 0.1, "同类任务得分高", String(sHit));
+  const sNone = scoreTaskAgainstWorkflow(g, "帮我订一张去北京的机票");
+  assert(sNone === 0, "无关任务得分 0", String(sNone));
+  const sPartial = scoreTaskAgainstWorkflow(g, "帮我搜索一下最近的新闻并规划提纲");
+  assert(sPartial > 0 && sPartial < sHit, "部分命中得分介于中间", String(sPartial));
 }
 
 console.log("\n== Phase 3 工作流：内置模板库 ==");

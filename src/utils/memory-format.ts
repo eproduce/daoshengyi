@@ -9,7 +9,7 @@ export interface MemoryFact {
   created_at: number;
 }
 
-const TYPE_LABEL: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
+const TYPE_LABEL: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办", workflow: "工作流" };
 export function factTypeLabel(t: string): string {
   return TYPE_LABEL[t] || t;
 }
