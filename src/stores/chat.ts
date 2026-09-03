@@ -263,6 +263,7 @@ function getMcpToolsPrompt(): string {
     "\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {\"path\": \"绝对路径或以 ~/ 开头\", \"content\": \"文件内容\"}。文件已存在时不会覆盖，返回提示。" +
     "\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {\"path\": \"文件绝对路径\"}。删除前先确认用户确实要求删除该文件。" +
     "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
+    "\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {\"command\": \"完整 shell 命令\"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。\n" +
     "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
     "\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {\"cwd\": \"项目目录绝对路径\", \"command\": \"可选，显式指定测试命令（如 pytest -q）\", \"args\": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。" +
     "\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {\"path\": \"项目目录绝对路径\"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。" +
@@ -312,7 +313,11 @@ function getMcpToolsPrompt(): string {
     "- **主动记忆**：用户明确告知偏好/个人信息/决定/待办时，调用 memory_save 记住（不要只当次回答）。\n" +
     "- **回忆优先**：涉及用户历史信息、上次讨论、个人偏好时，先 memory_recall 检索，再基于真实记忆回答，不要编造。\n" +
     "- **遗忘**：用户要求删除某条记忆时调用 memory_forget。\n" +
-    "- 记忆跨会话自动注入：系统也会在每次对话前自动检索相关记忆注入上下文，无需你手动调用；memory_recall 用于更精确的主动查证。";
+    "- 记忆跨会话自动注入：系统也会在每次对话前自动检索相关记忆注入上下文，无需你手动调用；memory_recall 用于更精确的主动查证。" +
+    "\n\n## 命令执行与打开本机应用（run_command）\n" +
+    "- **你具备本机命令行能力**：调用 run_command 可执行 shell 命令（受命令执行策略门禁；危险/破坏性命令会被拦截或需用户确认，勿尝试绕过）。\n" +
+    "- 用户要「打开/启动某应用、文件夹或文件」时**不要声称做不到**——macOS 用 run_command 执行 `open -a \"应用名\"`（例：照片→`open -a Photos`、访达→`open .`）或 `open \"文件/文件夹/照片库路径\"`（例：`open \"/Users/wanghuan/Pictures/Photos Library.photoslibrary\"` 会打开「照片」）。\n" +
+    "- 能用专用工具（git / run_tests / list_dir / read_file / replace_string / workflow_*）完成的优先用专用工具；run_command 用于其余命令（GUI 启动、构建脚本、brew、系统查询等）。只读优先，慎用写/删/安装类。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
     "\n\n## 强制要求（实时/时效信息）\n" +
@@ -1051,6 +1056,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return res.startsWith("merged:")
         ? `✅ 已更新处理模式记忆（并入已有条目）。以后遇到「${taskType}」类任务会自动想起工作流「${workflowName}」。`
         : `✅ 已记住处理模式：${taskType} → 工作流「${workflowName}」。以后同类任务会自动想起，直接 workflow_run 复用。`;
+    }
+    case "run_command": {
+      // 模型可调命令：与 /run 同款 execpolicy / 危险审批门禁；结果以字符串返回给模型
+      const command = String(args.command ?? args.cmd ?? "").trim();
+      if (!command) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
+      const { useChatStore } = await import("./chat");
+      return useChatStore().agentRunCommand(command);
     }
     case "describe_image": {
       const path = String(args.path || "");
@@ -2497,6 +2509,64 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /// 模型可调的 run_command 实现：与 /run 同一安全管线（execpolicy deny / 危险审批），
+  /// 但只把执行结果作为字符串返回给模型（不写对话消息），供 Agent 完成专用工具覆盖不了的
+  /// 命令任务（打开本机 App、运行构建/工具脚本、系统查询等）。
+  async function agentRunCommand(raw: string): Promise<string> {
+    const cmdStr = String(raw || "").replace(/～/g, "~").trim();
+    if (!cmdStr) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
+    // execpolicy：deny 直接拦截返回（不让模型重试绕行）；allow / prompt / 未命中继续
+    let policy: { decision: string; matched: string | null } | null = null;
+    try {
+      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", { command: cmdStr });
+    } catch { /* 策略查询失败按未命中处理（原有兜底） */ }
+    const policyDecision = policy?.decision ?? "none";
+    if (policyDecision === "deny") {
+      return `⛔ 命令被「命令执行策略」拦截（命中：\`${policy?.matched ?? "?"}\`）：$ ${cmdStr}\n此类破坏性命令不允许 Agent 执行；若确需，请让用户手动输入 /run 或调整 设置→权限→命令执行策略。`;
+    }
+    // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行
+    const needsConfirm = policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+    if (needsConfirm) {
+      const st = getSettings();
+      const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      if (mode === "manual") {
+        const ok = await askConfirm(`⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`);
+        if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
+      } else if (mode === "smart") {
+        const safe = await judgeCommandSafety(cmdStr);
+        if (!safe) {
+          const ok = await askConfirm(`⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`);
+          if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
+        }
+      }
+      // yolo → 自动放行
+    }
+    await setPreventSleep(true);
+    try {
+      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean; created_files?: string[] }>(
+        "execute_command", {
+          command: cmdStr,
+          args: [] as string[],
+          cwd: getSettings().workspace || null,
+          timeoutSecs: 60,
+        },
+      );
+      const out = result.stdout.trimEnd();
+      const err = result.stderr.trimEnd();
+      let content = `$ ${cmdStr}\n`;
+      if (out) content += `\n${out}\n`;
+      if (err) content += `\n[stderr]\n${err}\n`;
+      content += `\n${result.timed_out ? "⏰ 执行超时，已终止" : exitStatusLabel(result.exit_code)}`;
+      const created = result.created_files || [];
+      if (created.length > 0) content += `\n\n📄 生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
+      return content;
+    } catch (e: unknown) {
+      return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      await setPreventSleep(false);
+    }
+  }
+
   // 读取文件（/read 指令，借鉴 DeepSeek Harness 的文件能力）
   async function runRead(filePath: string) {
     let convId = activeConversationId.value;
@@ -3384,6 +3454,7 @@ export const useChatStore = defineStore("chat", () => {
     retryLast,
     taskPlan,
     setTaskPlan,
+    agentRunCommand,
     copyToClipboard,
     downloadExport,
     searchConversations,

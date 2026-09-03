@@ -47,6 +47,15 @@
 - **经验**：外部内容防注入要落在「工具结果回填」这个**唯一回注点**（主循环 + 子代理循环两处）而非各工具实现里，结构统一；标记用中文字面量边界（模型易识别），不篡改 MCP 工具原始返回
 - **待做（远期）**：O4「外部内容严格模式」开关（需 AppSettings + 设置 UI）；O5 IM 配对审批（未知发送者配对码）
 
+### ✅ 命令行支持：模型可调 run_command（桌面深度集成，2026-09-04）
+> 背景：测试时 Agent 对「打开照片 App / 访问照片库」回复「打不开 GUI」——根因是此前命令执行**只给用户 `/run`，模型没有命令入口**（模型侧仅 run_tests / git 白名单封装）。
+- **store 新增 `agentRunCommand(raw)`**：与 `/run` **同一安全管线**——execpolicy deny 直接拦截并返回（不让模型重试绕过）、危险命令按 manual/smart/yolo 三档审批（manual/smart 未获批准返回说明，引导模型改用安全命令或请用户手动 `/run`）、`setPreventSleep`、走 Rust `execute_command`（timeout 60s、workspace cwd）并返回 stdout/stderr/退出码/超时/生成文件文本；**不写对话消息**，仅把结果字符串返回给模型继续推理
+- **内置工具 `run_command`**（builtin-tools + getMcpToolsPrompt 同步 + callBuiltinTool case 经 `useChatStore().agentRunCommand`）
+- **提示词新增「命令执行与打开本机应用」引导**：用户要打开 App/文件夹/照片库时**不要声称做不到**——`open -a "照片"`(实际名 Photos) / `open "…/Photos Library.photoslibrary"` 等 macOS 命令；并强调专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先、只读优先
+- **验证**：npm test 252 / vite build 全绿（模型侧实际调用待实测）
+- **安全**：deny 规则（rm -rf / sudo / mkfs / dd / git reset --hard / git push --force / chmod -R 777 等）+ 危险确认沿用 `/run` 同一套门禁，Agent 无法绕过
+- **经验**：桌面 Agent「打开 GUI 应用」= 一条受控命令（`open`），无需专门 GUI 控制权；缺的是模型入口 + 提示词引导，而非底层能力
+
 ---
 
 ## 2026-09-03

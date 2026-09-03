@@ -178,6 +178,10 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "workflow_remember",
     desc: "**沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {\"task_type\": \"任务类型描述如 月度研究/日报生成\", \"workflow_name\": \"工作流名\"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。",
   },
+  {
+    name: "run_command",
+    desc: "**执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {\"command\": \"完整 shell 命令\"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` / `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先用专用工具，只读优先、慎用写/删/安装类。",
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);
