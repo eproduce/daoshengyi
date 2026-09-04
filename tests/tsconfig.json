@@ -1,0 +1,15 @@
+{
+  // 测试文件独立 tsconfig：仅供编辑器提供语言服务（不纳入主 vue-tsc 检查，
+  // 测试由 Vitest/esbuild 转译执行，fixture 多为宽松字面量）
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["./**/*.ts"]
+}

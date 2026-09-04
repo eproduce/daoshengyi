@@ -1,0 +1,62 @@
+# 持续集成：每次 push main / PR 自动跑质量门禁
+# - 前端：vitest 单测 + vue-tsc 类型检查 + vite build
+# - Rust：rustfmt 格式 + clippy（-D warnings）+ cargo test
+# 打包发布走 build-macos.yml（手动或 v* tag）
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (test + typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: Type check + Build (vue-tsc + vite)
+        run: npm run build
+
+  rust:
+    name: Rust (fmt + clippy + test)
+    # Tauri 依赖系统 GUI 库，macOS runner 与本地开发环境一致、无额外系统依赖
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check formatting (rustfmt)
+        run: cargo fmt --check
+
+      - name: Lint (clippy, deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test (cargo test)
+        run: cargo test --lib

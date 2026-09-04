@@ -22,7 +22,7 @@ import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 import { discoverProjectInstructions } from "@/utils/agents-md";
-import { executeWorkflow, validateWorkflowGraph, workflowKeywords, scoreTaskAgainstWorkflow, type WorkflowGraph } from "@/utils/workflow-engine";
+import { executeWorkflow, validateWorkflowGraph, scoreTaskAgainstWorkflow, type WorkflowGraph } from "@/utils/workflow-engine";
 import { markExternalToolResult } from "@/utils/untrusted";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题

@@ -16,7 +16,7 @@
 | 密钥 | AES-256-GCM，密钥文件 `secret.key`（0600）于 app_data_dir |
 | 定位 | 本地优先 + 国产模型（DeepSeek）的 AI Agent 桌面客户端 |
 | 远程 | `https://github.com/eproduce/daoshengyi` 分支 main |
-| 测试 | `npm test`（前端 224 项）· `cargo test --lib`（Rust 60 项）· `vue-tsc --noEmit` |
+| 测试 | `npm test`（Vitest，tests/ 4 文件 / 252 断言）· `cargo test --lib`（Rust 85 项）· `npm run build`（vue-tsc + vite）· CI 门禁：fmt / clippy(-D warnings) / 测试 / 构建 |
 
 ---
 
@@ -417,10 +417,11 @@
 
 ```bash
 npm run tauri dev          # 开发模式（自动启动 Vite + cargo）
-npx vite build            # 前端生产构建（不跑类型检查）
-npx vue-tsc --noEmit      # 前端严格类型检查（建议每轮自测加它）
-npm test                  # 前端测试（84 项）
-cargo check               # Rust 编译检查
-cargo test --lib          # Rust 单元测试（40 项，7 项 live 忽略）
-git push origin main      # 每次完成推送 GitHub
+npm run build             # 前端严格类型检查 + 生产构建（vue-tsc --noEmit + vite build）
+npm test                  # 前端测试（Vitest：tests/*.test.ts，252 断言）
+npm run test:watch        # 前端测试监听模式
+cargo fmt                 # Rust 格式化（CI fmt --check 门禁要求一致）
+cargo clippy --all-targets -- -D warnings   # Rust lint（CI 门禁：零告警）
+cargo test --lib          # Rust 单元测试（85 项，7 项 live 忽略）
+git push origin main      # 推送即触发 .github/workflows/ci.yml 质量门禁
 ```

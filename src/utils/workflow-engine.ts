@@ -414,7 +414,7 @@ export async function executeWorkflow(
 ): Promise<WorkflowResult> {
   const sorted = topoSort(graph);
   if ("error" in sorted) {
-    return { outputs: [], log: [`❌ ${sorted.error}`], nodeOutputs: {} };
+    return { outputs: [], log: [`❌ ${sorted.error}`], nodeOutputs: {}, trace: [] };
   }
   const outputs: Record<string, string> = { ...external };
   // 各节点结构化值表（优先 JSON 对象，供 {{id.field}} 字段级引用；外部输入为字符串）

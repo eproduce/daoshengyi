@@ -6,7 +6,11 @@ import { useMcpStore } from "./stores/mcp";
 import { useOllamaStore } from "./stores/ollama";
 import { useChatStore } from "./stores/chat";
 import { useUiStore } from "./stores/ui";
+import { installGlobalErrorLog } from "./utils/error-log";
 import "./assets/styles/main.css";
+
+// 全局错误本地日志：在应用挂载前安装，捕获 Vue 初始化期与运行期未捕获错误
+installGlobalErrorLog();
 
 const app = createApp(App);
 const pinia = createPinia();

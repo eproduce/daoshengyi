@@ -2,7 +2,23 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-04**
+> **最后更新：2026-09-05**
+
+---
+
+## 2026-09-05
+
+### ✅ 工程化/产品化优化批次：CI 质量门禁 + Vitest + 本地错误日志 + 依赖自动化
+> 背景：工程化评估发现四项短板——测试是手写 runner（无框架、CI Node20 跑不了原生 TS）、CI 只打包不测试、无 Lint/Format 门禁、无依赖自动更新。全部落地并推 GitHub。
+- **测试基建迁移 Vitest 3**（`tests/*.test.ts`，机械转换顶层断言语段原样保留）：手写 assert runner → `import {it,expect}` + 基于 expect 的本地 assert；`vitest.config.ts`（tests include + node env）+ `tests/tsconfig.json`（仅供编辑器语言服务，不纳入 vue-tsc——脚本式 fixture 为宽松字面量）；`package.json` test→`vitest run` + 新增 `test:watch`；删 scripts/test-*.mts（git 历史可回溯）。版本：vitest 3.2.7 与 vite5 兼容（vitest 4 需 vite6/7 → peer 冲突），CI/dependabot 已 ignore 防误升
+- **CI 质量门禁（`.github/workflows/ci.yml`，新）**：push main / PR 自动跑——前端 `npm test` + `npm run build`（vue-tsc 类型检查 + vite build）；Rust `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test --lib`（macOS runner 免装 webkit 系统库）。**首次启用即抓出 2 个遗留类型错误**（此前 vite build 不查类型漏网至今）：①`executeWorkflow` 拓扑错误分支漏 `trace: []`（Phase2 加 trace 时遗漏）②chat.ts 未用 `workflowKeywords` 导入——均已修复
+- **全仓 rustfmt + clippy 清零**：`cargo fmt`（项目从未整体格式化，全仓大 diff，语义不变）；clippy 自动修复 + 手动清 10 处（doc 续行 / too_many_arguments×2 allow / explicit_counter_loop / needless_range_loop→`slice.fill` / cloned_ref_to_slice_refs×2→`std::slice::from_ref` / ssrf field_reassign_with_default×3→struct update）→ **clippy 0 告警**，CI 可 `-D warnings`
+- **前端全局错误本地日志**（新 `src/utils/error-log.ts` + main.ts 挂载前安装）：`window.onerror` + `unhandledrejection` 幂等捕获 → 复用 Rust `debug_log` 命令写应用数据目录 `daoshengyi.log`（本地落盘不上报、隐私友好；浏览器预览回退 console.error）
+- **依赖自动更新（`.github/dependabot.yml`，新）**：npm（tauri/vue 分组 + ignore vitest、vite≥6）/ cargo / github-actions 每周一自动检查
+- **`.editorconfig`（新）**：统一缩进/行尾/编码基线
+- **验证**：npm test 4 文件全绿 / npm run build（vue-tsc + vite）通过 / cargo test 85 全绿 / cargo fmt --check 干净 / cargo clippy `-D warnings` 通过
+- **经验**：①把 vue-tsc 纳入门禁立竿见影（vite build 不查类型，遗留 2 错漏网至今）；②clippy `--fix` 能清约 70% 告警，其余多是有理有据（command 多参数用 allow 而非硬改签名）；③全仓 rustfmt 安全但 diff 巨大，应在项目早期就引入；④Dependabot 对需整体评估的大版本（vitest4/vite6）要 ignore 防自动破坏
+- **待做（需人工/决策）**：Apple 签名+公证（Gatekeeper 门槛）、tauri updater 自动更新、CSP 非 null、前端 ESLint/Prettier（避免无谓大 diff 暂缓）、超大 chunk（index 959kB）code-splitting
 
 ---
 

@@ -1,0 +1,35 @@
+# Dependabot：每周自动检查依赖更新（npm / cargo / GitHub Actions）
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      vue-ecosystem:
+        patterns: ["vue", "@vue/*", "pinia", "@vitejs/*"]
+    # vitest 4 / vite 6 与现有插件链需整体评估，避免自动破坏
+    ignore:
+      - dependency-name: "vitest"
+      - dependency-name: "vite"
+        versions: [">=6.0.0"]
+
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
