@@ -205,7 +205,11 @@ impl SecretCipher {
             .cipher()
             .encrypt(nonce, plain.as_bytes())
             .map_err(|e| format!("加密失败: {}", e))?;
-        Ok(format!("{}.{}", B64.encode(nonce_bytes), B64.encode(ciphertext)))
+        Ok(format!(
+            "{}.{}",
+            B64.encode(nonce_bytes),
+            B64.encode(ciphertext)
+        ))
     }
 
     /// 解密 `base64(nonce).base64(ciphertext)` 格式的密文
@@ -217,8 +221,12 @@ impl SecretCipher {
         if parts.len() != 2 {
             return Err("密文格式错误".into());
         }
-        let nonce_bytes = B64.decode(parts[0]).map_err(|e| format!("解码 nonce 失败: {}", e))?;
-        let ciphertext = B64.decode(parts[1]).map_err(|e| format!("解码密文失败: {}", e))?;
+        let nonce_bytes = B64
+            .decode(parts[0])
+            .map_err(|e| format!("解码 nonce 失败: {}", e))?;
+        let ciphertext = B64
+            .decode(parts[1])
+            .map_err(|e| format!("解码密文失败: {}", e))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         let plaintext = self
             .cipher()
@@ -325,7 +333,7 @@ fn load_or_create_key(app_dir: &Path) -> Result<[u8; KEY_LEN], String> {
     }
     let mut key = [0u8; KEY_LEN];
     OsRng.fill_bytes(&mut key);
-    std::fs::write(&key_path, &key).map_err(|e| format!("写入密钥文件失败: {}", e))?;
+    std::fs::write(&key_path, key).map_err(|e| format!("写入密钥文件失败: {}", e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -435,11 +443,18 @@ mod tests {
         // 旧数据为明文，decrypt_settings 应保留原文而非报错
         let mut settings = AppSettings {
             profiles: vec![ApiProfileSettings {
-                id: "p1".into(), name: "x".into(), base_url: "u".into(),
-                api_key: "sk-legacy-plain".into(), model: "m".into(),
-                max_tokens: 100, temperature: 0.5, thinking_enabled: false,
-                reasoning_effort: "high".into(), system_prompt: "".into(),
-                enable_web_search: false, max_context_messages: 10,
+                id: "p1".into(),
+                name: "x".into(),
+                base_url: "u".into(),
+                api_key: "sk-legacy-plain".into(),
+                model: "m".into(),
+                max_tokens: 100,
+                temperature: 0.5,
+                thinking_enabled: false,
+                reasoning_effort: "high".into(),
+                system_prompt: "".into(),
+                enable_web_search: false,
+                max_context_messages: 10,
                 available_models: None,
             }],
             active_profile_id: "p1".into(),

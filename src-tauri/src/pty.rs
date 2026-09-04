@@ -46,7 +46,12 @@ fn now_ms() -> i64 {
 pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: 30, cols: 120, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("创建 PTY 失败: {}", e))?;
     let mut cmd = CommandBuilder::new("sh");
     cmd.arg("-c");
@@ -56,7 +61,10 @@ pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
             cmd.cwd(cwd);
         }
     }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("启动进程失败: {}", e))?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("启动进程失败: {}", e))?;
     drop(pair.slave);
     let writer = pair
         .master
@@ -77,7 +85,9 @@ pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
                 match reader.read(&mut buf_in) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        buf.lock().unwrap().push_str(&String::from_utf8_lossy(&buf_in[..n]));
+                        buf.lock()
+                            .unwrap()
+                            .push_str(&String::from_utf8_lossy(&buf_in[..n]));
                     }
                 }
             }
@@ -133,7 +143,11 @@ pub fn pty_poll(id: u32, offset: usize) -> Result<PtyPollResult, String> {
         String::new()
     };
     let running = *s.running.lock().unwrap();
-    Ok(PtyPollResult { text, offset: total, running })
+    Ok(PtyPollResult {
+        text,
+        offset: total,
+        running,
+    })
 }
 
 /// 终止并移除 PTY
@@ -155,7 +169,11 @@ pub fn pty_kill(id: u32) -> Result<(), String> {
 pub fn pty_list() -> Vec<PtyInfo> {
     let ptys = ptys().lock().unwrap();
     ptys.values()
-        .map(|s| PtyInfo { id: s.id, command: s.command.clone(), started_at: s.started_at })
+        .map(|s| PtyInfo {
+            id: s.id,
+            command: s.command.clone(),
+            started_at: s.started_at,
+        })
         .collect()
 }
 
@@ -179,7 +197,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(out.contains("hello-pty"), "应捕获 echo 输出，实际: {:?}", out);
+        assert!(
+            out.contains("hello-pty"),
+            "应捕获 echo 输出，实际: {:?}",
+            out
+        );
         // 进程应已结束
         let r = pty_poll(id, offset).unwrap();
         let _ = r;
@@ -203,7 +225,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(out.contains("got:hello"), "应收到写入的输入并回显，实际: {:?}", out);
+        assert!(
+            out.contains("got:hello"),
+            "应收到写入的输入并回显，实际: {:?}",
+            out
+        );
         pty_kill(id).unwrap();
     }
 

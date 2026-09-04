@@ -10,8 +10,8 @@ fn main() {
         let swift_path = std::path::Path::new("ocr_tool.swift");
         let bin_path = std::path::Path::new("ocr_tool");
         let modified = |p: &std::path::Path| p.metadata().and_then(|m| m.modified()).ok();
-        let need_build = !bin_path.exists()
-            || swift_path.exists() && modified(swift_path) > modified(bin_path);
+        let need_build =
+            !bin_path.exists() || swift_path.exists() && modified(swift_path) > modified(bin_path);
         if need_build {
             match std::process::Command::new("swiftc")
                 .args(["-O", "ocr_tool.swift", "-o", "ocr_tool"])

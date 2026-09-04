@@ -25,7 +25,7 @@ type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 /// 字段名与前端 imConfig 对象的 snake_case 键一一对应（勿加 camelCase 重命名）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImConfig {
-    pub platform: String,       // "dingtalk" | "feishu" | "wecom"
+    pub platform: String, // "dingtalk" | "feishu" | "wecom"
     pub enabled: bool,
     pub whitelist: Vec<String>, // 允许的 chat_id（空=全部）
     pub trigger: String,        // 触发前缀（空=全部消息，如 "@ai " 只处理带前缀的）
@@ -70,7 +70,10 @@ impl ImConfig {
                 }
             }
             "wecom" => {
-                if self.wecom_corp_id.is_empty() || self.wecom_corp_secret.is_empty() || self.wecom_agent_id.is_empty() {
+                if self.wecom_corp_id.is_empty()
+                    || self.wecom_corp_secret.is_empty()
+                    || self.wecom_agent_id.is_empty()
+                {
                     return Err("企微需要配置 Corp ID / Corp Secret / AgentId".into());
                 }
             }
@@ -103,7 +106,11 @@ pub trait ImAdapter: Send + Sync {
 /// 网关的 LLM 回复生成器（由宿主注入，便于 mock 测试）
 #[async_trait]
 pub trait ReplyGenerator: Send + Sync {
-    async fn reply(&self, history: Vec<(String, String)>, user_text: &str) -> Result<String, String>;
+    async fn reply(
+        &self,
+        history: Vec<(String, String)>,
+        user_text: &str,
+    ) -> Result<String, String>;
 }
 
 /// 网关运行状态快照（返回给前端）
@@ -282,7 +289,12 @@ impl ImGateway {
         // 5. 记录 + 日志
         {
             let mut st = self.state.lock().await;
-            st.push_log(format!("📩 [{}] {}：{}", m.chat_id, m.sender, clip(&text, 80)));
+            st.push_log(format!(
+                "📩 [{}] {}：{}",
+                m.chat_id,
+                m.sender,
+                clip(&text, 80)
+            ));
             st.push_message(ImMessageLog {
                 ts: now,
                 chat: m.chat_id.clone(),
@@ -292,7 +304,11 @@ impl ImGateway {
             });
         }
         // 6. 会话上下文（每会话最近 N 条；借用块内结束，避免与 self.reply 冲突）
-        let max_ctx = if self.cfg.max_context == 0 { 12 } else { self.cfg.max_context };
+        let max_ctx = if self.cfg.max_context == 0 {
+            12
+        } else {
+            self.cfg.max_context
+        };
         {
             let hist = self.history.entry(m.chat_id.clone()).or_default();
             hist.push_back(("user".into(), text.clone()));
@@ -300,7 +316,13 @@ impl ImGateway {
                 hist.pop_front();
             }
         }
-        let snapshot: Vec<(String, String)> = self.history.get(&m.chat_id).cloned().unwrap_or_default().into_iter().collect();
+        let snapshot: Vec<(String, String)> = self
+            .history
+            .get(&m.chat_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         // 7. 调 LLM 生成回复
         let ans_res = self.reply.reply(snapshot, &text).await;
         match ans_res {
@@ -317,7 +339,11 @@ impl ImGateway {
                         }
                         let mut st = self.state.lock().await;
                         st.handled += 1;
-                        st.push_log(format!("✅ [{}] 已回复（{} 字）", m.chat_id, ans.chars().count()));
+                        st.push_log(format!(
+                            "✅ [{}] 已回复（{} 字）",
+                            m.chat_id,
+                            ans.chars().count()
+                        ));
                         for msg in st.messages.iter_mut().rev() {
                             if msg.chat == m.chat_id && msg.reply.is_empty() && msg.ts == now {
                                 msg.reply = clip(&ans, 200);
@@ -386,12 +412,25 @@ pub async fn wecom_get_token(
         "https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={}&corpsecret={}",
         corp_id, corp_secret
     );
-    let resp = client.get(&url).send().await.map_err(|e| format!("企微 gettoken 网络错误: {}", e))?;
-    let j: serde_json::Value = resp.json().await.map_err(|e| format!("企微 gettoken 响应解析失败: {}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("企微 gettoken 网络错误: {}", e))?;
+    let j: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("企微 gettoken 响应解析失败: {}", e))?;
     if j["errcode"].as_i64() == Some(0) {
-        j["access_token"].as_str().map(|s| s.to_string()).ok_or_else(|| "企微 gettoken 返回空 token".into())
+        j["access_token"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "企微 gettoken 返回空 token".into())
     } else {
-        Err(format!("企微 gettoken 失败 errcode={} errmsg={}", j["errcode"], j["errmsg"]))
+        Err(format!(
+            "企微 gettoken 失败 errcode={} errmsg={}",
+            j["errcode"], j["errmsg"]
+        ))
     }
 }
 
@@ -407,37 +446,61 @@ impl ImAdapter for WecomAdapter {
     }
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), String> {
         let token = wecom_get_token(&self.client, &self.corp_id, &self.corp_secret).await?;
-        let touser = if chat_id.trim().is_empty() { &self.default_touser } else { chat_id };
+        let touser = if chat_id.trim().is_empty() {
+            &self.default_touser
+        } else {
+            chat_id
+        };
         if touser.trim().is_empty() {
             return Err("企微未配置接收人（touser）".into());
         }
-        let url = format!("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={}", token);
+        let url = format!(
+            "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={}",
+            token
+        );
         let body = serde_json::json!({
             "touser": touser,
             "msgtype": "text",
             "agentid": self.agent_id.parse::<i64>().unwrap_or(0),
             "text": { "content": text },
         });
-        let resp = self.client.post(&url).json(&body).send().await.map_err(|e| format!("企微发送网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("企微发送响应解析失败: {}", e))?;
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("企微发送网络错误: {}", e))?;
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("企微发送响应解析失败: {}", e))?;
         if j["errcode"].as_i64() == Some(0) {
             Ok(())
         } else {
-            Err(format!("企微发送失败 errcode={} errmsg={}", j["errcode"], j["errmsg"]))
+            Err(format!(
+                "企微发送失败 errcode={} errmsg={}",
+                j["errcode"], j["errmsg"]
+            ))
         }
     }
 }
 
 // ============================== 钉钉（stream 长连接） ==============================
 
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// 钉钉 stream 消息解密（纯函数，可测）：data 为 base64(AES-256-CBC)。
 /// 加密 key = sha256(clientSecret) 前 32 字节，iv = 同 key 前 16 字节，PKCS7 去填充。
 pub fn decrypt_dingtalk_data(client_secret: &str, data: &str) -> Result<String, String> {
     let digest = sha256_bytes(client_secret.as_bytes());
-    let key: [u8; 32] = digest[..32].try_into().map_err(|_| "key 长度错误".to_string())?;
-    let iv: [u8; 16] = digest[..16].try_into().map_err(|_| "iv 长度错误".to_string())?;
+    let key: [u8; 32] = digest[..32]
+        .try_into()
+        .map_err(|_| "key 长度错误".to_string())?;
+    let iv: [u8; 16] = digest[..16]
+        .try_into()
+        .map_err(|_| "iv 长度错误".to_string())?;
     let ciphertext = base64_decode(data)?;
     let mut buf = ciphertext.clone();
     let pt = Aes256CbcDec::new(&key.into(), &iv.into())
@@ -513,7 +576,10 @@ impl DingtalkAdapter {
             .send()
             .await
             .map_err(|e| format!("钉钉 gettoken 网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("钉钉 gettoken 解析失败: {}", e))?;
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("钉钉 gettoken 解析失败: {}", e))?;
         j["accessToken"]
             .as_str()
             .map(|s| s.to_string())
@@ -529,8 +595,14 @@ impl DingtalkAdapter {
             .send()
             .await
             .map_err(|e| format!("钉钉 open connection 网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("钉钉 open connection 解析失败: {}", e))?;
-        let endpoint = j["endpoint"].as_str().ok_or_else(|| format!("钉钉 open 无 endpoint: {}", j))?.to_string();
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("钉钉 open connection 解析失败: {}", e))?;
+        let endpoint = j["endpoint"]
+            .as_str()
+            .ok_or_else(|| format!("钉钉 open 无 endpoint: {}", j))?
+            .to_string();
         let ticket = j["ticket"].as_str().unwrap_or("").to_string();
         Ok((endpoint, ticket))
     }
@@ -590,58 +662,61 @@ impl ImAdapter for DingtalkAdapter {
                 }
                 Err(_elapsed) => break,
             };
-            match frame {
-                tokio_tungstenite::tungstenite::Message::Text(t) => {
-                    let txt = t.to_string();
-                    let v: serde_json::Value = match serde_json::from_str(&txt) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    match v["type"].as_str() {
-                        Some("PING") => {
-                            use futures_util::SinkExt;
-                            if let Some(ws) = self.ws.as_mut() {
-                                let _ = ws
-                                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                                        serde_json::json!({ "type": "PONG" }).to_string(),
-                                    ))
-                                    .await;
-                            }
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = frame {
+                let txt = t.to_string();
+                let v: serde_json::Value = match serde_json::from_str(&txt) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                match v["type"].as_str() {
+                    Some("PING") => {
+                        use futures_util::SinkExt;
+                        if let Some(ws) = self.ws.as_mut() {
+                            let _ = ws
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    serde_json::json!({ "type": "PONG" }).to_string(),
+                                ))
+                                .await;
                         }
-                        Some("DATA") => {
-                            let topic = v["topic"].as_str().unwrap_or("");
-                            if !topic.contains("/im/bot/messages/get") {
-                                continue;
-                            }
-                            let data = v["data"].as_str().unwrap_or("");
-                            let plain = match decrypt_dingtalk_data(&self.cfg.dingtalk_client_secret, data) {
+                    }
+                    Some("DATA") => {
+                        let topic = v["topic"].as_str().unwrap_or("");
+                        if !topic.contains("/im/bot/messages/get") {
+                            continue;
+                        }
+                        let data = v["data"].as_str().unwrap_or("");
+                        let plain =
+                            match decrypt_dingtalk_data(&self.cfg.dingtalk_client_secret, data) {
                                 Ok(p) => p,
                                 Err(e) => {
                                     eprintln!("[im] 钉钉消息解密失败: {}", e);
                                     continue;
                                 }
                             };
-                            let ev: serde_json::Value = match serde_json::from_str(&plain) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            let msgtype = ev["msgtype"].as_str().unwrap_or("");
-                            let text = ev["text"]["content"].as_str().unwrap_or("").to_string();
-                            if msgtype != "text" || text.trim().is_empty() {
-                                continue;
-                            }
-                            let msg_id = ev["msgId"].as_str().unwrap_or("").to_string();
-                            let chat_id = ev["conversationId"].as_str().unwrap_or("").to_string();
-                            let sender = ev["senderStaffId"].as_str().unwrap_or("").to_string();
-                            if msg_id.is_empty() || chat_id.is_empty() {
-                                continue;
-                            }
-                            out.push(ImMessage { id: msg_id, chat_id, sender, text });
+                        let ev: serde_json::Value = match serde_json::from_str(&plain) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let msgtype = ev["msgtype"].as_str().unwrap_or("");
+                        let text = ev["text"]["content"].as_str().unwrap_or("").to_string();
+                        if msgtype != "text" || text.trim().is_empty() {
+                            continue;
                         }
-                        _ => {}
+                        let msg_id = ev["msgId"].as_str().unwrap_or("").to_string();
+                        let chat_id = ev["conversationId"].as_str().unwrap_or("").to_string();
+                        let sender = ev["senderStaffId"].as_str().unwrap_or("").to_string();
+                        if msg_id.is_empty() || chat_id.is_empty() {
+                            continue;
+                        }
+                        out.push(ImMessage {
+                            id: msg_id,
+                            chat_id,
+                            sender,
+                            text,
+                        });
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         Ok(out)
@@ -662,7 +737,10 @@ impl ImAdapter for DingtalkAdapter {
             .send()
             .await
             .map_err(|e| format!("钉钉发送网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("钉钉发送响应解析失败: {}", e))?;
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("钉钉发送响应解析失败: {}", e))?;
         if j.get("processQueryKey").is_some() || j.get("messageId").is_some() {
             Ok(())
         } else {
@@ -709,14 +787,20 @@ impl FeishuAdapter {
             .send()
             .await
             .map_err(|e| format!("飞书 gettoken 网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("飞书 gettoken 解析失败: {}", e))?;
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("飞书 gettoken 解析失败: {}", e))?;
         if j["code"].as_i64() == Some(0) {
             j["tenant_access_token"]
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "飞书 gettoken 返回空 token".into())
         } else {
-            Err(format!("飞书 gettoken 失败 code={} msg={}", j["code"], j["msg"]))
+            Err(format!(
+                "飞书 gettoken 失败 code={} msg={}",
+                j["code"], j["msg"]
+            ))
         }
     }
 
@@ -734,8 +818,14 @@ impl FeishuAdapter {
             .send()
             .await
             .map_err(|e| format!("飞书取 endpoint 网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("飞书 endpoint 解析失败: {}", e))?;
-        let url = j["data"]["url"].as_str().ok_or_else(|| format!("飞书 endpoint 无 url: {}", j))?.to_string();
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("飞书 endpoint 解析失败: {}", e))?;
+        let url = j["data"]["url"]
+            .as_str()
+            .ok_or_else(|| format!("飞书 endpoint 无 url: {}", j))?
+            .to_string();
         self.ticket = j["data"]["ticket"].as_str().unwrap_or("").to_string();
         let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
             .await
@@ -791,69 +881,74 @@ impl ImAdapter for FeishuAdapter {
                 }
                 Err(_elapsed) => break,
             };
-            match frame {
-                tokio_tungstenite::tungstenite::Message::Text(t) => {
-                    let txt = t.to_string();
-                    let v: serde_json::Value = match serde_json::from_str(&txt) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let kind = v["type"].as_i64().unwrap_or(0);
-                    match kind {
-                        0 => {
-                            // 事件
-                            let ev = &v["data"]["event"];
-                            let header = &v["data"]["header"];
-                            let ev_type = header["event_type"].as_str().unwrap_or("");
-                            if !ev_type.contains("im.message.receive_v1") {
-                                continue;
-                            }
-                            let encrypted = ev["encrypt"].as_str().or(v["data"]["encrypt"].as_str());
-                            let plain = if let Some(enc) = encrypted {
-                                match decrypt_feishu_data(&self.cfg.feishu_app_secret, enc) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        eprintln!("[im] 飞书事件解密失败: {}", e);
-                                        continue;
-                                    }
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = frame {
+                let txt = t.to_string();
+                let v: serde_json::Value = match serde_json::from_str(&txt) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let kind = v["type"].as_i64().unwrap_or(0);
+                match kind {
+                    0 => {
+                        // 事件
+                        let ev = &v["data"]["event"];
+                        let header = &v["data"]["header"];
+                        let ev_type = header["event_type"].as_str().unwrap_or("");
+                        if !ev_type.contains("im.message.receive_v1") {
+                            continue;
+                        }
+                        let encrypted = ev["encrypt"].as_str().or(v["data"]["encrypt"].as_str());
+                        let plain = if let Some(enc) = encrypted {
+                            match decrypt_feishu_data(&self.cfg.feishu_app_secret, enc) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    eprintln!("[im] 飞书事件解密失败: {}", e);
+                                    continue;
                                 }
-                            } else {
-                                serde_json::to_string(ev).unwrap_or_default()
-                            };
-                            let msg: serde_json::Value = match serde_json::from_str(&plain) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            let message = &msg["event"]["message"];
-                            let msg_type = message["message_type"].as_str().unwrap_or("");
-                            let content = message["content"].as_str().unwrap_or("").to_string();
-                            if msg_type != "text" || content.trim().is_empty() {
-                                continue;
                             }
-                            // content 是 JSON 字符串 {"text":"..."}
-                            let text = serde_json::from_str::<serde_json::Value>(&content)
-                                .ok()
-                                .and_then(|c| c["text"].as_str().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            if text.trim().is_empty() {
-                                continue;
-                            }
-                            let msg_id = message["message_id"].as_str().unwrap_or("").to_string();
-                            let chat_id = message["chat_id"].as_str().unwrap_or("").to_string();
-                            let sender = msg["event"]["sender"]["sender_id"]["open_id"].as_str().unwrap_or("").to_string();
-                            if msg_id.is_empty() || chat_id.is_empty() {
-                                continue;
-                            }
-                            out.push(ImMessage { id: msg_id, chat_id, sender, text });
+                        } else {
+                            serde_json::to_string(ev).unwrap_or_default()
+                        };
+                        let msg: serde_json::Value = match serde_json::from_str(&plain) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let message = &msg["event"]["message"];
+                        let msg_type = message["message_type"].as_str().unwrap_or("");
+                        let content = message["content"].as_str().unwrap_or("").to_string();
+                        if msg_type != "text" || content.trim().is_empty() {
+                            continue;
                         }
-                        1 => {
-                            // 心跳响应：无需处理（也可在此续心跳）
-                            self.last_heartbeat = std::time::Instant::now();
+                        // content 是 JSON 字符串 {"text":"..."}
+                        let text = serde_json::from_str::<serde_json::Value>(&content)
+                            .ok()
+                            .and_then(|c| c["text"].as_str().map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        if text.trim().is_empty() {
+                            continue;
                         }
-                        _ => {}
+                        let msg_id = message["message_id"].as_str().unwrap_or("").to_string();
+                        let chat_id = message["chat_id"].as_str().unwrap_or("").to_string();
+                        let sender = msg["event"]["sender"]["sender_id"]["open_id"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                        if msg_id.is_empty() || chat_id.is_empty() {
+                            continue;
+                        }
+                        out.push(ImMessage {
+                            id: msg_id,
+                            chat_id,
+                            sender,
+                            text,
+                        });
                     }
+                    1 => {
+                        // 心跳响应：无需处理（也可在此续心跳）
+                        self.last_heartbeat = std::time::Instant::now();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         Ok(out)
@@ -861,8 +956,15 @@ impl ImAdapter for FeishuAdapter {
 
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), String> {
         let token = self.get_tenant_token().await?;
-        let rid = if self.cfg.feishu_receive_id_type.is_empty() { "chat_id" } else { &self.cfg.feishu_receive_id_type };
-        let url = format!("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}", rid);
+        let rid = if self.cfg.feishu_receive_id_type.is_empty() {
+            "chat_id"
+        } else {
+            &self.cfg.feishu_receive_id_type
+        };
+        let url = format!(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}",
+            rid
+        );
         let body = serde_json::json!({
             "receive_id": chat_id,
             "msg_type": "text",
@@ -876,7 +978,10 @@ impl ImAdapter for FeishuAdapter {
             .send()
             .await
             .map_err(|e| format!("飞书发送网络错误: {}", e))?;
-        let j: serde_json::Value = resp.json().await.map_err(|e| format!("飞书发送响应解析失败: {}", e))?;
+        let j: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("飞书发送响应解析失败: {}", e))?;
         if j["code"].as_i64() == Some(0) {
             Ok(())
         } else {
@@ -926,7 +1031,10 @@ mod tests {
             Ok(std::mem::take(&mut *v))
         }
         async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), String> {
-            self.sent.lock().unwrap().push((chat_id.to_string(), text.to_string()));
+            self.sent
+                .lock()
+                .unwrap()
+                .push((chat_id.to_string(), text.to_string()));
             Ok(())
         }
     }
@@ -936,7 +1044,11 @@ mod tests {
     }
     #[async_trait]
     impl ReplyGenerator for MockReply {
-        async fn reply(&self, _history: Vec<(String, String)>, _user_text: &str) -> Result<String, String> {
+        async fn reply(
+            &self,
+            _history: Vec<(String, String)>,
+            _user_text: &str,
+        ) -> Result<String, String> {
             Ok(self.ans.clone())
         }
     }
@@ -959,16 +1071,40 @@ mod tests {
         rt.block_on(async {
             let cfg = cfg();
             let msgs = vec![
-                ImMessage { id: "m1".into(), chat_id: "c1".into(), sender: "u".into(), text: "你好".into() },
-                ImMessage { id: "m1".into(), chat_id: "c1".into(), sender: "u".into(), text: "你好".into() }, // 重复
+                ImMessage {
+                    id: "m1".into(),
+                    chat_id: "c1".into(),
+                    sender: "u".into(),
+                    text: "你好".into(),
+                },
+                ImMessage {
+                    id: "m1".into(),
+                    chat_id: "c1".into(),
+                    sender: "u".into(),
+                    text: "你好".into(),
+                }, // 重复
             ];
             let adapter = Box::new(MockAdapter::new(msgs));
-            let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply { ans: "回复你".into() });
+            let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply {
+                ans: "回复你".into(),
+            });
             let state = Arc::new(Mutex::new(ImGatewayState::default()));
             let mut gw = ImGateway::new(cfg, adapter, reply, state.clone());
-            gw.handle(ImMessage { id: "m1".into(), chat_id: "c1".into(), sender: "u".into(), text: "你好".into() }).await;
+            gw.handle(ImMessage {
+                id: "m1".into(),
+                chat_id: "c1".into(),
+                sender: "u".into(),
+                text: "你好".into(),
+            })
+            .await;
             // 同 id 去重：再处理一次不应重复回复
-            gw.handle(ImMessage { id: "m1".into(), chat_id: "c1".into(), sender: "u".into(), text: "你好".into() }).await;
+            gw.handle(ImMessage {
+                id: "m1".into(),
+                chat_id: "c1".into(),
+                sender: "u".into(),
+                text: "你好".into(),
+            })
+            .await;
             let st = state.lock().await;
             assert_eq!(st.handled, 1, "重复消息应去重");
         });
@@ -984,8 +1120,20 @@ mod tests {
             let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply { ans: "x".into() });
             let state = Arc::new(Mutex::new(ImGatewayState::default()));
             let mut gw = ImGateway::new(cfg, adapter, reply, state.clone());
-            gw.handle(ImMessage { id: "a".into(), chat_id: "c1".into(), sender: "u".into(), text: "ok".into() }).await;
-            gw.handle(ImMessage { id: "b".into(), chat_id: "c2".into(), sender: "u".into(), text: "no".into() }).await;
+            gw.handle(ImMessage {
+                id: "a".into(),
+                chat_id: "c1".into(),
+                sender: "u".into(),
+                text: "ok".into(),
+            })
+            .await;
+            gw.handle(ImMessage {
+                id: "b".into(),
+                chat_id: "c2".into(),
+                sender: "u".into(),
+                text: "no".into(),
+            })
+            .await;
             let st = state.lock().await;
             assert_eq!(st.handled, 1, "非白名单会话应被忽略");
         });
@@ -998,13 +1146,27 @@ mod tests {
             let mut cfg = cfg();
             cfg.trigger = "@ai ".into();
             let adapter = Box::new(MockAdapter::new(vec![]));
-            let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply { ans: "回复".into() });
+            let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply {
+                ans: "回复".into()
+            });
             let state = Arc::new(Mutex::new(ImGatewayState::default()));
             let mut gw = ImGateway::new(cfg, adapter, reply, state.clone());
             // 无前缀 → 忽略
-            gw.handle(ImMessage { id: "a".into(), chat_id: "c1".into(), sender: "u".into(), text: "随便聊聊".into() }).await;
+            gw.handle(ImMessage {
+                id: "a".into(),
+                chat_id: "c1".into(),
+                sender: "u".into(),
+                text: "随便聊聊".into(),
+            })
+            .await;
             // 有前缀 → 处理并剥离前缀
-            gw.handle(ImMessage { id: "b".into(), chat_id: "c1".into(), sender: "u".into(), text: "@ai 帮我查一下".into() }).await;
+            gw.handle(ImMessage {
+                id: "b".into(),
+                chat_id: "c1".into(),
+                sender: "u".into(),
+                text: "@ai 帮我查一下".into(),
+            })
+            .await;
             let st = state.lock().await;
             assert_eq!(st.handled, 1, "无触发前缀的消息应忽略");
         });
@@ -1024,7 +1186,7 @@ mod tests {
         let mut buf = plain.as_bytes().to_vec();
         buf.resize(buf.len() + 16, 0);
         let ct = Aes256CbcEnc::new(&key.into(), &iv.into())
-            .encrypt_padded_mut::<Pkcs7>(&mut buf, plain.as_bytes().len())
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, plain.len())
             .unwrap()
             .to_vec();
         use base64::Engine as _;
@@ -1042,7 +1204,7 @@ mod tests {
         let mut buf2 = plain2.as_bytes().to_vec();
         buf2.resize(buf2.len() + 16, 0);
         let ct2 = Aes256CbcEnc::new(&k2.into(), &iv2.into())
-            .encrypt_padded_mut::<Pkcs7>(&mut buf2, plain2.as_bytes().len())
+            .encrypt_padded_mut::<Pkcs7>(&mut buf2, plain2.len())
             .unwrap()
             .to_vec();
         let b64_2 = base64::engine::general_purpose::STANDARD.encode(ct2);
@@ -1055,7 +1217,8 @@ mod tests {
         // 模拟企微 gettoken 响应解析（不实际联网）
         let client = reqwest::Client::new();
         // 直接验证 JSON 解析逻辑等价路径：构造一次成功响应文本应能被我们读取
-        let j: serde_json::Value = serde_json::json!({ "errcode": 0, "errmsg": "ok", "access_token": "TOKEN123" });
+        let j: serde_json::Value =
+            serde_json::json!({ "errcode": 0, "errmsg": "ok", "access_token": "TOKEN123" });
         assert_eq!(j["errcode"].as_i64(), Some(0));
         assert_eq!(j["access_token"].as_str(), Some("TOKEN123"));
         let _ = client;

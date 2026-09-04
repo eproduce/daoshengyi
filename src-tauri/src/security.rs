@@ -38,7 +38,16 @@ pub struct SecurityInput<'a> {
 
 /// 系统危险目录：命中即视为白名单配置过宽（配合沙箱 P-A8 语义）
 const DANGEROUS_DIRS: &[&str] = &[
-    "/etc", "/bin", "/sbin", "/usr", "/System", "/private", "/dev", "/proc", "/sys", "/var/root",
+    "/etc",
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/System",
+    "/private",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/var/root",
 ];
 
 /// 依次执行全部自检，返回结构化结果列表
@@ -56,15 +65,27 @@ pub fn run_checks(inp: &SecurityInput) -> Vec<SecurityCheck> {
 /// 命令执行策略：必须有 deny 兜底（默认 deny rm -rf / sudo / mkfs 等）
 fn execpolicy_check(rules_text: &str) -> SecurityCheck {
     let rules = crate::execpolicy::parse_rules(rules_text);
-    let deny = rules.iter().filter(|r| r.action == crate::execpolicy::Decision::Deny).count();
-    let allow = rules.iter().filter(|r| r.action == crate::execpolicy::Decision::Allow).count();
+    let deny = rules
+        .iter()
+        .filter(|r| r.action == crate::execpolicy::Decision::Deny)
+        .count();
+    let allow = rules
+        .iter()
+        .filter(|r| r.action == crate::execpolicy::Decision::Allow)
+        .count();
     let prompt = rules.len().saturating_sub(deny + allow);
     SecurityCheck {
         id: "execpolicy",
         name: "命令执行策略兜底",
         ok: deny > 0,
         detail: if deny > 0 {
-            format!("共 {} 条规则：deny {} / allow {} / prompt {}，危险命令有 deny 兜底", rules.len(), deny, allow, prompt)
+            format!(
+                "共 {} 条规则：deny {} / allow {} / prompt {}，危险命令有 deny 兜底",
+                rules.len(),
+                deny,
+                allow,
+                prompt
+            )
         } else {
             "规则文件缺失或没有 deny 兜底（建议保留默认：deny rm -rf / sudo / mkfs 等）".to_string()
         },
@@ -77,7 +98,10 @@ fn allowed_paths_check(paths: &[String]) -> SecurityCheck {
         .iter()
         .filter(|p| {
             let t = p.trim();
-            t == "/" || DANGEROUS_DIRS.iter().any(|d| t == *d || t.starts_with(&format!("{}/", d)))
+            t == "/"
+                || DANGEROUS_DIRS
+                    .iter()
+                    .any(|d| t == *d || t.starts_with(&format!("{}/", d)))
         })
         .collect();
     SecurityCheck {
@@ -91,7 +115,13 @@ fn allowed_paths_check(paths: &[String]) -> SecurityCheck {
                 format!("已配置 {} 条白名单，未含系统危险目录", paths.len())
             }
         } else {
-            format!("白名单含危险目录：{}（建议移除）", bad.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("、"))
+            format!(
+                "白名单含危险目录：{}（建议移除）",
+                bad.iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )
         },
     }
 }
@@ -187,14 +217,21 @@ mod tests {
     #[test]
     fn default_config_all_ok() {
         let checks = run_checks(&base());
-        assert!(checks.iter().all(|c| c.ok), "默认配置应全部通过: {:?}", checks);
+        assert!(
+            checks.iter().all(|c| c.ok),
+            "默认配置应全部通过: {:?}",
+            checks
+        );
     }
 
     #[test]
     fn execpolicy_missing_deny_warns() {
         let mut inp = base();
         inp.rules_text = "# 只有 allow 没有 deny\nallow git status\n";
-        assert!(!by_id(&run_checks(&inp), "execpolicy").ok, "无 deny 兜底应告警");
+        assert!(
+            !by_id(&run_checks(&inp), "execpolicy").ok,
+            "无 deny 兜底应告警"
+        );
     }
 
     #[test]
@@ -202,20 +239,35 @@ mod tests {
         let mut inp = base();
         let p1 = vec![String::from("/etc"), String::from("/Users/me/work")];
         inp.allowed_paths = &p1;
-        assert!(!by_id(&run_checks(&inp), "allowed_paths").ok, "含 /etc 应告警");
-        let p2 = vec![String::from("/Users/me/work"), String::from("/Users/me/notes")];
+        assert!(
+            !by_id(&run_checks(&inp), "allowed_paths").ok,
+            "含 /etc 应告警"
+        );
+        let p2 = vec![
+            String::from("/Users/me/work"),
+            String::from("/Users/me/notes"),
+        ];
         inp.allowed_paths = &p2;
-        assert!(by_id(&run_checks(&inp), "allowed_paths").ok, "仅主目录子路径应通过");
+        assert!(
+            by_id(&run_checks(&inp), "allowed_paths").ok,
+            "仅主目录子路径应通过"
+        );
     }
 
     #[test]
     fn secret_key_and_ssrf_checks() {
         let mut inp = base();
         inp.key_mode_ok = false;
-        assert!(!by_id(&run_checks(&inp), "secret_key").ok, "密钥权限非 0600 应告警");
+        assert!(
+            !by_id(&run_checks(&inp), "secret_key").ok,
+            "密钥权限非 0600 应告警"
+        );
         inp.key_mode_ok = true;
         inp.key_loadable = false;
-        assert!(!by_id(&run_checks(&inp), "secret_key").ok, "密钥不可加载应告警");
+        assert!(
+            !by_id(&run_checks(&inp), "secret_key").ok,
+            "密钥不可加载应告警"
+        );
         let mut inp2 = base();
         inp2.ssrf_deny_private = false;
         assert!(!by_id(&run_checks(&inp2), "ssrf").ok, "SSRF 关闭应告警");
@@ -231,8 +283,14 @@ mod tests {
         let mut inp2 = base();
         inp2.im_enabled = true;
         inp2.im_whitelist_empty = true;
-        assert!(!by_id(&run_checks(&inp2), "im_gateway").ok, "IM 启用+空白名单应告警");
+        assert!(
+            !by_id(&run_checks(&inp2), "im_gateway").ok,
+            "IM 启用+空白名单应告警"
+        );
         inp2.im_whitelist_empty = false;
-        assert!(by_id(&run_checks(&inp2), "im_gateway").ok, "IM 启用+白名单通过");
+        assert!(
+            by_id(&run_checks(&inp2), "im_gateway").ok,
+            "IM 启用+白名单通过"
+        );
     }
 }

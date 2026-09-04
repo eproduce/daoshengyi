@@ -59,7 +59,11 @@ pub async fn stream_chat(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("[{}] {}", status, text.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "[{}] {}",
+            status,
+            text.chars().take(300).collect::<String>()
+        ));
     }
 
     use futures::StreamExt;
@@ -118,23 +122,24 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
     let usage = parsed.get("usage");
     let total = usage.and_then(|u| u.get("total_tokens").and_then(|v| v.as_u64()));
     // 缓存命中/未命中 token：DeepSeek 用 prompt_cache_hit/miss_tokens；兼容其他厂商字段
-    let cache_hit = usage
-        .and_then(|u| {
-            u.get("prompt_cache_hit_tokens")
-                .or_else(|| u.get("cache_read_input_tokens"))
-                .or_else(|| u.get("cached_tokens"))
-                .and_then(|v| v.as_u64())
-        });
-    let cache_miss = usage
-        .and_then(|u| {
-            u.get("prompt_cache_miss_tokens")
-                .or_else(|| u.get("cache_creation_input_tokens"))
-                .or_else(|| u.get("uncached_tokens"))
-                .and_then(|v| v.as_u64())
-        });
+    let cache_hit = usage.and_then(|u| {
+        u.get("prompt_cache_hit_tokens")
+            .or_else(|| u.get("cache_read_input_tokens"))
+            .or_else(|| u.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+    });
+    let cache_miss = usage.and_then(|u| {
+        u.get("prompt_cache_miss_tokens")
+            .or_else(|| u.get("cache_creation_input_tokens"))
+            .or_else(|| u.get("uncached_tokens"))
+            .and_then(|v| v.as_u64())
+    });
 
     // choices 可能为空数组（usage 块），此时 delta 为 None，但 usage 仍需上报
-    let delta = parsed.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("delta"));
+    let delta = parsed
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("delta"));
     let reasoning = delta.and_then(|d| d.get("reasoning_content").and_then(|v| v.as_str()));
     let content = delta.and_then(|d| d.get("content").and_then(|v| v.as_str()));
 
@@ -205,7 +210,11 @@ pub async fn chat_once(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("[{}] {}", status, text.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "[{}] {}",
+            status,
+            text.chars().take(300).collect::<String>()
+        ));
     }
 
     let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -225,5 +234,10 @@ pub async fn chat_once(
     let cache_miss = usage
         .and_then(|u| u.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()))
         .unwrap_or(0);
-    Ok(ChatOnceResult { content, reasoning_content, cache_hit, cache_miss })
+    Ok(ChatOnceResult {
+        content,
+        reasoning_content,
+        cache_hit,
+        cache_miss,
+    })
 }

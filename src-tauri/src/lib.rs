@@ -11,17 +11,17 @@
 //! `execpolicy`(命令执行策略, S1) / `pty`(交互式终端, S7)。
 
 mod api;
-mod middleware;
 mod db;
-mod search;
+mod execpolicy;
+mod im;
 mod mcp;
 mod mcp_server;
-mod settings;
-mod im;
-mod execpolicy;
+mod middleware;
 mod pty;
-mod ssrf;
+mod search;
 mod security;
+mod settings;
+mod ssrf;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -29,14 +29,14 @@ use execpolicy::{
 };
 use pty::{pty_kill, pty_list, pty_poll, pty_spawn, pty_write};
 
-use tauri::{Emitter, Manager, State};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use futures::StreamExt;
 use db::Database;
-use tokio::sync::Mutex;
+use futures::StreamExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
-use std::path::PathBuf;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Emitter, Manager, State};
+use tokio::sync::Mutex;
 
 /// 由本应用启动的 Ollama 服务进程 PID（退出应用时自动停止；用户自启的服务不受影响）
 static OLLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
@@ -57,9 +57,14 @@ pub fn run_mcp_server() -> i32 {
 
 /// 追加诊断日志到应用数据目录（用户看不到终端时，可从这里排查）
 fn append_log(app: &tauri::AppHandle, msg: &str) {
-    let Ok(dir) = app.path().app_data_dir() else { return };
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
     use std::io::Write;
-    let _ = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daoshengyi.log"))
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("daoshengyi.log"))
         .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
 }
 
@@ -97,15 +102,23 @@ struct SystemDiagnostics {
 fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String> {
     // 系统版本
     let os_ver = run_sys_cmd("sw_vers", &["-productVersion"]);
-    let os = if os_ver.is_empty() { "macOS (未知)".to_string() } else { format!("macOS {}", os_ver) };
+    let os = if os_ver.is_empty() {
+        "macOS (未知)".to_string()
+    } else {
+        format!("macOS {}", os_ver)
+    };
 
     // 内存总量（字节）
-    let mem_total_b: u64 = run_sys_cmd("sysctl", &["-n", "hw.memsize"]).parse().unwrap_or(0);
+    let mem_total_b: u64 = run_sys_cmd("sysctl", &["-n", "hw.memsize"])
+        .parse()
+        .unwrap_or(0);
 
     // 内存使用（vm_stat 分页统计，近似）
     let mut mem_used_percent: u8 = 0;
     if mem_total_b > 0 {
-        let page_size: u64 = run_sys_cmd("sysctl", &["-n", "hw.pagesize"]).parse().unwrap_or(4096);
+        let page_size: u64 = run_sys_cmd("sysctl", &["-n", "hw.pagesize"])
+            .parse()
+            .unwrap_or(4096);
         let vm = run_sys_cmd("vm_stat", &[]);
         let mut pages_free: u64 = 0;
         let mut pages_spec: u64 = 0;
@@ -127,7 +140,9 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
     let mut disk_total_kb: u64 = 0;
     let mut disk_free_kb: u64 = 0;
     for (i, line) in df.lines().enumerate() {
-        if i == 0 { continue; }
+        if i == 0 {
+            continue;
+        }
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() >= 4 {
             disk_total_kb = fields[1].parse().unwrap_or(0);
@@ -138,7 +153,12 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
 
     // 运行时长（截取 load averages 之前的部分）
     let uptime = run_sys_cmd("uptime", &[]);
-    let uptime_short = uptime.split("load averages").next().unwrap_or(&uptime).trim().to_string();
+    let uptime_short = uptime
+        .split("load averages")
+        .next()
+        .unwrap_or(&uptime)
+        .trim()
+        .to_string();
 
     // 日志尾部（最后 150 行）
     let mut log_tail = String::new();
@@ -149,7 +169,9 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
             log_tail = lines[start..].join("\n");
         }
     }
-    if log_tail.is_empty() { log_tail = "（暂无日志）".into(); }
+    if log_tail.is_empty() {
+        log_tail = "（暂无日志）".into();
+    }
 
     Ok(SystemDiagnostics {
         os,
@@ -170,7 +192,9 @@ fn system_diagnostics(app: tauri::AppHandle) -> Result<SystemDiagnostics, String
 fn write_text_file(path: String, content: String) -> Result<(), String> {
     let allowed = ["md", "json", "txt", "markdown"];
     let lower = path.to_lowercase();
-    let ok = allowed.iter().any(|ext| lower.ends_with(&format!(".{}", ext)));
+    let ok = allowed
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{}", ext)));
     if !ok {
         return Err("仅支持导出为 .md / .json / .txt / .markdown 文件".into());
     }
@@ -264,14 +288,23 @@ fn write_file_agent(db: State<Database>, path: String, content: String) -> Resul
     let expanded = sandbox_file_path(db.inner(), &path)?;
     // 撤销快照：操作前状态（是否已存在 + 原内容）
     let existed = std::path::Path::new(&expanded).exists();
-    let backup = if existed { std::fs::read_to_string(&expanded).unwrap_or_default() } else { String::new() };
+    let backup = if existed {
+        std::fs::read_to_string(&expanded).unwrap_or_default()
+    } else {
+        String::new()
+    };
     // 创建父目录（如 ~/Desktop、~/Documents 等）
     if let Some(parent) = std::path::Path::new(&expanded).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&expanded, content).map_err(|e| format!("写入文件失败: {}", e))?;
     // 写盘成功后记录撤销快照（编辑覆盖或新建）
-    let _ = db.record_undo(if existed { "edit" } else { "create" }, &expanded, &backup, existed);
+    let _ = db.record_undo(
+        if existed { "edit" } else { "create" },
+        &expanded,
+        &backup,
+        existed,
+    );
     // 写入后校验文件真实存在，杜绝"谎报成功"
     if !std::path::Path::new(&expanded).exists() {
         return Err("写入校验失败：文件未生成，请重试".into());
@@ -357,9 +390,7 @@ fn format_unified_diff(old: &str, new: &str) -> String {
             any_change = true;
             let lo = i.saturating_sub(ctx);
             let hi = (i + ctx).min(len.saturating_sub(1));
-            for k in lo..=hi {
-                marked[k] = true;
-            }
+            marked[lo..=hi].fill(true);
         }
     }
     if !any_change {
@@ -397,14 +428,25 @@ fn format_unified_diff(old: &str, new: &str) -> String {
     let mut out = String::new();
     for (s, e) in hunks {
         let old_start = rows[s..=e].iter().find_map(|r| r.2).unwrap_or_else(|| {
-            if s == 0 { 1 } else { rows[s - 1].2.map(|v| v + 1).unwrap_or(1) }
+            if s == 0 {
+                1
+            } else {
+                rows[s - 1].2.map(|v| v + 1).unwrap_or(1)
+            }
         });
         let new_start = rows[s..=e].iter().find_map(|r| r.3).unwrap_or_else(|| {
-            if s == 0 { 1 } else { rows[s - 1].3.map(|v| v + 1).unwrap_or(1) }
+            if s == 0 {
+                1
+            } else {
+                rows[s - 1].3.map(|v| v + 1).unwrap_or(1)
+            }
         });
         let old_count = rows[s..=e].iter().filter(|r| r.2.is_some()).count();
         let new_count = rows[s..=e].iter().filter(|r| r.3.is_some()).count();
-        out.push_str(&format!("@@ -{},{} +{},{} @@\n", old_start, old_count, new_start, new_count));
+        out.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start, old_count, new_start, new_count
+        ));
         for r in &rows[s..=e] {
             // unified diff：context 行前导一个空格，删除行 '-text'，新增行 '+text'
             out.push(r.0);
@@ -452,9 +494,20 @@ fn truncate_disp(s: &str) -> String {
 #[derive(serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum EditOp {
-    Replace { old: String, new: String, occurrence: Option<usize> },
-    Insert { anchor: String, position: String, text: String },
-    Delete { old: String, occurrence: Option<usize> },
+    Replace {
+        old: String,
+        new: String,
+        occurrence: Option<usize>,
+    },
+    Insert {
+        anchor: String,
+        position: String,
+        text: String,
+    },
+    Delete {
+        old: String,
+        occurrence: Option<usize>,
+    },
 }
 
 #[derive(serde::Serialize)]
@@ -475,23 +528,35 @@ fn compute_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<Edit
     let mut content = original.clone();
     for (i, edit) in edits.iter().enumerate() {
         match edit {
-            EditOp::Replace { old, new, occurrence } => {
+            EditOp::Replace {
+                old,
+                new,
+                occurrence,
+            } => {
                 if old.is_empty() {
                     return Err(format!("第 {} 个操作 replace 的 old 不能为空", i + 1));
                 }
                 let occ = occurrence.unwrap_or(1).max(1);
                 let pos = nth_occurrence(&content, old, occ).ok_or_else(|| {
-                    format!("replace 未找到文本（第 {} 次出现）：{:?}", occ, truncate_disp(old))
+                    format!(
+                        "replace 未找到文本（第 {} 次出现）：{:?}",
+                        occ,
+                        truncate_disp(old)
+                    )
                 })?;
                 content = format!("{}{}{}", &content[..pos], new, &content[pos + old.len()..]);
             }
-            EditOp::Insert { anchor, position, text } => {
+            EditOp::Insert {
+                anchor,
+                position,
+                text,
+            } => {
                 if anchor.is_empty() {
                     return Err(format!("第 {} 个操作 insert 的 anchor 不能为空", i + 1));
                 }
-                let pos = content.find(anchor).ok_or_else(|| {
-                    format!("insert 未找到锚点文本：{:?}", truncate_disp(anchor))
-                })?;
+                let pos = content
+                    .find(anchor)
+                    .ok_or_else(|| format!("insert 未找到锚点文本：{:?}", truncate_disp(anchor)))?;
                 let insert_at = if position.as_str() == "after" {
                     pos + anchor.len()
                 } else {
@@ -505,7 +570,11 @@ fn compute_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<Edit
                 }
                 let occ = occurrence.unwrap_or(1).max(1);
                 let pos = nth_occurrence(&content, old, occ).ok_or_else(|| {
-                    format!("delete 未找到文本（第 {} 次出现）：{:?}", occ, truncate_disp(old))
+                    format!(
+                        "delete 未找到文本（第 {} 次出现）：{:?}",
+                        occ,
+                        truncate_disp(old)
+                    )
                 })?;
                 content = format!("{}{}", &content[..pos], &content[pos + old.len()..]);
             }
@@ -524,23 +593,38 @@ fn compute_edits(path: String, edits: Vec<EditOp>, preview: bool) -> Result<Edit
     }
     let new_len = content.len();
     let diff = format_unified_diff(&original, &content);
-    let summary = if preview {
-        format!(
+    let summary =
+        if preview {
+            format!(
             "【预览】将对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节，未写盘）：\n```diff\n{}```",
             expanded, edits.len(), original.len(), new_len, diff
         )
-    } else {
-        format!(
-            "已对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节）：\n```diff\n{}```",
-            expanded, edits.len(), original.len(), new_len, diff
-        )
-    };
-    Ok(EditResult { path: expanded, diff, new_len, summary })
+        } else {
+            format!(
+                "已对文件 {} 应用 {} 个编辑操作（{} 字节 → {} 字节）：\n```diff\n{}```",
+                expanded,
+                edits.len(),
+                original.len(),
+                new_len,
+                diff
+            )
+        };
+    Ok(EditResult {
+        path: expanded,
+        diff,
+        new_len,
+        summary,
+    })
 }
 
 /// 应用编辑（命令层）：调用 compute_edits；真正写盘（非 preview）前读取原内容记录撤销快照。
 #[tauri::command]
-fn apply_edits(db: State<Database>, path: String, edits: Vec<EditOp>, preview: bool) -> Result<EditResult, String> {
+fn apply_edits(
+    db: State<Database>,
+    path: String,
+    edits: Vec<EditOp>,
+    preview: bool,
+) -> Result<EditResult, String> {
     let original = if preview {
         String::new()
     } else {
@@ -589,8 +673,14 @@ fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
     use chrono::TimeZone;
     if t.schedule_type == "daily" {
         let mut parts = t.daily_time.split(':');
-        let h: u32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-        let m: u32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let h: u32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        let m: u32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
         let now_local = chrono::Local::now();
         let mut next = now_local
             .date_naive()
@@ -598,10 +688,16 @@ fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
             .and_then(|dt| chrono::Local.from_local_datetime(&dt).single())
             .map(|dt| dt.timestamp_millis())
             .unwrap_or(now_ms);
-        if next <= now_ms { next += 24 * 3600 * 1000; }
+        if next <= now_ms {
+            next += 24 * 3600 * 1000;
+        }
         next
     } else {
-        let mins = if t.interval_minutes > 0 { t.interval_minutes } else { 60 };
+        let mins = if t.interval_minutes > 0 {
+            t.interval_minutes
+        } else {
+            60
+        };
         now_ms + mins * 60 * 1000
     }
 }
@@ -663,13 +759,23 @@ async fn chat_once(
     config: api::ApiConfig,
     messages: Vec<api::ChatMessage>,
 ) -> Result<api::ChatOnceResult, String> {
-    let log_msg = format!("[chat_once] model={} 消息数={}", config.model, messages.len());
+    let log_msg = format!(
+        "[chat_once] model={} 消息数={}",
+        config.model,
+        messages.len()
+    );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
     let result = api::chat_once(config, messages).await;
     match &result {
         Ok(r) => {
-            let m = format!("[chat_once] 完成 content={} 字符 reasoning={} 字符 cache_hit={} cache_miss={}", r.content.len(), r.reasoning_content.len(), r.cache_hit, r.cache_miss);
+            let m = format!(
+                "[chat_once] 完成 content={} 字符 reasoning={} 字符 cache_hit={} cache_miss={}",
+                r.content.len(),
+                r.reasoning_content.len(),
+                r.cache_hit,
+                r.cache_miss
+            );
             eprintln!("{}", m);
             append_log(&app, &m);
         }
@@ -684,7 +790,8 @@ async fn chat_once(
 
 /// 已被前端「停止」取消的流式 request_id 集合：send_message 每收到一个 chunk 前检查，
 /// 命中则立即停止拉流/emit（否则前端虽移除了监听，Rust 仍在生成并消耗 token）。
-static CANCELLED_STREAMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+static CANCELLED_STREAMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
 
 /// 取消指定 request_id 的流式生成（前端点「停止」时调用，实现立刻停止）。
 #[tauri::command]
@@ -705,7 +812,12 @@ async fn send_message(
 ) -> Result<(), String> {
     middleware::preprocess_messages(&mut messages);
     let has_image = messages.iter().any(|m| m.content.is_array());
-    let log_msg = format!("[send_message] model={} 消息数={} 含图片={}", config.model, messages.len(), has_image);
+    let log_msg = format!(
+        "[send_message] model={} 消息数={} 含图片={}",
+        config.model,
+        messages.len(),
+        has_image
+    );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
     let mut stream = match api::stream_chat(config, messages).await {
@@ -742,39 +854,55 @@ async fn send_message(
                     let line: String = buf.drain(..=pos).collect();
                     if let Some(delta) = api::parse_sse_line(line.trim()) {
                         delta_count += 1;
-                        let rl = delta.reasoning_content.as_ref().map(|s| s.len()).unwrap_or(0);
+                        let rl = delta
+                            .reasoning_content
+                            .as_ref()
+                            .map(|s| s.len())
+                            .unwrap_or(0);
                         let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let ch = delta.cache_hit.unwrap_or(0);
                         let cm = delta.cache_miss.unwrap_or(0);
                         // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
                         if let Some(c) = &delta.content {
                             if c.contains('\u{FFFD}') {
-                                let warn = format!("[sse] ⚠️ content 含乱码 U+FFFD，片段: {}", c.chars().take(160).collect::<String>());
+                                let warn = format!(
+                                    "[sse] ⚠️ content 含乱码 U+FFFD，片段: {}",
+                                    c.chars().take(160).collect::<String>()
+                                );
                                 eprintln!("{}", warn);
                                 append_log(&app, &warn);
                             }
                         }
                         if let Some(r) = &delta.reasoning_content {
                             if r.contains('\u{FFFD}') {
-                                let warn = format!("[sse] ⚠️ reasoning 含乱码 U+FFFD，片段: {}", r.chars().take(160).collect::<String>());
+                                let warn = format!(
+                                    "[sse] ⚠️ reasoning 含乱码 U+FFFD，片段: {}",
+                                    r.chars().take(160).collect::<String>()
+                                );
                                 eprintln!("{}", warn);
                                 append_log(&app, &warn);
                             }
                         }
                         // usage 块（choices 为空、仅有缓存/总 token）也打印，便于排查缓存命中率
                         if rl > 0 || cl > 0 || ch > 0 || cm > 0 {
-                            let sm = format!("[sse] reasoning_len={} content_len={} cache_hit={} cache_miss={}", rl, cl, ch, cm);
+                            let sm = format!(
+                                "[sse] reasoning_len={} content_len={} cache_hit={} cache_miss={}",
+                                rl, cl, ch, cm
+                            );
                             eprintln!("{}", sm);
                             append_log(&app, &sm);
                         }
-                        let _ = app.emit("sse-delta", &serde_json::json!({
-                            "request_id": request_id,
-                            "reasoning_content": delta.reasoning_content,
-                            "content": delta.content,
-                            "tokens": delta.tokens,
-                            "cache_hit": delta.cache_hit,
-                            "cache_miss": delta.cache_miss,
-                        }));
+                        let _ = app.emit(
+                            "sse-delta",
+                            &serde_json::json!({
+                                "request_id": request_id,
+                                "reasoning_content": delta.reasoning_content,
+                                "content": delta.content,
+                                "tokens": delta.tokens,
+                                "cache_hit": delta.cache_hit,
+                                "cache_miss": delta.cache_miss,
+                            }),
+                        );
                     }
                 }
             }
@@ -782,7 +910,10 @@ async fn send_message(
                 let em = format!("[sse] 流错误: {}", e);
                 eprintln!("{}", em);
                 append_log(&app, &em);
-                let _ = app.emit("sse-error", &serde_json::json!({"request_id": request_id, "error": e}));
+                let _ = app.emit(
+                    "sse-error",
+                    &serde_json::json!({"request_id": request_id, "error": e}),
+                );
                 return Err(e);
             }
         }
@@ -790,14 +921,17 @@ async fn send_message(
     // 处理最后可能残留的不完整行
     if let Some(delta) = api::parse_sse_line(buf.trim()) {
         delta_count += 1;
-        let _ = app.emit("sse-delta", &serde_json::json!({
-            "request_id": request_id,
-            "reasoning_content": delta.reasoning_content,
-            "content": delta.content,
-            "tokens": delta.tokens,
-            "cache_hit": delta.cache_hit,
-            "cache_miss": delta.cache_miss,
-        }));
+        let _ = app.emit(
+            "sse-delta",
+            &serde_json::json!({
+                "request_id": request_id,
+                "reasoning_content": delta.reasoning_content,
+                "content": delta.content,
+                "tokens": delta.tokens,
+                "cache_hit": delta.cache_hit,
+                "cache_miss": delta.cache_miss,
+            }),
+        );
     }
     let done_msg = format!("[sse] 完成, 共 {} 个 delta", delta_count);
     eprintln!("{}", done_msg);
@@ -833,13 +967,14 @@ fn read_file(db: State<Database>, path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
     if p.is_dir() {
         let mut entries: Vec<(String, bool, u64)> = Vec::new();
-        for entry in std::fs::read_dir(p).map_err(|e| format!("读取目录失败: {}", e))? {
-            if let Ok(ent) = entry {
-                let name = ent.file_name().to_string_lossy().to_string();
-                let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
-                entries.push((name, is_dir, size));
-            }
+        for ent in std::fs::read_dir(p)
+            .map_err(|e| format!("读取目录失败: {}", e))?
+            .flatten()
+        {
+            let name = ent.file_name().to_string_lossy().to_string();
+            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+            entries.push((name, is_dir, size));
         }
         // 目录优先，再按名称排序
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -849,7 +984,11 @@ fn read_file(db: State<Database>, path: String) -> Result<String, String> {
         let lines: Vec<String> = entries
             .iter()
             .map(|(name, is_dir, size)| {
-                if *is_dir { format!("📁 {}/", name) } else { format!("📄 {}  ({})", name, fmt_size(*size)) }
+                if *is_dir {
+                    format!("📁 {}/", name)
+                } else {
+                    format!("📄 {}  ({})", name, fmt_size(*size))
+                }
             })
             .collect();
         return Ok(format!("【目录】{}\n\n{}", path, lines.join("\n")));
@@ -898,7 +1037,9 @@ fn open_file(path: String, line: Option<i64>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(&path).status();
     #[cfg(target_os = "windows")]
-    let status = std::process::Command::new("cmd").args(["/c", "start", "", &path]).status();
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &path])
+        .status();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let status = std::process::Command::new("xdg-open").arg(&path).status();
     match status {
@@ -923,20 +1064,36 @@ struct AttachmentContent {
 #[tauri::command]
 async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<AttachmentContent, String> {
     let p = std::path::Path::new(&path);
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
 
     // 图片：扩展名 + magic
-    let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "heic", "ico"];
+    let image_exts = [
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "heic", "ico",
+    ];
     if image_exts.contains(&ext.as_str()) || detect_image_magic(&bytes) {
         let mime = match ext.as_str() {
-            "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif",
-            "webp" => "image/webp", "bmp" => "image/bmp", "svg" => "image/svg+xml",
-            "tiff" => "image/tiff", "heic" => "image/heic", _ => "image/*",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "svg" => "image/svg+xml",
+            "tiff" => "image/tiff",
+            "heic" => "image/heic",
+            _ => "image/*",
         };
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        return Ok(AttachmentContent { kind: "image".into(), mime: mime.into(), content: b64 });
+        return Ok(AttachmentContent {
+            kind: "image".into(),
+            mime: mime.into(),
+            content: b64,
+        });
     }
 
     // PDF：扩展名 + %PDF magic（拖拽时扩展名可能丢失）
@@ -946,7 +1103,7 @@ async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Attachme
         // 扫描件 PDF：文字层为空/过短（体检报告、扫描书页等图片型 PDF）→
         // 用本地 OCR（macOS Vision）把每页渲染成图像识别文字，让模型能读到全部内容
         if text.trim().chars().count() < 80 && cfg!(target_os = "macos") {
-            if let Ok(ocr) = run_ocr(&app, &[path.clone()]).await {
+            if let Ok(ocr) = run_ocr(&app, std::slice::from_ref(&path)).await {
                 let ocr = ocr.trim();
                 if !ocr.is_empty() {
                     return Ok(AttachmentContent {
@@ -957,27 +1114,46 @@ async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Attachme
                 }
             }
         }
-        return Ok(AttachmentContent { kind: "text".into(), mime: "application/pdf".into(), content: text });
+        return Ok(AttachmentContent {
+            kind: "text".into(),
+            mime: "application/pdf".into(),
+            content: text,
+        });
     }
 
     // Excel：xls/xlsx/xlsm/xlsb 用 calamine 解析单元格内容
     if matches!(ext.as_str(), "xls" | "xlsx" | "xlsm" | "xlsb") {
         let text = read_excel_content(&path)?;
-        return Ok(AttachmentContent { kind: "text".into(), mime: "application/vnd.ms-excel".into(), content: text });
+        return Ok(AttachmentContent {
+            kind: "text".into(),
+            mime: "application/vnd.ms-excel".into(),
+            content: text,
+        });
     }
 
     // Apple Numbers 表格：调用系统 Numbers.app 导出为 CSV 后读取
     if ext == "numbers" {
         let text = read_numbers_content(&path)?;
-        return Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text });
+        return Ok(AttachmentContent {
+            kind: "text".into(),
+            mime: "text/plain".into(),
+            content: text,
+        });
     }
 
     // 其余按文本：二进制检测（含 NUL 字节判定）+ GBK 回退
     if bytes.contains(&0u8) {
-        return Err("该附件是二进制格式，暂不支持作为文本读取；请另存为 CSV/TXT，或转为 PDF/Excel 后再上传".into());
+        return Err(
+            "该附件是二进制格式，暂不支持作为文本读取；请另存为 CSV/TXT，或转为 PDF/Excel 后再上传"
+                .into(),
+        );
     }
     let text = read_text_bytes(&bytes)?;
-    Ok(AttachmentContent { kind: "text".into(), mime: "text/plain".into(), content: text })
+    Ok(AttachmentContent {
+        kind: "text".into(),
+        mime: "text/plain".into(),
+        content: text,
+    })
 }
 
 /// 图片 magic bytes 检测（扩展名缺失时兜底识别）
@@ -1003,15 +1179,18 @@ fn read_text_bytes(bytes: &[u8]) -> Result<String, String> {
 fn append_excel_range(out: &mut String, sheet: &str, range: &calamine::Range<calamine::Data>) {
     out.push_str(&format!("\n【工作表 {}】\n", sheet));
     for row in range.rows() {
-        let cells: Vec<String> = row.iter().map(|c| match c {
-            calamine::Data::String(s) => s.clone(),
-            calamine::Data::Float(f) => f.to_string(),
-            calamine::Data::Int(i) => i.to_string(),
-            calamine::Data::Bool(b) => b.to_string(),
-            calamine::Data::DateTime(dt) => dt.to_string(),
-            calamine::Data::DateTimeIso(s) | calamine::Data::DurationIso(s) => s.clone(),
-            _ => String::new(),
-        }).collect();
+        let cells: Vec<String> = row
+            .iter()
+            .map(|c| match c {
+                calamine::Data::String(s) => s.clone(),
+                calamine::Data::Float(f) => f.to_string(),
+                calamine::Data::Int(i) => i.to_string(),
+                calamine::Data::Bool(b) => b.to_string(),
+                calamine::Data::DateTime(dt) => dt.to_string(),
+                calamine::Data::DateTimeIso(s) | calamine::Data::DurationIso(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
         out.push_str(&cells.join(","));
         out.push('\n');
     }
@@ -1027,17 +1206,23 @@ fn read_excel_content(path: &str) -> Result<String, String> {
         let mut wb = Xls::new(file).map_err(|e| format!("读取 Excel(.xls) 失败: {}", e))?;
         let sheets = wb.sheet_names().to_vec();
         for s in sheets {
-            if let Ok(range) = wb.worksheet_range(&s) { append_excel_range(&mut out, &s, &range); }
+            if let Ok(range) = wb.worksheet_range(&s) {
+                append_excel_range(&mut out, &s, &range);
+            }
         }
     } else {
         let file = std::fs::File::open(path).map_err(|e| format!("打开 Excel 失败: {}", e))?;
         let mut wb = Xlsx::new(file).map_err(|e| format!("读取 Excel(.xlsx) 失败: {}", e))?;
         let sheets = wb.sheet_names().to_vec();
         for s in sheets {
-            if let Ok(range) = wb.worksheet_range(&s) { append_excel_range(&mut out, &s, &range); }
+            if let Ok(range) = wb.worksheet_range(&s) {
+                append_excel_range(&mut out, &s, &range);
+            }
         }
     }
-    if out.trim().is_empty() { return Err("Excel 中未读取到内容".into()); }
+    if out.trim().is_empty() {
+        return Err("Excel 中未读取到内容".into());
+    }
     Ok(out)
 }
 
@@ -1068,10 +1253,12 @@ fn export_numbers_via_app(path: &str) -> Result<String, String> {
          \tclose theDoc saving no\n\
          end tell\n\
          end timeout",
-        path = path_str, out = out_str
+        path = path_str,
+        out = out_str
     );
     let status = std::process::Command::new("osascript")
-        .arg("-e").arg(&script)
+        .arg("-e")
+        .arg(&script)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -1081,7 +1268,9 @@ fn export_numbers_via_app(path: &str) -> Result<String, String> {
     }
     let bytes = std::fs::read(&out_csv).map_err(|e| format!("读取导出的 CSV 失败: {}", e))?;
     let _ = std::fs::remove_file(&out_csv);
-    if bytes.is_empty() { return Err("Numbers 导出内容为空".into()); }
+    if bytes.is_empty() {
+        return Err("Numbers 导出内容为空".into());
+    }
     read_text_bytes(&bytes)
 }
 
@@ -1089,11 +1278,14 @@ fn export_numbers_via_app(path: &str) -> Result<String, String> {
 fn extract_numbers_text(path: &str) -> Result<String, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| format!("打开 Numbers 文件失败: {}", e))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Numbers 文件无法解压: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Numbers 文件无法解压: {}", e))?;
     let mut collected = String::new();
     let mut seen = 0usize;
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("读取 Numbers 内部失败: {}", e))?;
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("读取 Numbers 内部失败: {}", e))?;
         let name = entry.name().to_string();
         // 只看 IWA / JSON / 表格相关的内部文件
         let is_target = name.ends_with(".iwa")
@@ -1101,19 +1293,29 @@ fn extract_numbers_text(path: &str) -> Result<String, String> {
             || name.contains("Sheet")
             || name.contains("Table")
             || name.contains("Document");
-        if !is_target { continue; }
+        if !is_target {
+            continue;
+        }
         let mut buf = Vec::new();
-        if entry.read_to_end(&mut buf).is_err() { continue; }
+        if entry.read_to_end(&mut buf).is_err() {
+            continue;
+        }
         // IWA 数据可能整体 snappy 压缩，尝试解压；失败则用原始字节
         let decompressed = if name.ends_with(".iwa") {
-            snap::raw::Decoder::new().decompress_vec(&buf).unwrap_or_else(|_| buf.clone())
-        } else { buf.clone() };
+            snap::raw::Decoder::new()
+                .decompress_vec(&buf)
+                .unwrap_or_else(|_| buf.clone())
+        } else {
+            buf.clone()
+        };
         let text = extract_readable_text(&decompressed);
         if !text.trim().is_empty() {
             collected.push_str(&format!("\n【{}】\n{}\n", name, text));
             seen += 1;
         }
-        if seen >= 20 { break; }
+        if seen >= 20 {
+            break;
+        }
     }
     if collected.trim().is_empty() {
         Err("未能从 Numbers 文件中提取到可读内容。请在 Numbers / WPS / LibreOffice 中另存为 CSV 或 Excel 后再上传".into())
@@ -1130,12 +1332,17 @@ fn extract_readable_text(bytes: &[u8]) -> String {
     let flush = |out: &mut Vec<String>, cur: &mut String| {
         let t = cur.trim();
         let printable: usize = t.chars().filter(|c| !c.is_ascii_control()).count();
-        if printable >= 3 { out.push(t.to_string()); }
+        if printable >= 3 {
+            out.push(t.to_string());
+        }
         cur.clear();
     };
     for c in s.chars() {
         if c.is_ascii_control() {
-            if !matches!(c, '\t' | '\n' | '\r') { flush(&mut out, &mut cur); continue; }
+            if !matches!(c, '\t' | '\n' | '\r') {
+                flush(&mut out, &mut cur);
+                continue;
+            }
             cur.push(c);
         } else {
             cur.push(c);
@@ -1145,8 +1352,15 @@ fn extract_readable_text(bytes: &[u8]) -> String {
     // 去重相邻重复（protobuf 里同一字符串常出现多次）
     let mut result: Vec<String> = Vec::new();
     for line in out {
-        if result.last().map(|l| l == &line).unwrap_or(false) { continue; }
-        if result.iter().any(|l| l.contains(&line) && l.len() > line.len() * 2) { continue; }
+        if result.last().map(|l| l == &line).unwrap_or(false) {
+            continue;
+        }
+        if result
+            .iter()
+            .any(|l| l.contains(&line) && l.len() > line.len() * 2)
+        {
+            continue;
+        }
         result.push(line);
     }
     result.join("\n")
@@ -1159,18 +1373,21 @@ fn extract_pdf_text(data: String) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| format!("PDF base64 解码失败: {}", e))?;
-    pdf_extract::extract_text_from_mem(&bytes)
-        .map_err(|e| format!("PDF 文本提取失败: {}", e))
+    pdf_extract::extract_text_from_mem(&bytes).map_err(|e| format!("PDF 文本提取失败: {}", e))
 }
 
 /// 分段读取 PDF：提取全文后返回 [offset, offset+length) 的字符区间（按 char 切，避免 UTF-8 边界问题）。
 /// 扫描件 PDF（文字层过短）自动用本地 OCR 识别全文后再分段，保证 pdf_read 工具对扫描件也可用。
 #[tauri::command]
-async fn read_pdf_part(app: tauri::AppHandle, path: String, offset: i64, length: i64) -> Result<String, String> {
-    let text = pdf_extract::extract_text(&path)
-        .map_err(|e| format!("PDF 文本提取失败: {}", e))?;
+async fn read_pdf_part(
+    app: tauri::AppHandle,
+    path: String,
+    offset: i64,
+    length: i64,
+) -> Result<String, String> {
+    let text = pdf_extract::extract_text(&path).map_err(|e| format!("PDF 文本提取失败: {}", e))?;
     let text = if text.trim().chars().count() < 80 && cfg!(target_os = "macos") {
-        match run_ocr(&app, &[path.clone()]).await {
+        match run_ocr(&app, std::slice::from_ref(&path)).await {
             Ok(ocr) if !ocr.trim().is_empty() => ocr,
             _ => text,
         }
@@ -1240,7 +1457,11 @@ fn chunk_text(text: &str, size: usize) -> Vec<String> {
 /// 知识库索引：扫描目录（md/txt/代码/PDF），分块写入并建 FTS 索引（重建式：先清空同名知识库）。
 /// 支持 P-A8 沙箱：配置了路径白名单时只能索引白名单内目录。
 #[tauri::command]
-async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Result<String, String> {
+async fn kb_index(
+    db: State<'_, Database>,
+    kb_name: String,
+    path: String,
+) -> Result<String, String> {
     use base64::Engine as _;
     let allowed = sandbox_allowed_paths(db.inner());
     let expanded = expand_user_path(&path)?;
@@ -1251,9 +1472,42 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
     if !root.is_dir() {
         return Err(format!("不是目录: {}", path));
     }
-    let skip: [&str; 9] = ["node_modules", ".git", "target", "dist", "build", ".next", "__pycache__", "vendor", ".idea"];
+    let skip: [&str; 9] = [
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        "__pycache__",
+        "vendor",
+        ".idea",
+    ];
     let is_ok_ext = |ext: &str| {
-        matches!(ext, "md" | "txt" | "markdown" | "json" | "py" | "ts" | "js" | "rs" | "vue" | "html" | "css" | "c" | "cpp" | "h" | "java" | "go" | "toml" | "yml" | "yaml" | "sh" | "csv" | "pdf")
+        matches!(
+            ext,
+            "md" | "txt"
+                | "markdown"
+                | "json"
+                | "py"
+                | "ts"
+                | "js"
+                | "rs"
+                | "vue"
+                | "html"
+                | "css"
+                | "c"
+                | "cpp"
+                | "h"
+                | "java"
+                | "go"
+                | "toml"
+                | "yml"
+                | "yaml"
+                | "sh"
+                | "csv"
+                | "pdf"
+        )
     };
 
     db.kb_create(&kb_name)?; // 注册知识库（让新库/空库在 kb_list 可见）
@@ -1262,7 +1516,8 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
     let mut collected: Vec<(String, String, i64)> = Vec::new(); // (rel, chunk, chunk_idx)
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("读取目录失败 {}: {}", dir.display(), e))?;
         for ent in entries.flatten() {
             let p = ent.path();
             if p.is_dir() {
@@ -1272,7 +1527,10 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
                 }
                 stack.push(p);
             } else if p.is_file() {
-                let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                let ext = p
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
                 if !is_ok_ext(&ext) {
                     continue;
                 }
@@ -1286,7 +1544,11 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
                 } else {
                     std::fs::read_to_string(&p).unwrap_or_default()
                 };
-                let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().to_string();
+                let rel = p
+                    .strip_prefix(&root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
                 for (i, chunk) in chunk_text(&text, 800).into_iter().enumerate() {
                     if chunk.trim().is_empty() {
                         continue;
@@ -1316,7 +1578,7 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
             if batch.len() >= 20 {
                 match ollama_embed_impl(batch.clone()).await {
                     Ok(vecs) => {
-                        for (m, v) in meta.iter().zip(vecs.into_iter()) {
+                        for (m, v) in meta.iter().zip(vecs) {
                             db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
                             chunks += 1;
                         }
@@ -1334,7 +1596,7 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
         }
         if !batch.is_empty() {
             if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
-                for (m, v) in meta.iter().zip(vecs.into_iter()) {
+                for (m, v) in meta.iter().zip(vecs) {
                     db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
                     chunks += 1;
                 }
@@ -1358,16 +1620,28 @@ async fn kb_index(db: State<'_, Database>, kb_name: String, path: String) -> Res
         files,
         chunks,
         root.display(),
-        if semantic { "，语义向量已启用 ✅" } else { &sem_note }
+        if semantic {
+            "，语义向量已启用 ✅"
+        } else {
+            &sem_note
+        }
     ))
 }
 
 /// 知识库检索（混合：FTS5 关键词 + 语义向量，Ollama embedding 可用时）
 #[tauri::command]
-async fn kb_search(db: State<'_, Database>, kb_name: String, query: String, limit: Option<i64>) -> Result<Vec<db::KbChunk>, String> {
+async fn kb_search(
+    db: State<'_, Database>,
+    kb_name: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<db::KbChunk>, String> {
     let lim = limit.unwrap_or(6).clamp(1, 20);
     // 尝试语义：Ollama 在跑且模型已装时给查询生成向量 → 混合检索；否则纯 FTS5
-    let qvec = ollama_embed_impl(vec![query.clone()]).await.ok().and_then(|v| v.into_iter().next());
+    let qvec = ollama_embed_impl(vec![query.clone()])
+        .await
+        .ok()
+        .and_then(|v| v.into_iter().next());
     db.kb_search_hybrid(&kb_name, &query, qvec.as_deref(), lim)
 }
 
@@ -1387,9 +1661,18 @@ fn kb_create(db: State<Database>, kb_name: String) -> Result<String, String> {
 
 /// 向知识库录入一段文本/文档（自动分块 + FTS 索引；本地 Ollama embedding 可用时叠加语义向量）
 #[tauri::command]
-async fn kb_add(db: State<'_, Database>, kb_name: String, source: String, text: String) -> Result<String, String> {
+async fn kb_add(
+    db: State<'_, Database>,
+    kb_name: String,
+    source: String,
+    text: String,
+) -> Result<String, String> {
     let name = kb_name.trim().to_string();
-    let src = if source.trim().is_empty() { "(手动录入)".to_string() } else { source.trim().to_string() };
+    let src = if source.trim().is_empty() {
+        "(手动录入)".to_string()
+    } else {
+        source.trim().to_string()
+    };
     let body = text.trim();
     if name.is_empty() {
         return Err("kb_add 需要 kb_name 参数（知识库名）".into());
@@ -1416,7 +1699,7 @@ async fn kb_add(db: State<'_, Database>, kb_name: String, source: String, text: 
             if batch.len() >= 20 {
                 match ollama_embed_impl(batch.clone()).await {
                     Ok(vecs) => {
-                        for ((s, idx), v) in meta.iter().zip(vecs.into_iter()) {
+                        for ((s, idx), v) in meta.iter().zip(vecs) {
                             db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
                             added += 1;
                         }
@@ -1434,7 +1717,7 @@ async fn kb_add(db: State<'_, Database>, kb_name: String, source: String, text: 
         }
         if !batch.is_empty() {
             if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
-                for ((s, idx), v) in meta.iter().zip(vecs.into_iter()) {
+                for ((s, idx), v) in meta.iter().zip(vecs) {
                     db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
                     added += 1;
                 }
@@ -1456,7 +1739,11 @@ async fn kb_add(db: State<'_, Database>, kb_name: String, source: String, text: 
         name,
         src,
         added,
-        if semantic { "语义向量已启用 ✅" } else { "关键词索引" }
+        if semantic {
+            "语义向量已启用 ✅"
+        } else {
+            "关键词索引"
+        }
     ))
 }
 
@@ -1479,7 +1766,9 @@ fn kb_delete(db: State<Database>, kb_name: String) -> Result<String, String> {
 #[tauri::command]
 fn workflow_save(db: State<Database>, name: String, graph: String) -> Result<i64, String> {
     let n = name.trim().to_string();
-    if n.is_empty() { return Err("工作流名称不能为空".into()); }
+    if n.is_empty() {
+        return Err("工作流名称不能为空".into());
+    }
     db.wf_save(&n, &graph)
 }
 
@@ -1502,6 +1791,7 @@ fn workflow_delete(db: State<Database>, id: i64) -> Result<(), String> {
 }
 
 /// 记录一次工作流运行
+#[allow(clippy::too_many_arguments)] // Tauri 命令参数与 workflow_runs 字段对应
 #[tauri::command]
 fn workflow_run_add(
     db: State<Database>,
@@ -1513,26 +1803,42 @@ fn workflow_run_add(
     summary: String,
     trace: Option<String>,
 ) -> Result<i64, String> {
-    db.wf_run_add(wf_id, &wf_name, &status, started_at, finished_at, &summary, trace.as_deref().unwrap_or(""))
+    db.wf_run_add(
+        wf_id,
+        &wf_name,
+        &status,
+        started_at,
+        finished_at,
+        &summary,
+        trace.as_deref().unwrap_or(""),
+    )
 }
 
 /// 工作流运行历史
 #[tauri::command]
-fn workflow_runs(db: State<Database>, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
+fn workflow_runs(
+    db: State<Database>,
+    limit: Option<i64>,
+) -> Result<Vec<db::WorkflowRunRow>, String> {
     db.wf_runs(limit.unwrap_or(10).clamp(1, 100))
 }
 
 /// 指定工作流的运行历史（含 trace，供 workflow_improve 自优化复盘）
 #[tauri::command]
-fn workflow_runs_for(db: State<Database>, wf_id: i64, limit: Option<i64>) -> Result<Vec<db::WorkflowRunRow>, String> {
+fn workflow_runs_for(
+    db: State<Database>,
+    wf_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<db::WorkflowRunRow>, String> {
     db.wf_runs_for(wf_id, limit.unwrap_or(10).clamp(1, 100))
 }
 
 // --- IM 网关（钉钉/飞书/企微，docs/IM_GATEWAY.md，2026-08-28 落地） ---
 
 /// IM 网关后台任务句柄（供停止）
-static IM_GATEWAY_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
-    std::sync::OnceLock::new();
+static IM_GATEWAY_HANDLE: std::sync::OnceLock<
+    std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+> = std::sync::OnceLock::new();
 
 /// 读取当前活跃模型配置（供 IM 回复 / exec 非交互执行等复用）。
 /// 读数据库设置 → AES 解密 → 取 active profile（无则取第一个）。
@@ -1569,7 +1875,11 @@ struct LlmReplyGen {
 
 #[async_trait::async_trait]
 impl im::ReplyGenerator for LlmReplyGen {
-    async fn reply(&self, history: Vec<(String, String)>, _user_text: &str) -> Result<String, String> {
+    async fn reply(
+        &self,
+        history: Vec<(String, String)>,
+        _user_text: &str,
+    ) -> Result<String, String> {
         let config = load_active_api_config(&self.app_dir)?;
         let sys = "你是「道生一」AI 助手，正在通过 IM（钉钉/飞书/企业微信）回答用户。\
 回答简洁、友好、直接给出结论；需要长内容时给要点；不要输出复杂排版。";
@@ -1579,7 +1889,10 @@ impl im::ReplyGenerator for LlmReplyGen {
         }];
         for (role, text) in history {
             let r = if role == "user" { "user" } else { "assistant" };
-            msgs.push(api::ChatMessage { role: r.into(), content: serde_json::Value::String(text) });
+            msgs.push(api::ChatMessage {
+                role: r.into(),
+                content: serde_json::Value::String(text),
+            });
         }
         let r = api::chat_once(config, msgs).await?;
         let content = r.content.trim().to_string();
@@ -1688,7 +2001,8 @@ async fn im_start(
         }
     }
     let adapter = im::build_adapter(&cfg)?;
-    let reply: std::sync::Arc<dyn im::ReplyGenerator> = std::sync::Arc::new(LlmReplyGen { app_dir });
+    let reply: std::sync::Arc<dyn im::ReplyGenerator> =
+        std::sync::Arc::new(LlmReplyGen { app_dir });
     let mut gateway = im::ImGateway::new(cfg, adapter, reply, gw_state.clone());
     let handle = tauri::async_runtime::spawn(async move { gateway.run().await });
     *IM_GATEWAY_HANDLE
@@ -1740,10 +2054,12 @@ fn security_check(
         let json = db.get_setting(SETTINGS_KEY)?.unwrap_or_default();
         serde_json::from_str(&json).unwrap_or_default()
     };
-    cipher.decrypt_settings(&mut st).map_err(|e| e.to_string())?;
+    cipher
+        .decrypt_settings(&mut st)
+        .map_err(|e| e.to_string())?;
     // execpolicy 规则文本（缺失回退默认内容）
-    let rules_text =
-        std::fs::read_to_string(execpolicy::rules_path(&app_dir)).unwrap_or_else(|_| execpolicy::DEFAULT_RULES.to_string());
+    let rules_text = std::fs::read_to_string(execpolicy::rules_path(&app_dir))
+        .unwrap_or_else(|_| execpolicy::DEFAULT_RULES.to_string());
     // 密钥文件权限（unix：组/其他无权限位即视为 0600 级）
     #[cfg(unix)]
     let key_mode_ok = {
@@ -1785,31 +2101,86 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
     if !root.is_dir() {
         return Err(format!("不是目录: {}", root_path));
     }
-    let skip: [&str; 9] = ["node_modules", ".git", "target", "dist", "build", ".next", "__pycache__", "vendor", ".idea"];
+    let skip: [&str; 9] = [
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        "__pycache__",
+        "vendor",
+        ".idea",
+    ];
     let is_code_ext = |ext: &str| {
-        matches!(ext, "py"|"ts"|"js"|"jsx"|"tsx"|"rs"|"go"|"java"|"c"|"cpp"|"h"|"hpp"|"vue"|"rb"|"php"|"swift"|"kt"|"scala"|"sh"|"toml"|"yml"|"yaml"|"json"|"html"|"css"|"sql")
+        matches!(
+            ext,
+            "py" | "ts"
+                | "js"
+                | "jsx"
+                | "tsx"
+                | "rs"
+                | "go"
+                | "java"
+                | "c"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "vue"
+                | "rb"
+                | "php"
+                | "swift"
+                | "kt"
+                | "scala"
+                | "sh"
+                | "toml"
+                | "yml"
+                | "yaml"
+                | "json"
+                | "html"
+                | "css"
+                | "sql"
+        )
     };
 
     let mut collected: Vec<(String, String, i64)> = Vec::new();
     let mut files = 0usize;
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
-        for ent in std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {}", e))?.flatten() {
+        for ent in std::fs::read_dir(&dir)
+            .map_err(|e| format!("读取目录失败: {}", e))?
+            .flatten()
+        {
             let p = ent.path();
             if p.is_dir() {
                 let name = ent.file_name().to_string_lossy().to_string();
-                if skip.contains(&name.as_str()) { continue; }
+                if skip.contains(&name.as_str()) {
+                    continue;
+                }
                 stack.push(p);
             } else if p.is_file() {
-                let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                if !is_code_ext(&ext) { continue; }
+                let ext = p
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if !is_code_ext(&ext) {
+                    continue;
+                }
                 // 跳过过大文件（可能是生成物/压缩产物）
-                if !p.metadata().map(|m| m.len() < 512 * 1024).unwrap_or(false) { continue; }
+                if !p.metadata().map(|m| m.len() < 512 * 1024).unwrap_or(false) {
+                    continue;
+                }
                 files += 1;
                 let text = std::fs::read_to_string(&p).unwrap_or_default();
-                let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().to_string();
+                let rel = p
+                    .strip_prefix(&root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
                 for (i, chunk) in chunk_text(&text, 500).into_iter().enumerate() {
-                    if chunk.trim().is_empty() { continue; }
+                    if chunk.trim().is_empty() {
+                        continue;
+                    }
                     collected.push((rel.clone(), chunk, i as i64));
                 }
             }
@@ -1819,8 +2190,14 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         return Ok(format!("未扫描到代码文件：{}", root.display()));
     }
     // 语义向量必须可用（否则索引无意义）
-    ollama_embed_impl(vec![collected[0].1.clone()]).await
-        .map_err(|e| format!("语义向量不可用（需要本地 Ollama 已运行且安装 nomic-embed-text）：{}", e))?;
+    ollama_embed_impl(vec![collected[0].1.clone()])
+        .await
+        .map_err(|e| {
+            format!(
+                "语义向量不可用（需要本地 Ollama 已运行且安装 nomic-embed-text）：{}",
+                e
+            )
+        })?;
 
     db.code_clear(&expanded)?;
     let mut chunks = 0usize;
@@ -1830,8 +2207,10 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         batch.push(item.1.clone());
         meta.push(item);
         if batch.len() >= 20 {
-            let vecs = ollama_embed_impl(batch.clone()).await.map_err(|e| format!("生成向量失败: {}", e))?;
-            for (m, v) in meta.iter().zip(vecs.into_iter()) {
+            let vecs = ollama_embed_impl(batch.clone())
+                .await
+                .map_err(|e| format!("生成向量失败: {}", e))?;
+            for (m, v) in meta.iter().zip(vecs) {
                 db.code_add_chunk(&expanded, &m.0, &m.1, m.2, Some(&v))?;
                 chunks += 1;
             }
@@ -1840,25 +2219,38 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         }
     }
     if !batch.is_empty() {
-        let vecs = ollama_embed_impl(batch.clone()).await.map_err(|e| format!("生成向量失败: {}", e))?;
-        for (m, v) in meta.iter().zip(vecs.into_iter()) {
+        let vecs = ollama_embed_impl(batch.clone())
+            .await
+            .map_err(|e| format!("生成向量失败: {}", e))?;
+        for (m, v) in meta.iter().zip(vecs) {
             db.code_add_chunk(&expanded, &m.0, &m.1, m.2, Some(&v))?;
             chunks += 1;
         }
     }
     Ok(format!(
         "项目语义索引完成：{} 个代码文件 → {} 个分块（{}）",
-        files, chunks, root.display()
+        files,
+        chunks,
+        root.display()
     ))
 }
 
 /// 自然语言找代码：查询嵌入 → 余弦召回相关代码分块
 #[tauri::command]
-async fn code_search(db: State<'_, Database>, root_path: String, query: String, limit: Option<i64>) -> Result<Vec<db::CodeChunkRow>, String> {
+async fn code_search(
+    db: State<'_, Database>,
+    root_path: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<db::CodeChunkRow>, String> {
     let lim = limit.unwrap_or(6).clamp(1, 20);
     let expanded = expand_user_path(&root_path)?;
-    let qvec = ollama_embed_impl(vec![query]).await
-        .map_err(|e| format!("语义向量不可用（需要本地 Ollama + nomic-embed-text）：{}", e))?;
+    let qvec = ollama_embed_impl(vec![query]).await.map_err(|e| {
+        format!(
+            "语义向量不可用（需要本地 Ollama + nomic-embed-text）：{}",
+            e
+        )
+    })?;
     let v = qvec.into_iter().next().ok_or("查询向量为空")?;
     db.code_search(&expanded, &v, lim)
 }
@@ -1897,7 +2289,11 @@ fn save_temp_attachment(data: String, name: String) -> Result<String, String> {
         .collect();
     let dir = std::env::temp_dir().join("daoshengyi_attachments");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
-    let path = dir.join(format!("{}_{}", chrono::Utc::now().timestamp_millis(), safe_name));
+    let path = dir.join(format!(
+        "{}_{}",
+        chrono::Utc::now().timestamp_millis(),
+        safe_name
+    ));
     std::fs::write(&path, &bytes).map_err(|e| format!("写入临时文件失败: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -1985,29 +2381,71 @@ fn browser_candidates() -> Vec<BrowserInfo> {
     #[cfg(target_os = "macos")]
     {
         let mac_browsers: &[(&str, &str, &str)] = &[
-            ("chrome", "Google Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            ("edge", "Microsoft Edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-            ("chromium", "Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
-            ("brave", "Brave Browser", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            (
+                "chrome",
+                "Google Chrome",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            (
+                "edge",
+                "Microsoft Edge",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            (
+                "chromium",
+                "Chromium",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            ),
+            (
+                "brave",
+                "Brave Browser",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ),
             ("arc", "Arc", "/Applications/Arc.app/Contents/MacOS/Arc"),
         ];
         for (id, name, p) in mac_browsers {
             if std::path::Path::new(p).exists() {
-                out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string(), is_default: false });
+                out.push(BrowserInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    path: p.to_string(),
+                    is_default: false,
+                });
             }
         }
         // 用户目录直装（~/Applications）
         let home_apps: &[(&str, &str, &str)] = &[
-            ("chrome", "Google Chrome", "Google Chrome.app/Contents/MacOS/Google Chrome"),
-            ("edge", "Microsoft Edge", "Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-            ("chromium", "Chromium", "Chromium.app/Contents/MacOS/Chromium"),
-            ("brave", "Brave Browser", "Brave Browser.app/Contents/MacOS/Brave Browser"),
+            (
+                "chrome",
+                "Google Chrome",
+                "Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            (
+                "edge",
+                "Microsoft Edge",
+                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            (
+                "chromium",
+                "Chromium",
+                "Chromium.app/Contents/MacOS/Chromium",
+            ),
+            (
+                "brave",
+                "Brave Browser",
+                "Brave Browser.app/Contents/MacOS/Brave Browser",
+            ),
         ];
         if let Some(home) = home_dir() {
             for (id, name, rel) in home_apps {
                 let p = home.join("Applications").join(rel);
                 if p.exists() && !out.iter().any(|b| b.id == *id) {
-                    out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string_lossy().to_string(), is_default: false });
+                    out.push(BrowserInfo {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        path: p.to_string_lossy().to_string(),
+                        is_default: false,
+                    });
                 }
             }
         }
@@ -2015,15 +2453,40 @@ fn browser_candidates() -> Vec<BrowserInfo> {
     #[cfg(target_os = "windows")]
     {
         let win_browsers: &[(&str, &str, &str)] = &[
-            ("chrome", "Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            ("chrome", "Google Chrome", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-            ("edge", "Microsoft Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-            ("chromium", "Chromium", r"C:\Program Files\Chromium\Application\chromium.exe"),
-            ("brave", "Brave Browser", r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            (
+                "chrome",
+                "Google Chrome",
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            ),
+            (
+                "chrome",
+                "Google Chrome",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ),
+            (
+                "edge",
+                "Microsoft Edge",
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            ),
+            (
+                "chromium",
+                "Chromium",
+                r"C:\Program Files\Chromium\Application\chromium.exe",
+            ),
+            (
+                "brave",
+                "Brave Browser",
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ),
         ];
         for (id, name, p) in win_browsers {
             if std::path::Path::new(p).exists() && !out.iter().any(|b| b.id == *id) {
-                out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p.to_string(), is_default: false });
+                out.push(BrowserInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    path: p.to_string(),
+                    is_default: false,
+                });
             }
         }
     }
@@ -2041,7 +2504,12 @@ fn browser_candidates() -> Vec<BrowserInfo> {
             if !out.iter().any(|b| b.id == *id) {
                 let p = run_sys_cmd("which", &[cmd]);
                 if !p.is_empty() {
-                    out.push(BrowserInfo { id: id.to_string(), name: name.to_string(), path: p, is_default: false });
+                    out.push(BrowserInfo {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        path: p,
+                        is_default: false,
+                    });
                 }
             }
         }
@@ -2078,14 +2546,19 @@ exit(1)
         let exe = std::env::temp_dir().join("dsy_default_browser");
         // 编译产物缓存到 temp 固定路径：swiftc -O 很慢（1~5s），只在 exe 缺失时编译一次，
         // 后续检测直接运行已编译二进制（毫秒级），避免每次打开设置面板都卡顿。
-        if !exe.exists() {
-            if std::fs::write(&tmp, swift).is_ok() {
-                let compile = std::process::Command::new("swiftc")
-                    .args(["-O", tmp.to_str().unwrap_or(""), "-o", exe.to_str().unwrap_or("")])
-                    .output();
-                let _ = std::fs::remove_file(&tmp);
-                if let Ok(o) = compile {
-                    if !o.status.success() { let _ = std::fs::remove_file(&exe); }
+        if !exe.exists() && std::fs::write(&tmp, swift).is_ok() {
+            let compile = std::process::Command::new("swiftc")
+                .args([
+                    "-O",
+                    tmp.to_str().unwrap_or(""),
+                    "-o",
+                    exe.to_str().unwrap_or(""),
+                ])
+                .output();
+            let _ = std::fs::remove_file(&tmp);
+            if let Ok(o) = compile {
+                if !o.status.success() {
+                    let _ = std::fs::remove_file(&exe);
                 }
             }
         }
@@ -2094,19 +2567,38 @@ exit(1)
             if let Ok(r) = run {
                 if r.status.success() {
                     let id = String::from_utf8_lossy(&r.stdout).trim().to_string();
-                    if !id.is_empty() { return Some(id); }
+                    if !id.is_empty() {
+                        return Some(id);
+                    }
                 }
             }
         }
         // 兜底：读 LaunchServices 注册表（无需编译）
-        let plist = run_sys_cmd("defaults", &["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"]);
+        let plist = run_sys_cmd(
+            "defaults",
+            &[
+                "read",
+                "com.apple.LaunchServices/com.apple.launchservices.secure",
+                "LSHandlers",
+            ],
+        );
         if !plist.is_empty() {
             let lower = plist.to_lowercase();
-            if lower.contains("google chrome") { return Some("chrome".into()); }
-            if lower.contains("microsoft edge") { return Some("edge".into()); }
-            if lower.contains("chromium") { return Some("chromium".into()); }
-            if lower.contains("brave") { return Some("brave".into()); }
-            if lower.contains("arc") { return Some("arc".into()); }
+            if lower.contains("google chrome") {
+                return Some("chrome".into());
+            }
+            if lower.contains("microsoft edge") {
+                return Some("edge".into());
+            }
+            if lower.contains("chromium") {
+                return Some("chromium".into());
+            }
+            if lower.contains("brave") {
+                return Some("brave".into());
+            }
+            if lower.contains("arc") {
+                return Some("arc".into());
+            }
         }
         None
     }
@@ -2114,24 +2606,50 @@ exit(1)
     {
         let x = run_sys_cmd("xdg-settings", &["get", "default-web-browser"]);
         let l = x.to_lowercase();
-        if l.contains("chrome") { return Some("chrome".into()); }
-        if l.contains("chromium") { return Some("chromium".into()); }
-        if l.contains("edge") { return Some("edge".into()); }
-        if l.contains("brave") { return Some("brave".into()); }
+        if l.contains("chrome") {
+            return Some("chrome".into());
+        }
+        if l.contains("chromium") {
+            return Some("chromium".into());
+        }
+        if l.contains("edge") {
+            return Some("edge".into());
+        }
+        if l.contains("brave") {
+            return Some("brave".into());
+        }
         None
     }
     #[cfg(target_os = "windows")]
     {
-        let reg = run_sys_cmd("reg", &["query", r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", "/v", "Progid"]);
+        let reg = run_sys_cmd(
+            "reg",
+            &[
+                "query",
+                r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+                "/v",
+                "Progid",
+            ],
+        );
         let l = reg.to_lowercase();
-        if l.contains("chrome") { return Some("chrome".into()); }
-        if l.contains("edge") { return Some("edge".into()); }
-        if l.contains("chromium") { return Some("chromium".into()); }
-        if l.contains("brave") { return Some("brave".into()); }
+        if l.contains("chrome") {
+            return Some("chrome".into());
+        }
+        if l.contains("edge") {
+            return Some("edge".into());
+        }
+        if l.contains("chromium") {
+            return Some("chromium".into());
+        }
+        if l.contains("brave") {
+            return Some("brave".into());
+        }
         None
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { None }
+    {
+        None
+    }
 }
 
 /// 检测已安装浏览器 + 系统默认浏览器（Puppeteer 多内核适配）。
@@ -2140,7 +2658,9 @@ fn detect_browsers() -> Vec<BrowserInfo> {
     let mut list = browser_candidates();
     if let Some(def) = system_default_browser() {
         for b in list.iter_mut() {
-            if b.id == def { b.is_default = true; }
+            if b.id == def {
+                b.is_default = true;
+            }
         }
     }
     list
@@ -2221,7 +2741,10 @@ fn parse_embed_response(json: &serde_json::Value) -> Result<Vec<Vec<f32>>, Strin
     let mut out = Vec::with_capacity(embeddings.len());
     for e in embeddings {
         let arr = e.as_array().ok_or("embedding 元素格式异常")?;
-        let vec: Vec<f32> = arr.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect();
+        let vec: Vec<f32> = arr
+            .iter()
+            .filter_map(|x| x.as_f64().map(|v| v as f32))
+            .collect();
         if vec.is_empty() {
             return Err("embedding 为空向量".into());
         }
@@ -2289,7 +2812,12 @@ async fn ollama_status() -> Result<OllamaStatus, String> {
             models = ollama_models().await.unwrap_or_default();
         }
     }
-    Ok(OllamaStatus { installed, running, installing, models })
+    Ok(OllamaStatus {
+        installed,
+        running,
+        installing,
+        models,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -2320,9 +2848,15 @@ async fn sh_output(cmd: &str, args: &[&str]) -> String {
 /// 检测硬件综合性能（CPU / 内存 / 显卡），判断是否适合本地部署视觉模型
 #[tauri::command]
 async fn check_hardware() -> HardwareInfo {
-    let cpu_cores = sh_output("sysctl", &["-n", "hw.ncpu"]).await.parse::<u32>().unwrap_or(4);
+    let cpu_cores = sh_output("sysctl", &["-n", "hw.ncpu"])
+        .await
+        .parse::<u32>()
+        .unwrap_or(4);
     let cpu_brand = sh_output("sysctl", &["-n", "machdep.cpu.brand_string"]).await;
-    let mem_bytes = sh_output("sysctl", &["-n", "hw.memsize"]).await.parse::<u64>().unwrap_or(0);
+    let mem_bytes = sh_output("sysctl", &["-n", "hw.memsize"])
+        .await
+        .parse::<u64>()
+        .unwrap_or(0);
     let memory_gb = (mem_bytes / 1024 / 1024 / 1024) as u32;
 
     // GPU 信息（system_profiler 解析）
@@ -2336,7 +2870,10 @@ async fn check_hardware() -> HardwareInfo {
             gpu_name = v.trim().to_string();
         } else if t.starts_with("VRAM") && t.contains(':') {
             // 兼容 "VRAM (Total): 8 GB" 与 "VRAM (Dynamic, Max): 1536 MB" 等格式
-            let s = t.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+            let s = t
+                .split_once(':')
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap_or_default();
             if let Some(num) = s.strip_suffix("GB") {
                 if let Ok(n) = num.trim().parse::<u32>() {
                     gpu_memory_mb = n * 1024;
@@ -2461,7 +2998,10 @@ async fn ollama_setup(
                 match ollama_install_from_zip(&app).await {
                     Ok(()) => true,
                     Err(e) => {
-                        let _ = app.emit("ollama-progress", format!("官方直装失败，尝试 Homebrew 安装…（{}）", e));
+                        let _ = app.emit(
+                            "ollama-progress",
+                            format!("官方直装失败，尝试 Homebrew 安装…（{}）", e),
+                        );
                         false
                     }
                 }
@@ -2469,7 +3009,10 @@ async fn ollama_setup(
                 false
             };
             if !zip_ok && brew_available() {
-                let _ = app.emit("ollama-progress", "正在通过 Homebrew 安装（约几百 MB，10 分钟超时）...");
+                let _ = app.emit(
+                    "ollama-progress",
+                    "正在通过 Homebrew 安装（约几百 MB，10 分钟超时）...",
+                );
                 let out = tokio::time::timeout(
                     std::time::Duration::from_secs(600),
                     tokio::process::Command::new("brew")
@@ -2483,7 +3026,10 @@ async fn ollama_setup(
                 })?
                 .map_err(|e| format!("无法执行 brew install ollama: {}", e))?;
                 if !out.status.success() {
-                    let err = String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>();
+                    let err = String::from_utf8_lossy(&out.stderr)
+                        .chars()
+                        .take(300)
+                        .collect::<String>();
                     let _ = app.emit("ollama-progress", format!("❌ Homebrew 安装也失败，请检查网络/代理后重试，或手动安装：`curl -fsSL https://ollama.com/install.sh | sh`\n{}", err));
                     return Err("Ollama 自动安装失败（官方直装与 Homebrew 均失败）".into());
                 }
@@ -2529,24 +3075,34 @@ async fn ollama_setup(
     // 3. 检查并拉取视觉模型
     let models = ollama_models().await.unwrap_or_default();
     if !models.iter().any(|m| m.contains("llava-phi3")) {
-        let _ = app.emit("ollama-progress", serde_json::json!({
-            "text": "正在下载视觉模型 llava-phi3（约 2GB，可后台下载，不影响使用）...",
-            "percent": 0.0,
-        }));
-        ollama_pull_with_progress(&app, "llava-phi3").await.map_err(|e| {
-            let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", e));
-            format!("模型 llava-phi3 拉取失败: {}", e)
-        })?;
+        let _ = app.emit(
+            "ollama-progress",
+            serde_json::json!({
+                "text": "正在下载视觉模型 llava-phi3（约 2GB，可后台下载，不影响使用）...",
+                "percent": 0.0,
+            }),
+        );
+        ollama_pull_with_progress(&app, "llava-phi3")
+            .await
+            .map_err(|e| {
+                let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", e));
+                format!("模型 llava-phi3 拉取失败: {}", e)
+            })?;
     } else {
-        let _ = app.emit("ollama-progress", serde_json::json!({ "text": "✅ llava-phi3 已就绪", "percent": 100.0 }));
+        let _ = app.emit(
+            "ollama-progress",
+            serde_json::json!({ "text": "✅ llava-phi3 已就绪", "percent": 100.0 }),
+        );
     }
 
     // 4. 自动配置应用内 API：添加/更新「本地 Ollama」配置并切换为当前模型，
     //    避免用户部署后还要手动去设置里填地址 / Key / 模型
-    ensure_ollama_profile(db.inner(), cipher.inner()).await.map_err(|e| {
-        let _ = app.emit("ollama-progress", format!("⚠️ 自动配置本地模型失败：{}", e));
-        e
-    })?;
+    ensure_ollama_profile(db.inner(), cipher.inner())
+        .await
+        .map_err(|e| {
+            let _ = app.emit("ollama-progress", format!("⚠️ 自动配置本地模型失败：{}", e));
+            e
+        })?;
     let _ = app.emit("ollama-progress", "🎉 本地视觉模型部署完成！图片将自动用本地 Ollama 识别，文本对话继续使用你当前的模型（如 DeepSeek）。直接发送图片即可识别。");
     let _ = app.emit("ollama-configured", ());
     Ok("ok".into())
@@ -2597,19 +3153,26 @@ fn system_proxy() -> Option<String> {
 /// 避免网络不通时反复触发大文件下载
 async fn url_reachable(url: &str, proxy: Option<&str>) -> bool {
     let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-s", "-I", "--max-time", "8", "-o", "/dev/null", "-w", "%{http_code}"]);
+    cmd.args([
+        "-s",
+        "-I",
+        "--max-time",
+        "8",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+    ]);
     if let Some(p) = proxy {
         cmd.args(["-x", p]);
     }
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        cmd.arg(url).output(),
-    )
-    .await;
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.arg(url).output()).await;
     match out {
         Ok(Ok(o)) => {
             let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            code.parse::<u16>().map(|c| (200..400).contains(&c)).unwrap_or(false)
+            code.parse::<u16>()
+                .map(|c| (200..400).contains(&c))
+                .unwrap_or(false)
         }
         _ => false,
     }
@@ -2644,7 +3207,10 @@ async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
         return Err("无法连接 Ollama 下载源（需要网络或代理）".into());
     }
 
-    let _ = app.emit("ollama-progress", "✅ 下载源连通，开始下载 Ollama 官方包（约几百 MB，已支持断点续传）...");
+    let _ = app.emit(
+        "ollama-progress",
+        "✅ 下载源连通，开始下载 Ollama 官方包（约几百 MB，已支持断点续传）...",
+    );
 
     // 临时目录（固定路径 ollama-setup：配合 curl -C - 断点续传，中断后重试续传而非从头下载）
     let tmp = std::env::temp_dir().join("ollama-setup");
@@ -2653,9 +3219,16 @@ async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
 
     // 1. 下载（macOS 自带 curl；-C - 断点续传；自动走系统代理；20 分钟超时）
     let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["--fail", "--show-error", "--location", "--progress-bar", "-C", "-"])
-        .arg("-o")
-        .arg(&zip_path);
+    cmd.args([
+        "--fail",
+        "--show-error",
+        "--location",
+        "--progress-bar",
+        "-C",
+        "-",
+    ])
+    .arg("-o")
+    .arg(&zip_path);
     if let Some(p) = proxy.as_deref() {
         cmd.args(["-x", p]);
     }
@@ -2663,13 +3236,19 @@ async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
     let dl = tokio::time::timeout(std::time::Duration::from_secs(1200), cmd.status())
         .await
         .map_err(|_| {
-            let _ = app.emit("ollama-progress", "❌ 下载 Ollama 超时（20 分钟），请检查网络后重试（已支持断点续传）");
+            let _ = app.emit(
+                "ollama-progress",
+                "❌ 下载 Ollama 超时（20 分钟），请检查网络后重试（已支持断点续传）",
+            );
             "下载超时".to_string()
         })?
         .map_err(|e| format!("无法执行 curl 下载 Ollama: {}", e))?;
     if !dl.success() {
         // 保留已下载部分，下次自动续传，不重复下载
-        let _ = app.emit("ollama-progress", "❌ 下载 Ollama 失败，请检查网络/代理后重试（已支持断点续传，不会重复下载已完成部分）");
+        let _ = app.emit(
+            "ollama-progress",
+            "❌ 下载 Ollama 失败，请检查网络/代理后重试（已支持断点续传，不会重复下载已完成部分）",
+        );
         return Err("Ollama 官方包下载失败".into());
     }
     let _ = app.emit("ollama-progress", "✅ 下载完成，正在解压安装到用户目录...");
@@ -2699,13 +3278,19 @@ async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
     if !bin.exists() {
         return Err("Ollama.app 结构异常，未找到 ollama 可执行文件".into());
     }
-    let _ = app.emit("ollama-progress", "✅ Ollama 安装成功（用户目录，无需 Homebrew）");
+    let _ = app.emit(
+        "ollama-progress",
+        "✅ Ollama 安装成功（用户目录，无需 Homebrew）",
+    );
     Ok(())
 }
 
 /// 部署成功后自动配置应用内 API：添加/更新「本地 Ollama」配置并切换为当前模型，
 /// 让用户无需手动填写 baseUrl / Key / 模型即可直接使用本地视觉模型识别图片。
-async fn ensure_ollama_profile(db: &Database, cipher: &settings::SecretCipher) -> Result<(), String> {
+async fn ensure_ollama_profile(
+    db: &Database,
+    cipher: &settings::SecretCipher,
+) -> Result<(), String> {
     // 1. 读取现有设置（解密）
     let mut settings: settings::AppSettings = match db.get_setting(SETTINGS_KEY)? {
         Some(v) => serde_json::from_str(&v).map_err(|e| format!("解析设置失败: {}", e))?,
@@ -2782,7 +3367,8 @@ async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
 
         let resp = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            client.post(url)
+            client
+                .post(url)
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send(),
@@ -2793,13 +3379,24 @@ async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Ollama 图片识别失败 [{}]: {}", status, text.chars().take(300).collect::<String>()));
+            return Err(format!(
+                "Ollama 图片识别失败 [{}]: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            ));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析响应失败: {}", e))?;
         let desc = json
-            .get("choices").and_then(|c| c.get(0))
-            .and_then(|c| c.get("message")).and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str()).unwrap_or("").to_string();
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         if !desc.is_empty() {
             parts.push(desc);
         }
@@ -2810,15 +3407,22 @@ async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
 /// 用 macOS 系统 Vision OCR 提取图片文字（准确、离线、快）。
 /// 非 macOS 返回空字符串，由前端回退到视觉模型语义描述。
 #[tauri::command]
-async fn ocr_extract_image_text(app: tauri::AppHandle, images: Vec<String>) -> Result<String, String> {
+async fn ocr_extract_image_text(
+    app: tauri::AppHandle,
+    images: Vec<String>,
+) -> Result<String, String> {
     if !cfg!(target_os = "macos") {
         return Ok(String::new());
     }
-    let tool = ocr_tool_path(&app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let tool = ocr_tool_path(&app)
+        .ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
     let mut parts: Vec<String> = Vec::new();
     for (i, img) in images.iter().enumerate() {
-        let Some(bytes) = decode_data_uri(img) else { continue };
-        let path = std::env::temp_dir().join(format!("daoshengyi-ocr-{}-{}.img", std::process::id(), i));
+        let Some(bytes) = decode_data_uri(img) else {
+            continue;
+        };
+        let path =
+            std::env::temp_dir().join(format!("daoshengyi-ocr-{}-{}.img", std::process::id(), i));
         if std::fs::write(&path, &bytes).is_err() {
             continue;
         }
@@ -2850,7 +3454,11 @@ fn resolve_image_data_uri(input: &str) -> Result<String, String> {
     }
     let path = input.strip_prefix("file://").unwrap_or(input);
     let bytes = std::fs::read(path).map_err(|e| format!("读取图片失败: {}", e))?;
-    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -2858,7 +3466,11 @@ fn resolve_image_data_uri(input: &str) -> Result<String, String> {
         _ => "image/png",
     };
     use base64::Engine as _;
-    Ok(format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(&bytes)))
+    Ok(format!(
+        "data:{};base64,{}",
+        mime,
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    ))
 }
 
 /// 把 base64 图片（data URI）保存到临时文件，返回路径。供浏览器截图落盘后给视觉/OCR 分析。
@@ -2877,8 +3489,11 @@ fn save_temp_image(data: String, path: Option<String>) -> Result<String, String>
         Some(p) if !p.trim().is_empty() => {
             let p = p.trim();
             if p == "~" || p.starts_with("~/") {
-                if home.is_empty() { std::path::PathBuf::from(p) }
-                else { std::path::Path::new(&home).join(p.trim_start_matches("~/")) }
+                if home.is_empty() {
+                    std::path::PathBuf::from(p)
+                } else {
+                    std::path::Path::new(&home).join(p.trim_start_matches("~/"))
+                }
             } else {
                 std::path::PathBuf::from(p)
             }
@@ -2887,7 +3502,9 @@ fn save_temp_image(data: String, path: Option<String>) -> Result<String, String>
             let dir = if home.is_empty() {
                 std::env::temp_dir()
             } else {
-                std::path::Path::new(&home).join("Pictures").join("道生一截图")
+                std::path::Path::new(&home)
+                    .join("Pictures")
+                    .join("道生一截图")
             };
             std::fs::create_dir_all(&dir).map_err(|e| format!("创建截图目录失败: {}", e))?;
             dir.join(format!("daoshengyi-shot-{}.png", ts))
@@ -2909,10 +3526,14 @@ async fn run_ocr(app: &tauri::AppHandle, paths: &[String]) -> Result<String, Str
     if !cfg!(target_os = "macos") {
         return Ok(String::new());
     }
-    let tool = ocr_tool_path(app).ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let tool = ocr_tool_path(app)
+        .ok_or("未找到 OCR 工具 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
     let mut cmd = tokio::process::Command::new(&tool);
     cmd.args(paths);
-    let out = cmd.output().await.map_err(|e| format!("执行 OCR 失败: {}", e))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("执行 OCR 失败: {}", e))?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -2977,7 +3598,9 @@ async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Resul
             if line.is_empty() {
                 continue;
             }
-            let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
             let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("");
             // Ollama 各版本下载状态名不同：老版本 "downloading"，0.3x 为 "pulling <digest>"。
             // 只要事件携带 total/completed 数字字段就按下载进度处理，避免进度卡在 0%。
@@ -2986,16 +3609,23 @@ async fn ollama_pull_with_progress(app: &tauri::AppHandle, model: &str) -> Resul
             if has_progress {
                 let total = val.get("total").and_then(|t| t.as_f64()).unwrap_or(0.0);
                 let completed = val.get("completed").and_then(|c| c.as_f64()).unwrap_or(0.0);
-                let percent = if total > 0.0 { (completed / total * 100.0).min(99.0) } else { 0.0 };
+                let percent = if total > 0.0 {
+                    (completed / total * 100.0).min(99.0)
+                } else {
+                    0.0
+                };
                 let _ = app.emit("ollama-progress", serde_json::json!({
                     "text": format!("正在下载 {}（{:.0}MB / {:.0}MB）...", model, completed / 1048576.0, total / 1048576.0),
                     "percent": percent,
                 }));
             } else if status == "success" {
-                let _ = app.emit("ollama-progress", serde_json::json!({
-                    "text": format!("✅ {} 部署完成", model),
-                    "percent": 100.0,
-                }));
+                let _ = app.emit(
+                    "ollama-progress",
+                    serde_json::json!({
+                        "text": format!("✅ {} 部署完成", model),
+                        "percent": 100.0,
+                    }),
+                );
                 break;
             } else if !status.is_empty() {
                 let _ = app.emit("ollama-progress", serde_json::json!({ "text": status }));
@@ -3031,7 +3661,13 @@ async fn execute_command(
     let mut out = run_shell_command(&full_cmd, cwd.as_deref(), timeout_secs).await;
     let duration = start.elapsed().as_millis() as i64;
     match &out {
-        Ok(CommandOutput { exit_code, stdout, stderr, timed_out: _, .. }) => {
+        Ok(CommandOutput {
+            exit_code,
+            stdout,
+            stderr,
+            timed_out: _,
+            ..
+        }) => {
             let _ = db.log_tool_call(
                 "command",
                 &audit_args,
@@ -3041,7 +3677,13 @@ async fn execute_command(
             );
         }
         Err(e) => {
-            let _ = db.log_tool_call("command", &audit_args, &format!("启动失败: {}", e), true, duration);
+            let _ = db.log_tool_call(
+                "command",
+                &audit_args,
+                &format!("启动失败: {}", e),
+                true,
+                duration,
+            );
         }
     }
     // 解析命令重定向生成的文件（绝对路径），供前端展示为可点击链接
@@ -3258,13 +3900,31 @@ async fn git_operation(
             let stdout = String::from_utf8_lossy(&out_buf).to_string();
             let stderr = String::from_utf8_lossy(&err_buf).to_string();
             let exit_code = status.code().unwrap_or(-1);
-            let _ = db.log_tool_call("git", &audit_args, &format!("exit={} out={} err={}", exit_code, stdout, stderr), exit_code != 0, duration);
-            Ok(CommandOutput { stdout, stderr, exit_code, timed_out: false, created_files: Vec::new() })
+            let _ = db.log_tool_call(
+                "git",
+                &audit_args,
+                &format!("exit={} out={} err={}", exit_code, stdout, stderr),
+                exit_code != 0,
+                duration,
+            );
+            Ok(CommandOutput {
+                stdout,
+                stderr,
+                exit_code,
+                timed_out: false,
+                created_files: Vec::new(),
+            })
         }
         Err(_) => {
             let msg = format!("git 操作超时（{}s），已终止", timeout_secs.unwrap_or(60));
             let _ = db.log_tool_call("git", &audit_args, &msg, true, duration);
-            Ok(CommandOutput { stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true, created_files: Vec::new() })
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: msg,
+                exit_code: -1,
+                timed_out: true,
+                created_files: Vec::new(),
+            })
         }
     }
 }
@@ -3303,8 +3963,13 @@ async fn run_tests(
     if let Some(c) = command {
         if !c.trim().is_empty() {
             framework = "custom".to_string();
-            let mut parts = c.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>();
-            if let Some(a) = args { parts.extend(a); }
+            let mut parts = c
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            if let Some(a) = args {
+                parts.extend(a);
+            }
             cmd_parts = parts;
         }
     }
@@ -3322,8 +3987,11 @@ async fn run_tests(
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
-        if !cwd.trim().is_empty() { cmd.current_dir(&cwd); }
-        cmd.spawn().map_err(|e| format!("启动测试命令失败（{}）: {}", display_cmd, e))?
+        if !cwd.trim().is_empty() {
+            cmd.current_dir(&cwd);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("启动测试命令失败（{}）: {}", display_cmd, e))?
     };
 
     let mut stdout_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
@@ -3339,7 +4007,8 @@ async fn run_tests(
             child.wait(),
         );
         (status_res, out_buf, err_buf)
-    }).await;
+    })
+    .await;
 
     let duration = start.elapsed().as_millis() as i64;
 
@@ -3349,13 +4018,33 @@ async fn run_tests(
             let stdout = String::from_utf8_lossy(&out_buf).to_string();
             let stderr = String::from_utf8_lossy(&err_buf).to_string();
             let exit_code = status.code().unwrap_or(-1);
-            let _ = db.log_tool_call("test", &audit_args, &format!("exit={} out={} err={}", exit_code, stdout, stderr), exit_code != 0, duration);
-            Ok(TestOutput { framework, command: display_cmd, stdout, stderr, exit_code, timed_out: false })
+            let _ = db.log_tool_call(
+                "test",
+                &audit_args,
+                &format!("exit={} out={} err={}", exit_code, stdout, stderr),
+                exit_code != 0,
+                duration,
+            );
+            Ok(TestOutput {
+                framework,
+                command: display_cmd,
+                stdout,
+                stderr,
+                exit_code,
+                timed_out: false,
+            })
         }
         Err(_) => {
             let msg = format!("测试执行超时（{}s），已终止", timeout_secs.unwrap_or(300));
             let _ = db.log_tool_call("test", &audit_args, &msg, true, duration);
-            Ok(TestOutput { framework, command: display_cmd, stdout: String::new(), stderr: msg, exit_code: -1, timed_out: true })
+            Ok(TestOutput {
+                framework,
+                command: display_cmd,
+                stdout: String::new(),
+                stderr: msg,
+                exit_code: -1,
+                timed_out: true,
+            })
         }
     }
 }
@@ -3370,8 +4059,14 @@ fn detect_test_framework(cwd: &str) -> (String, Vec<String>) {
     if dir.join("Cargo.toml").exists() {
         return ("cargo".into(), vec!["cargo".into(), "test".into()]);
     }
-    if dir.join("pyproject.toml").exists() || dir.join("requirements.txt").exists() || dir.join("pytest.ini").exists() {
-        return ("pytest".into(), vec!["python3".into(), "-m".into(), "pytest".into(), "-q".into()]);
+    if dir.join("pyproject.toml").exists()
+        || dir.join("requirements.txt").exists()
+        || dir.join("pytest.ini").exists()
+    {
+        return (
+            "pytest".into(),
+            vec!["python3".into(), "-m".into(), "pytest".into(), "-q".into()],
+        );
     }
     ("unknown".into(), Vec::new())
 }
@@ -3411,41 +4106,103 @@ fn analyze_project(root: String) -> Result<ProjectAnalysis, String> {
         stack_parts.push("Rust".into());
         if let Ok(content) = std::fs::read_to_string(dir.join("Cargo.toml")) {
             if let Some(line) = content.lines().find(|l| l.trim().starts_with("name")) {
-                manifest_hint = format!("Cargo 包: {}", line.trim().trim_start_matches("name").trim().trim_matches(|c| c == '=' || c == '"' || c == ' '));
+                manifest_hint = format!(
+                    "Cargo 包: {}",
+                    line.trim()
+                        .trim_start_matches("name")
+                        .trim()
+                        .trim_matches(|c| c == '=' || c == '"' || c == ' ')
+                );
             }
         }
     }
     if dir.join("package.json").exists() {
         let mut is_ts = false;
         if let Ok(content) = std::fs::read_to_string(dir.join("package.json")) {
-            if content.contains("\"typescript\"") || content.contains("\"tsc\"") { is_ts = true; }
-            if let Some(l) = content.lines().find(|l| l.contains("\"name\"")) {
-                let hint = l.trim().trim_start_matches("\"name\"").trim().trim_matches(|c| c == ':' || c == ',' || c == '"' || c == ' ');
-                manifest_hint = if manifest_hint.is_empty() { format!("npm 包: {}", hint) } else { format!("{}; npm 包: {}", manifest_hint, hint) };
+            if content.contains("\"typescript\"") || content.contains("\"tsc\"") {
+                is_ts = true;
             }
-            let scripts: Vec<String> = content.split("\"scripts\"").nth(1).map(|s| {
-                s.split(',').take(5).map(|x| {
-                    x.trim().trim_start_matches('{').trim().trim_matches('}').trim().to_string()
-                }).filter(|x| !x.is_empty() && x.contains(':')).collect()
-            }).unwrap_or_default();
+            if let Some(l) = content.lines().find(|l| l.contains("\"name\"")) {
+                let hint = l
+                    .trim()
+                    .trim_start_matches("\"name\"")
+                    .trim()
+                    .trim_matches(|c| c == ':' || c == ',' || c == '"' || c == ' ');
+                manifest_hint = if manifest_hint.is_empty() {
+                    format!("npm 包: {}", hint)
+                } else {
+                    format!("{}; npm 包: {}", manifest_hint, hint)
+                };
+            }
+            let scripts: Vec<String> = content
+                .split("\"scripts\"")
+                .nth(1)
+                .map(|s| {
+                    s.split(',')
+                        .take(5)
+                        .map(|x| {
+                            x.trim()
+                                .trim_start_matches('{')
+                                .trim()
+                                .trim_matches('}')
+                                .trim()
+                                .to_string()
+                        })
+                        .filter(|x| !x.is_empty() && x.contains(':'))
+                        .collect()
+                })
+                .unwrap_or_default();
             if !scripts.is_empty() {
                 manifest_hint = format!("{}; scripts: {}", manifest_hint, scripts.join(", "));
             }
         }
-        stack_parts.push(if is_ts { "TypeScript".into() } else { "JavaScript".into() });
+        stack_parts.push(if is_ts {
+            "TypeScript".into()
+        } else {
+            "JavaScript".into()
+        });
     }
     if dir.join("pyproject.toml").exists() || dir.join("requirements.txt").exists() {
         stack_parts.push("Python".into());
     }
-    if dir.join("go.mod").exists() { stack_parts.push("Go".into()); }
-    if dir.join("pom.xml").exists() { stack_parts.push("Java".into()); }
-    if dir.join("vue.config.js").exists() || dir.join("vite.config.ts").exists() || dir.join("vite.config.js").exists() { stack_parts.push("Vue".into()); }
-    if dir.join("src").join("App.vue").exists() { stack_parts.push("Vue".into()); }
-    let stack = if stack_parts.is_empty() { "未知".to_string() } else { stack_parts.join(" + ") };
+    if dir.join("go.mod").exists() {
+        stack_parts.push("Go".into());
+    }
+    if dir.join("pom.xml").exists() {
+        stack_parts.push("Java".into());
+    }
+    if dir.join("vue.config.js").exists()
+        || dir.join("vite.config.ts").exists()
+        || dir.join("vite.config.js").exists()
+    {
+        stack_parts.push("Vue".into());
+    }
+    if dir.join("src").join("App.vue").exists() {
+        stack_parts.push("Vue".into());
+    }
+    let stack = if stack_parts.is_empty() {
+        "未知".to_string()
+    } else {
+        stack_parts.join(" + ")
+    };
 
     // 顶层结构 + 按扩展名统计（跳过常见大目录）
-    const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", "build", "vendor", ".next", "__pycache__", ".idea", ".vscode"];
-    const SRC_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "vue", "py", "go", "java", "c", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "kt", "sh", "sql", "toml", "json", "yaml", "yml", "css", "html"];
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        "build",
+        "vendor",
+        ".next",
+        "__pycache__",
+        ".idea",
+        ".vscode",
+    ];
+    const SRC_EXTS: &[&str] = &[
+        "rs", "ts", "tsx", "js", "jsx", "vue", "py", "go", "java", "c", "cpp", "h", "hpp", "cs",
+        "rb", "php", "swift", "kt", "sh", "sql", "toml", "json", "yaml", "yml", "css", "html",
+    ];
     let mut top_level: Vec<String> = Vec::new();
     let mut by_ext: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut source_files = 0usize;
@@ -3455,7 +4212,9 @@ fn analyze_project(root: String) -> Result<ProjectAnalysis, String> {
             let name = ent.file_name().to_string_lossy().to_string();
             let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_dir {
-                if SKIP_DIRS.contains(&name.as_str()) { continue; }
+                if SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
                 top_level.push(format!("📁 {}/", name));
             } else {
                 top_level.push(format!("📄 {}", name));
@@ -3469,7 +4228,10 @@ fn analyze_project(root: String) -> Result<ProjectAnalysis, String> {
         }
     }
     top_level.sort();
-    let mut ext_lines: Vec<String> = by_ext.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+    let mut ext_lines: Vec<String> = by_ext
+        .iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect();
     ext_lines.sort();
 
     Ok(ProjectAnalysis {
@@ -3484,13 +4246,27 @@ fn analyze_project(root: String) -> Result<ProjectAnalysis, String> {
 
 /// Git 操作安全校验：白名单子命令 + 拒绝危险参数（可独立测试的纯逻辑）
 fn validate_git_operation(action: &str, args: &[String]) -> Result<(), String> {
-    const SAFE_RO: &[&str] = &["status", "diff", "log", "branch", "remote", "show", "ls-files", "rev-parse"];
+    const SAFE_RO: &[&str] = &[
+        "status",
+        "diff",
+        "log",
+        "branch",
+        "remote",
+        "show",
+        "ls-files",
+        "rev-parse",
+    ];
     const SAFE_RW: &[&str] = &["add", "commit", "pull", "push", "checkout", "init", "clone"];
     if !SAFE_RO.contains(&action) && !SAFE_RW.contains(&action) {
         return Err(format!(
             "git_operation 不支持该子命令: {}（仅限 {}）",
             action,
-            SAFE_RO.iter().chain(SAFE_RW).cloned().collect::<Vec<_>>().join("/")
+            SAFE_RO
+                .iter()
+                .chain(SAFE_RW)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("/")
         ));
     }
     // 禁止破坏性/危险参数（防止 agent 误操作或注入）
@@ -3542,7 +4318,12 @@ fn fork_conversation_cmd(
 
 /// O3 会话级工具集：确保会话行存在（session_spawn 先建子会话占位，queue_turn 再投递）。返回是否新建。
 #[tauri::command]
-fn ensure_conversation_cmd(db: State<Database>, id: String, title: String, model: String) -> Result<bool, String> {
+fn ensure_conversation_cmd(
+    db: State<Database>,
+    id: String,
+    title: String,
+    model: String,
+) -> Result<bool, String> {
     db.ensure_conversation(&id, &title, &model)
 }
 
@@ -3612,7 +4393,10 @@ async fn queue_turn(
                     duration: None,
                     cost: Some(0.0),
                 });
-                let _ = app.emit("queue-turn-done", serde_json::json!({ "conversationId": cid }));
+                let _ = app.emit(
+                    "queue-turn-done",
+                    serde_json::json!({ "conversationId": cid }),
+                );
             }
             Err(e) => {
                 // 失败也把投递内容记录进会话，避免丢失
@@ -3628,18 +4412,31 @@ async fn queue_turn(
 }
 
 #[tauri::command]
-fn search_conversations_cmd(db: State<Database>, query: String) -> Result<Vec<db::SearchResult>, String> {
+fn search_conversations_cmd(
+    db: State<Database>,
+    query: String,
+) -> Result<Vec<db::SearchResult>, String> {
     db.search(&query)
 }
 
 #[tauri::command]
-fn export_conversation_cmd(db: State<Database>, id: String, format: String) -> Result<String, String> {
+fn export_conversation_cmd(
+    db: State<Database>,
+    id: String,
+    format: String,
+) -> Result<String, String> {
     db.export_conversation(&id, &format)
 }
 
 /// 用量历史累计：每次 LLM 回复生成后调用一次（token/费用/耗时按天累计，删除会话不清零）
 #[tauri::command]
-fn accumulate_usage(db: State<Database>, tokens: i64, cost: f64, duration: f64, timestamp: i64) -> Result<(), String> {
+fn accumulate_usage(
+    db: State<Database>,
+    tokens: i64,
+    cost: f64,
+    duration: f64,
+    timestamp: i64,
+) -> Result<(), String> {
     db.accumulate_usage(tokens, cost, duration, timestamp)
 }
 
@@ -3654,7 +4451,14 @@ fn get_usage_agg(db: State<Database>) -> Result<serde_json::Value, String> {
 // --- 记忆命令 ---
 
 #[tauri::command]
-fn save_summary(db: State<Database>, id: String, conv_id: String, summary: String, range_start: i64, range_end: i64) -> Result<(), String> {
+fn save_summary(
+    db: State<Database>,
+    id: String,
+    conv_id: String,
+    summary: String,
+    range_start: i64,
+    range_end: i64,
+) -> Result<(), String> {
     db.save_summary(&id, &conv_id, &summary, range_start, range_end)
 }
 
@@ -3666,7 +4470,11 @@ fn get_summaries(db: State<Database>, conv_id: String) -> Result<Vec<db::Summary
 #[tauri::command]
 fn save_fact(db: State<Database>, fact: db::FactRow) -> Result<String, String> {
     let (is_new, id) = db.save_fact(&fact)?;
-    Ok(if is_new { format!("saved:{}", id) } else { format!("merged:{}", id) })
+    Ok(if is_new {
+        format!("saved:{}", id)
+    } else {
+        format!("merged:{}", id)
+    })
 }
 
 /// 记忆维护（启动/每日后台调度用）：重要度衰减 + 遗忘 + FTS 清理
@@ -3676,7 +4484,11 @@ fn maintain_facts(db: State<Database>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn search_facts(db: State<Database>, query: String, limit: i64) -> Result<Vec<db::FactRow>, String> {
+fn search_facts(
+    db: State<Database>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<db::FactRow>, String> {
     db.search_facts(&query, limit)
 }
 
@@ -3687,7 +4499,11 @@ fn get_preferences(db: State<Database>) -> Result<Vec<db::FactRow>, String> {
 
 /// 列出全部事实（记忆管理面板用）：fact_type 空=全部；按 重要度/最近访问 排序
 #[tauri::command]
-fn list_facts(db: State<Database>, fact_type: String, limit: i64) -> Result<Vec<db::FactRow>, String> {
+fn list_facts(
+    db: State<Database>,
+    fact_type: String,
+    limit: i64,
+) -> Result<Vec<db::FactRow>, String> {
     db.list_facts(&fact_type, limit)
 }
 
@@ -3775,7 +4591,10 @@ async fn list_models(base_url: String, api_key: String) -> Result<Vec<String>, S
         .map_err(|e| format!("请求模型列表失败: {}", e))?;
 
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
     if !status.is_success() {
         return Err(format!("HTTP {}: {}", status.as_u16(), body));
     }
@@ -3807,7 +4626,13 @@ fn delete_fact_cmd(db: State<Database>, id: String) -> Result<(), String> {
 
 /// 编辑事实（记忆管理面板用）：更新文本/类型/重要度
 #[tauri::command]
-fn update_fact_cmd(db: State<Database>, id: String, fact: String, fact_type: String, importance: i64) -> Result<(), String> {
+fn update_fact_cmd(
+    db: State<Database>,
+    id: String,
+    fact: String,
+    fact_type: String,
+    importance: i64,
+) -> Result<(), String> {
     db.update_fact(&id, &fact, &fact_type, importance)
 }
 
@@ -3822,7 +4647,11 @@ fn set_fact_embedding(db: State<Database>, id: String, embedding: Vec<f32>) -> R
 }
 
 #[tauri::command]
-fn search_by_embedding(db: State<Database>, embedding: Vec<f32>, limit: i64) -> Result<Vec<(db::FactRow, f32)>, String> {
+fn search_by_embedding(
+    db: State<Database>,
+    embedding: Vec<f32>,
+    limit: i64,
+) -> Result<Vec<(db::FactRow, f32)>, String> {
     db.search_by_embedding(&embedding, limit)
 }
 
@@ -3836,7 +4665,12 @@ async fn web_search(query: String) -> Result<Vec<search::SearchResult>, String> 
 /// 企业微信：POST {webhook} body {"msgtype":"text","text":{"content":..}}
 /// 校验 HTTP 状态 + 平台业务错误码（errcode / code 非 0 视为失败）。
 #[tauri::command]
-async fn send_im_message(platform: String, text: String, webhook: String, secret: String) -> Result<String, String> {
+async fn send_im_message(
+    platform: String,
+    text: String,
+    webhook: String,
+    secret: String,
+) -> Result<String, String> {
     if webhook.trim().is_empty() {
         return Err("未配置 Webhook 地址".into());
     }
@@ -3867,15 +4701,20 @@ async fn send_im_message(platform: String, text: String, webhook: String, secret
     };
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .build().map_err(|e| format!("客户端构建失败: {}", e))?;
-    let resp = client.post(&url)
+        .build()
+        .map_err(|e| format!("客户端构建失败: {}", e))?;
+    let resp = client
+        .post(&url)
         .header("Content-Type", "application/json")
         .body(body.to_string())
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
     let status = resp.status();
     let text_body = resp.text().await.unwrap_or_default();
     // 飞书/企业微信/钉钉即使 HTTP 200 也可能返回业务错误码，需再校验
-    let json: serde_json::Value = serde_json::from_str(&text_body).unwrap_or(serde_json::Value::Null);
+    let json: serde_json::Value =
+        serde_json::from_str(&text_body).unwrap_or(serde_json::Value::Null);
     let errcode = json.get("errcode").and_then(|v| v.as_i64());
     let code = json.get("code").and_then(|v| v.as_i64());
     let biz_ok = match (errcode, code) {
@@ -3886,7 +4725,11 @@ async fn send_im_message(platform: String, text: String, webhook: String, secret
     if status.is_success() && biz_ok {
         Ok(format!("✅ 已通过 {} 推送成功", platform))
     } else {
-        Err(format!("推送失败 [{}]: {}", status, text_body.chars().take(200).collect::<String>()))
+        Err(format!(
+            "推送失败 [{}]: {}",
+            status,
+            text_body.chars().take(200).collect::<String>()
+        ))
     }
 }
 
@@ -3918,9 +4761,14 @@ async fn fetch_page(db: State<'_, Database>, url: String) -> Result<PageContent,
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .timeout(std::time::Duration::from_secs(15))
-        .build().map_err(|e| format!("err:{}", e))?;
+        .build()
+        .map_err(|e| format!("err:{}", e))?;
 
-    let resp = client.get(&url).send().await.map_err(|e| format!("err:{}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("err:{}", e))?;
     let final_url = resp.url().to_string();
     let html = resp.text().await.map_err(|e| format!("err:{}", e))?;
     eprintln!("[fetch_page] HTML: {} bytes", html.len());
@@ -3929,7 +4777,11 @@ async fn fetch_page(db: State<'_, Database>, url: String) -> Result<PageContent,
     let text = html_to_text(&html);
     eprintln!("[fetch_page] 标题: {}, 文本: {} chars", title, text.len());
 
-    Ok(PageContent { title, text, url: final_url })
+    Ok(PageContent {
+        title,
+        text,
+        url: final_url,
+    })
 }
 
 // --- MCP 管理器 ---
@@ -3947,13 +4799,26 @@ async fn mcp_connect(
     args: Vec<String>,
     env: std::collections::HashMap<String, String>,
 ) -> Result<Vec<mcp::Tool>, String> {
-    let log_msg = format!("[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}", name, command, args);
+    let log_msg = format!(
+        "[mcp_connect] 收到连接请求: name='{}' command='{}' args={:?}",
+        name, command, args
+    );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
-    let config = mcp::McpServerConfig { name: name.clone(), command, args, enabled: true, env };
+    let config = mcp::McpServerConfig {
+        name: name.clone(),
+        command,
+        args,
+        enabled: true,
+        env,
+    };
     let client = match mcp::McpClient::connect(&config).await {
         Ok(c) => {
-            let m = format!("[mcp_connect] '{}' 连接成功, {} 个工具", name, c.tools.len());
+            let m = format!(
+                "[mcp_connect] '{}' 连接成功, {} 个工具",
+                name,
+                c.tools.len()
+            );
             eprintln!("{}", m);
             append_log(&app, &m);
             c
@@ -3983,20 +4848,17 @@ async fn mcp_call_tool(
     let audit_name = format!("{}:{}", server, tool_name);
 
     // 守卫：工具调用超时（借鉴 DeepSeek Harness 的 guard 理念）
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        async {
-            let mut clients = manager.clients.lock().await;
-            // LLM 输出的 server 名可能与配置名不一致（省略、大小写、多余空白等），
-            // 做宽松匹配：精确 → 去空白 → 大小写不敏感 → 唯一客户端兜底
-            let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
-            if key != server {
-                eprintln!("[mcp_call_tool] server '{}' 映射为 '{}'", server, key);
-            }
-            let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
-            client.call_tool(&tool_name, arguments).await
-        },
-    )
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut clients = manager.clients.lock().await;
+        // LLM 输出的 server 名可能与配置名不一致（省略、大小写、多余空白等），
+        // 做宽松匹配：精确 → 去空白 → 大小写不敏感 → 唯一客户端兜底
+        let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
+        if key != server {
+            eprintln!("[mcp_call_tool] server '{}' 映射为 '{}'", server, key);
+        }
+        let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
+        client.call_tool(&tool_name, arguments).await
+    })
     .await;
 
     let duration = start.elapsed().as_millis() as i64;
@@ -4024,15 +4886,24 @@ async fn mcp_call_tool(
 }
 
 #[tauri::command]
-async fn mcp_list_tools(manager: State<'_, McpManager>) -> Result<Vec<(String, Vec<mcp::Tool>)>, String> {
+async fn mcp_list_tools(
+    manager: State<'_, McpManager>,
+) -> Result<Vec<(String, Vec<mcp::Tool>)>, String> {
     let clients = manager.clients.lock().await;
-    Ok(clients.iter().map(|(name, c)| (name.clone(), c.tools.clone())).collect())
+    Ok(clients
+        .iter()
+        .map(|(name, c)| (name.clone(), c.tools.clone()))
+        .collect())
 }
 
 /// 断开 MCP 服务器连接：从管理器移除客户端，进程随 drop 被 kill（kill_on_drop），
 /// 浏览器类服务器（如 server-puppeteer）的浏览器窗口随之关闭，形成使用闭环。
 #[tauri::command]
-async fn mcp_disconnect(app: tauri::AppHandle, manager: State<'_, McpManager>, name: String) -> Result<bool, String> {
+async fn mcp_disconnect(
+    app: tauri::AppHandle,
+    manager: State<'_, McpManager>,
+    name: String,
+) -> Result<bool, String> {
     let mut clients = manager.clients.lock().await;
     let removed = clients.remove(&name).is_some();
     let m = if removed {
@@ -4049,10 +4920,10 @@ async fn mcp_disconnect(app: tauri::AppHandle, manager: State<'_, McpManager>, n
 
 #[derive(serde::Serialize, Clone)]
 struct CommunityPlugin {
-    id: String,          // 唯一标识（如 gmail）
-    name: String,        // 显示名
+    id: String,   // 唯一标识（如 gmail）
+    name: String, // 显示名
     description: String,
-    source: String,      // "smithery"
+    source: String, // "smithery"
     verified: bool,
     use_count: i64,
 }
@@ -4061,7 +4932,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -4083,7 +4956,10 @@ async fn fetch_community_plugins(query: Option<String>) -> Result<Vec<CommunityP
         .send()
         .await
         .map_err(|e| format!("请求插件市场失败: {}", e))?;
-    let text = resp.text().await.map_err(|e| format!("读取插件市场响应: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取插件市场响应: {}", e))?;
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析插件市场响应: {}", e))?;
     let servers = v
@@ -4092,12 +4968,24 @@ async fn fetch_community_plugins(query: Option<String>) -> Result<Vec<CommunityP
         .ok_or("插件市场响应缺少 servers 字段")?;
     let mut out = Vec::new();
     for s in servers {
-        let id = s.get("qualifiedName").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let id = s
+            .get("qualifiedName")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         if id.is_empty() {
             continue;
         }
-        let name = s.get("displayName").and_then(|x| x.as_str()).unwrap_or(&id).to_string();
-        let description = s.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let name = s
+            .get("displayName")
+            .and_then(|x| x.as_str())
+            .unwrap_or(&id)
+            .to_string();
+        let description = s
+            .get("description")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         let verified = s.get("verified").and_then(|x| x.as_bool()).unwrap_or(false);
         let use_count = s.get("useCount").and_then(|x| x.as_i64()).unwrap_or(0);
         out.push(CommunityPlugin {
@@ -4130,7 +5018,10 @@ async fn fetch_remote_plugin_endpoint(id: String) -> Result<String, String> {
         .send()
         .await
         .map_err(|e| format!("查询插件详情失败: {}", e))?;
-    let text = resp.text().await.map_err(|e| format!("读取插件详情: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取插件详情: {}", e))?;
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析插件详情: {}", e))?;
     if let Some(u) = v.get("deploymentUrl").and_then(|x| x.as_str()) {
@@ -4201,7 +5092,10 @@ fn undo_by_id(db: State<Database>, id: i64) -> Result<String, String> {
 
 fn extract_title(html: &str) -> String {
     let start = html.find("<title").unwrap_or(0);
-    let end = html[start..].find("</title>").map(|i| start + i).unwrap_or(0);
+    let end = html[start..]
+        .find("</title>")
+        .map(|i| start + i)
+        .unwrap_or(0);
     if start < end {
         let t = &html[start..end];
         let t = &t[t.find('>').map(|i| i + 1).unwrap_or(0)..];
@@ -4222,15 +5116,27 @@ fn html_to_text(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
     for c in s.chars() {
-        if c == '<' { in_tag = true; continue; }
-        if c == '>' { in_tag = false; continue; }
-        if !in_tag { result.push(c); }
+        if c == '<' {
+            in_tag = true;
+            continue;
+        }
+        if c == '>' {
+            in_tag = false;
+            continue;
+        }
+        if !in_tag {
+            result.push(c);
+        }
     }
 
     // 3. 解码实体
     result = result
-        .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
-        .replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
         .replace("&apos;", "'");
 
     // 4. 压缩空白
@@ -4238,9 +5144,13 @@ fn html_to_text(html: &str) -> String {
     let mut space = false;
     for c in result.chars() {
         if c.is_whitespace() {
-            if !space { out.push(' '); space = true; }
+            if !space {
+                out.push(' ');
+                space = true;
+            }
         } else {
-            out.push(c); space = false;
+            out.push(c);
+            space = false;
         }
     }
     out.trim().chars().take(8000).collect()
@@ -4258,10 +5168,16 @@ fn remove_tags(html: &str, tag: &str) -> String {
                 result.push_str(&html[pos..pos + i]);
                 match lower[pos + i..].find(&close) {
                     Some(j) => pos = pos + i + j + close.len(),
-                    None => { result.push_str(&html[pos..]); break; }
+                    None => {
+                        result.push_str(&html[pos..]);
+                        break;
+                    }
                 }
             }
-            None => { result.push_str(&html[pos..]); break; }
+            None => {
+                result.push_str(&html[pos..]);
+                break;
+            }
         }
     }
     result
@@ -4279,75 +5195,138 @@ fn app_version() -> String {
 /// 构建中文系统菜单栏，替换 Tauri 默认英文菜单。
 /// 自定义菜单项点击后统一转发为 `menu://action` 事件（payload 为动作 id），
 /// 前端在 main.ts 中 listen 并分发到对应功能。预定义项（隐藏/退出/编辑/窗口）由系统原生处理。
-fn build_app_menu<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> tauri::Result<Menu<R>> {
+fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     // 道生一（macOS 首个菜单标题会被系统替换为应用名）
-    let app_menu = Submenu::with_id_and_items(app, "app", "道生一", true, &[
-        &MenuItem::with_id(app, "about", "关于道生一", true, None::<&str>)?,
-        &MenuItem::with_id(app, "settings", "设置…", true, Some("CmdOrCtrl+,"))?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::hide(app, Some("隐藏道生一"))?,
-        &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
-        &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::quit(app, Some("退出道生一"))?,
-    ])?;
+    let app_menu = Submenu::with_id_and_items(
+        app,
+        "app",
+        "道生一",
+        true,
+        &[
+            &MenuItem::with_id(app, "about", "关于道生一", true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", "设置…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some("隐藏道生一"))?,
+            &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
+            &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some("退出道生一"))?,
+        ],
+    )?;
 
     // 文件
-    let file_menu = Submenu::with_id_and_items(app, "file", "文件", true, &[
-        &MenuItem::with_id(app, "new-chat", "新建对话", true, Some("CmdOrCtrl+N"))?,
-        &MenuItem::with_id(app, "export-md", "导出对话为 Markdown…", true, None::<&str>)?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
-    ])?;
+    let file_menu = Submenu::with_id_and_items(
+        app,
+        "file",
+        "文件",
+        true,
+        &[
+            &MenuItem::with_id(app, "new-chat", "新建对话", true, Some("CmdOrCtrl+N"))?,
+            &MenuItem::with_id(app, "export-md", "导出对话为 Markdown…", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+        ],
+    )?;
 
     // 编辑（撤销/重做/剪切/复制/粘贴/全选：系统原生动作）
-    let edit_menu = Submenu::with_id_and_items(app, "edit", "编辑", true, &[
-        &PredefinedMenuItem::undo(app, Some("撤销"))?,
-        &PredefinedMenuItem::redo(app, Some("重做"))?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::cut(app, Some("剪切"))?,
-        &PredefinedMenuItem::copy(app, Some("复制"))?,
-        &PredefinedMenuItem::paste(app, Some("粘贴"))?,
-        &PredefinedMenuItem::select_all(app, Some("全选"))?,
-    ])?;
+    let edit_menu = Submenu::with_id_and_items(
+        app,
+        "edit",
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, Some("撤销"))?,
+            &PredefinedMenuItem::redo(app, Some("重做"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, Some("剪切"))?,
+            &PredefinedMenuItem::copy(app, Some("复制"))?,
+            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+        ],
+    )?;
 
     // 视图
-    let view_menu = Submenu::with_id_and_items(app, "view", "视图", true, &[
-        &MenuItem::with_id(app, "toggle-sidebar", "切换侧边栏", true, Some("CmdOrCtrl+B"))?,
-        &MenuItem::with_id(app, "toggle-theme", "切换主题", true, Some("CmdOrCtrl+Shift+L"))?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?,
-    ])?;
+    let view_menu = Submenu::with_id_and_items(
+        app,
+        "view",
+        "视图",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "toggle-sidebar",
+                "切换侧边栏",
+                true,
+                Some("CmdOrCtrl+B"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "toggle-theme",
+                "切换主题",
+                true,
+                Some("CmdOrCtrl+Shift+L"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?,
+        ],
+    )?;
 
     // 窗口
-    let window_menu = Submenu::with_id_and_items(app, "window", "窗口", true, &[
-        &PredefinedMenuItem::minimize(app, Some("最小化"))?,
-        &PredefinedMenuItem::maximize(app, Some("最大化"))?,
-    ])?;
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        "window",
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+            &PredefinedMenuItem::maximize(app, Some("最大化"))?,
+        ],
+    )?;
 
     // 工具（关键功能入口）
-    let tools_menu = Submenu::with_id_and_items(app, "tools", "工具", true, &[
-        &MenuItem::with_id(app, "open-skills", "技能库", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-mcp", "插件（MCP）", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-ollama", "本地模型（Ollama）", true, None::<&str>)?,
-        &PredefinedMenuItem::separator(app)?,
-        &MenuItem::with_id(app, "open-stats", "用量统计", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
-        &MenuItem::with_id(app, "open-memory", "长期记忆", true, None::<&str>)?,
-        &PredefinedMenuItem::separator(app)?,
-        &MenuItem::with_id(app, "open-workflow", "可视化工作流", true, None::<&str>)?,
-    ])?;
+    let tools_menu = Submenu::with_id_and_items(
+        app,
+        "tools",
+        "工具",
+        true,
+        &[
+            &MenuItem::with_id(app, "open-skills", "技能库", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-mcp", "插件（MCP）", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-ollama", "本地模型（Ollama）", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "open-stats", "用量统计", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-tasks", "定时任务", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-health", "运行时诊断", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-memory", "长期记忆", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "open-workflow", "可视化工作流", true, None::<&str>)?,
+        ],
+    )?;
 
-    Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &tools_menu])
+    Menu::with_items(
+        app,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &tools_menu,
+        ],
+    )
 }
 
 // 全局快捷键（Phase 5）：进程级静态，供 plugin handler 与 setup 注册共享比对。
 // 默认 CommandOrControl+Shift+Space（显示/隐藏主窗口）/ CommandOrControl+Shift+K（新建对话），
 // 可在设置页自定义；SHORTCUTS 存当前已注册的 (toggle, new_chat) 用于运行时重注册。
-static SHORTCUTS: std::sync::OnceLock<std::sync::Mutex<Option<(tauri_plugin_global_shortcut::Shortcut, tauri_plugin_global_shortcut::Shortcut)>>> = std::sync::OnceLock::new();
+static SHORTCUTS: std::sync::OnceLock<
+    std::sync::Mutex<
+        Option<(
+            tauri_plugin_global_shortcut::Shortcut,
+            tauri_plugin_global_shortcut::Shortcut,
+        )>,
+    >,
+> = std::sync::OnceLock::new();
 
 /// 注册全局快捷键（解析失败回退默认），并记录当前注册句柄供重新注册。
 fn register_global_shortcuts(app: &tauri::AppHandle, toggle: &str, new_chat: &str) {
@@ -4358,11 +5337,14 @@ fn register_global_shortcuts(app: &tauri::AppHandle, toggle: &str, new_chat: &st
         .unwrap_or_else(|_| Shortcut::from_str(settings::DEFAULT_SHORTCUT_TOGGLE).unwrap());
     let n = Shortcut::from_str(new_chat)
         .unwrap_or_else(|_| Shortcut::from_str(settings::DEFAULT_SHORTCUT_NEW_CHAT).unwrap());
-    if gs.register(t.clone()).is_err() {
+    if gs.register(t).is_err() {
         eprintln!("[shortcut] 注册 {} 失败（可能被占用），保持未注册", toggle);
     }
-    if gs.register(n.clone()).is_err() {
-        eprintln!("[shortcut] 注册 {} 失败（可能被占用），保持未注册", new_chat);
+    if gs.register(n).is_err() {
+        eprintln!(
+            "[shortcut] 注册 {} 失败（可能被占用），保持未注册",
+            new_chat
+        );
     }
     let slot = SHORTCUTS.get_or_init(|| std::sync::Mutex::new(None));
     *slot.lock().unwrap() = Some((t, n));
@@ -4370,7 +5352,11 @@ fn register_global_shortcuts(app: &tauri::AppHandle, toggle: &str, new_chat: &st
 
 /// 运行时应用全局快捷键设置：先注销当前注册，再按新配置注册（前端保存设置后调用）。
 #[tauri::command]
-fn apply_global_shortcuts(app: tauri::AppHandle, toggle: String, new_chat: String) -> Result<(), String> {
+fn apply_global_shortcuts(
+    app: tauri::AppHandle,
+    toggle: String,
+    new_chat: String,
+) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let gs = app.global_shortcut();
     if let Some(slot) = SHORTCUTS.get() {
@@ -4395,10 +5381,7 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let pair = SHORTCUTS
-                        .get()
-                        .and_then(|m| m.lock().ok())
-                        .and_then(|g| g.clone());
+                    let pair = SHORTCUTS.get().and_then(|m| m.lock().ok()).and_then(|g| *g);
                     if let Some((t, n)) = pair {
                         if shortcut == &t {
                             if let Some(win) = app.get_webview_window("main") {
@@ -4421,11 +5404,20 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             const ACTIONS: &[&str] = &[
-                "about", "settings", "new-chat", "export-md",
-                "toggle-sidebar", "toggle-theme",
-                "open-skills", "open-mcp", "open-ollama",
-                "open-stats", "open-tasks", "open-health",
-                "open-memory", "open-workflow",
+                "about",
+                "settings",
+                "new-chat",
+                "export-md",
+                "toggle-sidebar",
+                "toggle-theme",
+                "open-skills",
+                "open-mcp",
+                "open-ollama",
+                "open-stats",
+                "open-tasks",
+                "open-health",
+                "open-memory",
+                "open-workflow",
             ];
             if ACTIONS.contains(&id) {
                 let _ = app.emit("menu://action", id);
@@ -4453,27 +5445,40 @@ pub fn run() {
                         let tasks = db.list_scheduled_tasks().unwrap_or_default();
                         let now = chrono::Utc::now().timestamp_millis();
                         for t in tasks {
-                            if !t.enabled || t.next_run_at > now { continue; }
+                            if !t.enabled || t.next_run_at > now {
+                                continue;
+                            }
                             let started = chrono::Utc::now().timestamp_millis();
                             let output = std::process::Command::new("/bin/sh")
-                                .arg("-c").arg(&t.command)
+                                .arg("-c")
+                                .arg(&t.command)
                                 .output();
                             let result = match output {
                                 Ok(o) => {
-                                    let mut s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                    let mut s =
+                                        String::from_utf8_lossy(&o.stdout).trim().to_string();
                                     let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
                                     if !e.is_empty() {
-                                        s = format!("{}{}{}", s, if s.is_empty() { "" } else { "\n" }, e);
+                                        s = format!(
+                                            "{}{}{}",
+                                            s,
+                                            if s.is_empty() { "" } else { "\n" },
+                                            e
+                                        );
                                     }
                                     if s.is_empty() {
                                         format!("(退出码 {})", o.status.code().unwrap_or(-1))
-                                    } else { s }
+                                    } else {
+                                        s
+                                    }
                                 }
                                 Err(e) => format!("(启动失败: {})", e),
                             };
                             let clipped = if result.len() > 1000 {
                                 format!("{}...(截断)", &result[..1000])
-                            } else { result };
+                            } else {
+                                result
+                            };
                             let mut updated = t.clone();
                             updated.next_run_at = compute_next_run(&t, now);
                             updated.last_run_at = Some(started);
@@ -4505,8 +5510,20 @@ pub fn run() {
                 let tray_menu = tauri::menu::Menu::with_items(
                     app,
                     &[
-                        &tauri::menu::MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?,
-                        &tauri::menu::MenuItem::with_id(app, "tray-new-chat", "新建对话", true, None::<&str>)?,
+                        &tauri::menu::MenuItem::with_id(
+                            app,
+                            "tray-show",
+                            "显示主窗口",
+                            true,
+                            None::<&str>,
+                        )?,
+                        &tauri::menu::MenuItem::with_id(
+                            app,
+                            "tray-new-chat",
+                            "新建对话",
+                            true,
+                            None::<&str>,
+                        )?,
                         &tauri::menu::PredefinedMenuItem::separator(app)?,
                         &tauri::menu::PredefinedMenuItem::quit(app, Some("退出道生一"))?,
                     ],
@@ -4575,7 +5592,10 @@ pub fn run() {
             //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
             #[cfg(debug_assertions)]
             {
-                if std::env::var("DAOSHENGYI_DEVTOOLS").map(|v| v == "1").unwrap_or(false) {
+                if std::env::var("DAOSHENGYI_DEVTOOLS")
+                    .map(|v| v == "1")
+                    .unwrap_or(false)
+                {
                     if let Some(window) = app.get_webview_window("main") {
                         window.open_devtools();
                     }
@@ -4739,7 +5759,10 @@ mod tests {
         let long = "字".repeat(100);
         let chunks = chunk_text(&long, 30);
         assert!(chunks.len() >= 3, "长行切成多块，实际 {}", chunks.len());
-        assert!(chunks.iter().all(|c| c.chars().count() <= 30), "每块不超过 size");
+        assert!(
+            chunks.iter().all(|c| c.chars().count() <= 30),
+            "每块不超过 size"
+        );
         assert_eq!(chunks.concat().chars().count(), 100, "拼接后内容完整");
     }
 
@@ -4748,7 +5771,12 @@ mod tests {
         // 两行合计超 size → 在新行前断开成两块
         let text = format!("{}\n{}", "a".repeat(30), "b".repeat(30));
         let chunks = chunk_text(&text, 50);
-        assert_eq!(chunks.len(), 2, "两行合并超 size 时在新行前断开，实际 {}", chunks.len());
+        assert_eq!(
+            chunks.len(),
+            2,
+            "两行合并超 size 时在新行前断开，实际 {}",
+            chunks.len()
+        );
         assert_eq!(chunks[0].trim(), "a".repeat(30), "首块为第一行");
         assert_eq!(chunks[1].trim(), "b".repeat(30), "次块为第二行");
         // 超长行(>size)会被切成多块
@@ -4761,11 +5789,26 @@ mod tests {
     fn path_within_any_matches_prefix_only() {
         use std::path::{Path, PathBuf};
         let dirs = [PathBuf::from("/Users/x/op")];
-        assert!(path_within_any(Path::new("/Users/x/op"), &dirs), "等于白名单目录");
-        assert!(path_within_any(Path::new("/Users/x/op/src/a.ts"), &dirs), "白名单子路径");
-        assert!(!path_within_any(Path::new("/Users/x/op2/a.ts"), &dirs), "前缀相似但不同目录不误判");
-        assert!(!path_within_any(Path::new("/Users/x"), &dirs), "父目录不命中");
-        assert!(!path_within_any(Path::new("/a/b"), &[]), "空白名单无目录可匹配（调用方先判空再调用）");
+        assert!(
+            path_within_any(Path::new("/Users/x/op"), &dirs),
+            "等于白名单目录"
+        );
+        assert!(
+            path_within_any(Path::new("/Users/x/op/src/a.ts"), &dirs),
+            "白名单子路径"
+        );
+        assert!(
+            !path_within_any(Path::new("/Users/x/op2/a.ts"), &dirs),
+            "前缀相似但不同目录不误判"
+        );
+        assert!(
+            !path_within_any(Path::new("/Users/x"), &dirs),
+            "父目录不命中"
+        );
+        assert!(
+            !path_within_any(Path::new("/a/b"), &[]),
+            "空白名单无目录可匹配（调用方先判空再调用）"
+        );
     }
 
     #[test]
@@ -4774,7 +5817,10 @@ mod tests {
         let parsed = parse_allowed_paths(&["/Users/x/op".into(), "~/Pictures".into(), "  ".into()]);
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0], std::path::PathBuf::from("/Users/x/op"));
-        assert_eq!(parsed[1], std::path::PathBuf::from(format!("{}/Pictures", home)));
+        assert_eq!(
+            parsed[1],
+            std::path::PathBuf::from(format!("{}/Pictures", home))
+        );
     }
 
     // P-A6 本地语义 embedding：模型检测 + 响应解析（纯函数）
@@ -4814,7 +5860,11 @@ mod tests {
     /// 在真实 HOME 下建独立临时目录（apply_edits 要求主目录内路径）。
     fn edit_test_dir(name: &str) -> std::path::PathBuf {
         let home = std::env::var("HOME").expect("HOME 应存在");
-        let dir = std::path::Path::new(&home).join(format!("ds_edit_test_{}_{}", name, std::process::id()));
+        let dir = std::path::Path::new(&home).join(format!(
+            "ds_edit_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -4823,8 +5873,12 @@ mod tests {
     fn git_validate_allows_safe_ops() {
         assert!(validate_git_operation("status", &[]).is_ok());
         assert!(validate_git_operation("diff", &[]).is_ok());
-        assert!(validate_git_operation("log", &["--oneline".to_string(), "-5".to_string()]).is_ok());
-        assert!(validate_git_operation("commit", &["-m".to_string(), "feat: x".to_string()]).is_ok());
+        assert!(
+            validate_git_operation("log", &["--oneline".to_string(), "-5".to_string()]).is_ok()
+        );
+        assert!(
+            validate_git_operation("commit", &["-m".to_string(), "feat: x".to_string()]).is_ok()
+        );
         assert!(validate_git_operation("push", &[]).is_ok());
     }
 
@@ -4840,7 +5894,9 @@ mod tests {
     fn git_validate_rejects_dangerous_args() {
         assert!(validate_git_operation("pull", &["--force".to_string()]).is_err());
         assert!(validate_git_operation("checkout", &["--hard".to_string()]).is_err());
-        assert!(validate_git_operation("branch", &["--delete".to_string(), "x".to_string()]).is_err());
+        assert!(
+            validate_git_operation("branch", &["--delete".to_string(), "x".to_string()]).is_err()
+        );
         // 正常参数不受影响
         assert!(validate_git_operation("checkout", &["main".to_string()]).is_ok());
     }
@@ -4928,11 +5984,19 @@ mod tests {
         // replace 默认第 1 次出现 → 只改第一处
         let r = compute_edits(
             path.clone(),
-            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+            vec![EditOp::Replace {
+                old: "world".into(),
+                new: "RUST".into(),
+                occurrence: None,
+            }],
             false,
         )
         .unwrap();
-        assert!(r.diff.contains("+hello RUST"), "diff 应含新增行: {}", r.diff);
+        assert!(
+            r.diff.contains("+hello RUST"),
+            "diff 应含新增行: {}",
+            r.diff
+        );
         assert!(r.path == path);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
@@ -4943,12 +6007,18 @@ mod tests {
         // insert after 锚点
         compute_edits(
             path.clone(),
-            vec![EditOp::Insert { anchor: "foo bar".into(), position: "after".into(), text: "\nINSERTED".into() }],
+            vec![EditOp::Insert {
+                anchor: "foo bar".into(),
+                position: "after".into(),
+                text: "\nINSERTED".into(),
+            }],
             false,
         )
         .unwrap();
         assert!(
-            std::fs::read_to_string(&file).unwrap().contains("foo bar\nINSERTED"),
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("foo bar\nINSERTED"),
             "插入后内容: {}",
             std::fs::read_to_string(&file).unwrap()
         );
@@ -4957,12 +6027,20 @@ mod tests {
         std::fs::write(&file, "hello\nhello\n").unwrap();
         compute_edits(
             path.clone(),
-            vec![EditOp::Delete { old: "hello".into(), occurrence: Some(2) }],
+            vec![EditOp::Delete {
+                old: "hello".into(),
+                occurrence: Some(2),
+            }],
             false,
         )
         .unwrap();
         let content = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(content.matches("hello").count(), 1, "删除第 2 次出现后应只剩 1 处: {}", content);
+        assert_eq!(
+            content.matches("hello").count(),
+            1,
+            "删除第 2 次出现后应只剩 1 处: {}",
+            content
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4977,24 +6055,28 @@ mod tests {
         // 相对路径拒绝
         assert!(compute_edits("relative.txt".into(), vec![], false).is_err());
         // 未匹配文本 → 报错且文件不变
-        assert!(
-            compute_edits(
-                path.clone(),
-                vec![EditOp::Replace { old: "不存在的文本".into(), new: "x".into(), occurrence: None }],
-                false,
-            )
-            .is_err()
-        );
+        assert!(compute_edits(
+            path.clone(),
+            vec![EditOp::Replace {
+                old: "不存在的文本".into(),
+                new: "x".into(),
+                occurrence: None
+            }],
+            false,
+        )
+        .is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "abc\n");
         // 编辑后无变化 → 报错
-        assert!(
-            compute_edits(
-                path.clone(),
-                vec![EditOp::Replace { old: "abc".into(), new: "abc".into(), occurrence: None }],
-                false,
-            )
-            .is_err()
-        );
+        assert!(compute_edits(
+            path.clone(),
+            vec![EditOp::Replace {
+                old: "abc".into(),
+                new: "abc".into(),
+                occurrence: None
+            }],
+            false,
+        )
+        .is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -5009,19 +6091,42 @@ mod tests {
 
         let r = compute_edits(
             path.clone(),
-            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
+            vec![EditOp::Replace {
+                old: "world".into(),
+                new: "RUST".into(),
+                occurrence: None,
+            }],
             true,
         )
         .unwrap();
         // 返回 diff 且标记「预览/未写盘」
-        assert!(r.diff.contains("+hello RUST"), "diff 应含新增行: {}", r.diff);
-        assert!(r.summary.contains("预览") && r.summary.contains("未写盘"), "summary 应标注预览: {}", r.summary);
+        assert!(
+            r.diff.contains("+hello RUST"),
+            "diff 应含新增行: {}",
+            r.diff
+        );
+        assert!(
+            r.summary.contains("预览") && r.summary.contains("未写盘"),
+            "summary 应标注预览: {}",
+            r.summary
+        );
         // 文件内容未变
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world\n", "preview 不应写盘");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "hello world\n",
+            "preview 不应写盘"
+        );
         // 随后真正应用（preview=false）→ 内容才变
-        compute_edits(path.clone(),
-            vec![EditOp::Replace { old: "world".into(), new: "RUST".into(), occurrence: None }],
-            false).unwrap();
+        compute_edits(
+            path.clone(),
+            vec![EditOp::Replace {
+                old: "world".into(),
+                new: "RUST".into(),
+                occurrence: None,
+            }],
+            false,
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello RUST\n");
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -5034,16 +6139,29 @@ mod tests {
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let home = std::env::var("HOME").unwrap_or_default();
         if !home.is_empty() {
-            assert_eq!(out.stdout.trim(), home, "~ 应展开为 HOME，实际: {}", out.stdout);
+            assert_eq!(
+                out.stdout.trim(),
+                home,
+                "~ 应展开为 HOME，实际: {}",
+                out.stdout
+            );
         }
         // 管道
-        let out2 = run_shell_command("echo abc | tr a-z A-Z", None, Some(10)).await.unwrap();
+        let out2 = run_shell_command("echo abc | tr a-z A-Z", None, Some(10))
+            .await
+            .unwrap();
         assert_eq!(out2.exit_code, 0, "stderr: {}", out2.stderr);
         assert_eq!(out2.stdout.trim(), "ABC", "管道应生效: {}", out2.stdout);
         // shell 内建 + &&
-        let out3 = run_shell_command("cd /tmp && pwd", None, Some(10)).await.unwrap();
+        let out3 = run_shell_command("cd /tmp && pwd", None, Some(10))
+            .await
+            .unwrap();
         assert_eq!(out3.exit_code, 0, "stderr: {}", out3.stderr);
-        assert!(out3.stdout.contains("/tmp"), "cd && pwd 应生效: {}", out3.stdout);
+        assert!(
+            out3.stdout.contains("/tmp"),
+            "cd && pwd 应生效: {}",
+            out3.stdout
+        );
     }
 
     #[tokio::test]
@@ -5052,7 +6170,10 @@ mod tests {
         let out = run_shell_command("sleep 30", None, Some(2)).await.unwrap();
         assert!(out.timed_out, "应标记超时");
         assert!(out.stderr.contains("超时"), "stderr: {}", out.stderr);
-        assert!(start.elapsed().as_secs() < 15, "应在 2s 超时终止而非等 30s（进程组被杀）");
+        assert!(
+            start.elapsed().as_secs() < 15,
+            "应在 2s 超时终止而非等 30s（进程组被杀）"
+        );
     }
 
     #[test]
@@ -5063,17 +6184,35 @@ mod tests {
         let cwd = dir.to_str().unwrap();
         let expect = out.to_str().unwrap().to_string();
         // > 相对路径
-        assert_eq!(extract_redirected_files("ls > out.txt", Some(cwd)), vec![expect.clone()]);
+        assert_eq!(
+            extract_redirected_files("ls > out.txt", Some(cwd)),
+            vec![expect.clone()]
+        );
         // >> 追加
-        assert_eq!(extract_redirected_files("echo hi >> out.txt", Some(cwd)), vec![expect.clone()]);
+        assert_eq!(
+            extract_redirected_files("echo hi >> out.txt", Some(cwd)),
+            vec![expect.clone()]
+        );
         // 2> 错误重定向也生成文件
-        assert_eq!(extract_redirected_files("cmd 2> out.txt", Some(cwd)), vec![expect.clone()]);
+        assert_eq!(
+            extract_redirected_files("cmd 2> out.txt", Some(cwd)),
+            vec![expect.clone()]
+        );
         // 排除 /dev/null 与 2>&1
-        assert_eq!(extract_redirected_files("cmd > /dev/null 2>&1", Some(cwd)), Vec::<String>::new());
+        assert_eq!(
+            extract_redirected_files("cmd > /dev/null 2>&1", Some(cwd)),
+            Vec::<String>::new()
+        );
         // 引号内的 > 不误判
-        assert_eq!(extract_redirected_files("echo \"a > b\"", Some(cwd)), Vec::<String>::new());
+        assert_eq!(
+            extract_redirected_files("echo \"a > b\"", Some(cwd)),
+            Vec::<String>::new()
+        );
         // 不存在的文件不返回
-        assert_eq!(extract_redirected_files("cmd > missing.txt", Some(cwd)), Vec::<String>::new());
+        assert_eq!(
+            extract_redirected_files("cmd > missing.txt", Some(cwd)),
+            Vec::<String>::new()
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5081,7 +6220,11 @@ mod tests {
     async fn run_shell_unknown_command_reports_exit_127() {
         // 非可执行命令（如 list）：走 shell 后是「command not found」（exit 127）而非启动失败
         let out = run_shell_command("list", None, Some(5)).await.unwrap();
-        assert_eq!(out.exit_code, 127, "list 应报 command not found: {}", out.stderr);
+        assert_eq!(
+            out.exit_code, 127,
+            "list 应报 command not found: {}",
+            out.stderr
+        );
         assert!(
             out.stderr.contains("not found") || out.stderr.contains("未找到"),
             "stderr 应提示找不到命令: {}",

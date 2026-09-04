@@ -60,7 +60,10 @@ fn initialize_result() -> Value {
 }
 
 fn str_arg(args: &Value, key: &str) -> String {
-    args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn int_arg(args: &Value, key: &str, default: i64) -> i64 {
@@ -69,19 +72,40 @@ fn int_arg(args: &Value, key: &str, default: i64) -> i64 {
 
 /// 处理 tools/call：分发到具体能力，返回 MCP 文本结果
 async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcError> {
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-    let err = |code: i64, msg: &str| JsonRpcError { code, message: msg.to_string() };
+    let err = |code: i64, msg: &str| JsonRpcError {
+        code,
+        message: msg.to_string(),
+    };
     let (text, is_err) = match name.as_str() {
         "memory_search" => {
             let query = str_arg(&args, "query");
             let limit = int_arg(&args, "limit", 5);
             match db.search_facts(&query, limit) {
                 Ok(facts) if !facts.is_empty() => {
-                    let lines: Vec<String> = facts.iter().enumerate().map(|(i, f)| {
-                        format!("{}. [{}] {}（重要度 {}，访问 {} 次）", i + 1, f.fact_type, f.fact, f.importance, f.access_count)
-                    }).collect();
-                    (format!("找到 {} 条记忆：\n{}", facts.len(), lines.join("\n")), false)
+                    let lines: Vec<String> = facts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            format!(
+                                "{}. [{}] {}（重要度 {}，访问 {} 次）",
+                                i + 1,
+                                f.fact_type,
+                                f.fact,
+                                f.importance,
+                                f.access_count
+                            )
+                        })
+                        .collect();
+                    (
+                        format!("找到 {} 条记忆：\n{}", facts.len(), lines.join("\n")),
+                        false,
+                    )
                 }
                 Ok(_) => ("未找到相关记忆".to_string(), false),
                 Err(e) => (format!("记忆检索失败: {}", e), true),
@@ -93,7 +117,11 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
                 return Err(err(-32602, "memory_save 需要 fact 参数"));
             }
             let fact_type = str_arg(&args, "fact_type");
-            let fact_type = if fact_type.is_empty() { "info".to_string() } else { fact_type };
+            let fact_type = if fact_type.is_empty() {
+                "info".to_string()
+            } else {
+                fact_type
+            };
             let importance = int_arg(&args, "importance", 5).clamp(1, 10);
             let row = FactRow {
                 id: format!("fact_{}_{}", now_ms(), rand::random::<u32>()),
@@ -106,7 +134,19 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
                 created_at: now_ms(),
             };
             match db.save_fact(&row) {
-                Ok((is_new, _)) => (format!("已保存记忆（类型 {}，重要度 {}{}）", row.fact_type, row.importance, if is_new { "" } else { "，与已有记忆合并" }), false),
+                Ok((is_new, _)) => (
+                    format!(
+                        "已保存记忆（类型 {}，重要度 {}{}）",
+                        row.fact_type,
+                        row.importance,
+                        if is_new {
+                            ""
+                        } else {
+                            "，与已有记忆合并"
+                        }
+                    ),
+                    false,
+                ),
                 Err(e) => (format!("保存失败: {}", e), true),
             }
         }
@@ -117,10 +157,32 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
             }
             match crate::search::search_web(&query).await {
                 Ok(results) if !results.is_empty() => {
-                    let lines: Vec<String> = results.iter().enumerate().map(|(i, r)| {
-                        format!("{}. {} — {}\n   {}", i + 1, if r.title.is_empty() { r.url.clone() } else { r.title.clone() }, r.url, r.snippet)
-                    }).collect();
-                    (format!("搜索「{}」找到 {} 条：\n{}", query, results.len(), lines.join("\n")), false)
+                    let lines: Vec<String> = results
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            format!(
+                                "{}. {} — {}\n   {}",
+                                i + 1,
+                                if r.title.is_empty() {
+                                    r.url.clone()
+                                } else {
+                                    r.title.clone()
+                                },
+                                r.url,
+                                r.snippet
+                            )
+                        })
+                        .collect();
+                    (
+                        format!(
+                            "搜索「{}」找到 {} 条：\n{}",
+                            query,
+                            results.len(),
+                            lines.join("\n")
+                        ),
+                        false,
+                    )
                 }
                 Ok(_) => (format!("搜索「{}」无结果", query), false),
                 Err(e) => (format!("搜索失败: {}", e), true),
@@ -131,10 +193,28 @@ async fn handle_call(db: &Database, params: &Value) -> Result<Value, JsonRpcErro
             let limit = int_arg(&args, "limit", 10) as usize;
             match db.search(&query) {
                 Ok(results) if !results.is_empty() => {
-                    let lines: Vec<String> = results.iter().take(limit).enumerate().map(|(i, r)| {
-                        format!("{}. [{}]（{}）{}", i + 1, r.conversation_title, r.role, r.snippet)
-                    }).collect();
-                    (format!("在对话历史中找到 {} 条相关：\n{}", results.len(), lines.join("\n")), false)
+                    let lines: Vec<String> = results
+                        .iter()
+                        .take(limit)
+                        .enumerate()
+                        .map(|(i, r)| {
+                            format!(
+                                "{}. [{}]（{}）{}",
+                                i + 1,
+                                r.conversation_title,
+                                r.role,
+                                r.snippet
+                            )
+                        })
+                        .collect();
+                    (
+                        format!(
+                            "在对话历史中找到 {} 条相关：\n{}",
+                            results.len(),
+                            lines.join("\n")
+                        ),
+                        false,
+                    )
                 }
                 Ok(_) => ("未找到相关对话".to_string(), false),
                 Err(e) => (format!("对话搜索失败: {}", e), true),
@@ -155,7 +235,10 @@ pub async fn serve() -> i32 {
             return 1;
         }
     };
-    eprintln!("[mcp-server] 道生一 MCP 服务器已启动（数据目录: {}）", app_dir.display());
+    eprintln!(
+        "[mcp-server] 道生一 MCP 服务器已启动（数据目录: {}）",
+        app_dir.display()
+    );
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -171,18 +254,37 @@ pub async fn serve() -> i32 {
             Err(_) => continue,
         };
         // 通知请求（无 id）直接忽略
-        let Some(id) = v.get("id").and_then(|x| x.as_u64()) else { continue };
-        let method = v.get("method").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let Some(id) = v.get("id").and_then(|x| x.as_u64()) else {
+            continue;
+        };
+        let method = v
+            .get("method")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         let params = v.get("params").cloned().unwrap_or(Value::Null);
         let result = match method.as_str() {
             "initialize" => Ok(initialize_result()),
             "tools/list" => Ok(tools_list()),
             "tools/call" => handle_call(&db, &params).await,
-            _ => Err(JsonRpcError { code: -32601, message: format!("方法不存在: {}", method) }),
+            _ => Err(JsonRpcError {
+                code: -32601,
+                message: format!("方法不存在: {}", method),
+            }),
         };
         let resp = match result {
-            Ok(r) => JsonRpcResponse { jsonrpc: "2.0".into(), id: Some(id), result: Some(r), error: None },
-            Err(e) => JsonRpcResponse { jsonrpc: "2.0".into(), id: Some(id), result: None, error: Some(e) },
+            Ok(r) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: Some(id),
+                result: Some(r),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: Some(id),
+                result: None,
+                error: Some(e),
+            },
         };
         let mut s = serde_json::to_string(&resp).unwrap_or_default();
         s.push('\n');

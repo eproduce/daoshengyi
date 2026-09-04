@@ -107,7 +107,10 @@ pub fn parse_rule(line: &str) -> Option<Rule> {
         "prompt" => Decision::Prompt,
         _ => return None,
     };
-    Some(Rule { action, pattern: tokenize(rest) })
+    Some(Rule {
+        action,
+        pattern: tokenize(rest),
+    })
 }
 
 /// 解析整个规则文件内容 → 命令规则列表
@@ -201,10 +204,7 @@ pub fn check_command_policy(
 
 /// 测试一条命令的决策（设置页用，不落盘）
 #[tauri::command]
-pub fn test_command_policy(
-    app: tauri::AppHandle,
-    command: String,
-) -> Result<PolicyResult, String> {
+pub fn test_command_policy(app: tauri::AppHandle, command: String) -> Result<PolicyResult, String> {
     Ok(policy_result(&app, &command))
 }
 
@@ -281,11 +281,20 @@ mod tests {
     #[test]
     fn evaluate_allow_deny_prompt_none() {
         let rules = vec![
-            Rule { action: Decision::Deny, pattern: tokenize("sudo") },
-            Rule { action: Decision::Allow, pattern: tokenize("git status") },
+            Rule {
+                action: Decision::Deny,
+                pattern: tokenize("sudo"),
+            },
+            Rule {
+                action: Decision::Allow,
+                pattern: tokenize("git status"),
+            },
         ];
         assert_eq!(evaluate_command("sudo rm -rf /", &rules).0, Decision::Deny);
-        assert_eq!(evaluate_command("git status --short", &rules).0, Decision::Allow);
+        assert_eq!(
+            evaluate_command("git status --short", &rules).0,
+            Decision::Allow
+        );
         assert_eq!(evaluate_command("ls -la", &rules).0, Decision::None);
     }
 
@@ -294,7 +303,10 @@ mod tests {
         let rules = parse_rules(DEFAULT_RULES);
         assert_eq!(evaluate_command("rm -rf /tmp/x", &rules).0, Decision::Deny);
         assert_eq!(evaluate_command("rm -fr /tmp", &rules).0, Decision::Deny);
-        assert_eq!(evaluate_command("sudo apt install x", &rules).0, Decision::Deny);
+        assert_eq!(
+            evaluate_command("sudo apt install x", &rules).0,
+            Decision::Deny
+        );
         assert_eq!(
             evaluate_command("dd if=/dev/zero of=/dev/sda bs=1M", &rules).0,
             Decision::Deny
@@ -310,8 +322,14 @@ mod tests {
     #[test]
     fn first_match_wins_order() {
         let rules = vec![
-            Rule { action: Decision::Allow, pattern: tokenize("git push --force") },
-            Rule { action: Decision::Deny, pattern: tokenize("git push") },
+            Rule {
+                action: Decision::Allow,
+                pattern: tokenize("git push --force"),
+            },
+            Rule {
+                action: Decision::Deny,
+                pattern: tokenize("git push"),
+            },
         ];
         assert_eq!(
             evaluate_command("git push --force origin", &rules).0,
@@ -326,7 +344,10 @@ mod tests {
 
     #[test]
     fn token_with_equals_is_prefix_match() {
-        let rules = vec![Rule { action: Decision::Deny, pattern: tokenize("dd if=") }];
+        let rules = vec![Rule {
+            action: Decision::Deny,
+            pattern: tokenize("dd if="),
+        }];
         assert_eq!(
             evaluate_command("dd if=/dev/zero of=/x", &rules).0,
             Decision::Deny
@@ -335,8 +356,7 @@ mod tests {
 
     #[test]
     fn parse_rules_skips_comments_and_network() {
-        let rules =
-            parse_rules("# hi\ndeny rm -rf\n\nnetwork allow github.com\nallow git status");
+        let rules = parse_rules("# hi\ndeny rm -rf\n\nnetwork allow github.com\nallow git status");
         assert_eq!(rules.len(), 2);
     }
 }

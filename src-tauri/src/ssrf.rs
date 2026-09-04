@@ -161,14 +161,28 @@ mod tests {
             assert!(is_private_ip(ip), "{} 应判为私有/保留", ip);
         }
         // 边界外与公网
-        for ip in ["8.8.8.8", "1.1.1.1", "114.114.114.114", "172.15.255.255", "172.32.0.1", "192.169.1.1"] {
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "114.114.114.114",
+            "172.15.255.255",
+            "172.32.0.1",
+            "192.169.1.1",
+        ] {
             assert!(!is_private_ip(ip), "{} 不应判为私有", ip);
         }
     }
 
     #[test]
     fn private_ipv6_segments() {
-        for ip in ["::1", "::", "fc00::1", "fd12:3456::abcd", "fe80::1", "ff02::1"] {
+        for ip in [
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12:3456::abcd",
+            "fe80::1",
+            "ff02::1",
+        ] {
             assert!(is_private_ip(ip), "{} 应判为私有/保留", ip);
         }
         for ip in ["2001:4860:4860::8888", "2606:4700::1111"] {
@@ -178,9 +192,18 @@ mod tests {
 
     #[test]
     fn extract_host_cases() {
-        assert_eq!(extract_host("https://example.com/path?a=1"), Some("example.com".into()));
-        assert_eq!(extract_host("http://user:pw@example.com:8080/x"), Some("example.com".into()));
-        assert_eq!(extract_host("http://127.0.0.1:3000/"), Some("127.0.0.1".into()));
+        assert_eq!(
+            extract_host("https://example.com/path?a=1"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            extract_host("http://user:pw@example.com:8080/x"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            extract_host("http://127.0.0.1:3000/"),
+            Some("127.0.0.1".into())
+        );
         assert_eq!(extract_host("https://[::1]:8080/x"), Some("::1".into()));
         assert_eq!(extract_host("http://[fd12::1]/"), Some("fd12::1".into()));
         assert_eq!(extract_host("example.com"), Some("example.com".into()));
@@ -197,14 +220,19 @@ mod tests {
         assert!(check_url("https://8.8.8.8/", &p).is_ok());
         assert!(check_url("http://[::1]:3000/", &p).is_err());
         // allow_hosts 白名单精确放行私有 IP
-        let mut allow = SsrfPolicy::default();
-        allow.allow_hosts = vec!["127.0.0.1".into()];
+        let allow = SsrfPolicy {
+            allow_hosts: vec!["127.0.0.1".into()],
+            ..Default::default()
+        };
         assert!(check_url("http://127.0.0.1:3000/", &allow).is_ok());
     }
 
     #[test]
     fn deny_off_allows_all() {
-        let p = SsrfPolicy { deny_private: false, ..Default::default() };
+        let p = SsrfPolicy {
+            deny_private: false,
+            ..Default::default()
+        };
         assert!(check_url("http://127.0.0.1/", &p).is_ok());
         assert!(check_url("http://192.168.1.1/", &p).is_ok());
     }
@@ -213,14 +241,24 @@ mod tests {
     fn hostname_resolution_blocked() {
         // localhost 由系统 hosts 稳定解析到环回——离线单测可用
         let p = SsrfPolicy::default();
-        assert!(check_url("http://localhost/", &p).is_err(), "localhost 应被拦截");
+        assert!(
+            check_url("http://localhost/", &p).is_err(),
+            "localhost 应被拦截"
+        );
         // 子域白名单
-        let mut b = SsrfPolicy::default();
-        b.allow_hosts = vec!["example.com".into()];
+        let b = SsrfPolicy {
+            allow_hosts: vec!["example.com".into()],
+            ..Default::default()
+        };
         assert!(check_url("http://api.example.com/x", &b).is_ok());
         // allow_private_hosts 命中 localhost → 仍拦环回
-        let mut a = SsrfPolicy::default();
-        a.allow_private_hosts = vec!["localhost".into()];
-        assert!(check_url("http://localhost:8080/", &a).is_err(), "allow_private_hosts 不能放行环回");
+        let a = SsrfPolicy {
+            allow_private_hosts: vec!["localhost".into()],
+            ..Default::default()
+        };
+        assert!(
+            check_url("http://localhost:8080/", &a).is_err(),
+            "allow_private_hosts 不能放行环回"
+        );
     }
 }
