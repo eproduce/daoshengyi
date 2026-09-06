@@ -23,7 +23,7 @@ jobs:
     name: Bundle macOS (universal x86_64 + aarch64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
