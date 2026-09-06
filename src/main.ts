@@ -35,20 +35,48 @@ listen<string>("menu://action", (e) => {
   const ui = useUiStore();
   const chat = useChatStore();
   switch (e.payload) {
-    case "about": ui.openAbout(); break;
-    case "settings": ui.openSettings("api"); break;
-    case "new-chat": chat.createConversation(); break;
-    case "export-md": ui.requestExport(); break;
-    case "toggle-sidebar": ui.toggleSidebar(); break;
-    case "toggle-theme": ui.requestThemeToggle(); break;
-    case "open-skills": ui.openSkills(); break;
-    case "open-mcp": ui.openSettings("mcp"); break;
-    case "open-ollama": ui.openSettings("ollama"); break;
-    case "open-stats": ui.openSettings("stats"); break;
-    case "open-tasks": ui.openSettings("tasks"); break;
-    case "open-health": ui.openSettings("health"); break;
-    case "open-memory": ui.openSettings("memory"); break;
-    case "open-workflow": ui.openWorkflow(); break;
+    case "about":
+      ui.openAbout();
+      break;
+    case "settings":
+      ui.openSettings("api");
+      break;
+    case "new-chat":
+      chat.createConversation();
+      break;
+    case "export-md":
+      ui.requestExport();
+      break;
+    case "toggle-sidebar":
+      ui.toggleSidebar();
+      break;
+    case "toggle-theme":
+      ui.requestThemeToggle();
+      break;
+    case "open-skills":
+      ui.openSkills();
+      break;
+    case "open-mcp":
+      ui.openSettings("mcp");
+      break;
+    case "open-ollama":
+      ui.openSettings("ollama");
+      break;
+    case "open-stats":
+      ui.openSettings("stats");
+      break;
+    case "open-tasks":
+      ui.openSettings("tasks");
+      break;
+    case "open-health":
+      ui.openSettings("health");
+      break;
+    case "open-memory":
+      ui.openSettings("memory");
+      break;
+    case "open-workflow":
+      ui.openWorkflow();
+      break;
   }
 }).catch(() => {});
 
@@ -77,5 +105,7 @@ document.addEventListener("copy", (e) => {
       e.clipboardData.setData("text/html", html);
       e.preventDefault();
     }
-  } catch { /* 异常时回退系统默认复制 */ }
+  } catch {
+    /* 异常时回退系统默认复制 */
+  }
 });

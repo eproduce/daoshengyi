@@ -7,4 +7,5 @@
 //   - group 1 = 前导字符（路径在行首时为 `^` 空串；否则为前导的非 [\w/:] 字符）
 //   - group 2 = 路径本身
 // 调用方取 m[2]，路径起点 = m.index + m[1].length。
-export const LOCAL_FILE_RE = /(^|[^\w\/:])((?:~\/|\/)[A-Za-z0-9_@.\/\-\u4e00-\u9fa5]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|cpp|c|hpp|html?|h|css|sql|db|zip|tar\.gz|7z))/gi;
+export const LOCAL_FILE_RE =
+  /(^|[^\w\/:])((?:~\/|\/)[A-Za-z0-9_@.\/\-\u4e00-\u9fa5]*\/[^ \t\n\r\[\]\(\)"']*\.(?:csv|xlsx?|xlsm|pdf|docx?|txt|md|json|png|jpe?g|gif|webp|bmp|svg|py|js|ts|rs|toml|yaml|ya?ml|xml|log|sh|rb|go|java|cpp|c|hpp|html?|h|css|sql|db|zip|tar\.gz|7z))/gi; // eslint-disable-line no-useless-escape

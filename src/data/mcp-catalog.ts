@@ -38,7 +38,8 @@ export const MCP_CATALOG: McpCatalogItem[] = [
       // 浏览器可执行路径**由应用动态选择**（探测已装浏览器 + 系统默认 + 设置，
       // 见 mcp.ts applyPuppeteerEnv / utils/browser-select.ts），此处不硬编码，
       // 避免本机无 Edge 时启动失败。仅保留视口设置。
-      PUPPETEER_LAUNCH_OPTIONS: '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}',
+      PUPPETEER_LAUNCH_OPTIONS:
+        '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}',
     },
     tags: ["浏览器", "自动化"],
   },

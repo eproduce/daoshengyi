@@ -1,6 +1,17 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch, reactive } from "vue";
-import type { Conversation, ChatMessage, ChatTool, ApiConfig, ApiProfile, ImageAttachment, FileAttachment, MessageRole, PlanStepStatus, TaskPlan } from "@/types";
+import type {
+  Conversation,
+  ChatMessage,
+  ChatTool,
+  ApiConfig,
+  ApiProfile,
+  ImageAttachment,
+  FileAttachment,
+  MessageRole,
+  PlanStepStatus,
+  TaskPlan,
+} from "@/types";
 import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
 import { getPersona } from "@/data/personas-catalog";
@@ -11,7 +22,15 @@ import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore, isBrowserServer } from "./mcp";
 import { useMemorySystem } from "./memory";
 import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
-import { parseToolCall, stripToolJson, formatToolResultPreview, hasCompleteToolCall, hasToolCallIntent, visibleText, type ToolCall } from "@/utils/tool-call";
+import {
+  parseToolCall,
+  stripToolJson,
+  formatToolResultPreview,
+  hasCompleteToolCall,
+  hasToolCallIntent,
+  visibleText,
+  type ToolCall,
+} from "@/utils/tool-call";
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
@@ -22,24 +41,42 @@ import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
 import { discoverProjectInstructions } from "@/utils/agents-md";
-import { executeWorkflow, validateWorkflowGraph, scoreTaskAgainstWorkflow, type WorkflowGraph } from "@/utils/workflow-engine";
+import {
+  executeWorkflow,
+  validateWorkflowGraph,
+  scoreTaskAgainstWorkflow,
+  type WorkflowGraph,
+} from "@/utils/workflow-engine";
 import { markExternalToolResult } from "@/utils/untrusted";
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
-  try { await invoke("debug_log", { msg }); } catch { /* 日志失败不影响主流程 */ }
+  try {
+    await invoke("debug_log", { msg });
+  } catch {
+    /* 日志失败不影响主流程 */
+  }
 }
 
 /// 从模型输出中提取 JSON 对象文本（去 markdown 围栏；取首个 { 到末个 }）
 function extractJsonBlock(s: string): string {
-  const t = s.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const t = s
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
   const start = t.indexOf("{");
   const end = t.lastIndexOf("}");
   return start >= 0 && end > start ? t.slice(start, end + 1) : t;
 }
 
 // --- MCP 工具辅助 ---
-let mcpToolsCache: { server: string; name: string; description: string; inputSchema?: Record<string, unknown> }[] = [];
+let mcpToolsCache: {
+  server: string;
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+}[] = [];
 let mcpToolsRefreshing: Promise<void> | null = null;
 
 // --- Agent 多模式（§3.11）：当前模式 id。模块级定义（供模块级 callMcpTool 做工具白名单拦截），
@@ -50,30 +87,43 @@ function loadMode(): AgentModeId {
   try {
     const saved = localStorage.getItem(MODE_KEY);
     if (saved && getModeById(saved)) return saved as AgentModeId;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   // 模式记忆（§3.11 Phase B）：未显式保存时，用历史使用频次最高的模式（默认对话）
   try {
     const hist: Record<string, number> = JSON.parse(localStorage.getItem(MODE_HIST_KEY) || "{}");
     let best: AgentModeId = "chat";
     let bestN = 0;
     for (const [id, n] of Object.entries(hist)) {
-      if (n > bestN && getModeById(id)) { best = id as AgentModeId; bestN = n; }
+      if (n > bestN && getModeById(id)) {
+        best = id as AgentModeId;
+        bestN = n;
+      }
     }
     if (bestN > 0) return best;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return "chat";
 }
 const activeModeId = ref<AgentModeId>(loadMode());
 /// 模式使用频次（供 UI 显示「常用」；不参与响应式，读取时解析 localStorage）
 function readModeHist(): Record<string, number> {
-  try { return JSON.parse(localStorage.getItem(MODE_HIST_KEY) || "{}"); } catch { return {}; }
+  try {
+    return JSON.parse(localStorage.getItem(MODE_HIST_KEY) || "{}");
+  } catch {
+    return {};
+  }
 }
 function bumpModeHist(id: AgentModeId) {
   try {
     const hist = readModeHist();
     hist[id] = (hist[id] || 0) + 1;
     localStorage.setItem(MODE_HIST_KEY, JSON.stringify(hist));
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 // --- 会话级权限记忆（§3.10 🟡）：本会话内已允许的操作（按工具名），减少重复确认。 ---
@@ -95,12 +145,23 @@ export async function refreshMcpTools() {
   if (mcpToolsRefreshing) return mcpToolsRefreshing;
   mcpToolsRefreshing = (async () => {
     try {
-      const servers = await invoke<[string, {name:string;description:string;inputSchema?:Record<string,unknown>}[]][]>("mcp_list_tools");
+      const servers =
+        await invoke<
+          [string, { name: string; description: string; inputSchema?: Record<string, unknown> }[]][]
+        >("mcp_list_tools");
       mcpToolsCache = [];
       for (const [server, tools] of servers) {
-        for (const t of tools) mcpToolsCache.push({ server, name: t.name, description: t.description, inputSchema: t.inputSchema });
+        for (const t of tools)
+          mcpToolsCache.push({
+            server,
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          });
       }
-    } catch { mcpToolsCache = []; }
+    } catch {
+      mcpToolsCache = [];
+    }
   })();
   try {
     await mcpToolsRefreshing;
@@ -111,17 +172,24 @@ export async function refreshMcpTools() {
 /// 列出已启用但未连接的 MCP 服务器（如浏览器自动化），提示模型按需激活。
 /// 浏览器等重服务器不会在日常对话中自动连接/弹窗，只有模型明确需要时才激活。
 function pendingServersPrompt(): string {
-  const pending = useMcpStore().servers.filter(s => s.enabled && !s.connected);
+  const pending = useMcpStore().servers.filter((s) => s.enabled && !s.connected);
   if (pending.length === 0) return "";
-  const lines = pending.map(s => {
-    const cat = MCP_CATALOG.find(c => c.name === s.name || `${c.command} ${c.args}` === `${s.command} ${s.args}`);
+  const lines = pending.map((s) => {
+    const cat = MCP_CATALOG.find(
+      (c) => c.name === s.name || `${c.command} ${c.args}` === `${s.command} ${s.args}`,
+    );
     return `- **${s.name}**（未连接）: ${cat ? cat.description : "可用的 MCP 服务器"}`;
   });
   return (
     "\n\n## 未连接服务器（按需激活，不占用资源、不弹窗）\n" +
     lines.join("\n") +
     "\n\n若任务需要上述服务器的能力，请先调用其激活指令，收到工具列表后再选择具体工具：\n" +
-    pending.map(s => `<tool_call>\n{"server":"${s.name}","tool":"__connect__","arguments":{}}\n</tool_call>`).join("\n")
+    pending
+      .map(
+        (s) =>
+          `<tool_call>\n{"server":"${s.name}","tool":"__connect__","arguments":{}}\n</tool_call>`,
+      )
+      .join("\n")
   );
 }
 
@@ -176,7 +244,11 @@ function waitStopSignal(): Promise<void> {
  * 立即抛 AgentStoppedError，让工具循环马上退出——真正「立即停止 agent 行为」。
  * 注：后台 Rust 命令可能仍在执行（前端无法 kill 进程），但 agent 不再继续生成/调工具。
  */
-async function callToolStoppable(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+async function callToolStoppable(
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
   const raced = await Promise.race([
     callMcpTool(server, tool, args).then((r) => ({ kind: "ok" as const, data: r })),
     waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
@@ -241,7 +313,7 @@ function getMcpToolsPrompt(): string {
   const toolCallRule =
     "\n\n## 工具调用唯一格式（极重要）\n" +
     "需要调用工具时，**唯一方式**是在回复正文中输出工具调用标记：\n" +
-    "<tool_call>{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}</tool_call>\n" +
+    '<tool_call>{"server":"服务器名","tool":"工具名","arguments":{...}}</tool_call>\n' +
     "- **绝对禁止**在正文中写「### 🔧 调用工具」「<details>参数</details>」「✅ 工具结果」等卡片式文本假装已调用工具——那只是普通文本，工具不会执行，回复会中断。\n" +
     "- 也不要输出残缺的标签或裸 JSON；工具调用必须成对包含开/闭标记，JSON 必须是合法对象且含 tool/name 与 arguments。\n" +
     "- 系统会自动执行你的工具调用并把**真实结果**回填给你，你只需等结果返回后再继续回答，无需自己模拟结果。\n";
@@ -249,31 +321,31 @@ function getMcpToolsPrompt(): string {
     outputRule +
     toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
-    "- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {\"url\": \"完整网址\"}\n" +
-    "- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {\"query\": \"关键词\"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n" +
-    "- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {\"path\": \"本地图片文件路径\"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n" +
-    "- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {\"path\": \"本地图片文件路径\"}。用于从截图/图片提取文字。\n" +
-    "- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {\"goal\": \"子任务目标\", \"context\": \"可选补充上下文\", \"allow_tools\": true, \"role\": \"可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）\"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。" +
-    "\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {\"tasks\": [{\"goal\": \"子任务1\", \"context\": \"可选\", \"allow_tools\": true, \"role\": \"可选角色\"}, ...], \"concurrency\": 可选并发数（默认最多 4）, \"synth\": 可选，true 时并行完成后用评审角色汇总仲裁}. **使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。" +
-    "- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {\"path\": \"PDF 路径\", \"offset\": 起始字符偏移, \"length\": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。" +
-    "\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {\"path\": \"目标文件绝对路径（或以 ~/ 开头）\", \"content\": \"文件内容\"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**\n" +
+    '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {"url": "完整网址"}\n' +
+    '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
+    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
+    '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。\n' +
+    '- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {"goal": "子任务目标", "context": "可选补充上下文", "allow_tools": true, "role": "可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。' +
+    '\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {"tasks": [{"goal": "子任务1", "context": "可选", "allow_tools": true, "role": "可选角色"}, ...], "concurrency": 可选并发数（默认最多 4）, "synth": 可选，true 时并行完成后用评审角色汇总仲裁}. **使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。' +
+    '- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {"path": "PDF 路径", "offset": 起始字符偏移, "length": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。' +
+    '\n- **write_file** (app): **把内容写入本地文件（应用自身真实写盘并校验）**。参数 {"path": "目标文件绝对路径（或以 ~/ 开头）", "content": "文件内容"}。仅支持写入用户主目录内文件，可写 CSV/Excel 文本等任意文本格式。**写文件必须用本工具（server 填 app）**：返回真实绝对路径，回复用户时**必须原样引用**该路径，禁止改名、改目录或编造路径。**新建/整文件覆盖用本工具；修改已有文件优先用 replace_string / insert_string 精确编辑（见下）。**\n' +
     "**长文件/完整 HTML 严禁一次性塞进 content**（内容过长会超过单次输出长度限制，工具调用写到一半被截断、文件根本不会写入）：必须分段写入——先 write_file 写开头骨架，再用 insert_string 在末尾占位标记前逐段追加，详见「文件导出规范」的「长文件必须分段写入」。**" +
-    "\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {\"path\": \"文件绝对路径\", \"old_text\": \"要替换的原文（须与文件内容完全一致）\", \"new_text\": \"新文本（可为空=删除该段）\", \"occurrence\": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。" +
-    "\n- **insert_string** (app): **在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {\"path\": \"文件绝对路径\", \"anchor\": \"锚点文本（须唯一且与文件内容完全一致）\", \"position\": \"before 之前 | after 之后（默认 before）\", \"new_text\": \"要插入的内容\"}。适合在函数/代码块末尾、配置项列表中添加新条目。" +
-    "\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {\"path\": \"绝对路径或以 ~/ 开头\", \"content\": \"文件内容\"}。文件已存在时不会覆盖，返回提示。" +
-    "\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {\"path\": \"文件绝对路径\"}。删除前先确认用户确实要求删除该文件。" +
-    "\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {\"path\": \"目录绝对路径\"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。" +
-    "\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {\"command\": \"完整 shell 命令\"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。\n" +
-    "\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {\"cwd\": \"仓库目录绝对路径\", \"action\": \"status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析\", \"args\": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action=\"commit\" args=[\"-m\",\"提交说明\"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。" +
-    "\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {\"cwd\": \"项目目录绝对路径\", \"command\": \"可选，显式指定测试命令（如 pytest -q）\", \"args\": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。" +
-    "\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {\"path\": \"项目目录绝对路径\"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。" +
-    "\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地 Ollama + nomic-embed-text，重建式）。参数 {\"root\": \"项目目录绝对路径\"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。" +
-    "\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {\"root\": \"项目目录绝对路径\", \"query\": \"自然语言描述要查的代码，如「处理用户登录」「解析配置文件」\", \"limit\": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。" +
+    '\n- **replace_string** (app): **精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {"path": "文件绝对路径", "old_text": "要替换的原文（须与文件内容完全一致）", "new_text": "新文本（可为空=删除该段）", "occurrence": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。' +
+    '\n- **insert_string** (app): **在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {"path": "文件绝对路径", "anchor": "锚点文本（须唯一且与文件内容完全一致）", "position": "before 之前 | after 之后（默认 before）", "new_text": "要插入的内容"}。适合在函数/代码块末尾、配置项列表中添加新条目。' +
+    '\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {"path": "绝对路径或以 ~/ 开头", "content": "文件内容"}。文件已存在时不会覆盖，返回提示。' +
+    '\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。' +
+    '\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {"path": "目录绝对路径"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。' +
+    '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。\n' +
+    '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
+    '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
+    '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
+    '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地 Ollama + nomic-embed-text，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
+    '\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {"root": "项目目录绝对路径", "query": "自然语言描述要查的代码，如「处理用户登录」「解析配置文件」", "limit": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。' +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
-    "\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {\"kb_name\": \"知识库名，如「个人」\"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。" +
-    "\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地 Ollama embedding 可用时叠加语义向量）。参数 {\"kb_name\": \"知识库名\", \"source\": \"来源/文档名（如 笔记.md）\", \"text\": \"要录入的完整文本内容\"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。" +
-    "\n- **kb_index** (app): 把本地目录/项目**索引成知识库**（重建式，支持 md/txt/代码/PDF，自动分块；同名知识库会重新索引）。参数 {\"kb_name\": \"知识库名\", \"path\": \"目录绝对路径\"}。**使用时机**：用户要求基于某目录/文档集做知识问答时，先 kb_index 建立索引。" +
-    "\n- **kb_search** (app): 在已索引的**知识库**中检索（关键词 + 中文分词；本地 Ollama embedding 可用时叠加语义向量）。参数 {\"kb_name\": \"知识库名\", \"query\": \"检索词\", \"limit\": 可选条数（默认 6）}。**使用时机**：问题涉及知识库内容时先检索再作答；检索不到可换关键词。" +
+    '\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {"kb_name": "知识库名，如「个人」"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。' +
+    '\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地 Ollama embedding 可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。' +
+    '\n- **kb_index** (app): 把本地目录/项目**索引成知识库**（重建式，支持 md/txt/代码/PDF，自动分块；同名知识库会重新索引）。参数 {"kb_name": "知识库名", "path": "目录绝对路径"}。**使用时机**：用户要求基于某目录/文档集做知识问答时，先 kb_index 建立索引。' +
+    '\n- **kb_search** (app): 在已索引的**知识库**中检索（关键词 + 中文分词；本地 Ollama embedding 可用时叠加语义向量）。参数 {"kb_name": "知识库名", "query": "检索词", "limit": 可选条数（默认 6）}。**使用时机**：问题涉及知识库内容时先检索再作答；检索不到可换关键词。' +
     "\n- **kb_list** (app): 列出已建立的知识库及分块数。参数 {}。**使用时机**：不确定有哪些知识库时调用。" +
     "\n\n## 知识库使用要点\n" +
     "- 用户说「创建/新建知识库 XX」→ 先 kb_create 建库；需要录入内容时用 kb_add（一段文本/文档）或 kb_index（整个目录）。\n" +
@@ -284,21 +356,21 @@ function getMcpToolsPrompt(): string {
     "- 你修改/生成代码后，**必须用 run_tests 运行测试验证**，不能假设改对了。\n" +
     "- 测试失败时：分析失败项/错误信息 → 修复代码 → **再次 run_tests**，如此循环直到测试通过（「通过才算完成」门禁）。\n" +
     "- 如果项目没有测试，用 run_tests 时显式 command（如 `python3 -m py_compile main.py` 或直接说明无测试）；不要编造测试结果。" +
-    "\n- **memory_save** (app): 把用户明确告诉你的重要信息保存到长期记忆（跨会话生效，下次对话自动想起）。参数 {\"fact\": \"要记住的内容\", \"fact_type\": \"preference\" 偏好 | \"info\" 信息 | \"decision\" 决策 | \"todo\" 待办, \"importance\": 重要度 1-10}。**使用时机**：用户告知个人偏好（如「我喜欢简洁回答」）、重要个人信息（姓名/职业/所在地）、作出的决定、或叮嘱你要记住的待办事项时——主动调用记住，不要只放在本次回答里。\n" +
-    "\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {\"query\": \"关键词\", \"limit\": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n" +
-    "\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {\"query\": \"要遗忘的记忆关键词\"}。\n" +
-    "\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {\"platform\": \"feishu\" 或 \"wecom\" 或 \"dingtalk\", \"text\": \"要推送的内容\"}。用于用户要求把信息/提醒推送到聊天工具时。" +
+    '\n- **memory_save** (app): 把用户明确告诉你的重要信息保存到长期记忆（跨会话生效，下次对话自动想起）。参数 {"fact": "要记住的内容", "fact_type": "preference" 偏好 | "info" 信息 | "decision" 决策 | "todo" 待办, "importance": 重要度 1-10}。**使用时机**：用户告知个人偏好（如「我喜欢简洁回答」）、重要个人信息（姓名/职业/所在地）、作出的决定、或叮嘱你要记住的待办事项时——主动调用记住，不要只放在本次回答里。\n' +
+    '\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {"query": "关键词", "limit": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n' +
+    '\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {"query": "要遗忘的记忆关键词"}。\n' +
+    '\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {"platform": "feishu" 或 "wecom" 或 "dingtalk", "text": "要推送的内容"}。用于用户要求把信息/提醒推送到聊天工具时。' +
     "\n- **workflow_list** (app): 列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。" +
-    "\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {\"name\": \"工作流名称或 id\", \"input\": \"可选外部输入（节点里以 {{user}} 引用）\"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。" +
-    "\n- **workflow_create** (app): **把多步骤/可复用任务抽象成工作流并保存**。参数 {\"name\": \"工作流名称\", \"graph\": {\"nodes\": [{\"id\":\"n1\",\"type\":\"text|llm|tool|condition|code|end\",\"label\":\"节点名\",\"config\":{...}}], \"edges\": [{\"id\":\"e1\",\"source\":\"n1\",\"target\":\"n2\"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。" +
-    "\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {\"name\": \"工作流名称或 id\", \"note\": \"可选改进诉求\"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。" +
-    "\n- **workflow_suggest** (app): **按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {\"task\": \"任务描述\", \"limit\": \"可选条数默认 3\"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。" +
-    "\n- **workflow_remember** (app): **沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {\"task_type\": \"任务类型描述如 月度研究/日报生成\", \"workflow_name\": \"工作流名\"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。" +
-    "\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {\"title\": \"任务标题\", \"steps\": [\"子任务1\", \"子任务2\", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。" +
-    "\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {\"step\": 步骤序号(从1开始), \"status\": \"doing\" 进行中 | \"done\" 已完成 | \"failed\" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。" +
-    "\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {\"prompt\": \"后台任务的完整指令\", \"name\": \"可选子会话名（默认 子任务）\"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。" +
-    "\n- **session_status** (app): **查询后台子会话的执行进度/最近结果**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。返回 执行中/已完成 + 消息数 + 最近结果前 600 字。" +
-    "\n- **session_resume** (app): **等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {\"session_id\": \"session_spawn 返回的 id\"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。" +
+    '\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {"name": "工作流名称或 id", "input": "可选外部输入（节点里以 {{user}} 引用）"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。' +
+    '\n- **workflow_create** (app): **把多步骤/可复用任务抽象成工作流并保存**。参数 {"name": "工作流名称", "graph": {"nodes": [{"id":"n1","type":"text|llm|tool|condition|code|end","label":"节点名","config":{...}}], "edges": [{"id":"e1","source":"n1","target":"n2"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。' +
+    '\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {"name": "工作流名称或 id", "note": "可选改进诉求"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。' +
+    '\n- **workflow_suggest** (app): **按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {"task": "任务描述", "limit": "可选条数默认 3"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。' +
+    '\n- **workflow_remember** (app): **沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {"task_type": "任务类型描述如 月度研究/日报生成", "workflow_name": "工作流名"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。' +
+    '\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {"title": "任务标题", "steps": ["子任务1", "子任务2", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。' +
+    '\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {"step": 步骤序号(从1开始), "status": "doing" 进行中 | "done" 已完成 | "failed" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。' +
+    '\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {"prompt": "后台任务的完整指令", "name": "可选子会话名（默认 子任务）"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。' +
+    '\n- **session_status** (app): **查询后台子会话的执行进度/最近结果**。参数 {"session_id": "session_spawn 返回的 id"}。返回 执行中/已完成 + 消息数 + 最近结果前 600 字。' +
+    '\n- **session_resume** (app): **等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {"session_id": "session_spawn 返回的 id"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。' +
     "\n\n## 后台子会话使用要点\n" +
     "- 用户需要**长时间/独立**的任务（如长研究、批量抓取、多步代码改造）且不想阻塞当前对话时，可用 session_spawn 投到后台执行。\n" +
     "- spawn 后 session_status 查进度；需要结果时 session_resume（会等待完成并取回全文）。若子会话结果与主任务无关，也可不 resume，直接告知用户子会话已就绪、可点击查看。\n" +
@@ -316,7 +388,7 @@ function getMcpToolsPrompt(): string {
     "- 记忆跨会话自动注入：系统也会在每次对话前自动检索相关记忆注入上下文，无需你手动调用；memory_recall 用于更精确的主动查证。" +
     "\n\n## 命令执行与打开本机应用（run_command）\n" +
     "- **你具备本机命令行能力**：调用 run_command 可执行 shell 命令（受命令执行策略门禁；危险/破坏性命令会被拦截或需用户确认，勿尝试绕过）。\n" +
-    "- 用户要「打开/启动某应用、文件夹或文件」时**不要声称做不到**——macOS 用 run_command 执行 `open -a \"应用名\"`（例：照片→`open -a Photos`、访达→`open .`）或 `open \"文件/文件夹/照片库路径\"`（例：`open \"/Users/wanghuan/Pictures/Photos Library.photoslibrary\"` 会打开「照片」）。\n" +
+    '- 用户要「打开/启动某应用、文件夹或文件」时**不要声称做不到**——macOS 用 run_command 执行 `open -a "应用名"`（例：照片→`open -a Photos`、访达→`open .`）或 `open "文件/文件夹/照片库路径"`（例：`open "/Users/wanghuan/Pictures/Photos Library.photoslibrary"` 会打开「照片」）。\n' +
     "- 能用专用工具（git / run_tests / list_dir / read_file / replace_string / workflow_*）完成的优先用专用工具；run_command 用于其余命令（GUI 启动、构建脚本、brew、系统查询等）。只读优先，慎用写/删/安装类。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
@@ -365,31 +437,47 @@ function getMcpToolsPrompt(): string {
   const fileRule =
     "\n\n## 文件导出规范（重要）\n" +
     "需要把内容保存为本地文件（如 CSV 考勤表、报告、脚本等）时，**必须真实调用内置 write_file 工具（server 填 `app`）**，由应用真实写盘并校验。\n" +
-    "- **调用方式只有一种**：在回复中输出 `<tool_call>{\"server\":\"app\",\"tool\":\"write_file\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"}}</tool_call>`。\n" +
+    '- **调用方式只有一种**：在回复中输出 `<tool_call>{"server":"app","tool":"write_file","arguments":{"path":"...","content":"..."}}</tool_call>`。\n' +
     "- **严禁在回复正文中模拟工具调用过程**：禁止以 `### 🔧 调用工具`、`<details>参数</details>`、`✅ 工具结果` 等卡片形式假装已调用工具或已写入文件——那只是文本，不会真正写盘。\n" +
     "- **只有 write_file 真实返回的路径才可引用**：最终回复**必须原样引用**工具返回的真实绝对路径，禁止改写文件名、目录或编造路径。\n" +
     "- **若未真实调用并成功写入，禁止给出任何文件路径**，也不要声称「已写入」或「已导出」，可如实说明无法保存文件。\n" +
     "- **如实报告文件数量**：生成了几个文件就引用几个（每个都是 write_file 真实返回的路径）；**禁止声称「已生成 N 份 / 两个版本」除非确实写入了 N 个文件**。若确实写了多个文件（如 HTML 版 + CSV 版），必须把每个文件的真实路径都列出来，不能只说一份。\n" +
     "- **表格文档格式（排版必须正确）**：用户要「表格文档 / Excel / 表格 / CSV」时，用 write_file 生成 **CSV**（Excel/WPS 可直接打开，行列最稳）或 **HTML 表格**（浏览器打开可打印），并在回复中说明文件格式。\n" +
-    "- **HTML 表格必须行列对齐**：每一行 `<tr>` 内的单元格数量必须与表头**完全一致**（表头 5 列则每行都恰好 5 个 `<td>`/`<th>`），**禁止行内单元格数不齐**（浏览器会错位显示、排版错乱）；需要跨列/跨行时用 `colspan`/`rowspan` 显式声明并保持总列数不变。最小结构示例：`<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><thead><tr><th>列1</th><th>列2</th></tr></thead><tbody><tr><td>值</td><td>值</td></tr></tbody></table>`。\n" +
-    "- **CSV 单元格规范**：含逗号、换行或中文标点的单元格用双引号包裹（如 `\"某,单位\"`），每行列数一致；文件用 UTF-8 编码。\n" +
+    '- **HTML 表格必须行列对齐**：每一行 `<tr>` 内的单元格数量必须与表头**完全一致**（表头 5 列则每行都恰好 5 个 `<td>`/`<th>`），**禁止行内单元格数不齐**（浏览器会错位显示、排版错乱）；需要跨列/跨行时用 `colspan`/`rowspan` 显式声明并保持总列数不变。最小结构示例：`<table border="1" cellpadding="6" cellspacing="0"><thead><tr><th>列1</th><th>列2</th></tr></thead><tbody><tr><td>值</td><td>值</td></tr></tbody></table>`。\n' +
+    '- **CSV 单元格规范**：含逗号、换行或中文标点的单元格用双引号包裹（如 `"某,单位"`），每行列数一致；文件用 UTF-8 编码。\n' +
     "- 当前无法直接生成二进制 .xlsx/.docx，**不要假装生成了 Excel/Word 文件**，如实说明已生成 CSV/HTML 及打开方式。\n" +
     "- **长文件/完整 HTML 必须分段写入（防止工具调用被截断）**：完整 HTML / 长报告 / 长脚本**禁止一次性塞进单个 write_file 的 content**——内容过长会超过单次输出长度限制，`<tool_call>` 写到一半被截断、`</tool_call>` 不完整，工具根本不会执行、文件不会写入；再次重试同样会被截断。正确做法（**分段写入**）：\n" +
     "  ① 先用 `write_file` 写文件**开头部分**（含根结构，末尾放一个唯一占位标记如 `<!--MORE-->`；HTML 的 `<html>`/`</html>` 根标签必须在本段内完整闭合，保证文件始终合法）；\n" +
-    "  ② 再用 `insert_string` **逐段追加**：参数 `{\"path\": 同一路径, \"anchor\": \"<!--MORE-->\", \"position\": \"before\", \"new_text\": \"<下一段内容>\\n<!--MORE-->\"}`——把下一段插到占位标记前，并在段尾重新放一个 `<!--MORE-->` 占位；\n" +
+    '  ② 再用 `insert_string` **逐段追加**：参数 `{"path": 同一路径, "anchor": "<!--MORE-->", "position": "before", "new_text": "<下一段内容>\\n<!--MORE-->"}`——把下一段插到占位标记前，并在段尾重新放一个 `<!--MORE-->` 占位；\n' +
     "  ③ 重复 ② 直到内容写完，**最后一次 `new_text` 不要留 `<!--MORE-->` 占位**，让文件以完整内容收尾。\n" +
     "  每次工具调用的内容控制在 **≤ 2500 字符**；宁可多分几段，也不要一次塞完整份文件。\n" +
     "- 禁止使用社区 filesystem MCP 服务器的写入类工具（write_file / write_text_file 等）。";
   const pending = pendingServersPrompt();
 
   if (mcpToolsCache.length === 0) {
-    return builtin + realtime + searchFormat + planRule + orchestrateRule + editRule + fileRule + pending +
-      "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>";
+    return (
+      builtin +
+      realtime +
+      searchFormat +
+      planRule +
+      orchestrateRule +
+      editRule +
+      fileRule +
+      pending +
+      '\n\n需要工具时只回复以下格式：\n<tool_call>\n{"server":"app","tool":"工具名","arguments":{...}}\n</tool_call>'
+    );
   }
 
-  return builtin + realtime + searchFormat + planRule + orchestrateRule + editRule + fileRule +
+  return (
+    builtin +
+    realtime +
+    searchFormat +
+    planRule +
+    orchestrateRule +
+    editRule +
+    fileRule +
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
-    mcpToolsCache.map(t => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
+    mcpToolsCache.map((t) => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
     "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。不确定时可先用 web_search 或 fetch_page 探索。" +
     "\n\n## 文件系统使用要点\n" +
@@ -399,7 +487,7 @@ function getMcpToolsPrompt(): string {
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点\n" +
     "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、搜索、点击或操作页面时，**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
-    "- 若浏览器工具不在上方工具列表（按需激活），直接用 `{\"server\":\"浏览器自动化\",\"tool\":\"puppeteer_navigate\",...}` 调用即可，系统会自动连接浏览器。\n" +
+    '- 若浏览器工具不在上方工具列表（按需激活），直接用 `{"server":"浏览器自动化","tool":"puppeteer_navigate",...}` 调用即可，系统会自动连接浏览器。\n' +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- **操作顺序**：先用 puppeteer_navigate 打开目标页面 → 等渲染完成 → 再 puppeteer_fill 输入 / puppeteer_click 点击 / puppeteer_evaluate 提取 / puppeteer_screenshot 截图。**不要跳过导航直接尝试输入或点击**（没打开页面无从操作）。\n" +
     "- **优先图形化操作（通用，适配任意站点/搜索引擎）**：搜索、输入用 `puppeteer_fill` 填输入框（正确触发输入事件）+ `puppeteer_click` 点提交按钮。若用 `puppeteer_evaluate` 设值，必须**同时触发 input/change 事件再提交**，否则框架收不到输入：如 `el.value='关键词'; el.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('form').requestSubmit();`。仅当页面确实无法图形化交互时，才兜底用带查询参数的 URL 直达（如 `https://www.baidu.com/s?wd=关键词`）。\n" +
@@ -407,8 +495,9 @@ function getMcpToolsPrompt(): string {
     "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
     "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（默认 ~/Pictures/道生一截图/daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
     "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
-    "\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"服务器名\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>" +
-    "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。";
+    '\n需要工具时只回复以下格式：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>' +
+    "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。"
+  );
 }
 
 /// 任务完成后关闭浏览器，形成使用闭环。
@@ -416,18 +505,28 @@ function getMcpToolsPrompt(): string {
 /// （kill 服务器进程，kill_on_drop）使浏览器窗口随之关闭。
 async function closeBrowserIfOpen(): Promise<void> {
   const browserServers = new Set(
-    mcpToolsCache.filter((t) => /^puppeteer_/i.test(t.name)).map((t) => t.server)
+    mcpToolsCache.filter((t) => /^puppeteer_/i.test(t.name)).map((t) => t.server),
   );
   for (const server of browserServers) {
-    try { await invoke("mcp_disconnect", { name: server }); } catch { /* 忽略 */ }
+    try {
+      await invoke("mcp_disconnect", { name: server });
+    } catch {
+      /* 忽略 */
+    }
   }
   if (browserServers.size > 0) {
     // 同步清空工具缓存，并把 mcp store 中的服务器标记为未连接
-    try { await refreshMcpTools(); } catch { /* 忽略 */ }
+    try {
+      await refreshMcpTools();
+    } catch {
+      /* 忽略 */
+    }
     try {
       const { useMcpStore } = await import("./mcp");
       useMcpStore().markDisconnected([...browserServers]);
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 /// 本次消息会话内是否已用 puppeteer_navigate 打开过网页（拦截未导航就 fill/click）。
@@ -454,19 +553,29 @@ function resolveToolServer(server: string | undefined, tool: string): string {
   const s = server && server !== "default" ? server : "app";
   if (s === "app" || s === "builtin") {
     if (/^puppeteer_/i.test(tool) || tool === "__connect__") {
-      const fromCache = mcpToolsCache.find((t) => t.name === tool && t.server !== "app" && t.server !== "builtin");
+      const fromCache = mcpToolsCache.find(
+        (t) => t.name === tool && t.server !== "app" && t.server !== "builtin",
+      );
       if (fromCache) return fromCache.server;
-      const browserServer = useMcpStore().servers.find((srv) => srv.enabled && isBrowserServer(srv.name, srv.command));
+      const browserServer = useMcpStore().servers.find(
+        (srv) => srv.enabled && isBrowserServer(srv.name, srv.command),
+      );
       if (browserServer) return browserServer.name;
     } else {
-      const match = mcpToolsCache.find((t) => t.name === tool && t.server !== "app" && t.server !== "builtin");
+      const match = mcpToolsCache.find(
+        (t) => t.name === tool && t.server !== "app" && t.server !== "builtin",
+      );
       if (match) return match.server;
     }
   }
   return s;
 }
 
-export async function callMcpTool(server: string, tool: string, args: Record<string, unknown>): Promise<string> {
+export async function callMcpTool(
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
   // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
@@ -512,13 +621,23 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
     }
   }
 
-  const target = mcp.servers.find(s => s.name === server) ?? mcp.servers.find(s => s.enabled && !s.connected);
-  if (tool === "__connect__" || (target && target.enabled && !target.connected && target.name === server)) {
+  const target =
+    mcp.servers.find((s) => s.name === server) ??
+    mcp.servers.find((s) => s.enabled && !s.connected);
+  if (
+    tool === "__connect__" ||
+    (target && target.enabled && !target.connected && target.name === server)
+  ) {
     if (!target) {
-      return `未找到可激活的服务器「${server}」。可用工具：${mcpToolsCache.map(t => `${t.name}(${t.server})`).join(", ") || "无"}`;
+      return `未找到可激活的服务器「${server}」。可用工具：${mcpToolsCache.map((t) => `${t.name}(${t.server})`).join(", ") || "无"}`;
     }
     if (target.connected) {
-      return `服务器「${target.name}」已连接。可用工具：${mcpToolsCache.filter(t => t.server === target.name).map(t => t.name).join(", ") || "（暂无工具）"}。请选择合适的工具继续。`;
+      return `服务器「${target.name}」已连接。可用工具：${
+        mcpToolsCache
+          .filter((t) => t.server === target.name)
+          .map((t) => t.name)
+          .join(", ") || "（暂无工具）"
+      }。请选择合适的工具继续。`;
     }
     try {
       const toolNames = await mcp.connectByName(target.name);
@@ -541,16 +660,27 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   // 执行后的真实状态，避免并行时误判「未打开网页」。
   const isPuppeteer = /^puppeteer_/i.test(tool);
   let screenshotUserPath: string | null = null;
-  const execute = async (): Promise<{content:{type:string;text?:string;data?:string}[];isError?:boolean}> => {
+  const execute = async (): Promise<{
+    content: { type: string; text?: string; data?: string }[];
+    isError?: boolean;
+  }> => {
     if (isPuppeteer) {
       // 增强浏览器自动化：navigate 时若模型未指定 waitUntil，默认等待网络空闲，
       // 确保 JS 动态渲染完成，避免紧跟的 screenshot 截到空白页面。
-      if (tool === "puppeteer_navigate" && args && typeof args === "object" && !(args as Record<string, unknown>).waitUntil) {
+      if (
+        tool === "puppeteer_navigate" &&
+        args &&
+        typeof args === "object" &&
+        !(args as Record<string, unknown>).waitUntil
+      ) {
         (args as Record<string, unknown>).waitUntil = "networkidle2";
       }
       // 拦截 puppeteer 页面操作：必须先 navigate 打开过网页，否则无从输入/点击/截图。
       // 防止 agent 跳过导航就直接 fill/click（页面都没打开谈何操作）。
-      if (/^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) && !browserNavigated) {
+      if (
+        /^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) &&
+        !browserNavigated
+      ) {
         throw new BrowserNotNavigatedError();
       }
       if (tool === "puppeteer_navigate") {
@@ -572,11 +702,16 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
         }
       }
     }
-    return invoke<{content:{type:string;text?:string;data?:string}[];isError?:boolean}>("mcp_call_tool", {
-      server: effectiveServer, toolName: tool, arguments: args,
-    });
+    return invoke<{ content: { type: string; text?: string; data?: string }[]; isError?: boolean }>(
+      "mcp_call_tool",
+      {
+        server: effectiveServer,
+        toolName: tool,
+        arguments: args,
+      },
+    );
   };
-  let result: {content:{type:string;text?:string;data?:string}[];isError?:boolean};
+  let result: { content: { type: string; text?: string; data?: string }[]; isError?: boolean };
   if (isPuppeteer) {
     try {
       result = await withBrowserLock(execute);
@@ -589,17 +724,22 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
   } else {
     result = await execute();
   }
-  const text = result.content.map(c => c.text || "").join("\n");
+  const text = result.content.map((c) => c.text || "").join("\n");
   // 若返回了图片数据（如 puppeteer_screenshot 截图），保存到临时文件，
   // 并提示大模型可用 describe_image / ocr_image 分析该截图
-  const images = result.content.filter(c => c.type === "image" && c.data);
+  const images = result.content.filter((c) => c.type === "image" && c.data);
   let out = text;
   for (const img of images) {
     try {
       // 用户指定了保存路径则用之，否则保存到持久目录 ~/Pictures/道生一截图/
-      const p = await invoke<string>("save_temp_image", { data: img.data, path: screenshotUserPath });
+      const p = await invoke<string>("save_temp_image", {
+        data: img.data,
+        path: screenshotUserPath,
+      });
       out += `\n\n截图已保存到: ${p}\n（如需理解截图内容，可调用内置工具 describe_image 描述图片 或 ocr_image 提取文字，参数 path 填该路径）`;
-    } catch { /* 保存失败忽略 */ }
+    } catch {
+      /* 保存失败忽略 */
+    }
   }
   return out;
 }
@@ -611,7 +751,7 @@ export async function callMcpTool(server: string, tool: string, args: Record<str
 /// 用于截图时保持页面视口与窗口一致；读不到时回退 1440x900。
 function puppeteerViewport(): { width: number; height: number } {
   try {
-    const srv = useMcpStore().servers.find(s => s.env?.PUPPETEER_LAUNCH_OPTIONS);
+    const srv = useMcpStore().servers.find((s) => s.env?.PUPPETEER_LAUNCH_OPTIONS);
     const raw = srv?.env?.PUPPETEER_LAUNCH_OPTIONS;
     if (raw) {
       const opts = JSON.parse(raw) as { defaultViewport?: { width?: number; height?: number } };
@@ -619,7 +759,9 @@ function puppeteerViewport(): { width: number; height: number } {
       const h = opts.defaultViewport?.height;
       if (w && h) return { width: w, height: h };
     }
-  } catch { /* 忽略 */ }
+  } catch {
+    /* 忽略 */
+  }
   return { width: 1440, height: 900 };
 }
 
@@ -628,17 +770,20 @@ function puppeteerViewport(): { width: number; height: number } {
 /// 正文空洞时强制模型真正调用工具或给出完整答案，避免「只有工具卡片 + 一句意图声明」的断头回复。
 function isVagueBody(s: string): boolean {
   const sc = s.trim();
-  if (sc.length === 0) return true;                        // 空正文
-  if (/^###\s*(🔧|🌐)/.test(sc)) return true;             // 仍被工具卡片/占位占用
-  if (sc.length > 120) return false;                       // 长正文视为已有实质内容
+  if (sc.length === 0) return true; // 空正文
+  if (/^###\s*(🔧|🌐)/.test(sc)) return true; // 仍被工具卡片/占位占用
+  if (sc.length > 120) return false; // 长正文视为已有实质内容
   // 有列表/编号/冒号/表格/代码块等结构 → 视为有内容。
   // 注意：仅换行不算（agent 常只写个标题如「**检查页面元素**」就结束，仍是空洞）
   if (/^\s*[-•*]\s|\d+[.、]\s|[：]|:\s|\|.+\||```/.test(sc)) return false;
   // 短正文 + 第一人称/过渡词/延续词引导的「过程声明」（我/将/直接/继续/尝试/再…
   // 访问/获取/查…）或「结果无关」→ 空洞。纯建议（如「可访问官网查看最新政策」无
   // 引导词）不算空洞。
-  return /(我|将|准备|接下来|让我|直接|先|去|继续|尝试|再|重新).{0,12}(访问|获取|查看|打开|查询|搜索|查|输出|写|写入|整理|生成|拼|创建|保存|补全|重新输出)/.test(sc)
-    || /无关|与问题不相关/.test(sc);
+  return (
+    /(我|将|准备|接下来|让我|直接|先|去|继续|尝试|再|重新).{0,12}(访问|获取|查看|打开|查询|搜索|查|输出|写|写入|整理|生成|拼|创建|保存|补全|重新输出)/.test(
+      sc,
+    ) || /无关|与问题不相关/.test(sc)
+  );
 }
 
 const MAX_TOOL_RESULT_CHARS = 6000;
@@ -675,8 +820,11 @@ function extractSearchKeywords(text: string): string {
   // 4) 收紧为 12 字以内核心词（长句查询搜索引擎质量差）
   // 5) 清洗后为空则退回原始提问的前 12 字
   const cleaned = text
-    .replace(/[，。！？、；：""''（）【】《》…—·,.!?;:'"()\[\]{}<>]/g, " ")
-    .replace(/(请|帮我|麻烦|请问|我想要|我想|给我|推荐|介绍下|介绍一下|说说|讲讲|帮我查|帮我找|查一下|查查|看看|分析|解释|说明|总结|简述|告诉我|我想知道|为什么|是什么|什么是|怎么样|怎么样才|如何|怎么用|怎么|怎样|为啥|啥|一下|的话|有没有|有哪些|哪些|是什么意思|如何理解|区别|区别是什么|是做什么的|是干什么的|做什么用|干什么用|是干嘛的|干嘛的|是什么样)\s*/g, " ")
+    .replace(/[，。！？、；：""''（）【】《》…—·,.!?;:'"()\[\]{}<>]/g, " ") // eslint-disable-line no-useless-escape
+    .replace(
+      /(请|帮我|麻烦|请问|我想要|我想|给我|推荐|介绍下|介绍一下|说说|讲讲|帮我查|帮我找|查一下|查查|看看|分析|解释|说明|总结|简述|告诉我|我想知道|为什么|是什么|什么是|怎么样|怎么样才|如何|怎么用|怎么|怎样|为啥|啥|一下|的话|有没有|有哪些|哪些|是什么意思|如何理解|区别|区别是什么|是做什么的|是干什么的|做什么用|干什么用|是干嘛的|干嘛的|是什么样)\s*/g,
+      " ",
+    )
     .replace(/\s+/g, " ")
     .trim()
     // 去掉末尾疑问/修饰残留（如「是做什么」「的最新」），保留核心实体
@@ -713,7 +861,9 @@ async function toolSessionSpawn(args: Record<string, unknown>): Promise<string> 
   // 确保后端有会话行（queue_turn 后台写消息依赖该行，否则子会话不会出现在列表）
   try {
     await invoke("ensure_conversation_cmd", { id, title: conv.title, model: conv.model });
-  } catch { /* 已存在/失败忽略 */ }
+  } catch {
+    /* 已存在/失败忽略 */
+  }
   sessionBusy.add(id);
   try {
     await invoke("queue_turn", { conversationId: id, text: prompt });
@@ -735,7 +885,9 @@ async function toolSessionStatus(id: string): Promise<string> {
   const chat = useChatStore();
   try {
     await chat.refreshConversation(id);
-  } catch { /* 会话可能已删除 */ }
+  } catch {
+    /* 会话可能已删除 */
+  }
   const conv = chat.conversations.find((c) => c.id === id);
   if (!conv) return `❌ 找不到会话 ${id}（可能已被删除）。`;
   const msgs = conv.messages;
@@ -761,11 +913,18 @@ async function toolSessionResume(id: string): Promise<string> {
     if (stopRequested) throw new AgentStoppedError();
     try {
       await chat.refreshConversation(id);
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
     const conv = chat.conversations.find((c) => c.id === id);
     if (!conv) return `❌ 找不到会话 ${id}（可能已被删除），无法取回结果。`;
     const last = conv.messages[conv.messages.length - 1];
-    if (last && last.role === "assistant" && typeof last.content === "string" && last.content.trim().length > 0) {
+    if (
+      last &&
+      last.role === "assistant" &&
+      typeof last.content === "string" &&
+      last.content.trim().length > 0
+    ) {
       return `【子会话「${conv.title}」结果】\n${last.content}`;
     }
     if (Date.now() > deadline) {
@@ -792,13 +951,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "fetch_page": {
       const url = String(args.url || "");
       if (!url) throw new Error("fetch_page 需要 url 参数");
-      const res = await invoke<{title: string; text: string; url: string}>("fetch_page", { url });
+      const res = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url });
       let out = `【${res.title}】\n${res.text.slice(0, 4000)}`;
       // JS 动态渲染/反爬识别：内容过少或命中拦截词时，提示模型改用浏览器自动化（Puppeteer）
       const short = (res.text || "").trim().length < 300;
-      const blocked = /安全验证|验证码|captcha|访问验证|请输入验证码|滑动验证|人机验证/i.test(`${res.title} ${res.text}`);
+      const blocked = /安全验证|验证码|captcha|访问验证|请输入验证码|滑动验证|人机验证/i.test(
+        `${res.title} ${res.text}`,
+      );
       if (short || blocked) {
-        out += `\n\n⚠️ 页面内容过少${blocked ? "（疑似被反爬拦截）" : ""}，很可能是 JS 动态渲染、需登录或需等待加载。` +
+        out +=
+          `\n\n⚠️ 页面内容过少${blocked ? "（疑似被反爬拦截）" : ""}，很可能是 JS 动态渲染、需登录或需等待加载。` +
           `请改用浏览器自动化工具获取动态内容：先调用 puppeteer_navigate 打开该 URL（可传 waitUntil: "networkidle0" 等待渲染完成），` +
           `再用 puppeteer_evaluate 执行 JS 提取页面数据（如 document.body.innerText），或 puppeteer_screenshot 截图分析。不要重复 fetch_page。`;
       }
@@ -807,53 +969,90 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "web_search": {
       const query = String(args.query || "");
       if (!query) throw new Error("web_search 需要 query 参数");
-      const results = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", { query });
+      const results = await invoke<{ title: string; url: string; snippet: string }[]>(
+        "web_search",
+        { query },
+      );
       if (!results.length) return "（搜索无结果，请在回复中明确告知用户未找到可靠信息，不要编造）";
       // 搜索引擎摘要常被截断、不含具体信息 → 对最相关的前 2 个结果自动抓取正文片段，
       // 让模型能基于具体内容回答，而不是只罗列链接让用户自己点开。抓取失败/正文过短则跳过。
-      const enriched: { title: string; url: string; snippet: string; body?: string }[] = await Promise.all(results.slice(0, 2).map(async (r) => {
-        try {
-          const res = await invoke<{ title: string; text: string; url: string }>("fetch_page", { url: r.url });
-          const text = (res.text || "").replace(/\s+/g, " ").trim();
-          if (text.length < 150) return r; // 正文过少（动态渲染/反爬），跳过
-          return { ...r, body: text.slice(0, 600) };
-        } catch { return r; }
-      }));
-      return "以下是搜索结果（对最相关的前几条已自动抓取正文片段，可直接引用其中具体信息作答）。" +
+      const enriched: { title: string; url: string; snippet: string; body?: string }[] =
+        await Promise.all(
+          results.slice(0, 2).map(async (r) => {
+            try {
+              const res = await invoke<{ title: string; text: string; url: string }>("fetch_page", {
+                url: r.url,
+              });
+              const text = (res.text || "").replace(/\s+/g, " ").trim();
+              if (text.length < 150) return r; // 正文过少（动态渲染/反爬），跳过
+              return { ...r, body: text.slice(0, 600) };
+            } catch {
+              return r;
+            }
+          }),
+        );
+      return (
+        "以下是搜索结果（对最相关的前几条已自动抓取正文片段，可直接引用其中具体信息作答）。" +
         "**若现有信息仍不足以回答用户问题，对未抓取或信息不足的链接，必须继续用 fetch_page 抓取正文获取具体信息后再作答，严禁只罗列链接让用户自己点开**。" +
         "请整理成清晰的中文回答（先说明找到几条，再逐条列要点+来源，不要原样粘贴）。" +
         "**引用来源时逐字原样复制「链接: 」后的完整 URL，禁止截断路径/删改扩展名/自行拼接或编造链接**：\n\n" +
-        enriched.map((r, i) => `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}${r.body ? `\n    正文: ${r.body}` : ""}`).join("\n\n");
+        enriched
+          .map(
+            (r, i) =>
+              `[${i + 1}] ${r.title}\n    链接: ${r.url}\n    摘要: ${r.snippet}${r.body ? `\n    正文: ${r.body}` : ""}`,
+          )
+          .join("\n\n")
+      );
     }
     case "send_im": {
       // 主动推送消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）
       const platform = String(args.platform || "").toLowerCase();
       const text = String(args.text || "");
       if (!text) throw new Error("send_im 需要 text 参数（要推送的内容）");
-      const isWecom = platform.includes("wecom") || platform.includes("企业") || platform.includes("weixin");
-      const isFeishu = platform.includes("feishu") || platform.includes("飞书") || platform.includes("lark");
-      const isDingtalk = platform.includes("dingtalk") || platform.includes("钉钉") || platform.includes("dingding");
-      if (!isWecom && !isFeishu && !isDingtalk) throw new Error("send_im 需要 platform 参数：feishu（飞书）/ wecom（企业微信）/ dingtalk（钉钉）");
+      const isWecom =
+        platform.includes("wecom") || platform.includes("企业") || platform.includes("weixin");
+      const isFeishu =
+        platform.includes("feishu") || platform.includes("飞书") || platform.includes("lark");
+      const isDingtalk =
+        platform.includes("dingtalk") || platform.includes("钉钉") || platform.includes("dingding");
+      if (!isWecom && !isFeishu && !isDingtalk)
+        throw new Error(
+          "send_im 需要 platform 参数：feishu（飞书）/ wecom（企业微信）/ dingtalk（钉钉）",
+        );
       const cfg = getSettings();
       const plat = isWecom ? "wecom" : isFeishu ? "feishu" : "dingtalk";
       // Webhook 统一从 IM 配置读取（旧版平铺字段仅作过渡期回退）
       const imCfg = (cfg.imConfig || {}) as Record<string, unknown>;
-      const legacy = isWecom ? cfg.wecomWebhook : isFeishu ? cfg.feishuWebhook : cfg.dingtalkWebhook;
-      const webhookKey = isWecom ? "wecom_webhook" : isFeishu ? "feishu_webhook" : "dingtalk_webhook";
+      const legacy = isWecom
+        ? cfg.wecomWebhook
+        : isFeishu
+          ? cfg.feishuWebhook
+          : cfg.dingtalkWebhook;
+      const webhookKey = isWecom
+        ? "wecom_webhook"
+        : isFeishu
+          ? "feishu_webhook"
+          : "dingtalk_webhook";
       const webhook = (imCfg[webhookKey] as string) || legacy || "";
       if (!webhook) {
-        throw new Error(`未配置${isWecom ? "企业微信" : isFeishu ? "飞书" : "钉钉"} Webhook，请先在「设置 → 即时聊天」中填写群机器人 Webhook 地址。`);
+        throw new Error(
+          `未配置${isWecom ? "企业微信" : isFeishu ? "飞书" : "钉钉"} Webhook，请先在「设置 → 即时聊天」中填写群机器人 Webhook 地址。`,
+        );
       }
-      const secret = plat === "dingtalk" ? ((imCfg["dingtalk_secret"] as string) || cfg.dingtalkSecret || "") : "";
+      const secret =
+        plat === "dingtalk" ? (imCfg["dingtalk_secret"] as string) || cfg.dingtalkSecret || "" : "";
       const result = await invoke<string>("send_im_message", {
-        platform: plat, text, webhook,
+        platform: plat,
+        text,
+        webhook,
         secret,
       });
       return result;
     }
     case "workflow_list": {
       const list = await invoke<{ id: number; name: string }[]>("workflow_list");
-      if (!list.length) return "（暂无已保存的工作流。可让用户在可视化工作流编辑器里搭建，或用 workflow_create 直接生成。）";
+      if (!list.length)
+        return "（暂无已保存的工作流。可让用户在可视化工作流编辑器里搭建，或用 workflow_create 直接生成。）";
       return "已保存的工作流：\n" + list.map((w) => `- ${w.name}（id=${w.id}）`).join("\n");
     }
     case "workflow_create": {
@@ -862,7 +1061,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!name) throw new Error("workflow_create 需要 name 参数（工作流名称）");
       let graph: WorkflowGraph;
       if (typeof args.graph === "string") {
-        try { graph = JSON.parse(args.graph) as WorkflowGraph; } catch { throw new Error("graph 必须是合法 JSON"); }
+        try {
+          graph = JSON.parse(args.graph) as WorkflowGraph;
+        } catch {
+          throw new Error("graph 必须是合法 JSON");
+        }
       } else if (args.graph && typeof args.graph === "object") {
         graph = args.graph as WorkflowGraph;
       } else {
@@ -879,32 +1082,48 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!nameOrId) throw new Error("workflow_run 需要 name 参数（工作流名称或 id）");
       let wf: { id: number; name: string; graph: string } | null = null;
       if (/^\d+$/.test(nameOrId)) {
-        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: Number(nameOrId) });
+        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
+          id: Number(nameOrId),
+        });
       } else {
         const list = await invoke<{ id: number; name: string }[]>("workflow_list");
         const hit = list.find((x) => x.name === nameOrId);
-        if (hit) wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: hit.id });
+        if (hit)
+          wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
+            id: hit.id,
+          });
       }
-      if (!wf) throw new Error(`未找到工作流「${nameOrId}」，可先 workflow_list 查看已有工作流，或 workflow_create 新建`);
+      if (!wf)
+        throw new Error(
+          `未找到工作流「${nameOrId}」，可先 workflow_list 查看已有工作流，或 workflow_create 新建`,
+        );
       let graph: WorkflowGraph;
-      try { graph = JSON.parse(wf.graph) as WorkflowGraph; } catch { throw new Error("工作流数据损坏，无法解析"); }
+      try {
+        graph = JSON.parse(wf.graph) as WorkflowGraph;
+      } catch {
+        throw new Error("工作流数据损坏，无法解析");
+      }
       const verr = validateWorkflowGraph(graph);
       if (verr) throw new Error(`工作流「${wf.name}」不合法：${verr}`);
       const external: Record<string, string> = {};
       const input = args.input ?? args.user;
-      if (input !== undefined && input !== null && String(input).trim()) external["user"] = String(input);
+      if (input !== undefined && input !== null && String(input).trim())
+        external["user"] = String(input);
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
       const config = store.getAuxConfig();
-      if (!config.baseUrl || !config.apiKey) throw new Error("未配置 API 地址/Key，无法执行工作流 LLM 节点");
+      if (!config.baseUrl || !config.apiKey)
+        throw new Error("未配置 API 地址/Key，无法执行工作流 LLM 节点");
       const startedAt = Date.now();
       const res = await executeWorkflow(graph, external, {
         llmCall: async (prompt, opts) => {
           const data = await invoke<{ content?: string }>("chat_once", {
             config: {
-              base_url: config.baseUrl, api_key: config.apiKey,
+              base_url: config.baseUrl,
+              api_key: config.apiKey,
               model: opts?.model || config.model,
-              max_tokens: config.maxTokens, temperature: 0.3,
+              max_tokens: config.maxTokens,
+              temperature: 0.3,
               thinking_enabled: config.thinkingEnabled ?? false,
               reasoning_effort: config.reasoningEffort ?? "low",
               system_prompt: "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
@@ -917,17 +1136,29 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         toolCall: async (tool, toolArgs) => callMcpTool("app", tool, toolArgs),
       });
       const failed = res.log.some((l) => l.startsWith("❌") || l.includes("执行失败"));
-      const traceStr = JSON.stringify((res.trace || []).map((t) => ({ ...t, output: (t.output || "").slice(0, 400) })));
+      const traceStr = JSON.stringify(
+        (res.trace || []).map((t) => ({ ...t, output: (t.output || "").slice(0, 400) })),
+      );
       try {
-        const summary = (res.outputs.length
-          ? res.outputs.slice(0, 2).map((o) => `[${o.label}] ${o.value.slice(0, 80)}`).join("；")
-          : (res.log[0] || "").slice(0, 160)) || "（无输出）";
+        const summary =
+          (res.outputs.length
+            ? res.outputs
+                .slice(0, 2)
+                .map((o) => `[${o.label}] ${o.value.slice(0, 80)}`)
+                .join("；")
+            : (res.log[0] || "").slice(0, 160)) || "（无输出）";
         await invoke("workflow_run_add", {
-          wfId: wf.id, wfName: wf.name, status: failed ? "failed" : "success",
-          startedAt, finishedAt: Date.now(), summary: summary.slice(0, 200),
+          wfId: wf.id,
+          wfName: wf.name,
+          status: failed ? "failed" : "success",
+          startedAt,
+          finishedAt: Date.now(),
+          summary: summary.slice(0, 200),
           trace: traceStr,
         });
-      } catch { /* 记录运行历史失败不影响执行 */ }
+      } catch {
+        /* 记录运行历史失败不影响执行 */
+      }
       const logTail = res.log.slice(-10).join("\n");
       const outText = res.outputs.map((o) => `[${o.label}] ${o.value}`).join("\n\n---\n\n");
       return `【工作流「${wf.name}」${failed ? "执行完成（存在失败节点，请查看日志）" : "执行成功"}】\n${logTail}${outText ? `\n\n—— 最终输出 ——\n${outText}` : ""}`;
@@ -938,34 +1169,58 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!nameOrId) throw new Error("workflow_improve 需要 name 参数（工作流名称或 id）");
       let wf: { id: number; name: string; graph: string } | null = null;
       if (/^\d+$/.test(nameOrId)) {
-        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: Number(nameOrId) });
+        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
+          id: Number(nameOrId),
+        });
       } else {
         const list = await invoke<{ id: number; name: string }[]>("workflow_list");
         const hit = list.find((x) => x.name === nameOrId);
-        if (hit) wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id: hit.id });
+        if (hit)
+          wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
+            id: hit.id,
+          });
       }
       if (!wf) throw new Error(`未找到工作流「${nameOrId}」`);
       let graph: WorkflowGraph;
-      try { graph = JSON.parse(wf.graph) as WorkflowGraph; } catch { throw new Error("工作流数据损坏"); }
+      try {
+        graph = JSON.parse(wf.graph) as WorkflowGraph;
+      } catch {
+        throw new Error("工作流数据损坏");
+      }
       const note = String(args.note ?? "").trim();
       // 读取最近运行历史（含失败轨迹）
       let runsText = "（暂无运行记录）";
       try {
-        const runs = await invoke<{ status: string; started_at: number; summary: string; trace: string }[]>("workflow_runs_for", { wfId: wf.id, limit: 6 });
+        const runs = await invoke<
+          { status: string; started_at: number; summary: string; trace: string }[]
+        >("workflow_runs_for", { wfId: wf.id, limit: 6 });
         if (runs.length) {
-          runsText = runs.map((r) => {
-            let line = `- [${r.status}] ${new Date(r.started_at).toLocaleString("zh-CN")} ${(r.summary || "").slice(0, 200)}`;
-            if (r.trace) {
-              try {
-                const arr = JSON.parse(r.trace) as { nodeId?: string; type?: string; status?: string }[];
-                const bad = (Array.isArray(arr) ? arr : []).filter((x) => x.status === "error" || x.status === "skipped");
-                if (bad.length) line += ` | 问题节点：${bad.map((x) => `${x.nodeId}(${x.type}:${x.status})`).join(", ")}`;
-              } catch { /* 轨迹解析失败忽略 */ }
-            }
-            return line;
-          }).join("\n");
+          runsText = runs
+            .map((r) => {
+              let line = `- [${r.status}] ${new Date(r.started_at).toLocaleString("zh-CN")} ${(r.summary || "").slice(0, 200)}`;
+              if (r.trace) {
+                try {
+                  const arr = JSON.parse(r.trace) as {
+                    nodeId?: string;
+                    type?: string;
+                    status?: string;
+                  }[];
+                  const bad = (Array.isArray(arr) ? arr : []).filter(
+                    (x) => x.status === "error" || x.status === "skipped",
+                  );
+                  if (bad.length)
+                    line += ` | 问题节点：${bad.map((x) => `${x.nodeId}(${x.type}:${x.status})`).join(", ")}`;
+                } catch {
+                  /* 轨迹解析失败忽略 */
+                }
+              }
+              return line;
+            })
+            .join("\n");
         }
-      } catch { /* 读历史失败不影响优化 */ }
+      } catch {
+        /* 读历史失败不影响优化 */
+      }
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
       const config = store.getRoutedAuxConfig("coding");
@@ -982,9 +1237,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         "4. **只输出改进后的工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）。";
       const data = await invoke<{ content?: string }>("chat_once", {
         config: {
-          base_url: config.baseUrl, api_key: config.apiKey, model: config.model,
-          max_tokens: 6000, temperature: 0.2,
-          thinking_enabled: false, reasoning_effort: "low",
+          base_url: config.baseUrl,
+          api_key: config.apiKey,
+          model: config.model,
+          max_tokens: 6000,
+          temperature: 0.2,
+          thinking_enabled: false,
+          reasoning_effort: "low",
           system_prompt: "你是严谨的工程 Agent。只按用户要求输出合法 JSON，不要附加任何说明。",
           enable_web_search: false,
         },
@@ -1002,15 +1261,32 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (JSON.stringify(improved) === JSON.stringify(graph)) {
         return `【工作流优化】「${wf.name}」无需改动（模型判定当前版本已合适或运行正常）。`;
       }
-      const newId = await invoke<number>("workflow_save", { name: wf.name, graph: JSON.stringify(improved) });
+      const newId = await invoke<number>("workflow_save", {
+        name: wf.name,
+        graph: JSON.stringify(improved),
+      });
       const oldLabels = new Set(graph.nodes.map((n) => n.label));
       const newLabels = new Set(improved.nodes.map((n) => n.label));
-      const added = improved.nodes.filter((n) => !oldLabels.has(n.label)).map((n) => `${n.type}「${n.label}」`);
-      const removed = graph.nodes.filter((n) => !newLabels.has(n.label)).map((n) => `${n.type}「${n.label}」`);
+      const added = improved.nodes
+        .filter((n) => !oldLabels.has(n.label))
+        .map((n) => `${n.type}「${n.label}」`);
+      const removed = graph.nodes
+        .filter((n) => !newLabels.has(n.label))
+        .map((n) => `${n.type}「${n.label}」`);
       try {
         const summary = `自优化：${graph.nodes.length}→${improved.nodes.length} 节点${added.length ? `；新增 ${added.slice(0, 4).join("、")}` : ""}${removed.length ? `；移除 ${removed.slice(0, 4).join("、")}` : ""}`;
-        await invoke("workflow_run_add", { wfId: newId, wfName: wf.name, status: "improved", startedAt: Date.now(), finishedAt: Date.now(), summary: summary.slice(0, 200), trace: "" });
-      } catch { /* 记录失败不影响 */ }
+        await invoke("workflow_run_add", {
+          wfId: newId,
+          wfName: wf.name,
+          status: "improved",
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+          summary: summary.slice(0, 200),
+          trace: "",
+        });
+      } catch {
+        /* 记录失败不影响 */
+      }
       const diff: string[] = [];
       if (added.length) diff.push(`新增节点：${added.slice(0, 6).join("、")}`);
       if (removed.length) diff.push(`移除节点：${removed.slice(0, 6).join("、")}`);
@@ -1026,31 +1302,50 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const scored = list
         .map((w) => {
           let g: WorkflowGraph | null = null;
-          try { g = JSON.parse(w.graph) as WorkflowGraph; } catch { /* 忽略坏数据 */ }
+          try {
+            g = JSON.parse(w.graph) as WorkflowGraph;
+          } catch {
+            /* 忽略坏数据 */
+          }
           return { w, g, score: g ? scoreTaskAgainstWorkflow(g, task) : 0 };
         })
         .filter((x) => x.score > 0)
         .sort((a, b) => b.score - a.score)
         .slice(0, Math.min(Number(args.limit ?? 3) || 3, 5));
-      if (!scored.length) return "（未找到与当前任务相关的工作流——若是全新且以后会重复的流程，可 workflow_create 抽象后 workflow_remember 记住）";
-      return "可按需复用的相关工作流（相关度从高到低）：\n" + scored.map((s, i) => {
-        const labels = (s.g?.nodes || []).map((n) => n.label).filter(Boolean);
-        const chain = labels.slice(0, 6).join(" → ");
-        return `${i + 1}. ${s.w.name}（id=${s.w.id}，相关度 ${(s.score * 100).toFixed(0)}%）${chain ? `\n   流程：${chain}${labels.length > 6 ? " …" : ""}` : ""}`;
-      }).join("\n");
+      if (!scored.length)
+        return "（未找到与当前任务相关的工作流——若是全新且以后会重复的流程，可 workflow_create 抽象后 workflow_remember 记住）";
+      return (
+        "可按需复用的相关工作流（相关度从高到低）：\n" +
+        scored
+          .map((s, i) => {
+            const labels = (s.g?.nodes || []).map((n) => n.label).filter(Boolean);
+            const chain = labels.slice(0, 6).join(" → ");
+            return `${i + 1}. ${s.w.name}（id=${s.w.id}，相关度 ${(s.score * 100).toFixed(0)}%）${chain ? `\n   流程：${chain}${labels.length > 6 ? " …" : ""}` : ""}`;
+          })
+          .join("\n")
+      );
     }
     case "workflow_remember": {
       // Phase 3：把「某类任务 → 已沉淀工作流」沉淀为记忆（type=workflow，跨会话自动注入）
       const taskType = String(args.task_type ?? args.taskType ?? "").trim();
       const workflowName = String(args.workflow_name ?? args.workflowName ?? "").trim();
-      if (!taskType || !workflowName) throw new Error("workflow_remember 需要 task_type（任务类型描述）与 workflow_name（工作流名）");
+      if (!taskType || !workflowName)
+        throw new Error(
+          "workflow_remember 需要 task_type（任务类型描述）与 workflow_name（工作流名）",
+        );
       const list = await invoke<{ id: number; name: string }[]>("workflow_list");
       const hit = list.find((w) => w.name === workflowName);
       if (!hit) throw new Error(`工作流「${workflowName}」不存在，先用 workflow_create 创建再记住`);
       const fact = `任务类型「${taskType}」可复用已沉淀工作流「${workflowName}」（id=${hit.id}），同类任务直接用 workflow_run 执行`;
       const row = {
-        id: uuidv4(), conversation_id: null, fact, fact_type: "workflow",
-        importance: 6, access_count: 0, last_accessed: null, created_at: Date.now(),
+        id: uuidv4(),
+        conversation_id: null,
+        fact,
+        fact_type: "workflow",
+        importance: 6,
+        access_count: 0,
+        last_accessed: null,
+        created_at: Date.now(),
       };
       const res = await invoke<string>("save_fact", { fact: row });
       return res.startsWith("merged:")
@@ -1085,7 +1380,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // P-M3：可选角色（planner/executor/verifier/reviewer/researcher）→ 角色提示 + 工具集约束
       const roleId = args.role ? String(args.role) : undefined;
       if (roleId && !getRoleById(roleId)) {
-        throw new Error(`未知角色: ${roleId}（可选 planner/executor/verifier/reviewer/researcher）`);
+        throw new Error(
+          `未知角色: ${roleId}（可选 planner/executor/verifier/reviewer/researcher）`,
+        );
       }
       const allowedTools = roleId ? roleAllowedToolNames(roleId) : undefined;
       // 动态获取 chat store，避免模块循环依赖；子代理用独立上下文跑工具循环
@@ -1093,7 +1390,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const store = useChatStore();
       // P-A12 多模型路由：编程类子代理走 coding 路由（配置了专门的编程模型则用之，否则辅助/主模型）
       const config = store.getRoutedAuxConfig("coding");
-      if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再委派子代理");
+      if (!config.baseUrl || !config.apiKey)
+        throw new Error("请先配置 API 地址和 Key 再委派子代理");
       // 登记子代理记录（可视化面板实时显示；带角色则前缀标注）
       const rec = store.spawnSubagent(`${roleId ? `[${getRoleById(roleId)!.name}] ` : ""}${goal}`);
       const sys = buildSubagentSysPrompt(context, allowTools, roleId);
@@ -1114,7 +1412,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         throw e;
       }
       // 子代理若也返回工具调用 JSON，则剥离展示
-      const visible = finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）";
+      const visible =
+        finalText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（子代理未返回内容）";
       return `【子代理结论】\n${visible}`;
     }
     case "subagent_parallel": {
@@ -1125,12 +1424,21 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // P-M3：每个任务可指定 role（角色提示 + 工具集约束）；P-M4：synth=true 时并行完成后
       // 用评审角色做汇总仲裁（冲突消解/交叉验证/统一呈现）。
       const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
-      const tasks: { idx: number; goal: string; context: string; allowTools: boolean; role?: string; allowedTools?: string[] }[] = rawTasks
+      const tasks: {
+        idx: number;
+        goal: string;
+        context: string;
+        allowTools: boolean;
+        role?: string;
+        allowedTools?: string[];
+      }[] = rawTasks
         .map((t, i) => {
           const o = (t ?? {}) as Record<string, unknown>;
           const role = o.role ? String(o.role) : undefined;
           if (role && !getRoleById(role)) {
-            throw new Error(`未知角色: ${role}（可选 planner/executor/verifier/reviewer/researcher）`);
+            throw new Error(
+              `未知角色: ${role}（可选 planner/executor/verifier/reviewer/researcher）`,
+            );
           }
           return {
             idx: i,
@@ -1143,14 +1451,20 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         })
         .filter((t) => t.goal);
       if (!tasks.length) {
-        throw new Error("subagent_parallel 需要 tasks 参数（子任务数组 [{goal, context?, allow_tools?, role?}]，至少 1 项）");
+        throw new Error(
+          "subagent_parallel 需要 tasks 参数（子任务数组 [{goal, context?, allow_tools?, role?}]，至少 1 项）",
+        );
       }
-      const concurrency = Math.max(1, Math.min(4, Number(args.concurrency ?? tasks.length) || tasks.length));
+      const concurrency = Math.max(
+        1,
+        Math.min(4, Number(args.concurrency ?? tasks.length) || tasks.length),
+      );
       const { useChatStore } = await import("./chat");
       const store = useChatStore();
       // P-A12 多模型路由：编程类子代理走 coding 路由
       const config = store.getRoutedAuxConfig("coding");
-      if (!config.baseUrl || !config.apiKey) throw new Error("请先配置 API 地址和 Key 再并行委派子代理");
+      if (!config.baseUrl || !config.apiKey)
+        throw new Error("请先配置 API 地址和 Key 再并行委派子代理");
 
       // 信号量并发池：最多 concurrency 个 worker 从共享任务队列取任务并行执行
       const results: { idx: number; ok: boolean; goal: string; text: string }[] = [];
@@ -1159,23 +1473,40 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const workers = Array.from({ length: workerCount }, async () => {
         while (cursor < tasks.length) {
           const task = tasks[cursor++];
-          const rec = store.spawnSubagent(`${task.role ? `[${getRoleById(task.role)!.name}] ` : ""}${task.goal}`);
+          const rec = store.spawnSubagent(
+            `${task.role ? `[${getRoleById(task.role)!.name}] ` : ""}${task.goal}`,
+          );
           const sys = buildSubagentSysPrompt(task.context, task.allowTools, task.role);
           try {
-            const text = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), task.goal, {
-              allowTools: task.allowTools,
-              ...(task.allowedTools ? { allowedTools: task.allowedTools } : {}),
-            });
+            const text = await runSubagentLoop(
+              config,
+              withMathRule(withCurrentDate(sys)),
+              task.goal,
+              {
+                allowTools: task.allowTools,
+                ...(task.allowedTools ? { allowedTools: task.allowedTools } : {}),
+              },
+            );
             store.completeSubagent(rec.id, text);
             results.push({ idx: task.idx, ok: true, goal: task.goal, text });
           } catch (e) {
             if (e instanceof AgentStoppedError) {
               store.failSubagent(rec.id, "已由用户停止");
-              results.push({ idx: task.idx, ok: false, goal: task.goal, text: "（子代理已由用户停止）" });
+              results.push({
+                idx: task.idx,
+                ok: false,
+                goal: task.goal,
+                text: "（子代理已由用户停止）",
+              });
             } else {
               const msg = e instanceof Error ? e.message : String(e);
               store.failSubagent(rec.id, msg);
-              results.push({ idx: task.idx, ok: false, goal: task.goal, text: `（子代理失败: ${msg}）` });
+              results.push({
+                idx: task.idx,
+                ok: false,
+                goal: task.goal,
+                text: `（子代理失败: ${msg}）`,
+              });
             }
           }
         }
@@ -1188,7 +1519,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         try {
           const sorted = [...results].sort((a, b) => a.idx - b.idx);
           const findings = sorted
-            .map((r, i) => `### 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`)
+            .map(
+              (r, i) =>
+                `### 子任务 ${i + 1}：${r.goal}\n${r.ok ? "✅ 完成" : "❌ 失败"}\n\n${r.text}`,
+            )
             .join("\n\n");
           // 评审角色提示（含角色指令 + 允许工具列表）作为仲裁者基础系统提示，
           // 与 allowedTools 执行侧约束配套（提示词展示 + 执行兜底双保险）
@@ -1196,11 +1530,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
           const synthPrompt =
             withCurrentDate(
               "你是道生一的**汇总仲裁者**，负责把多个子代理的结果整合成一份统一、自洽的最终结论。\n" +
-              "要求：\n" +
-              "1. **汇总**：归纳各子任务要点，去重、归类；\n" +
-              "2. **冲突消解**：不同子任务结论冲突时，明确指出冲突点、评估各方证据/可信度、给出你的判定与理由；\n" +
-              "3. **交叉验证**：相互印证的信息标注为一致，互相矛盾的信息说明取舍依据；\n" +
-              "4. **统一呈现**：结构化输出——最终结论 / 要点 / 遗留问题 / 建议。"
+                "要求：\n" +
+                "1. **汇总**：归纳各子任务要点，去重、归类；\n" +
+                "2. **冲突消解**：不同子任务结论冲突时，明确指出冲突点、评估各方证据/可信度、给出你的判定与理由；\n" +
+                "3. **交叉验证**：相互印证的信息标注为一致，互相矛盾的信息说明取舍依据；\n" +
+                "4. **统一呈现**：结构化输出——最终结论 / 要点 / 遗留问题 / 建议。",
             ) +
             "\n\n---\n\n" +
             sys +
@@ -1211,13 +1545,18 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
             allowedTools: roleAllowedToolNames("reviewer"),
           });
           store.completeSubagent(synthRec.id, synthText);
-          const visible = synthText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() || "（仲裁未返回内容）";
+          const visible =
+            synthText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim() ||
+            "（仲裁未返回内容）";
           return `【并行子代理汇总仲裁】\n${visible}`;
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           store.failSubagent(synthRec.id, msg);
           // 仲裁失败回退普通汇总
-          return formatParallelResults(results, workerCount) + `\n\n> ⚠️ 汇总仲裁失败（${msg}），以上为原始汇总。`;
+          return (
+            formatParallelResults(results, workerCount) +
+            `\n\n> ⚠️ 汇总仲裁失败（${msg}），以上为原始汇总。`
+          );
         }
       }
 
@@ -1250,19 +1589,38 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("replace_string 需要 path 参数");
       if (!oldText) throw new Error("replace_string 需要 old_text 参数（要替换的原文）");
       const edits: Record<string, unknown>[] = [
-        { op: "replace", old: oldText, new: newText, ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}) },
+        {
+          op: "replace",
+          old: oldText,
+          new: newText,
+          ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}),
+        },
       ];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
       if (getSettings().fileEditConfirm && !hasSessionPermit("replace_string")) {
-        const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
+        const preview = await invoke<{
+          path: string;
+          diff: string;
+          new_len: number;
+          summary: string;
+        }>("apply_edits", { path, edits, preview: true });
         const ok = await requestEditConfirm({
-          kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
-          tool: "replace_string", args: { ...args },
+          kind: "edit",
+          path,
+          diff: preview.diff,
+          summary: preview.summary,
+          edits,
+          tool: "replace_string",
+          args: { ...args },
           rememberLabel: "本会话内不再询问 replace_string",
         });
-        if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+        if (!ok)
+          return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
-      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>(
+        "apply_edits",
+        { path, edits, preview: false },
+      );
       notifyUndoChanged(); // 可撤销（编辑）
       return res.summary;
     }
@@ -1278,15 +1636,29 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
       if (getSettings().fileEditConfirm && !hasSessionPermit("insert_string")) {
-        const preview = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: true });
+        const preview = await invoke<{
+          path: string;
+          diff: string;
+          new_len: number;
+          summary: string;
+        }>("apply_edits", { path, edits, preview: true });
         const ok = await requestEditConfirm({
-          kind: "edit", path, diff: preview.diff, summary: preview.summary, edits,
-          tool: "insert_string", args: { ...args },
+          kind: "edit",
+          path,
+          diff: preview.diff,
+          summary: preview.summary,
+          edits,
+          tool: "insert_string",
+          args: { ...args },
           rememberLabel: "本会话内不再询问 insert_string",
         });
-        if (!ok) return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+        if (!ok)
+          return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
       }
-      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>("apply_edits", { path, edits, preview: false });
+      const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>(
+        "apply_edits",
+        { path, edits, preview: false },
+      );
       notifyUndoChanged(); // 可撤销（编辑）
       return res.summary;
     }
@@ -1310,7 +1682,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("delete_file 需要 path 参数");
       // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除（会话内已允许则直接放行）
       if (getSettings().fileEditConfirm && !hasSessionPermit("delete_file")) {
-        const ok = await requestEditConfirm({ kind: "delete", path, tool: "delete_file", args: { ...args }, rememberLabel: "本会话内不再询问 delete_file" });
+        const ok = await requestEditConfirm({
+          kind: "delete",
+          path,
+          tool: "delete_file",
+          args: { ...args },
+          rememberLabel: "本会话内不再询问 delete_file",
+        });
         if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
       }
       const del = await invoke<string>("delete_file_agent", { path });
@@ -1322,7 +1700,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const chat = useChatStore();
       const title = String(args.title || args.task || "任务计划");
       const rawSteps = Array.isArray(args.steps) ? args.steps.map((s) => String(s)) : [];
-      if (!rawSteps.length) throw new Error("plan_task 需要 steps 参数（子任务字符串数组，至少 1 项）");
+      if (!rawSteps.length)
+        throw new Error("plan_task 需要 steps 参数（子任务字符串数组，至少 1 项）");
       const plan: TaskPlan = {
         id: uuidv4(),
         title,
@@ -1331,7 +1710,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       };
       chat.setTaskPlan(plan);
       return (
-        "✅ 已创建任务计划「" + title + "」，进度卡片已显示，共 " + plan.steps.length + " 步：\n" +
+        "✅ 已创建任务计划「" +
+        title +
+        "」，进度卡片已显示，共 " +
+        plan.steps.length +
+        " 步：\n" +
         plan.steps.map((s, i) => `${i + 1}. [待办] ${s.text}`).join("\n") +
         "\n执行规范：每步开始前用 plan_update 标记 doing，完成后标记 done，失败标记 failed（可调整计划）；全部步骤完成后在正文给出完整最终回答。"
       );
@@ -1352,7 +1735,12 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       plan.steps[stepIdx].status = status as PlanStepStatus;
       chat.setTaskPlan({ ...plan }); // 触发响应式更新
       const done = plan.steps.filter((s) => s.status === "done").length;
-      const label: Record<string, string> = { pending: "待办", doing: "进行中", done: "已完成", failed: "失败" };
+      const label: Record<string, string> = {
+        pending: "待办",
+        doing: "进行中",
+        done: "已完成",
+        failed: "失败",
+      };
       return (
         `📋 计划进度更新：步骤 ${stepIdx + 1}「${plan.steps[stepIdx].text.slice(0, 30)}」→ ${label[status] || status}` +
         `（${done}/${plan.steps.length} 完成）`
@@ -1389,8 +1777,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 兼容：若返回结构化数组（旧协议）则格式化
       if (Array.isArray(res)) {
         const arr = res as unknown as { dir: boolean; path: string; name: string; size?: number }[];
-        return `目录 ${path} 内容（${arr.length} 项）：\n` +
-          arr.map(r => (r.dir ? `📁 ${r.name}/` : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`)).join("\n");
+        return (
+          `目录 ${path} 内容（${arr.length} 项）：\n` +
+          arr
+            .map((r) =>
+              r.dir
+                ? `📁 ${r.name}/`
+                : `📄 ${r.name}${r.size !== undefined ? ` (${r.size} 字节)` : ""}`,
+            )
+            .join("\n")
+        );
       }
       return `（${path} 读取失败）`;
     }
@@ -1406,15 +1802,23 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     }
     case "read_multiple_files": {
       // 批量读取多个文件（filesystem MCP 风格名兼容；参数 paths 数组或 path 单个）
-      const paths = Array.isArray(args.paths) ? args.paths.map(String) : Array.isArray(args.files) ? args.files.map(String) : args.path ? [String(args.path)] : [];
+      const paths = Array.isArray(args.paths)
+        ? args.paths.map(String)
+        : Array.isArray(args.files)
+          ? args.files.map(String)
+          : args.path
+            ? [String(args.path)]
+            : [];
       if (!paths.length) throw new Error("read_multiple_files 需要 paths 数组参数");
       const parts: string[] = [];
       for (const p of paths) {
         try {
           const res = await invoke<string>("read_file", { path: p });
-          parts.push(typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）"
-            ? `（${p} 是目录）`
-            : `📄 ${p}\n\`\`\`\n${res.slice(0, 8000)}\n\`\`\``);
+          parts.push(
+            typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）"
+              ? `（${p} 是目录）`
+              : `📄 ${p}\n\`\`\`\n${res.slice(0, 8000)}\n\`\`\``,
+          );
         } catch (e: unknown) {
           parts.push(`📄 ${p}\n❌ 读取失败: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -1447,25 +1851,44 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const query = String(args.query || args.q || "").trim();
       if (!query) throw new Error("memory_recall 需要 query 参数（要回忆的关键词）");
       const limit = Math.max(1, Math.min(20, Number(args.limit ?? 5) || 5));
-      const facts = await invoke<{ id: string; fact: string; fact_type: string; importance: number; access_count: number }[]>("search_facts", { query, limit });
+      const facts = await invoke<
+        { id: string; fact: string; fact_type: string; importance: number; access_count: number }[]
+      >("search_facts", { query, limit });
       if (!facts.length) return "（未找到相关记忆）";
-      const labels: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办" };
-      return "相关记忆：\n" + facts.map((f, i) =>
-        `${i + 1}. [${labels[f.fact_type] || f.fact_type}] ${f.fact}（重要度 ${f.importance}）`
-      ).join("\n");
+      const labels: Record<string, string> = {
+        preference: "偏好",
+        info: "信息",
+        decision: "决策",
+        todo: "待办",
+      };
+      return (
+        "相关记忆：\n" +
+        facts
+          .map(
+            (f, i) =>
+              `${i + 1}. [${labels[f.fact_type] || f.fact_type}] ${f.fact}（重要度 ${f.importance}）`,
+          )
+          .join("\n")
+      );
     }
     case "memory_forget": {
       // 主动遗忘：用户要求删除某条记忆时，按内容关键词检索并删除
       const query = String(args.query || args.fact || "").trim();
       if (!query) throw new Error("memory_forget 需要 query 参数（要遗忘的记忆关键词）");
-      const facts = await invoke<{ id: string; fact: string; fact_type: string }[]>("search_facts", { query, limit: 5 });
+      const facts = await invoke<{ id: string; fact: string; fact_type: string }[]>(
+        "search_facts",
+        { query, limit: 5 },
+      );
       if (!facts.length) return "（未找到需要遗忘的相关记忆）";
       const deleted: string[] = [];
       for (const f of facts) {
         await invoke("delete_fact_cmd", { id: f.id }).catch(() => {});
         deleted.push(f.fact);
       }
-      return `✅ 已遗忘 ${deleted.length} 条记忆：\n` + deleted.map((d, i) => `${i + 1}. ${d}`).join("\n");
+      return (
+        `✅ 已遗忘 ${deleted.length} 条记忆：\n` +
+        deleted.map((d, i) => `${i + 1}. ${d}`).join("\n")
+      );
     }
     case "git": {
       // Git 操作（编程 Agent）：在指定仓库目录执行 git 子命令
@@ -1473,13 +1896,25 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const action = String(args.action || args.subcommand || "").trim();
       const gitArgs = Array.isArray(args.args) ? args.args.map(String) : [];
       if (!cwd) throw new Error("git 需要 cwd 参数（仓库目录绝对路径）");
-      if (!action) throw new Error("git 需要 action 参数（如 status / diff / log / commit / push / pull / add / checkout / branch）");
-      const res = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean }>("git_operation", {
-        cwd, action, args: gitArgs, timeoutSecs: 60,
+      if (!action)
+        throw new Error(
+          "git 需要 action 参数（如 status / diff / log / commit / push / pull / add / checkout / branch）",
+        );
+      const res = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+      }>("git_operation", {
+        cwd,
+        action,
+        args: gitArgs,
+        timeoutSecs: 60,
       });
       const out = res.stdout || res.stderr || "";
       const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
-      const status = res.exit_code === 0 ? "" : `\n（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）`;
+      const status =
+        res.exit_code === 0 ? "" : `\n（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）`;
       return `git ${action} ${gitArgs.join(" ")}\n${head}${status}`;
     }
     case "run_tests": {
@@ -1488,26 +1923,49 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!cwd) throw new Error("run_tests 需要 cwd 参数（项目目录绝对路径）");
       const command = String(args.command || "").trim() || undefined;
       const testArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-      const res = await invoke<{ framework: string; command: string; stdout: string; stderr: string; exit_code: number; timed_out: boolean }>("run_tests", {
-        cwd, command: command ?? null, args: testArgs, timeoutSecs: 300,
+      const res = await invoke<{
+        framework: string;
+        command: string;
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+      }>("run_tests", {
+        cwd,
+        command: command ?? null,
+        args: testArgs,
+        timeoutSecs: 300,
       });
       const out = (res.stdout || res.stderr || "").trim();
       const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
       const pass = res.exit_code === 0;
       // 结构化返回：明确成功/失败 + 失败摘要，供 Agent 判断并迭代修复
-      const failLines = res.stdout.split("\n").filter(l => /FAILED|failed|✗|Error|error:|panicked/i.test(l)).slice(0, 15).join("\n");
+      const failLines = res.stdout
+        .split("\n")
+        .filter((l) => /FAILED|failed|✗|Error|error:|panicked/i.test(l))
+        .slice(0, 15)
+        .join("\n");
       return `【测试结果】框架=${res.framework} 命令=${res.command} 状态=${pass ? "✅ 通过" : "❌ 失败"}（退出码 ${res.exit_code}${res.timed_out ? "，超时" : ""}）\n${head}${!pass && failLines ? `\n\n失败项/错误：\n${failLines}` : ""}`;
     }
     case "analyze_project": {
       // 代码库理解：扫描项目结构，识别技术栈/清单脚本/源码分布
       const path = String(args.path || args.cwd || args.dir || "").trim();
       if (!path) throw new Error("analyze_project 需要 path 参数（项目目录绝对路径）");
-      const a = await invoke<{ root: string; stack: string; manifest_hint: string; top_level: string[]; by_ext: string[]; source_files: number }>("analyze_project", { root: path });
-      return `【项目分析】${a.root}\n` +
+      const a = await invoke<{
+        root: string;
+        stack: string;
+        manifest_hint: string;
+        top_level: string[];
+        by_ext: string[];
+        source_files: number;
+      }>("analyze_project", { root: path });
+      return (
+        `【项目分析】${a.root}\n` +
         `- 技术栈: ${a.stack || "未知"}\n` +
         (a.manifest_hint ? `- ${a.manifest_hint}\n` : "") +
         `- 源码文件: ${a.source_files} 个（${a.by_ext.join(", ")}）\n` +
-        `- 顶层结构:\n${a.top_level.map(x => `  ${x}`).join("\n")}`;
+        `- 顶层结构:\n${a.top_level.map((x) => `  ${x}`).join("\n")}`
+      );
     }
     case "kb_index": {
       // Phase 3 知识库 RAG：把本地目录索引成知识库（重建式）
@@ -1524,15 +1982,28 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!kbName) throw new Error("kb_search 需要 kb_name 参数（知识库名）");
       if (!query) throw new Error("kb_search 需要 query 参数（检索词）");
       const limit = args.limit ? Number(args.limit) : null;
-      const hits = await invoke<{ id: number; kb_name: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]>("kb_search", { kbName, query, limit });
-      if (!hits.length) return `（知识库「${kbName}」未检索到与「${query}」相关的内容，可换关键词或先 kb_index 索引目录）`;
-      const out = hits.map((h, i) => `[${i + 1}] ${h.file}#${h.chunk_idx}\n${h.chunk.slice(0, 500)}`).join("\n\n");
+      const hits = await invoke<
+        {
+          id: number;
+          kb_name: string;
+          file: string;
+          chunk: string;
+          chunk_idx: number;
+          created_at: number;
+        }[]
+      >("kb_search", { kbName, query, limit });
+      if (!hits.length)
+        return `（知识库「${kbName}」未检索到与「${query}」相关的内容，可换关键词或先 kb_index 索引目录）`;
+      const out = hits
+        .map((h, i) => `[${i + 1}] ${h.file}#${h.chunk_idx}\n${h.chunk.slice(0, 500)}`)
+        .join("\n\n");
       return `【知识库「${kbName}」检索「${query}」】命中 ${hits.length} 条：\n\n${out}`;
     }
     case "kb_list": {
       // Phase 3 知识库 RAG：列出已建知识库（含空库）
       const list = await invoke<{ name: string; chunks: number }[]>("kb_list");
-      if (!list.length) return "（尚未建立知识库，可用 kb_create 创建命名知识库或 kb_index 索引本地目录）";
+      if (!list.length)
+        return "（尚未建立知识库，可用 kb_create 创建命名知识库或 kb_index 索引本地目录）";
       return "已建立知识库：\n" + list.map((k) => `- ${k.name}（${k.chunks} 分块）`).join("\n");
     }
     case "kb_create": {
@@ -1561,12 +2032,31 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const root = String(args.root || args.path || "").trim();
       const query = String(args.query || "").trim();
       if (!root) throw new Error("code_search 需要 root 参数（项目目录绝对路径）");
-      if (!query) throw new Error("code_search 需要 query 参数（自然语言描述要查的代码，如「处理用户登录」）");
+      if (!query)
+        throw new Error(
+          "code_search 需要 query 参数（自然语言描述要查的代码，如「处理用户登录」）",
+        );
       const limit = args.limit ? Number(args.limit) : null;
-      const hits = await invoke<{ id: number; root: string; file: string; chunk: string; chunk_idx: number; created_at: number; start_line: number }[]>("code_search", { rootPath: root, query, limit });
-      if (!hits.length) return `（项目「${root}」未检索到与「${query}」相关的代码。若尚未索引，先调 code_index 索引该项目；也可换更贴近代码语义的描述）`;
+      const hits = await invoke<
+        {
+          id: number;
+          root: string;
+          file: string;
+          chunk: string;
+          chunk_idx: number;
+          created_at: number;
+          start_line: number;
+        }[]
+      >("code_search", { rootPath: root, query, limit });
+      if (!hits.length)
+        return `（项目「${root}」未检索到与「${query}」相关的代码。若尚未索引，先调 code_index 索引该项目；也可换更贴近代码语义的描述）`;
       // 符号跳转：命中结果带 `文件:行号`（可点击打开文件并定位到该行）
-      const out = hits.map((h, i) => `[${i + 1}] ${h.file}:${h.start_line || 1}\n\`\`\`\n${h.chunk.slice(0, 600)}\n\`\`\``).join("\n\n");
+      const out = hits
+        .map(
+          (h, i) =>
+            `[${i + 1}] ${h.file}:${h.start_line || 1}\n\`\`\`\n${h.chunk.slice(0, 600)}\n\`\`\``,
+        )
+        .join("\n\n");
       return `【项目「${root}」语义检索「${query}」】相关代码 ${hits.length} 处（按相似度）：\n\n${out}`;
     }
     case "code_roots": {
@@ -1626,7 +2116,12 @@ function withMathRule(sp: string): string {
 const CHAT_ONCE_TIMEOUT_MS = 60000;
 async function chatOnce(config: ApiConfig, convo: { role: string; content: string }[]) {
   return Promise.race([
-    invoke<{ content: string; reasoning_content?: string; cache_hit?: number; cache_miss?: number }>("chat_once", {
+    invoke<{
+      content: string;
+      reasoning_content?: string;
+      cache_hit?: number;
+      cache_miss?: number;
+    }>("chat_once", {
       config: {
         base_url: config.baseUrl,
         api_key: config.apiKey,
@@ -1635,7 +2130,9 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
         temperature: 0.3, // 工具决策用低温更稳定
         thinking_enabled: config.thinkingEnabled,
         reasoning_effort: config.reasoningEffort,
-        system_prompt: withMathRule(withCurrentDate(config.systemPrompt || "你是道生一，一个AI桌面助手。")),
+        system_prompt: withMathRule(
+          withCurrentDate(config.systemPrompt || "你是道生一，一个AI桌面助手。"),
+        ),
         enable_web_search: config.enableWebSearch,
       },
       messages: convo,
@@ -1668,21 +2165,25 @@ function getRoleToolsPrompt(allowed: string[]): string {
     "无论你的思考（reasoning）过程多么详细，**最终答案必须完整、详细地呈现在回复正文中**：用结构化 Markdown（标题/列表/表格）给出完整的结论、分析与要点，不要只给一句简短结论。\n" +
     "\n## 工具调用唯一格式（极重要）\n" +
     "需要调用工具时，**唯一方式**是在回复正文中输出工具调用标记：\n" +
-    "<tool_call>{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}</tool_call>\n" +
+    '<tool_call>{"server":"app","tool":"工具名","arguments":{...}}</tool_call>\n' +
     "- **绝对禁止**写「### 🔧 调用工具」等卡片文本假装已调用工具——那只是文本，不会执行。\n" +
     "- 工具调用必须成对包含开/闭标记，JSON 必须是合法对象且含 tool 与 arguments；系统会自动执行并把**真实结果**回填给你。\n" +
     "\n## 你被允许使用的内置工具（server 填 `app`）\n" +
     (lines || "- （本角色暂无可用工具，请直接基于推理给出结论，不要调用其它工具）") +
-    "\n\n需要工具时只回复以下格式：\n<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>"
+    '\n\n需要工具时只回复以下格式：\n<tool_call>\n{"server":"app","tool":"工具名","arguments":{...}}\n</tool_call>'
   );
 }
 
 /// 构造子代理系统提示（P-M1 起子代理可调内置工具；allowTools=false 则纯对话；
 /// P-M3 起支持角色 roleId → 角色指令 + 按角色过滤工具列表）。
 function buildSubagentSysPrompt(context: string, allowTools: boolean, roleId?: string): string {
-  const base = "你是道生一的子代理，负责独立完成一个子任务。" + (context ? `\n补充上下文：${context}` : "");
+  const base =
+    "你是道生一的子代理，负责独立完成一个子任务。" + (context ? `\n补充上下文：${context}` : "");
   if (!allowTools) {
-    return base + "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。";
+    return (
+      base +
+      "\n请聚焦完成该子任务并直接给出结论。不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。"
+    );
   }
   // P-M3 角色：注入角色定位/指令，并只展示该角色允许的工具（提示词侧约束）
   const role = roleId ? getRoleById(roleId) : undefined;
@@ -1765,11 +2266,19 @@ async function runSubagentLoop(
 
 const DEFAULT_PROFILES: ApiProfile[] = [
   {
-    id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com",
-    apiKey: "", model: "deepseek-v4-flash", maxTokens: 8192, temperature: 0.7,
-    thinkingEnabled: true, reasoningEffort: "high",
-    systemPrompt: "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
-    enableWebSearch: false, maxContextMessages: 50,
+    id: "deepseek",
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "",
+    model: "deepseek-v4-flash",
+    maxTokens: 8192,
+    temperature: 0.7,
+    thinkingEnabled: true,
+    reasoningEffort: "high",
+    systemPrompt:
+      "你是道生一，一个AI桌面助手。你运行在用户的本地设备上。请用简洁、准确的中文回答。",
+    enableWebSearch: false,
+    maxContextMessages: 50,
   },
 ];
 
@@ -1782,18 +2291,45 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
     try {
-      const convs = await invoke<{id:string;title:string;model:string;created_at:number;updated_at:number}[]>("load_conversations");
+      const convs =
+        await invoke<
+          { id: string; title: string; model: string; created_at: number; updated_at: number }[]
+        >("load_conversations");
       for (const c of convs) {
-        const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: c.id });
+        const msgs = await invoke<
+          {
+            id: string;
+            conversation_id: string;
+            role: string;
+            content: string;
+            reasoning_content?: string;
+            images?: string;
+            attachments?: string;
+            timestamp: number;
+            tokens?: number;
+            duration?: number;
+            cost?: number;
+          }[]
+        >("get_messages", { conversationId: c.id });
         conversations.value.push({
-          id: c.id, title: c.title, model: c.model,
-          createdAt: c.created_at, updatedAt: c.updated_at,
-          messages: msgs.map(m => ({
-            id: m.id, role: m.role as MessageRole, content: m.content,
+          id: c.id,
+          title: c.title,
+          model: c.model,
+          createdAt: c.created_at,
+          updatedAt: c.updated_at,
+          messages: msgs.map((m) => ({
+            id: m.id,
+            role: m.role as MessageRole,
+            content: m.content,
             reasoning_content: m.reasoning_content,
-            images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
-            attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
-            timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
+            images: m.images ? (JSON.parse(m.images) as ImageAttachment[]) : undefined,
+            attachments: m.attachments
+              ? (JSON.parse(m.attachments) as FileAttachment[])
+              : undefined,
+            timestamp: m.timestamp,
+            tokens: m.tokens,
+            duration: m.duration,
+            cost: m.cost,
           })),
         });
       }
@@ -1802,9 +2338,11 @@ export const useChatStore = defineStore("chat", () => {
       try {
         const settings = await initSettings();
         activeId = settings.activeConversationId;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       if (!activeId) activeId = localStorage.getItem("daoshengyi_activeConv");
-      if (activeId && conversations.value.some(c => c.id === activeId)) {
+      if (activeId && conversations.value.some((c) => c.id === activeId)) {
         activeConversationId.value = activeId;
       }
       // 加载用量历史累计（跨会话保留）
@@ -1823,16 +2361,30 @@ export const useChatStore = defineStore("chat", () => {
         const conv = activeConversation.value;
         if (!conv) return;
         await invoke("save_conversation", {
-          conv: { id: conv.id, title: conv.title, model: conv.model, created_at: conv.createdAt, updated_at: conv.updatedAt },
-          messages: conv.messages.map(m => ({
-            id: m.id, conversation_id: conv.id, role: m.role, content: m.content,
+          conv: {
+            id: conv.id,
+            title: conv.title,
+            model: conv.model,
+            created_at: conv.createdAt,
+            updated_at: conv.updatedAt,
+          },
+          messages: conv.messages.map((m) => ({
+            id: m.id,
+            conversation_id: conv.id,
+            role: m.role,
+            content: m.content,
             reasoning_content: m.reasoning_content || null,
             images: m.images ? JSON.stringify(m.images) : null,
             attachments: m.attachments ? JSON.stringify(m.attachments) : null,
-            timestamp: m.timestamp, tokens: m.tokens || null, duration: m.duration || null, cost: m.cost || null,
+            timestamp: m.timestamp,
+            tokens: m.tokens || null,
+            duration: m.duration || null,
+            cost: m.cost || null,
           })),
         });
-      } catch (e) { console.warn("[道生一] 保存失败:", e); }
+      } catch (e) {
+        console.warn("[道生一] 保存失败:", e);
+      }
     }, 500);
   }
 
@@ -1848,11 +2400,17 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const s = localStorage.getItem(ARCHIVE_KEY);
       return s ? (JSON.parse(s) as string[]) : [];
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   }
   const archivedIds = ref<Set<string>>(new Set(loadArchivedIds()));
   function persistArchived() {
-    try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...archivedIds.value])); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...archivedIds.value]));
+    } catch {
+      /* ignore */
+    }
   }
   const profiles = ref<ApiProfile[]>(loadProfilesLegacy());
   const activeProfileId = ref<string>(profiles.value[0]?.id ?? "default");
@@ -1881,27 +2439,31 @@ export const useChatStore = defineStore("chat", () => {
     daily: { date: string; tokens: number; cost: number; msgs: number }[];
   } | null>(null);
   async function refreshUsageAgg() {
-    try { usageAgg.value = await invoke("get_usage_agg"); } catch { /* 忽略 */ }
+    try {
+      usageAgg.value = await invoke("get_usage_agg");
+    } catch {
+      /* 忽略 */
+    }
   }
 
   // 异步加载 Rust 端配置（优先于 localStorage 旧数据）
   initSettingsFromRust();
 
   // --- 计算属性 ---
-  const activeConversation = computed(() =>
-    conversations.value.find((c) => c.id === activeConversationId.value) ?? null
+  const activeConversation = computed(
+    () => conversations.value.find((c) => c.id === activeConversationId.value) ?? null,
   );
 
   const sortedConversations = computed(() =>
-    [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt)
+    [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt),
   );
 
   // 归档过滤：主列表只显示未归档会话；归档会话单独列出（可在归档视图恢复/删除）
   const visibleConversations = computed(() =>
-    sortedConversations.value.filter((c) => !archivedIds.value.has(c.id))
+    sortedConversations.value.filter((c) => !archivedIds.value.has(c.id)),
   );
   const archivedConversations = computed(() =>
-    sortedConversations.value.filter((c) => archivedIds.value.has(c.id))
+    sortedConversations.value.filter((c) => archivedIds.value.has(c.id)),
   );
 
   // 当前对话统计（总 token、总费用）
@@ -1920,8 +2482,12 @@ export const useChatStore = defineStore("chat", () => {
   });
 
   // 历史累计统计（后端 usage_agg，跨会话保留、含已删除会话）；fallback 当前对话
-  const usageAggTotal = computed(() => usageAgg.value?.total?.total_tokens ?? conversationStats.value.tokens);
-  const usageAggCost = computed(() => usageAgg.value?.total?.total_cost ?? conversationStats.value.cost);
+  const usageAggTotal = computed(
+    () => usageAgg.value?.total?.total_tokens ?? conversationStats.value.tokens,
+  );
+  const usageAggCost = computed(
+    () => usageAgg.value?.total?.total_cost ?? conversationStats.value.cost,
+  );
 
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
@@ -1929,8 +2495,8 @@ export const useChatStore = defineStore("chat", () => {
     if (id) updateSettings({ activeConversationId: id });
   });
 
-  const activeProfile = computed(() =>
-    profiles.value.find((p) => p.id === activeProfileId.value) ?? profiles.value[0]
+  const activeProfile = computed(
+    () => profiles.value.find((p) => p.id === activeProfileId.value) ?? profiles.value[0],
   );
 
   const currentConfig = computed<ApiConfig>(() => {
@@ -1954,13 +2520,21 @@ export const useChatStore = defineStore("chat", () => {
   const activePersonaId = ref(localStorage.getItem(PERSONA_KEY) || "");
   function setPersona(id: string) {
     activePersonaId.value = id;
-    try { localStorage.setItem(PERSONA_KEY, id); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(PERSONA_KEY, id);
+    } catch {
+      /* ignore */
+    }
   }
 
   // --- Agent 多模式（§3.11）：切换运行模式（对话/任务/办公/研究/编码/速答） ---
   function setMode(id: AgentModeId) {
     activeModeId.value = id;
-    try { localStorage.setItem(MODE_KEY, id); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(MODE_KEY, id);
+    } catch {
+      /* ignore */
+    }
     bumpModeHist(id); // 模式记忆：记录使用频次
   }
 
@@ -1970,8 +2544,11 @@ export const useChatStore = defineStore("chat", () => {
     const p = auxId ? profiles.value.find((x) => x.id === auxId) : undefined;
     if (p && p.baseUrl) {
       return {
-        baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model,
-        maxTokens: p.maxTokens, temperature: p.temperature,
+        baseUrl: p.baseUrl,
+        apiKey: p.apiKey,
+        model: p.model,
+        maxTokens: p.maxTokens,
+        temperature: p.temperature,
         thinkingEnabled: p.thinkingEnabled ?? false,
         reasoningEffort: p.reasoningEffort ?? "high",
         systemPrompt: p.systemPrompt ?? "",
@@ -1990,8 +2567,11 @@ export const useChatStore = defineStore("chat", () => {
     const p = id ? profiles.value.find((x) => x.id === id) : undefined;
     if (p && p.baseUrl) {
       return {
-        baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model,
-        maxTokens: p.maxTokens, temperature: p.temperature,
+        baseUrl: p.baseUrl,
+        apiKey: p.apiKey,
+        model: p.model,
+        maxTokens: p.maxTokens,
+        temperature: p.temperature,
         thinkingEnabled: p.thinkingEnabled ?? false,
         reasoningEffort: p.reasoningEffort ?? "high",
         systemPrompt: p.systemPrompt ?? "",
@@ -2014,7 +2594,10 @@ export const useChatStore = defineStore("chat", () => {
     if (r) {
       r.status = "completed";
       r.durationSec = Number(((Date.now() - r.startedAt) / 1000).toFixed(1));
-      r.resultPreview = resultText.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim().slice(0, 220);
+      r.resultPreview = resultText
+        .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+        .trim()
+        .slice(0, 220);
     }
   }
   function failSubagent(id: string, err: string) {
@@ -2033,9 +2616,7 @@ export const useChatStore = defineStore("chat", () => {
   // 同步兜底：先读 localStorage 旧数据（作为迁移源）
   // 移除历史代码生成的默认 OpenAI 占位配置（未填 Key）
   function stripDefaultOpenAI(list: ApiProfile[]): ApiProfile[] {
-    const filtered = list.filter(
-      (p) => !(p.id === "default" && p.name === "OpenAI" && !p.apiKey)
-    );
+    const filtered = list.filter((p) => !(p.id === "default" && p.name === "OpenAI" && !p.apiKey));
     if (filtered.length === 0) return [...DEFAULT_PROFILES];
     return filtered;
   }
@@ -2053,7 +2634,9 @@ export const useChatStore = defineStore("chat", () => {
         }
         return stripDefaultOpenAI(parsed);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return [...DEFAULT_PROFILES];
   }
 
@@ -2072,7 +2655,10 @@ export const useChatStore = defineStore("chat", () => {
       const settings = await initSettings();
       if (settings.profiles.length > 0) {
         profiles.value = stripDefaultOpenAI(settings.profiles);
-        if (settings.activeProfileId && profiles.value.some((p) => p.id === settings.activeProfileId)) {
+        if (
+          settings.activeProfileId &&
+          profiles.value.some((p) => p.id === settings.activeProfileId)
+        ) {
           activeProfileId.value = settings.activeProfileId;
         } else if (profiles.value.length > 0) {
           activeProfileId.value = profiles.value[0].id;
@@ -2100,7 +2686,10 @@ export const useChatStore = defineStore("chat", () => {
         profiles.value = stripDefaultOpenAI(settings.profiles);
         // 保持用户当前的文本主模型（如 DeepSeek）——本地 Ollama 只作为图片识别的视觉辅助，
         // 不因一键部署而切换主模型
-        if (settings.activeProfileId && profiles.value.some((p) => p.id === settings.activeProfileId)) {
+        if (
+          settings.activeProfileId &&
+          profiles.value.some((p) => p.id === settings.activeProfileId)
+        ) {
           activeProfileId.value = settings.activeProfileId;
         } else if (profiles.value.length > 0) {
           activeProfileId.value = profiles.value[0].id;
@@ -2126,7 +2715,9 @@ export const useChatStore = defineStore("chat", () => {
     if (isStreaming.value) stopStreaming();
     activeProfileId.value = id;
     profileSwitching.value = true;
-    setTimeout(() => { profileSwitching.value = false; }, 800);
+    setTimeout(() => {
+      profileSwitching.value = false;
+    }, 800);
   }
 
   function updateProfile(id: string, partial: Partial<ApiProfile>) {
@@ -2181,17 +2772,44 @@ export const useChatStore = defineStore("chat", () => {
     const newId = uuidv4();
     const newTitle = `${src.title}（分支）`;
     try {
-      await invoke("fork_conversation_cmd", { id, atMessageId: atMessageId ?? null, newId, newTitle });
-      const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: newId });
+      await invoke("fork_conversation_cmd", {
+        id,
+        atMessageId: atMessageId ?? null,
+        newId,
+        newTitle,
+      });
+      const msgs = await invoke<
+        {
+          id: string;
+          conversation_id: string;
+          role: string;
+          content: string;
+          reasoning_content?: string;
+          images?: string;
+          attachments?: string;
+          timestamp: number;
+          tokens?: number;
+          duration?: number;
+          cost?: number;
+        }[]
+      >("get_messages", { conversationId: newId });
       conversations.value.push({
-        id: newId, title: newTitle, model: src.model,
-        createdAt: Date.now(), updatedAt: Date.now(),
+        id: newId,
+        title: newTitle,
+        model: src.model,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
         messages: msgs.map((m) => ({
-          id: m.id, role: m.role as MessageRole, content: m.content,
+          id: m.id,
+          role: m.role as MessageRole,
+          content: m.content,
           reasoning_content: m.reasoning_content,
-          images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
-          attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
-          timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
+          images: m.images ? (JSON.parse(m.images) as ImageAttachment[]) : undefined,
+          attachments: m.attachments ? (JSON.parse(m.attachments) as FileAttachment[]) : undefined,
+          timestamp: m.timestamp,
+          tokens: m.tokens,
+          duration: m.duration,
+          cost: m.cost,
         })),
       });
       activeConversationId.value = newId;
@@ -2217,19 +2835,40 @@ export const useChatStore = defineStore("chat", () => {
   // 重新从后端加载某会话的全部消息（queue 后台回复落地后刷新用）
   async function refreshConversation(convId: string) {
     try {
-      const msgs = await invoke<{id:string;conversation_id:string;role:string;content:string;reasoning_content?:string;images?:string;attachments?:string;timestamp:number;tokens?:number;duration?:number;cost?:number}[]>("get_messages", { conversationId: convId });
+      const msgs = await invoke<
+        {
+          id: string;
+          conversation_id: string;
+          role: string;
+          content: string;
+          reasoning_content?: string;
+          images?: string;
+          attachments?: string;
+          timestamp: number;
+          tokens?: number;
+          duration?: number;
+          cost?: number;
+        }[]
+      >("get_messages", { conversationId: convId });
       const conv = conversations.value.find((c) => c.id === convId);
       if (conv) {
         conv.messages = msgs.map((m) => ({
-          id: m.id, role: m.role as MessageRole, content: m.content,
+          id: m.id,
+          role: m.role as MessageRole,
+          content: m.content,
           reasoning_content: m.reasoning_content,
-          images: m.images ? JSON.parse(m.images) as ImageAttachment[] : undefined,
-          attachments: m.attachments ? JSON.parse(m.attachments) as FileAttachment[] : undefined,
-          timestamp: m.timestamp, tokens: m.tokens, duration: m.duration, cost: m.cost,
+          images: m.images ? (JSON.parse(m.images) as ImageAttachment[]) : undefined,
+          attachments: m.attachments ? (JSON.parse(m.attachments) as FileAttachment[]) : undefined,
+          timestamp: m.timestamp,
+          tokens: m.tokens,
+          duration: m.duration,
+          cost: m.cost,
         }));
         conv.updatedAt = Date.now();
       }
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
   }
 
   function selectConversation(id: string) {
@@ -2262,7 +2901,7 @@ export const useChatStore = defineStore("chat", () => {
     convId: string,
     text: string,
     images?: ImageAttachment[],
-    attachments?: FileAttachment[]
+    attachments?: FileAttachment[],
   ): ChatMessage {
     const msg: ChatMessage = {
       id: uuidv4(),
@@ -2277,7 +2916,8 @@ export const useChatStore = defineStore("chat", () => {
       conv.messages.push(msg);
       conv.updatedAt = Date.now();
       if (conv.title === "新对话" && conv.messages.length === 1) {
-        const titleText = text || (images?.length ? "[图片]" : "") || (attachments?.length ? "[附件]" : "");
+        const titleText =
+          text || (images?.length ? "[图片]" : "") || (attachments?.length ? "[附件]" : "");
         conv.title = titleText.slice(0, 30) + (titleText.length > 30 ? "..." : "");
       }
     }
@@ -2287,7 +2927,11 @@ export const useChatStore = defineStore("chat", () => {
   // --- 图片预处理：用视觉模型描述图片（图片→文字描述→交给文本大模型） ---
   // 长任务期间防止系统休眠（macOS caffeinate；非 macOS/失败静默忽略）
   async function setPreventSleep(active: boolean): Promise<void> {
-    try { await invoke("set_prevent_sleep", { active }); } catch { /* ignore */ }
+    try {
+      await invoke("set_prevent_sleep", { active });
+    } catch {
+      /* ignore */
+    }
   }
   async function describeImages(images: ImageAttachment[]): Promise<string> {
     const b64s = images.map((img) => img.base64);
@@ -2299,7 +2943,9 @@ export const useChatStore = defineStore("chat", () => {
         invoke<string>("ocr_extract_image_text", { images: b64s }),
         new Promise<string>((resolve) => setTimeout(() => resolve(""), 30000)),
       ]);
-    } catch { /* 非 macOS 或无 OCR 工具时忽略 */ }
+    } catch {
+      /* 非 macOS 或无 OCR 工具时忽略 */
+    }
 
     // 2) 语义描述：本地视觉模型（跨平台通用；Intel 无 GPU 约 1 分钟）
     let semantic = "";
@@ -2309,7 +2955,9 @@ export const useChatStore = defineStore("chat", () => {
         invoke<string>("ollama_describe_image", { images: b64s }),
         new Promise<string>((resolve) => setTimeout(() => resolve(""), 110000)),
       ]);
-    } catch { /* 视觉模型不可用时忽略 */ }
+    } catch {
+      /* 视觉模型不可用时忽略 */
+    }
 
     // 合并 OCR 文字 + 语义描述
     const parts: string[] = [];
@@ -2318,9 +2966,7 @@ export const useChatStore = defineStore("chat", () => {
     if (parts.length > 0) return parts.join("\n\n");
 
     // 3) 回退：找一个有视觉能力的 API（非 DeepSeek，已配 Key）
-    const visionProfile = profiles.value.find(
-      p => p.apiKey && !p.baseUrl.includes("deepseek")
-    );
+    const visionProfile = profiles.value.find((p) => p.apiKey && !p.baseUrl.includes("deepseek"));
     if (!visionProfile) return "";
 
     const baseUrl = visionProfile.baseUrl.replace(/\/+$/, "");
@@ -2335,13 +2981,18 @@ export const useChatStore = defineStore("chat", () => {
           },
           body: JSON.stringify({
             model: visionProfile.model,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "text", text: "请详细描述这张图片的内容。如果图片中有文字，请逐字转录。用中文回答，简洁准确。" },
-                { type: "image_url", image_url: { url: img.base64, detail: "auto" } },
-              ],
-            }],
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: "请详细描述这张图片的内容。如果图片中有文字，请逐字转录。用中文回答，简洁准确。",
+                  },
+                  { type: "image_url", image_url: { url: img.base64, detail: "auto" } },
+                ],
+              },
+            ],
             max_tokens: 500,
           }),
         });
@@ -2350,7 +3001,9 @@ export const useChatStore = defineStore("chat", () => {
           const desc = data.choices?.[0]?.message?.content || "";
           if (desc) fbParts.push(`[图片: ${img.fileName || "附件"}] ${desc}`);
         }
-      } catch { /* 单张失败不影响其他 */ }
+      } catch {
+        /* 单张失败不影响其他 */
+      }
     }
     return fbParts.join("\n\n");
   }
@@ -2365,14 +3018,14 @@ export const useChatStore = defineStore("chat", () => {
 
   // 危险命令模式（借鉴 DeepSeek Harness 的 approval 审批理念）
   const DANGEROUS_PATTERNS: RegExp[] = [
-    /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i,   // rm -rf / rm -fr
+    /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, // rm -rf / rm -fr
     /\brm\s+.*\s\/\s*$|\brm\s+-[a-z]*r[a-z]*f\s+\//i,
     /\bsudo\b/i,
     /\bmkfs\b/i,
     /\bdd\s+if=/i,
     /\bshutdown\b/i,
     /\breboot\b/i,
-    /\b:\(\)\s*\{/i,                                  // fork bomb
+    /\b:\(\)\s*\{/i, // fork bomb
     /\bgit\s+reset\s+--hard\b/i,
     /\bgit\s+push\b[^\n]*--force\b/i,
     /\bchmod\s+-R\s+777\b/i,
@@ -2391,7 +3044,7 @@ export const useChatStore = defineStore("chat", () => {
       "你是命令安全审查器，判断一条 shell 命令是否可以安全自动执行。\n" +
       "安全标准：不删除用户数据/系统文件（删除 /tmp 或明确临时目录且路径安全可视为安全）、不破坏系统、" +
       "不泄露敏感信息、不下载并执行不可信脚本、不关闭/重启系统、不改权限到危险状态。\n" +
-      "只回答 JSON：{\"safe\": true 或 false, \"reason\": \"10字内中文理由\"}，不要输出其他内容。";
+      '只回答 JSON：{"safe": true 或 false, "reason": "10字内中文理由"}，不要输出其他内容。';
     try {
       const data = await chatOnce(config, [
         { role: "system", content: sys },
@@ -2400,7 +3053,9 @@ export const useChatStore = defineStore("chat", () => {
       const text = (data?.content || "").trim();
       const m = text.match(/\{\s*"safe"\s*:\s*(true|false)/i);
       if (m) return m[1].toLowerCase() === "true";
-    } catch { /* 判断失败走保守确认 */ }
+    } catch {
+      /* 判断失败走保守确认 */
+    }
     return false;
   }
 
@@ -2428,26 +3083,36 @@ export const useChatStore = defineStore("chat", () => {
     // S1 命令执行策略引擎：先查规则文件（deny 拦截 / allow 放行 / prompt 或未命中走现有三档审批）
     let policy: { decision: string; matched: string | null } | null = null;
     try {
-      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", { command: cmdStr });
-    } catch { /* 策略查询失败 → 按未命中处理（原有行为兜底） */ }
+      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", {
+        command: cmdStr,
+      });
+    } catch {
+      /* 策略查询失败 → 按未命中处理（原有行为兜底） */
+    }
     const policyDecision = policy?.decision ?? "none";
     if (policyDecision === "deny") {
-      notify(`⛔ 命令被「命令执行策略」拦截：\n\n$ ${cmdStr}\n\n命中规则：\`${policy?.matched ?? "?"}\`\n\n可在 设置→权限→命令执行策略 中调整规则。`);
+      notify(
+        `⛔ 命令被「命令执行策略」拦截：\n\n$ ${cmdStr}\n\n命中规则：\`${policy?.matched ?? "?"}\`\n\n可在 设置→权限→命令执行策略 中调整规则。`,
+      );
       return;
     }
     // 危险命令审批：策略命中 allow 直接放行；prompt 或未命中但命中内置危险模式 → 走
     // manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
-    const needsConfirm = policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+    const needsConfirm =
+      policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
     if (needsConfirm) {
       const st = getSettings();
-      const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      const mode: "manual" | "smart" | "yolo" =
+        st.approvalMode || (st.yoloMode ? "yolo" : "manual");
       if (mode === "manual") {
         const ok = await askConfirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
         if (!ok) return;
       } else if (mode === "smart") {
         const safe = await judgeCommandSafety(cmdStr);
         if (!safe) {
-          const ok = await askConfirm(`⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`);
+          const ok = await askConfirm(
+            `⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`,
+          );
           if (!ok) return;
         }
         // 判定安全 → 自动放行
@@ -2461,7 +3126,11 @@ export const useChatStore = defineStore("chat", () => {
 
     const conv = conversations.value.find((c) => c.id === convId)!;
     const assistantMsg = reactive<ChatMessage>({
-      id: uuidv4(), role: "assistant", content: "", timestamp: Date.now(), streaming: true,
+      id: uuidv4(),
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      streaming: true,
     });
     conv.messages.push(assistantMsg);
     conv.updatedAt = Date.now();
@@ -2474,14 +3143,18 @@ export const useChatStore = defineStore("chat", () => {
     try {
       // 整条命令交给后端 shell（/bin/sh -c）执行，支持 ~ 展开/管道/&& 等 shell 语法；
       // parseCommandLine 只用于判空与展示，不再拆分传参（拆分会丢失引号与 shell 语义）
-      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean; created_files?: string[] }>(
-        "execute_command", {
-          command: cmdStr,
-          args: [] as string[],
-          cwd: getSettings().workspace || null,
-          timeoutSecs: 30,
-        },
-      );
+      const result = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+        created_files?: string[];
+      }>("execute_command", {
+        command: cmdStr,
+        args: [] as string[],
+        cwd: getSettings().workspace || null,
+        timeoutSecs: 30,
+      });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
       let content = `$ ${cmdStr}\n`;
@@ -2513,29 +3186,42 @@ export const useChatStore = defineStore("chat", () => {
   /// 但只把执行结果作为字符串返回给模型（不写对话消息），供 Agent 完成专用工具覆盖不了的
   /// 命令任务（打开本机 App、运行构建/工具脚本、系统查询等）。
   async function agentRunCommand(raw: string): Promise<string> {
-    const cmdStr = String(raw || "").replace(/～/g, "~").trim();
+    const cmdStr = String(raw || "")
+      .replace(/～/g, "~")
+      .trim();
     if (!cmdStr) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
     // execpolicy：deny 直接拦截返回（不让模型重试绕行）；allow / prompt / 未命中继续
     let policy: { decision: string; matched: string | null } | null = null;
     try {
-      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", { command: cmdStr });
-    } catch { /* 策略查询失败按未命中处理（原有兜底） */ }
+      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", {
+        command: cmdStr,
+      });
+    } catch {
+      /* 策略查询失败按未命中处理（原有兜底） */
+    }
     const policyDecision = policy?.decision ?? "none";
     if (policyDecision === "deny") {
       return `⛔ 命令被「命令执行策略」拦截（命中：\`${policy?.matched ?? "?"}\`）：$ ${cmdStr}\n此类破坏性命令不允许 Agent 执行；若确需，请让用户手动输入 /run 或调整 设置→权限→命令执行策略。`;
     }
     // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行
-    const needsConfirm = policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+    const needsConfirm =
+      policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
     if (needsConfirm) {
       const st = getSettings();
-      const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      const mode: "manual" | "smart" | "yolo" =
+        st.approvalMode || (st.yoloMode ? "yolo" : "manual");
       if (mode === "manual") {
-        const ok = await askConfirm(`⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`);
-        if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
+        const ok = await askConfirm(
+          `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`,
+        );
+        if (!ok)
+          return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
       } else if (mode === "smart") {
         const safe = await judgeCommandSafety(cmdStr);
         if (!safe) {
-          const ok = await askConfirm(`⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`);
+          const ok = await askConfirm(
+            `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`,
+          );
           if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
         }
       }
@@ -2543,14 +3229,18 @@ export const useChatStore = defineStore("chat", () => {
     }
     await setPreventSleep(true);
     try {
-      const result = await invoke<{ stdout: string; stderr: string; exit_code: number; timed_out: boolean; created_files?: string[] }>(
-        "execute_command", {
-          command: cmdStr,
-          args: [] as string[],
-          cwd: getSettings().workspace || null,
-          timeoutSecs: 60,
-        },
-      );
+      const result = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+        created_files?: string[];
+      }>("execute_command", {
+        command: cmdStr,
+        args: [] as string[],
+        cwd: getSettings().workspace || null,
+        timeoutSecs: 60,
+      });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
       let content = `$ ${cmdStr}\n`;
@@ -2558,7 +3248,8 @@ export const useChatStore = defineStore("chat", () => {
       if (err) content += `\n[stderr]\n${err}\n`;
       content += `\n${result.timed_out ? "⏰ 执行超时，已终止" : exitStatusLabel(result.exit_code)}`;
       const created = result.created_files || [];
-      if (created.length > 0) content += `\n\n📄 生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
+      if (created.length > 0)
+        content += `\n\n📄 生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
       return content;
     } catch (e: unknown) {
       return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
@@ -2575,7 +3266,11 @@ export const useChatStore = defineStore("chat", () => {
 
     const conv = conversations.value.find((c) => c.id === convId)!;
     const assistantMsg = reactive<ChatMessage>({
-      id: uuidv4(), role: "assistant", content: "", timestamp: Date.now(), streaming: true,
+      id: uuidv4(),
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      streaming: true,
     });
     conv.messages.push(assistantMsg);
     conv.updatedAt = Date.now();
@@ -2601,7 +3296,11 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // --- 流式发送 ---
-  async function sendMessage(text: string, images?: ImageAttachment[], attachments?: FileAttachment[]) {
+  async function sendMessage(
+    text: string,
+    images?: ImageAttachment[],
+    attachments?: FileAttachment[],
+  ) {
     // 新消息：重置浏览器「已打开页面」标记（上一任务的浏览器已断开，需重新导航）
     browserNavigated = false;
     // 命令执行指令：/run <命令>
@@ -2637,7 +3336,13 @@ export const useChatStore = defineStore("chat", () => {
         "输入 `/` 可弹出命令面板。";
       const hc = conversations.value.find((c) => c.id === hcId);
       if (hc) {
-        const m = reactive<ChatMessage>({ id: uuidv4(), role: "assistant", content: helpText, timestamp: Date.now(), streaming: false });
+        const m = reactive<ChatMessage>({
+          id: uuidv4(),
+          role: "assistant",
+          content: helpText,
+          timestamp: Date.now(),
+          streaming: false,
+        });
         hc.messages.push(m);
         hc.updatedAt = Date.now();
         scheduleSave();
@@ -2703,7 +3408,7 @@ export const useChatStore = defineStore("chat", () => {
       streamingContent.value = ""; // 清空占位，交由后续流式回复填充
     }
 
-    let unlistenFns: UnlistenFn[] = [];
+    const unlistenFns: UnlistenFn[] = [];
     let inputTokens = 0;
     const memory = useMemorySystem();
     // 方案 B：流式工具循环的展示记录（工具卡片逐段累积，最终拼进 assistantMsg.content）
@@ -2713,7 +3418,9 @@ export const useChatStore = defineStore("chat", () => {
     try {
       // 本地图片识别失败/超时：明确报错，避免静默降级成空回复
       if (ocrFailed) {
-        throw new Error("本地图片识别失败或超时（请确认 Ollama 服务正常运行、llava-phi3 模型已下载）后重试");
+        throw new Error(
+          "本地图片识别失败或超时（请确认 Ollama 服务正常运行、llava-phi3 模型已下载）后重试",
+        );
       }
       const config = currentConfig.value;
       if (!config.baseUrl || !config.apiKey) throw new Error("请先在设置中配置 API 地址和 Key");
@@ -2724,8 +3431,16 @@ export const useChatStore = defineStore("chat", () => {
       const mcpSettings = getSettings().mcpServers ?? [];
       if (mcpSettings.some((s) => s.enabled)) {
         // 按需连接：对话开始时连接启用的 MCP 服务器（启动不全连、用完即断），再刷新工具缓存
-        try { await useMcpStore().connectEnabled(); } catch { /* 连接失败不阻塞 */ }
-        try { await refreshMcpTools(); } catch { /* 忽略 */ }
+        try {
+          await useMcpStore().connectEnabled();
+        } catch {
+          /* 连接失败不阻塞 */
+        }
+        try {
+          await refreshMcpTools();
+        } catch {
+          /* 忽略 */
+        }
       }
 
       // 注入当前日期（防止日期幻觉），作为系统提示基础。
@@ -2757,10 +3472,15 @@ export const useChatStore = defineStore("chat", () => {
       // 补全完整日期：系统提示的天粒度日期对"今天"有效，但用户消息里再带一份
       // 完整日期+星期+时刻，双保险，进一步压低日期/时间幻觉。
       const nowDt = new Date();
-      const todayStr = `${nowDt.getFullYear()}年${nowDt.getMonth()+1}月${nowDt.getDate()}日 ${nowDt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", weekday: "long" })}`;
-      volatileCtx.push(`【当前时间】现在是 ${todayStr} ${nowDt.toLocaleString("zh-CN", {
-        timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
-      })}（Asia/Shanghai）。`);
+      const todayStr = `${nowDt.getFullYear()}年${nowDt.getMonth() + 1}月${nowDt.getDate()}日 ${nowDt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", weekday: "long" })}`;
+      volatileCtx.push(
+        `【当前时间】现在是 ${todayStr} ${nowDt.toLocaleString("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        })}（Asia/Shanghai）。`,
+      );
       // 图片描述作为上下文（不展示在对话里，但模型可见）
       if (descCtx) volatileCtx.push(descCtx);
       // 注入文件上下文（PDF 走"分次浏览"：只给概要预览 + pdf_read 工具提示，按需分段读取）
@@ -2769,9 +3489,11 @@ export const useChatStore = defineStore("chat", () => {
           .map((f) => {
             const isPdf = f.mimeType === "application/pdf" || /\.pdf$/i.test(f.name);
             if (isPdf && f.path) {
-              return `\n--- PDF 文件: ${f.name}（共 ${f.content.length} 字符）---\n` +
+              return (
+                `\n--- PDF 文件: ${f.name}（共 ${f.content.length} 字符）---\n` +
                 `[内容较长，先展示开头预览]\n${f.content.slice(0, 2500)}\n` +
-                `[如需完整内容，请调用 pdf_read 工具分段读取：参数 path="${f.path}", offset 从 0 起按 4000 逐段]`;
+                `[如需完整内容，请调用 pdf_read 工具分段读取：参数 path="${f.path}", offset 从 0 起按 4000 逐段]`
+              );
             }
             return `\n--- 文件: ${f.name} ---\n${f.content.slice(0, 30000)}`;
           })
@@ -2788,21 +3510,29 @@ export const useChatStore = defineStore("chat", () => {
         const autoQuery = extractSearchKeywords(text.trim());
         streamingContent.value = `🌐 正在联网搜索：${autoQuery.slice(0, 24)}...`;
         try {
-          const results = await invoke<{title:string;url:string;snippet:string}[]>("web_search", { query: autoQuery });
+          const results = await invoke<{ title: string; url: string; snippet: string }[]>(
+            "web_search",
+            { query: autoQuery },
+          );
           if (results.length > 0) {
             volatileCtx.push(formatSearchResults(autoQuery, results));
             // 搜索结果做成可见卡片（进 toolChain，随最终答案一起展示在气泡里）
             // URL 用 <url> autolink（而非 [t](url)），避免 URL 含 ) 等特殊字符时
             // markdown 链接被截断导致“地址不完整”
-            const list = results.slice(0, 5).map(r => `- **${r.title}**\n  <${r.url}>\n  ${r.snippet}`).join("\n");
+            const list = results
+              .slice(0, 5)
+              .map((r) => `- **${r.title}**\n  <${r.url}>\n  ${r.snippet}`)
+              .join("\n");
             toolChain.push(
               `### 🌐 联网搜索\n\n**查询**：\`${autoQuery}\`\n\n` +
-              `<details><summary>共 ${results.length} 条结果</summary>\n\n${list}\n\n</details>`
+                `<details><summary>共 ${results.length} 条结果</summary>\n\n${list}\n\n</details>`,
             );
           } else {
             streamingContent.value = `🌐 联网搜索「${autoQuery}」未找到结果，继续回答...`;
           }
-        } catch { /* 搜索暂不可用 */ }
+        } catch {
+          /* 搜索暂不可用 */
+        }
         streamingContent.value = ""; // 清空占位，交由流式回复填充
       }
       // 注入用户画像（跨会话沉淀的偏好/身份/环境，每次对话稳定带上）——5 秒超时兜底
@@ -2826,7 +3556,14 @@ export const useChatStore = defineStore("chat", () => {
           const ragText = await Promise.race([
             (async () => {
               const hits = await invoke<
-                { id: number; kb_name: string; file: string; chunk: string; chunk_idx: number; created_at: number }[]
+                {
+                  id: number;
+                  kb_name: string;
+                  file: string;
+                  chunk: string;
+                  chunk_idx: number;
+                  created_at: number;
+                }[]
               >("kb_search", { kbName: st.ragKb, query: (text || "").slice(0, 60), limit: 4 });
               if (!hits || !hits.length) return "";
               return (
@@ -2850,7 +3587,7 @@ export const useChatStore = defineStore("chat", () => {
         if (projInstr) {
           volatileCtx.push(
             `【项目指令】（来源 ${projInstr.path}，自动发现注入）\n${projInstr.content}\n` +
-            `[项目指令代表该项目的约定（编码规范/测试命令/目录说明），除非与用户当前明确指示冲突，否则应优先遵守。]`
+              `[项目指令代表该项目的约定（编码规范/测试命令/目录说明），除非与用户当前明确指示冲突，否则应优先遵守。]`,
           );
         }
       }
@@ -2863,19 +3600,31 @@ export const useChatStore = defineStore("chat", () => {
 
       // 构建 Rust 格式消息
       const maxCtx = config.maxContextMessages || 50;
-      const histAll = conv.messages.filter(m => m.role !== "system" && !m.streaming);
+      const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
       const histStart = Math.max(0, histAll.length - maxCtx);
       const hist = histAll.slice(histStart);
       const rustMsgs: { role: string; content: unknown }[] = [];
       // O1 智能上下文压缩：记录每条历史对应的原始会话消息序号（用于定位已被摘要覆盖的最老段）
       const rustOrig: (number | null)[] = [];
-      if (sp) { rustMsgs.push({ role: "system", content: sp }); rustOrig.push(null); }
+      if (sp) {
+        rustMsgs.push({ role: "system", content: sp });
+        rustOrig.push(null);
+      }
       hist.forEach((m, i) => {
         rustOrig.push(histStart + i);
         // DeepSeek 不支持图片：所有带图片的消息（含历史残留的图片消息）一律只发文本，
         // 避免收到 image_url 报 400；支持图片的模型才发送多模态。
         if (m.images?.length && !isDS) {
-          rustMsgs.push({ role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map(img => ({ type: "image_url", image_url: { url: img.base64, detail: "auto" } }))] });
+          rustMsgs.push({
+            role: m.role,
+            content: [
+              { type: "text", text: m.content },
+              ...m.images.map((img) => ({
+                type: "image_url",
+                image_url: { url: img.base64, detail: "auto" },
+              })),
+            ],
+          });
         } else {
           rustMsgs.push({ role: m.role, content: m.content });
         }
@@ -2883,7 +3632,7 @@ export const useChatStore = defineStore("chat", () => {
 
       // 把本次易变上下文追加到最新一条用户消息末尾（不进 system，保证 system+历史前缀稳定可缓存）
       if (volatileCtx.length > 0) {
-        const lastUser = [...rustMsgs].reverse().find(m => m.role === "user");
+        const lastUser = [...rustMsgs].reverse().find((m) => m.role === "user");
         if (lastUser && typeof lastUser.content === "string") {
           lastUser.content = `${lastUser.content}\n\n[本次补充上下文]\n${volatileCtx.join("\n\n")}`;
         } else {
@@ -2901,16 +3650,24 @@ export const useChatStore = defineStore("chat", () => {
         // 收集已被摘要覆盖的原始消息序号（summaries 表：会话自动摘要，落库复用、不重算）
         const covered = new Set<number>();
         try {
-          const sums = await invoke<{ msg_range_start: number; msg_range_end: number }[]>("get_summaries", { convId }).catch(() => [] as { msg_range_start: number; msg_range_end: number }[]);
-          for (const s of sums) for (let i = s.msg_range_start; i <= s.msg_range_end; i++) covered.add(i);
-        } catch { /* 忽略 */ }
+          const sums = await invoke<{ msg_range_start: number; msg_range_end: number }[]>(
+            "get_summaries",
+            { convId },
+          ).catch(() => [] as { msg_range_start: number; msg_range_end: number }[]);
+          for (const s of sums)
+            for (let i = s.msg_range_start; i <= s.msg_range_end; i++) covered.add(i);
+        } catch {
+          /* 忽略 */
+        }
         // 优先删除已被摘要覆盖的最老段（摘要已在 volatileCtx 补偿，保留其余原文）
         let pruned = true;
         while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && pruned && rustMsgs.length > 2) {
           pruned = false;
-          for (let i = 1; i < rustMsgs.length; i++) { // 0 是 system，保留
+          for (let i = 1; i < rustMsgs.length; i++) {
+            // 0 是 system，保留
             if (covered.has(rustOrig[i] as number)) {
-              rustMsgs.splice(i, 1); rustOrig.splice(i, 1);
+              rustMsgs.splice(i, 1);
+              rustOrig.splice(i, 1);
               pruned = true;
               break;
             }
@@ -2918,9 +3675,10 @@ export const useChatStore = defineStore("chat", () => {
         }
         // 覆盖段删尽仍超长 → 回退粗暴裁剪（从最早非 system 删，保底不超限）
         while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && rustMsgs.length > 2) {
-          const idx = rustMsgs.findIndex(m => m.role !== "system");
+          const idx = rustMsgs.findIndex((m) => m.role !== "system");
           if (idx === -1) break;
-          rustMsgs.splice(idx, 1); rustOrig.splice(idx, 1);
+          rustMsgs.splice(idx, 1);
+          rustOrig.splice(idx, 1);
         }
       }
       // 裁剪后重算输入 token（用于费用计算）
@@ -2930,10 +3688,15 @@ export const useChatStore = defineStore("chat", () => {
       }, 0);
 
       const rustCfg = {
-        base_url: config.baseUrl, api_key: config.apiKey, model: config.model || "deepseek-v4-flash",
-        max_tokens: config.maxTokens, temperature: config.temperature,
-        thinking_enabled: config.thinkingEnabled, reasoning_effort: config.reasoningEffort,
-        system_prompt: sp, enable_web_search: config.enableWebSearch,
+        base_url: config.baseUrl,
+        api_key: config.apiKey,
+        model: config.model || "deepseek-v4-flash",
+        max_tokens: config.maxTokens,
+        temperature: config.temperature,
+        thinking_enabled: config.thinkingEnabled,
+        reasoning_effort: config.reasoningEffort,
+        system_prompt: sp,
+        enable_web_search: config.enableWebSearch,
       };
 
       // ---- 方案 B：流式优先 + <tool_call> 流式检测工具循环 ----
@@ -2948,7 +3711,9 @@ export const useChatStore = defineStore("chat", () => {
 
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
       // 返回 toolCall 非空 → 本轮流式输出的是一段工具调用（需执行后继续）；为 null → 最终答案。
-      async function streamRound(msgs: { role: string; content: unknown }[]): Promise<{ toolCall: ToolCall | null; content: string }> {
+      async function streamRound(
+        msgs: { role: string; content: unknown }[],
+      ): Promise<{ toolCall: ToolCall | null; content: string }> {
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
         const requestId = uuidv4(); // 本轮请求唯一 id：事件过滤，避免旧请求的 sse-delta/done 串扰新一轮
         activeStreamRequestId = requestId; // 暴露给 stopStreaming，用于取消 Rust 端生成
@@ -2964,7 +3729,14 @@ export const useChatStore = defineStore("chat", () => {
         let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
 
         roundUnlisten.push(
-          await listen<{ request_id?: string; reasoning_content?: string; content?: string; tokens?: number; cache_hit?: number; cache_miss?: number }>("sse-delta", e => {
+          await listen<{
+            request_id?: string;
+            reasoning_content?: string;
+            content?: string;
+            tokens?: number;
+            cache_hit?: number;
+            cache_miss?: number;
+          }>("sse-delta", (e) => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return; // 忽略其他请求的事件
             const d = e.payload;
             if (d.reasoning_content) {
@@ -2977,7 +3749,9 @@ export const useChatStore = defineStore("chat", () => {
                 const parsed = parseToolCall(reasoningBuffer);
                 if (parsed) {
                   toolCall = parsed;
-                  dbg(`[round ${requestId.slice(0, 8)}] 思考中发现工具调用 ${parsed.server}/${parsed.tool}`);
+                  dbg(
+                    `[round ${requestId.slice(0, 8)}] 思考中发现工具调用 ${parsed.server}/${parsed.tool}`,
+                  );
                   resolveDone();
                 }
               }
@@ -2994,10 +3768,14 @@ export const useChatStore = defineStore("chat", () => {
                 const parsed = parseToolCall(toolBuffer);
                 if (parsed) {
                   toolCall = parsed;
-                  dbg(`[round ${requestId.slice(0, 8)}] 检测到工具调用 ${parsed.server}/${parsed.tool}，buffer长度=${toolBuffer.length}`);
+                  dbg(
+                    `[round ${requestId.slice(0, 8)}] 检测到工具调用 ${parsed.server}/${parsed.tool}，buffer长度=${toolBuffer.length}`,
+                  );
                   resolveDone();
                 } else {
-                  dbg(`[round ${requestId.slice(0, 8)}] 有闭合标记但解析失败，buffer=${toolBuffer.slice(-200)}`);
+                  dbg(
+                    `[round ${requestId.slice(0, 8)}] 有闭合标记但解析失败，buffer=${toolBuffer.slice(-200)}`,
+                  );
                 }
               }
             }
@@ -3005,11 +3783,11 @@ export const useChatStore = defineStore("chat", () => {
             if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
             if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
           }),
-          await listen<{ request_id?: string; error?: string }>("sse-error", e => {
+          await listen<{ request_id?: string; error?: string }>("sse-error", (e) => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return;
             rejectDone(new Error(e.payload.error || "模型流式错误"));
           }),
-          await listen<string>("sse-done", e => {
+          await listen<string>("sse-done", (e) => {
             if (e.payload && e.payload !== requestId) return;
             resolveDone();
           }),
@@ -3020,7 +3798,9 @@ export const useChatStore = defineStore("chat", () => {
         // 否则前端只会干等到 120 秒超时；正常路径 invoke resolve、重复 reject 无害。
         dbg(`[round ${requestId.slice(0, 8)}] 发起 send_message，messages=${msgs.length}`);
         invoke("send_message", { requestId, config: rustCfg, messages: msgs }).catch((e) => {
-          dbg(`[round ${requestId.slice(0, 8)}] invoke send_message 错误: ${e instanceof Error ? e.message : String(e)}`);
+          dbg(
+            `[round ${requestId.slice(0, 8)}] invoke send_message 错误: ${e instanceof Error ? e.message : String(e)}`,
+          );
           rejectDone(e instanceof Error ? e : new Error(String(e)));
         });
 
@@ -3032,11 +3812,11 @@ export const useChatStore = defineStore("chat", () => {
             doneP,
             waitStopSignal(), // 用户停止 → 提前结束本轮流式（工具循环随后 break）
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000)
+              setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000),
             ),
           ]);
         } finally {
-          roundUnlisten.forEach(f => f());
+          roundUnlisten.forEach((f) => f());
         }
         return { toolCall, content: toolBuffer };
       }
@@ -3050,7 +3830,9 @@ export const useChatStore = defineStore("chat", () => {
         roundResult = await streamRound(rustMsgs);
         if (stopRequested) break; // 本轮流式返回后仍被停止 → 不再处理/重试
         const tc = roundResult.toolCall;
-        dbg(`[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`);
+        dbg(
+          `[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`,
+        );
         if (!tc) {
           // 模型**尝试**了工具调用（正文出现闭合标记）但解析失败：
           // 空 <tool_call></tool_call>、JSON 不合法、或写成「### 🔧 调用工具」卡片文本。
@@ -3065,7 +3847,7 @@ export const useChatStore = defineStore("chat", () => {
               content:
                 "⚠️ 你上一条回复里的工具调用格式无效：要么是空的 <tool_call></tool_call>，要么 JSON 不合法，要么写成了「### 🔧 调用工具」卡片文本——这些都**不会真正执行工具**。\n" +
                 "请重新用**唯一合法格式**输出：\n" +
-                "<tool_call>\n{\"server\":\"文件系统\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
+                '<tool_call>\n{"server":"文件系统","tool":"工具名","arguments":{...}}\n</tool_call>\n' +
                 "JSON 必须是合法对象且含 server、tool、arguments 三个字段；不要写卡片文本，不要输出空标记。",
             });
             continue; // 重新发起一轮流式
@@ -3078,10 +3860,13 @@ export const useChatStore = defineStore("chat", () => {
             // write_file 大 content 截断：模型把整份 HTML 塞进一个 write_file 的 content，
             // 超过单次输出上限被截断（有 write_file 开标记且已输出不少 content 但仍无 </tool_call>）。
             // 这种场景重试一次性大输出只会再截断 → 必须引导改为分段写入。
-            const isBigWriteFile = /write_file/.test(roundResult.content) &&
+            const isBigWriteFile =
+              /write_file/.test(roundResult.content) &&
               /"content"\s*:/.test(roundResult.content) &&
               roundResult.content.length > 2000;
-            dbg(`[loop] 检测到工具调用意图但未闭合/解析失败（大 write_file 截断=${isBigWriteFile}），第 ${round} 轮注入修正指令重试`);
+            dbg(
+              `[loop] 检测到工具调用意图但未闭合/解析失败（大 write_file 截断=${isBigWriteFile}），第 ${round} 轮注入修正指令重试`,
+            );
             rustMsgs.push({ role: "assistant", content: roundResult.content });
             rustMsgs.push({
               role: "user",
@@ -3089,12 +3874,12 @@ export const useChatStore = defineStore("chat", () => {
                 ? "⚠️ 你上一条 **write_file 调用因 content 过长被截断**，`</tool_call>` 未闭合，文件没有写入；再一次性输出仍会被截断。\n" +
                   "**改用分段写入（禁止一次塞整份文件）**：\n" +
                   "① 先 `write_file` 写文件**开头部分**，末尾放唯一占位标记 `<!--MORE-->`（HTML 根标签 `<html>`/`</html>` 在本段内闭合，保证文件合法）；\n" +
-                  "② 用 `insert_string` 逐段追加：`{\"path\": 同一路径, \"anchor\": \"<!--MORE-->\", \"position\": \"before\", \"new_text\": \"<下一段>\\n<!--MORE-->\"}`；\n" +
+                  '② 用 `insert_string` 逐段追加：`{"path": 同一路径, "anchor": "<!--MORE-->", "position": "before", "new_text": "<下一段>\\n<!--MORE-->"}`；\n' +
                   "③ 重复 ② 直到写完，最后一次 `new_text` 不要留 `<!--MORE-->`，让文件完整收尾。\n" +
                   "每次工具调用的内容 ≤ 2500 字符。不要重试一次性大输出。"
                 : "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
                   "请重新输出**完整合法**的工具调用：\n" +
-                  "<tool_call>\n{\"server\":\"app\",\"tool\":\"工具名\",\"arguments\":{...}}\n</tool_call>\n" +
+                  '<tool_call>\n{"server":"app","tool":"工具名","arguments":{...}}\n</tool_call>\n' +
                   "必须是完整的开/闭合标记、JSON 合法且含 server、tool、arguments 字段。若确实不需要工具，直接在正文给出完整答案。",
             });
             continue;
@@ -3148,7 +3933,9 @@ export const useChatStore = defineStore("chat", () => {
           // 用户停止时立即中断（不等当前工具跑完），让「停止」即刻生效
           const result = await callToolStoppable(toolServer, tc.tool, tc.arguments);
           if (stopRequested) break; // 工具返回后被停止 → 不再回填继续下一轮
-          dbg(`[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`);
+          dbg(
+            `[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`,
+          );
           const clipped = formatToolResultPreview(tc.tool, result);
           const card =
             `### 🔧 调用工具：\`${tc.tool}\`\n\n` +
@@ -3156,7 +3943,9 @@ export const useChatStore = defineStore("chat", () => {
             `\n<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`;
           toolChain.push(card);
           toolCards.push({
-            name: tc.tool, server: toolServer, status: "done",
+            name: tc.tool,
+            server: toolServer,
+            status: "done",
             durationMs: Date.now() - startTool,
             argsPreview: argsStr.slice(0, 300),
             resultPreview: clipped.slice(0, 300),
@@ -3164,9 +3953,10 @@ export const useChatStore = defineStore("chat", () => {
           streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
           rustMsgs.push({ role: "assistant", content: roundResult.content });
           // 接近工具轮次上限时，明确要求模型收尾，避免它一直探索目录而始终不输出最终答案
-          const closingHint = round >= MAX_TOOL_ROUNDS - 3
-            ? "\n\n⚠️ 已接近工具调用次数上限（剩余次数有限）。请基于**当前已获取的全部目录/文件结果**直接给出完整、详细的最终分析总结，**不要再调用更多工具**。"
-            : "";
+          const closingHint =
+            round >= MAX_TOOL_ROUNDS - 3
+              ? "\n\n⚠️ 已接近工具调用次数上限（剩余次数有限）。请基于**当前已获取的全部目录/文件结果**直接给出完整、详细的最终分析总结，**不要再调用更多工具**。"
+              : "";
           rustMsgs.push({
             role: "user",
             content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
@@ -3178,16 +3968,25 @@ export const useChatStore = defineStore("chat", () => {
           const card = `> ❌ 工具调用失败: \`${err}\``;
           toolChain.push(card);
           toolCards.push({
-            name: tc.tool, server: toolServer, status: "error",
+            name: tc.tool,
+            server: toolServer,
+            status: "error",
             durationMs: Date.now() - startTool,
             argsPreview: argsStr.slice(0, 300),
             error: err.slice(0, 300),
           });
           streamingContent.value = card;
           rustMsgs.push({ role: "assistant", content: roundResult.content });
+          // 精确编辑失败（old_text/anchor 与实际文件不一致）：不让模型直接放弃，
+          // 强制先 read_file 核对实际内容后以精确原文重试——避免分段写入/占位符类任务半途而废
+          const editRetryHint =
+            /未找到文本|未找到锚点/.test(err) &&
+            /^(replace_string|insert_string|delete_file)$/.test(tc.tool)
+              ? "\n\n⚠️ **精确编辑失败：old_text/anchor 与实际文件内容不一致（文件未改动）**。请**务必**先用 `read_file` 读取该文件（长文件请用较大 `offset` 读**末尾**区域），找到**文件中实际存在**的精确文本，再重新发起 replace_string/insert_string。注意分段占位 `<!--MORE-->` 可能多次出现或与相邻内容连排，必须逐字复制、可用 `occurrence` 指定第几次出现。**禁止臆测文件内容、禁止原样重试、禁止直接向用户报告失败**——修正后必须重试成功。"
+              : "";
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。`,
+            content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。${editRetryHint}`,
           });
         }
       }
@@ -3197,7 +3996,9 @@ export const useChatStore = defineStore("chat", () => {
       const sc = streamingContent.value.trim();
       const hasFinalAnswer = !isVagueBody(streamingContent.value);
       if (toolChain.length > 0 && !hasFinalAnswer) {
-        dbg(`[loop] 工具已执行但正文无实质答案（streamingContent=${sc.length} 字符，判定空洞=${isVagueBody(streamingContent.value)}），追加收尾轮`);
+        dbg(
+          `[loop] 工具已执行但正文无实质答案（streamingContent=${sc.length} 字符，判定空洞=${isVagueBody(streamingContent.value)}），追加收尾轮`,
+        );
         rustMsgs.push({
           role: "user",
           content:
@@ -3217,13 +4018,17 @@ export const useChatStore = defineStore("chat", () => {
       }
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
-
     } catch (err: unknown) {
       if (err instanceof Error) {
         let msg = err.message;
         // 图片发送失败时给出明确引导（多为模型不支持图片输入）
-        if (images && images.length > 0 && /400|unsupported|not.?support|image|content_type/i.test(msg)) {
-          msg += "\n\n💡 当前模型可能不支持图片输入。请在「设置 → API 配置」中添加支持视觉能力的模型（如 OpenAI、Gemini、Qwen-VL 等），或切换到支持图片的模型。";
+        if (
+          images &&
+          images.length > 0 &&
+          /400|unsupported|not.?support|image|content_type/i.test(msg)
+        ) {
+          msg +=
+            "\n\n💡 当前模型可能不支持图片输入。请在「设置 → API 配置」中添加支持视觉能力的模型（如 OpenAI、Gemini、Qwen-VL 等），或切换到支持图片的模型。";
         }
         dbg(`[sendMessage] 外层错误: ${msg}`);
         // 修复：工具已执行过（streamingContent 被工具卡片占用、非空）时，错误分支
@@ -3238,24 +4043,38 @@ export const useChatStore = defineStore("chat", () => {
       }
     } finally {
       activeStreamRequestId = null; // 本轮结束，清除当前流式 request_id
-      dbg(`[sendMessage] finally: toolChain=${toolChain.length}，streamingContent=${streamingContent.value.length}，reasoning=${streamingReasoning.value.length}`);
-      unlistenFns.forEach(f => f());
+      dbg(
+        `[sendMessage] finally: toolChain=${toolChain.length}，streamingContent=${streamingContent.value.length}，reasoning=${streamingReasoning.value.length}`,
+      );
+      unlistenFns.forEach((f) => f());
       // 流式兜底：剥离模型口头输出的工具调用 JSON；工具卡片（toolChain）逐段拼在最前
       const finalText = stripToolJson(streamingContent.value);
-      assistantMsg.content = toolChain.length > 0
-        ? (finalText ? toolChain.join("\n\n") + "\n\n" + finalText : toolChain.join("\n\n"))
-        : finalText;
+      assistantMsg.content =
+        toolChain.length > 0
+          ? finalText
+            ? toolChain.join("\n\n") + "\n\n" + finalText
+            : toolChain.join("\n\n")
+          : finalText;
       if (toolCards.length > 0) assistantMsg.tools = toolCards;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
       // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算
       if (!assistantMsg.tokens) {
-        assistantMsg.tokens = estimateMessageTokens(streamingContent.value, streamingReasoning.value);
+        assistantMsg.tokens = estimateMessageTokens(
+          streamingContent.value,
+          streamingReasoning.value,
+        );
       }
       // 费用估算
       try {
-        assistantMsg.cost = estimateCost(currentConfig.value.model, inputTokens, assistantMsg.tokens || 0);
-      } catch { /* 费用计算失败不影响主流程 */ }
+        assistantMsg.cost = estimateCost(
+          currentConfig.value.model,
+          inputTokens,
+          assistantMsg.tokens || 0,
+        );
+      } catch {
+        /* 费用计算失败不影响主流程 */
+      }
       assistantMsg.streaming = false;
       // 用量历史累计：即使删除会话也保留 token/费用统计（后端 usage_agg 表，按天累计）。
       // 只统计 LLM 消耗（/run、/read 等本地指令不走这里，不计入）。
@@ -3285,7 +4104,9 @@ export const useChatStore = defineStore("chat", () => {
       scheduleSave();
 
       // 对话结束：用完断开 MCP 服务器，释放资源（浏览器等子进程随之关闭）
-      useMcpStore().disconnectAll().catch(() => {});
+      useMcpStore()
+        .disconnectAll()
+        .catch(() => {});
 
       // 后台提取关键事实
       if (currentConfig.value.apiKey) {
@@ -3323,7 +4144,10 @@ export const useChatStore = defineStore("chat", () => {
     // 找到最后一个 user 消息和它之后的 assistant 消息
     let lastUserIdx = -1;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "user") { lastUserIdx = i; break; }
+      if (msgs[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
     }
     if (lastUserIdx === -1) return;
     const lastUser = msgs[lastUserIdx];
@@ -3340,8 +4164,11 @@ export const useChatStore = defineStore("chat", () => {
     } catch {
       // fallback
       const ta = document.createElement("textarea");
-      ta.value = text; document.body.appendChild(ta);
-      ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
     }
   }
 
@@ -3349,15 +4176,24 @@ export const useChatStore = defineStore("chat", () => {
   async function searchConversations(query: string) {
     if (!query.trim()) return [];
     try {
-      return await invoke<{conversation_id:string;conversation_title:string;message_id:string;role:string;snippet:string;timestamp:number}[]>(
-        "search_conversations_cmd", { query }
-      );
-    } catch { return []; }
+      return await invoke<
+        {
+          conversation_id: string;
+          conversation_title: string;
+          message_id: string;
+          role: string;
+          snippet: string;
+          timestamp: number;
+        }[]
+      >("search_conversations_cmd", { query });
+    } catch {
+      return [];
+    }
   }
 
   // --- 对话导出 (Rust) ---
   async function downloadExport(id: string, format: "md" | "json") {
-    const conv = conversations.value.find(c => c.id === id);
+    const conv = conversations.value.find((c) => c.id === id);
     const filename = `${conv?.title || "对话"}.${format}`;
     try {
       const content = await invoke<string>("export_conversation_cmd", { id, format });
@@ -3379,18 +4215,26 @@ export const useChatStore = defineStore("chat", () => {
       a.download = filename;
       a.click();
       URL.revokeObjectURL(a.href);
-    } catch (e) { console.warn("[道生一] 导出失败:", e); }
+    } catch (e) {
+      console.warn("[道生一] 导出失败:", e);
+    }
   }
 
   // S4 queue：后台投递完成/失败事件 → 刷新对应会话（后台回复落地后即时可见）
   if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
     listen<any>("queue-turn-done", (e) => {
       const cid = e.payload?.conversationId;
-      if (cid) { markSessionDone(cid); refreshConversation(cid); }
+      if (cid) {
+        markSessionDone(cid);
+        refreshConversation(cid);
+      }
     });
     listen<any>("queue-turn-error", (e) => {
       const cid = e.payload?.conversationId;
-      if (cid) { markSessionDone(cid); refreshConversation(cid); }
+      if (cid) {
+        markSessionDone(cid);
+        refreshConversation(cid);
+      }
     });
   }
 

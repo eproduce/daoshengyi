@@ -109,19 +109,31 @@
 
 *,
 *::before,
-*::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-html, body {
-  height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: 14px; line-height: 1.6;
-  color: var(--text-primary); background: var(--bg-primary);
-  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
-  overflow: hidden; user-select: none;
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
-#app { height: 100%; }
+html,
+body {
+  height: 100%;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  user-select: none;
+}
+
+#app {
+  height: 100%;
+}
 
 /* =========================== 统一下拉框 select =========================== */
 /* 全局去除浏览器默认 select 外观（默认箭头/内边距），统一为自定义箭头 + 主题变量，
@@ -146,62 +158,156 @@ select {
   line-height: 1.4;
   cursor: pointer;
   outline: none;
-  transition: border-color .2s, box-shadow .2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
-select:hover { border-color: var(--accent-color); }
+select:hover {
+  border-color: var(--accent-color);
+}
 select:focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, .12);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
 }
-select:disabled { opacity: .6; cursor: not-allowed; }
-select option { background-color: var(--bg-elevated); color: var(--text-primary); }
+select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+select option {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+}
 
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
 
 /* =========================== Markdown =========================== */
-.markdown-body { word-break: break-word; line-height: 1.75; }
-.markdown-body p { margin: 0 0 10px; }
-.markdown-body p:last-child { margin-bottom: 0; }
-.markdown-body ul, .markdown-body ol { margin: 6px 0; padding-left: 22px; }
-.markdown-body li { margin: 3px 0; }
+.markdown-body {
+  word-break: break-word;
+  line-height: 1.75;
+}
+.markdown-body p {
+  margin: 0 0 10px;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+.markdown-body li {
+  margin: 3px 0;
+}
 .markdown-body blockquote {
-  margin: 10px 0; padding: 8px 16px;
+  margin: 10px 0;
+  padding: 8px 16px;
   border-left: 3px solid var(--accent-color);
-  background: var(--accent-bg); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--accent-bg);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   color: var(--text-secondary);
 }
 .markdown-body code {
   font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, monospace;
-  font-size: .88em; background: var(--code-bg);
-  padding: 2px 6px; border-radius: 5px; font-weight: 500;
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-weight: 500;
 }
 .markdown-body pre {
-  margin: 12px 0; padding: 16px 18px; border-radius: var(--radius-md);
-  overflow-x: auto; background: var(--pre-bg); color: var(--pre-text);
+  margin: 12px 0;
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  background: var(--pre-bg);
+  color: var(--pre-text);
   border: 1px solid var(--border-color);
 }
-.markdown-body pre code { background: transparent; padding: 0; font-size: .88em; line-height: 1.65; font-weight: 400; }
-.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4 { margin: 18px 0 8px; font-weight: 650; letter-spacing: -.01em; }
-.markdown-body h1 { font-size: 1.45em; }
-.markdown-body h2 { font-size: 1.25em; }
-.markdown-body h3 { font-size: 1.1em; }
-.markdown-body table { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: .92em; }
-.markdown-body th, .markdown-body td { border: 1px solid var(--border-color); padding: 8px 14px; text-align: left; }
-.markdown-body th { background: var(--bg-secondary); font-weight: 600; }
-.markdown-body a { color: var(--accent-color); text-decoration: none; font-weight: 500; }
-.markdown-body a:hover { text-decoration: underline; }
-.markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 16px 0; }
-.markdown-body img { max-width: 100%; border-radius: var(--radius-sm); }
-.hljs { background: transparent !important; }
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.88em;
+  line-height: 1.65;
+  font-weight: 400;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 18px 0 8px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.markdown-body h1 {
+  font-size: 1.45em;
+}
+.markdown-body h2 {
+  font-size: 1.25em;
+}
+.markdown-body h3 {
+  font-size: 1.1em;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+  font-size: 0.92em;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border-color);
+  padding: 8px 14px;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+.markdown-body a {
+  color: var(--accent-color);
+  text-decoration: none;
+  font-weight: 500;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+.markdown-body img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+.hljs {
+  background: transparent !important;
+}
 
 /* ── KaTeX 公式 ─────────────────────────────────────────────────── */
 /* 覆盖 .markdown-body 的 word-break，避免长公式被折行拆碎 */
-.markdown-body .katex { white-space: nowrap; }
+.markdown-body .katex {
+  white-space: nowrap;
+}
 .markdown-body .katex,
-.markdown-body .katex * { overflow-wrap: normal; word-break: normal; }
+.markdown-body .katex * {
+  overflow-wrap: normal;
+  word-break: normal;
+}
 /* 修复复制公式时字母翻倍：KaTeX 的 MathML 无障碍层与可见 HTML 层都会被选中复制，
    导致 $p$ 复制成 "pp"、"3^6=729" 复制成 "36=72936=729"。让 MathML 层不可选中，
    复制只取可见层（不影响屏幕阅读器，user-select 不改变无障碍树）。 */

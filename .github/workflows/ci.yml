@@ -1,5 +1,5 @@
 # 持续集成：每次 push main / PR 自动跑质量门禁
-# - 前端：vitest 单测 + vue-tsc 类型检查 + vite build
+# - 前端：vitest 单测 + ESLint + Prettier 格式检查 + vue-tsc 类型检查 + vite build
 # - Rust：rustfmt 格式 + clippy（-D warnings）+ cargo test
 # 打包发布走 build-macos.yml（手动或 v* tag）
 
@@ -28,6 +28,12 @@ jobs:
 
       - name: Unit tests (Vitest)
         run: npm test
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Format check (Prettier)
+        run: npm run format:check
 
       - name: Type check + Build (vue-tsc + vite)
         run: npm run build

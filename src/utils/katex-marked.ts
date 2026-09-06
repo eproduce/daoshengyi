@@ -15,7 +15,8 @@ interface KatexToken extends Tokens.Generic {
 // 避免误判货币（如 "$5 和 $10"）。\(...\) 与 \[...\] 已在 md() 预处理中归一化。
 // 关键：内容部分也不允许未转义的 $（只能 \\. 转义），否则残缺公式（如 "$H是 $G"）
 // 会一路吞掉后续文字（含 ** 加粗、其他公式）当公式解析 → KaTeX 整段报错。
-const inlineRule = /^(\${1,2})(?!\$)((?:\\.|[^\\\n\$])*?(?:\\.|[^\\\n\$]))\1(?=[\s?!\.,:：？！。，；、（）、…—–·《》〈〉【】]|$)/;
+const inlineRule =
+  /^(\${1,2})(?!\$)((?:\\.|[^\\\n\$])*?(?:\\.|[^\\\n\$]))\1(?=[\s?!\.,:：？！。，；、（）、…—–·《》〈〉【】]|$)/; // eslint-disable-line no-useless-escape
 // 块级：$$\n ... \n$$
 const blockRule = /^(\${1,2})\n((?:\\[^]|[^\\])+?)\n\1(?:\n|$)/;
 
@@ -65,7 +66,9 @@ const inlineKatex: TokenizerExtension & RendererExtension = {
       displayMode: match[1].length === 2,
     };
   },
-  renderer: ((token: KatexToken) => renderKatex(token.text, token.displayMode)) as (token: Tokens.Generic) => string,
+  renderer: ((token: KatexToken) => renderKatex(token.text, token.displayMode)) as (
+    token: Tokens.Generic,
+  ) => string,
 };
 
 const blockKatex: TokenizerExtension & RendererExtension = {
@@ -81,7 +84,9 @@ const blockKatex: TokenizerExtension & RendererExtension = {
       displayMode: match[1].length === 2,
     };
   },
-  renderer: ((token: KatexToken) => renderKatex(token.text, token.displayMode) + "\n") as (token: Tokens.Generic) => string,
+  renderer: ((token: KatexToken) => renderKatex(token.text, token.displayMode) + "\n") as (
+    token: Tokens.Generic,
+  ) => string,
 };
 
 export function katexMarkedExtension(): MarkedExtension {

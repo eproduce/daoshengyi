@@ -20,9 +20,7 @@ export interface FileAttachment {
 }
 
 /// 多模态消息内容
-export type MessageContent =
-  | string
-  | (TextContentPart | ImageContentPart)[];
+export type MessageContent = string | (TextContentPart | ImageContentPart)[];
 
 export interface TextContentPart {
   type: "text";
@@ -167,4 +165,3 @@ export interface SkillCatalogItem {
   version: string;
   tags: string[];
 }
-

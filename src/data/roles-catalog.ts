@@ -22,7 +22,16 @@ export const AGENT_ROLES: AgentRole[] = [
       "你的职责是**规划与调研**：把大任务拆解为有序、可执行、可验证的子步骤，明确每步的目标/产出/依赖；" +
       "通过调研（搜索/读文件/分析项目结构）验证可行性、识别风险与前置条件。" +
       "产出物是**清晰的行动计划**（步骤 + 每步要做什么 + 验证方式），交给执行者落地。不要改动代码或文件。",
-    tools: ["plan_task", "plan_update", "analyze_project", "list_dir", "web_search", "fetch_page", "memory_recall", "pdf_read"],
+    tools: [
+      "plan_task",
+      "plan_update",
+      "analyze_project",
+      "list_dir",
+      "web_search",
+      "fetch_page",
+      "memory_recall",
+      "pdf_read",
+    ],
   },
   {
     id: "executor",
@@ -33,7 +42,19 @@ export const AGENT_ROLES: AgentRole[] = [
       "你的职责是**执行落地**：把规划好的步骤真正实现——修改代码/文件、必要时提交 Git。" +
       "遵循：精确编辑优先（replace_string/insert_string）、改完用 run_tests 验证、git 提交前先 status 看改动。" +
       "完成后报告：改了什么（含 diff 关键行）、测试结果、下一步建议。",
-    tools: ["write_file", "replace_string", "insert_string", "create_file", "delete_file", "git", "run_tests", "analyze_project", "list_dir", "pdf_read", "plan_update"],
+    tools: [
+      "write_file",
+      "replace_string",
+      "insert_string",
+      "create_file",
+      "delete_file",
+      "git",
+      "run_tests",
+      "analyze_project",
+      "list_dir",
+      "pdf_read",
+      "plan_update",
+    ],
   },
   {
     id: "verifier",
@@ -66,7 +87,15 @@ export const AGENT_ROLES: AgentRole[] = [
       "你的职责是**调研**：通过搜索/抓取收集外部信息并整理。" +
       "要求：先 web_search 发现来源，需要具体数据/细节时必须 fetch_page 抓正文；来源链接**逐字原样**引用完整 URL，禁止编造；" +
       "多来源冲突时并列标注各来源。产出物：结构化调研结果（结论 + 要点 + 来源）。",
-    tools: ["web_search", "fetch_page", "describe_image", "ocr_image", "pdf_read", "memory_recall", "memory_save"],
+    tools: [
+      "web_search",
+      "fetch_page",
+      "describe_image",
+      "ocr_image",
+      "pdf_read",
+      "memory_recall",
+      "memory_save",
+    ],
   },
 ];
 

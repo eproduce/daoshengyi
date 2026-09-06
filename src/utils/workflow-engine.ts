@@ -76,7 +76,9 @@ function tryParseStructured(s: string): unknown {
   try {
     const v = JSON.parse(t);
     return v !== null && typeof v === "object" ? v : s;
-  } catch { return s; }
+  } catch {
+    return s;
+  }
 }
 
 /** 字段级模板渲染：支持 {{id}}（整块）与 {{id.field}}（对象字段，可多级 {{id.a.b}}）。
@@ -86,7 +88,11 @@ export function renderTemplateEx(template: string, structured: Record<string, un
     const dot = key.indexOf(".");
     if (dot === -1) {
       const v = structured[key];
-      return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+      return v === undefined || v === null
+        ? ""
+        : typeof v === "object"
+          ? JSON.stringify(v, null, 2)
+          : String(v);
     }
     const rootId = key.slice(0, dot);
     const path = key.slice(dot + 1).split(".");
@@ -94,9 +100,16 @@ export function renderTemplateEx(template: string, structured: Record<string, un
     for (const seg of path) {
       if (cur && typeof cur === "object") {
         cur = (cur as Record<string, unknown>)[seg];
-      } else { cur = undefined; break; }
+      } else {
+        cur = undefined;
+        break;
+      }
     }
-    return cur === undefined || cur === null ? "" : typeof cur === "object" ? JSON.stringify(cur, null, 2) : String(cur);
+    return cur === undefined || cur === null
+      ? ""
+      : typeof cur === "object"
+        ? JSON.stringify(cur, null, 2)
+        : String(cur);
   });
 }
 
@@ -119,7 +132,10 @@ function condTokenize(expr: string): CondTok[] {
   const n = expr.length;
   while (i < n) {
     const c = expr[i];
-    if (/\s/.test(c)) { i++; continue; }
+    if (/\s/.test(c)) {
+      i++;
+      continue;
+    }
     if (c === "{" && expr[i + 1] === "{") {
       const end = expr.indexOf("}}", i + 2);
       if (end === -1) break;
@@ -132,9 +148,17 @@ function condTokenize(expr: string): CondTok[] {
       let s = "";
       let closed = false;
       while (j < n) {
-        if (expr[j] === "\\" && j + 1 < n) { s += expr[j + 1]; j += 2; continue; }
-        if (expr[j] === c) { closed = true; break; }
-        s += expr[j]; j++;
+        if (expr[j] === "\\" && j + 1 < n) {
+          s += expr[j + 1];
+          j += 2;
+          continue;
+        }
+        if (expr[j] === c) {
+          closed = true;
+          break;
+        }
+        s += expr[j];
+        j++;
       }
       toks.push({ t: "str", v: s });
       i = closed ? j + 1 : j;
@@ -142,16 +166,40 @@ function condTokenize(expr: string): CondTok[] {
     }
     if (/[0-9]/.test(c)) {
       const m = expr.slice(i).match(/^[0-9]*\.?[0-9]+/);
-      if (m) { toks.push({ t: "num", v: parseFloat(m[0]) }); i += m[0].length; continue; }
+      if (m) {
+        toks.push({ t: "num", v: parseFloat(m[0]) });
+        i += m[0].length;
+        continue;
+      }
     }
     const two = expr.slice(i, i + 2);
-    if (["==", "!=", ">=", "<=", "&&", "||"].includes(two)) { toks.push({ t: "op", v: two }); i += 2; continue; }
-    if (c === "(") { toks.push({ t: "lp" }); i++; continue; }
-    if (c === ")") { toks.push({ t: "rp" }); i++; continue; }
-    if (["!", ">", "<"].includes(c)) { toks.push({ t: "op", v: c }); i++; continue; }
-    if (/[A-Za-z0-9_\-]/.test(c)) {
-      const m = expr.slice(i).match(/^[A-Za-z0-9_\-]+/);
-      if (m) { toks.push({ t: "id", v: m[0] }); i += m[0].length; continue; }
+    if (["==", "!=", ">=", "<=", "&&", "||"].includes(two)) {
+      toks.push({ t: "op", v: two });
+      i += 2;
+      continue;
+    }
+    if (c === "(") {
+      toks.push({ t: "lp" });
+      i++;
+      continue;
+    }
+    if (c === ")") {
+      toks.push({ t: "rp" });
+      i++;
+      continue;
+    }
+    if (["!", ">", "<"].includes(c)) {
+      toks.push({ t: "op", v: c });
+      i++;
+      continue;
+    }
+    if (/[A-Za-z0-9_-]/.test(c)) {
+      const m = expr.slice(i).match(/^[A-Za-z0-9_-]+/);
+      if (m) {
+        toks.push({ t: "id", v: m[0] });
+        i += m[0].length;
+        continue;
+      }
     }
     i++; // 未知字符跳过
   }
@@ -176,17 +224,28 @@ class CondParser {
     this.toks = toks;
   }
   parse(): CondAst | null {
-    try { return this.parseOr(); } catch { return null; }
+    try {
+      return this.parseOr();
+    } catch {
+      return null;
+    }
   }
-  private peek(): CondTok | undefined { return this.toks[this.pos]; }
-  private next(): CondTok | undefined { return this.toks[this.pos++]; }
+  private peek(): CondTok | undefined {
+    return this.toks[this.pos];
+  }
+  private next(): CondTok | undefined {
+    return this.toks[this.pos++];
+  }
   private isId(v: string): boolean {
     const t = this.peek();
     return !!t && t.t === "id" && t.v.toLowerCase() === v;
   }
   private parseOr(): CondAst {
     let left = this.parseAnd();
-    while (this.peek()?.t === "op" && (this.peek() as { v: string }).v === "||" || this.isId("or")) {
+    while (
+      (this.peek()?.t === "op" && (this.peek() as { v: string }).v === "||") ||
+      this.isId("or")
+    ) {
       this.next();
       left = { k: "or", l: left, r: this.parseAnd() };
     }
@@ -194,7 +253,10 @@ class CondParser {
   }
   private parseAnd(): CondAst {
     let left = this.parseRel();
-    while (this.peek()?.t === "op" && (this.peek() as { v: string }).v === "&&" || this.isId("and")) {
+    while (
+      (this.peek()?.t === "op" && (this.peek() as { v: string }).v === "&&") ||
+      this.isId("and")
+    ) {
       this.next();
       left = { k: "and", l: left, r: this.parseRel() };
     }
@@ -269,23 +331,36 @@ function truthy(v: CondVal): boolean {
 }
 function condEval(ast: CondAst, outputs: Record<string, string>): CondVal {
   switch (ast.k) {
-    case "bool": return { b: ast.v };
-    case "str": return { s: ast.v };
-    case "num": return { n: ast.v };
-    case "ref": return { s: outputs[ast.id] ?? "" };
-    case "not": return { b: !truthy(condEval(ast.e, outputs)) };
-    case "or": return { b: truthy(condEval(ast.l, outputs)) || truthy(condEval(ast.r, outputs)) };
-    case "and": return { b: truthy(condEval(ast.l, outputs)) && truthy(condEval(ast.r, outputs)) };
+    case "bool":
+      return { b: ast.v };
+    case "str":
+      return { s: ast.v };
+    case "num":
+      return { n: ast.v };
+    case "ref":
+      return { s: outputs[ast.id] ?? "" };
+    case "not":
+      return { b: !truthy(condEval(ast.e, outputs)) };
+    case "or":
+      return { b: truthy(condEval(ast.l, outputs)) || truthy(condEval(ast.r, outputs)) };
+    case "and":
+      return { b: truthy(condEval(ast.l, outputs)) && truthy(condEval(ast.r, outputs)) };
     case "cmp": {
       const l = strOf(condEval(ast.l, outputs));
       const r = strOf(condEval(ast.r, outputs));
       switch (ast.op) {
-        case "==": return { b: l === r };
-        case "!=": return { b: l !== r };
-        case ">": return { b: numOf({ s: l }) > numOf({ s: r }) };
-        case "<": return { b: numOf({ s: l }) < numOf({ s: r }) };
-        case ">=": return { b: numOf({ s: l }) >= numOf({ s: r }) };
-        case "<=": return { b: numOf({ s: l }) <= numOf({ s: r }) };
+        case "==":
+          return { b: l === r };
+        case "!=":
+          return { b: l !== r };
+        case ">":
+          return { b: numOf({ s: l }) > numOf({ s: r }) };
+        case "<":
+          return { b: numOf({ s: l }) < numOf({ s: r }) };
+        case ">=":
+          return { b: numOf({ s: l }) >= numOf({ s: r }) };
+        case "<=":
+          return { b: numOf({ s: l }) <= numOf({ s: r }) };
       }
       return { b: false };
     }
@@ -355,7 +430,11 @@ export function topoSort(graph: WorkflowGraph): { order: string[] } | { error: s
 }
 
 /** 某条入边是否激活：非条件源边始终激活；条件源边需 label 与条件输出（true/false）一致；无 label 视为始终激活。 */
-function edgeActive(e: WorkflowEdge, outputs: Record<string, string>, byId: Map<string, WorkflowNode>): boolean {
+function edgeActive(
+  e: WorkflowEdge,
+  outputs: Record<string, string>,
+  byId: Map<string, WorkflowNode>,
+): boolean {
   const src = byId.get(e.source);
   if (!src || src.type !== "condition") return true;
   if (!e.label) return true;
@@ -373,9 +452,7 @@ function resolveInputs(
   byId: Map<string, WorkflowNode>,
 ): string {
   const upstream = edges.filter((e) => e.target === node.id && edgeActive(e, outputs, byId));
-  const ctx = upstream
-    .map((e) => `[${e.source}]\n${outputs[e.source] ?? ""}`)
-    .join("\n\n");
+  const ctx = upstream.map((e) => `[${e.source}]\n${outputs[e.source] ?? ""}`).join("\n\n");
   const base = node.config.prompt ?? node.config.text ?? "";
   // 外部输入（用户提供）也参与占位符替换；结构化表优先（支持 {{id.field}}）
   const withExternal = renderTemplateEx(base, { ...structured, ...external });
@@ -383,12 +460,17 @@ function resolveInputs(
 }
 
 /** 深拷贝参数模板并对所有字符串值做占位符替换（支持 {{id.field}} 字段级，structured 为结构化值表）。 */
-function renderArgs(args: Record<string, unknown>, structured: Record<string, unknown>): Record<string, unknown> {
+function renderArgs(
+  args: Record<string, unknown>,
+  structured: Record<string, unknown>,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
     if (typeof v === "string") out[k] = renderTemplateEx(v, structured);
-    else if (Array.isArray(v)) out[k] = v.map((x) => (typeof x === "string" ? renderTemplateEx(x, structured) : x));
-    else if (v && typeof v === "object") out[k] = renderArgs(v as Record<string, unknown>, structured);
+    else if (Array.isArray(v))
+      out[k] = v.map((x) => (typeof x === "string" ? renderTemplateEx(x, structured) : x));
+    else if (v && typeof v === "object")
+      out[k] = renderArgs(v as Record<string, unknown>, structured);
     else out[k] = v;
   }
   return out;
@@ -432,7 +514,14 @@ export async function executeWorkflow(
       outputs[id] = "（分支未激活，跳过）";
       skippedIds.add(id);
       log.push(`⏭️ ${node.label}（${node.id}）条件分支未激活，跳过`);
-      trace.push({ nodeId: id, label: node.label, type: node.type, status: "skipped", durationMs: 0, output: "（分支未激活，跳过）" });
+      trace.push({
+        nodeId: id,
+        label: node.label,
+        type: node.type,
+        status: "skipped",
+        durationMs: 0,
+        output: "（分支未激活，跳过）",
+      });
       onStep?.({ nodeId: id, status: "skipped", output: "（分支未激活，跳过）" });
       continue;
     }
@@ -457,7 +546,14 @@ export async function executeWorkflow(
         outputs[id] = val ? "true" : "false";
         structured[id] = val ? "true" : "false";
         log.push(`🔀 ${node.label}（${node.id}）→ ${val ? "true" : "false"}`);
-        trace.push({ nodeId: id, label: node.label, type: node.type, status: "done", durationMs: Date.now() - t0, output: val ? "true" : "false" });
+        trace.push({
+          nodeId: id,
+          label: node.label,
+          type: node.type,
+          status: "done",
+          durationMs: Date.now() - t0,
+          output: val ? "true" : "false",
+        });
         onStep?.({ nodeId: id, status: "done", output: val ? "true" : "false" });
         continue;
       } else if (node.type === "code") {
@@ -470,21 +566,36 @@ export async function executeWorkflow(
       // 结构化值：尝试把输出解析为 JSON 对象/数组（LLM 输出 JSON、代码节点返回对象等）
       structured[id] = tryParseStructured(outputs[id]);
       log.push(`✅ ${node.label}（${node.id}）→ ${(outputs[id] || "").slice(0, 120)}`);
-      trace.push({ nodeId: id, label: node.label, type: node.type, status: "done", durationMs: Date.now() - t0, output: outputs[id] ?? "" });
+      trace.push({
+        nodeId: id,
+        label: node.label,
+        type: node.type,
+        status: "done",
+        durationMs: Date.now() - t0,
+        output: outputs[id] ?? "",
+      });
       onStep?.({ nodeId: id, status: "done", output: outputs[id] });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.push(`❌ ${node.label}（${node.id}）：${msg}`);
       outputs[id] = `（节点执行失败：${msg}）`;
       structured[id] = outputs[id];
-      trace.push({ nodeId: id, label: node.label, type: node.type, status: "error", durationMs: Date.now() - t0, output: outputs[id] });
+      trace.push({
+        nodeId: id,
+        label: node.label,
+        type: node.type,
+        status: "error",
+        durationMs: Date.now() - t0,
+        output: outputs[id],
+      });
       onStep?.({ nodeId: id, status: "error", output: `（节点执行失败：${msg}）` });
     }
   }
 
   // 终端节点 = 无出边（含 end 节点）且未被分支跳过；作为最终输出
   const terminal = graph.nodes.filter(
-    (n) => !skippedIds.has(n.id) && (n.type === "end" || !graph.edges.some((e) => e.source === n.id))
+    (n) =>
+      !skippedIds.has(n.id) && (n.type === "end" || !graph.edges.some((e) => e.source === n.id)),
   );
   return {
     outputs: terminal.map((n) => ({ nodeId: n.id, label: n.label, value: outputs[n.id] ?? "" })),
@@ -510,9 +621,12 @@ export function validateWorkflowGraph(graph: WorkflowGraph): string | null {
     if (!TYPES.includes(n.type)) return `节点 ${n.id} 类型不合法：${n.type}`;
     if (!n.label || !String(n.label).trim()) return `节点 ${n.id} 缺少 label`;
     if (n.type === "tool" && !n.config?.tool) return `工具节点 ${n.id} 未指定工具名（config.tool）`;
-    if (n.type === "llm" && !n.config?.prompt?.trim()) return `LLM 节点 ${n.id} 未填写提示词（config.prompt）`;
-    if (n.type === "condition" && !n.config?.expression?.trim()) return `条件节点 ${n.id} 未填写表达式（config.expression）`;
-    if (n.type === "code" && !n.config?.code?.trim()) return `代码节点 ${n.id} 未填写代码（config.code）`;
+    if (n.type === "llm" && !n.config?.prompt?.trim())
+      return `LLM 节点 ${n.id} 未填写提示词（config.prompt）`;
+    if (n.type === "condition" && !n.config?.expression?.trim())
+      return `条件节点 ${n.id} 未填写表达式（config.expression）`;
+    if (n.type === "code" && !n.config?.code?.trim())
+      return `代码节点 ${n.id} 未填写代码（config.code）`;
   }
   for (const e of graph.edges) {
     if (!ids.has(e.source)) return `连线 ${e.id} 源节点 ${e.source} 不存在`;
@@ -548,7 +662,10 @@ export function queryTokens(text: string): string[] {
   const cjk = s.replace(/[^\u4e00-\u9fa5]+/g, " ");
   for (const seg of cjk.split(/\s+/)) {
     if (!seg) continue;
-    if (seg.length <= 2) { out.add(seg); continue; }
+    if (seg.length <= 2) {
+      out.add(seg);
+      continue;
+    }
     out.add(seg);
     for (let i = 0; i + 2 < seg.length; i++) out.add(seg.slice(i, i + 3));
     for (let i = 0; i + 1 < seg.length; i++) out.add(seg.slice(i, i + 2));

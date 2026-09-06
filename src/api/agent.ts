@@ -33,7 +33,7 @@ function buildMessages(messages: ChatMessage[]) {
  */
 export async function* streamChat(
   messages: ChatMessage[],
-  config: ApiConfig
+  config: ApiConfig,
 ): AsyncGenerator<StreamDelta> {
   const body: ChatCompletionRequest = {
     model: config.model,
@@ -88,10 +88,7 @@ export async function* streamChat(
 /**
  * 非流式聊天请求
  */
-export async function sendChat(
-  messages: ChatMessage[],
-  config: ApiConfig
-): Promise<string> {
+export async function sendChat(messages: ChatMessage[], config: ApiConfig): Promise<string> {
   const body: ChatCompletionRequest = {
     model: config.model,
     messages: buildMessages(messages),
@@ -115,4 +112,3 @@ export async function sendChat(
   const data = await response.json();
   return data.choices?.[0]?.message?.content || "";
 }
-

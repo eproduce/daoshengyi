@@ -18,15 +18,33 @@ import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
 import type { ImageAttachment, FileAttachment } from "@/types";
-import { Download, Trash2, Moon, Sun, Settings, MessageSquarePlus, Terminal, FileText, Paperclip, AlarmClock, Stethoscope, Square } from "lucide-vue-next";
+import {
+  Download,
+  Trash2,
+  Moon,
+  Sun,
+  Settings,
+  MessageSquarePlus,
+  Terminal,
+  FileText,
+  Paperclip,
+  AlarmClock,
+  Stethoscope,
+  Square,
+} from "lucide-vue-next";
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
 const ui = useUiStore();
 const { theme, toggleTheme } = useTheme();
 
+// 桌面环境检测：非 Tauri（浏览器 dev/preview 预览）时本地文件写入/系统命令等能力不可用，
+// 顶部显示警示条，避免用户在纯浏览器里误以为 agent「不能写文件」
+const isDesktop = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+const browserModeBanner = ref(true); // 预览警示条可手动关闭
+
 // 首次启动自动检测 Ollama 本地视觉模型（结合硬件评估智能引导）
-const ollamaBanner = ref(false);       // 硬件允许 → 一键部署横幅
+const ollamaBanner = ref(false); // 硬件允许 → 一键部署横幅
 const ollamaNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
 const hardwareMessage = ref("");
 function openSettings(tab: SettingsTab = "api") {
@@ -34,11 +52,17 @@ function openSettings(tab: SettingsTab = "api") {
 }
 
 // 系统菜单事件（main.ts 分发）触发的响应：切换主题 / 导出对话
-watch(() => ui.themeToggleCounter, () => toggleTheme());
-watch(() => ui.exportCounter, () => {
-  const id = chatStore.activeConversationId;
-  if (id) chatStore.downloadExport(id, "md");
-});
+watch(
+  () => ui.themeToggleCounter,
+  () => toggleTheme(),
+);
+watch(
+  () => ui.exportCounter,
+  () => {
+    const id = chatStore.activeConversationId;
+    if (id) chatStore.downloadExport(id, "md");
+  },
+);
 // 根据当前 Ollama 状态计算聊天窗口引导横幅。抽取为独立函数，供启动时与
 // 状态变化（含一键部署完成）时实时重算——修复「部署完成后横幅仍残留」。
 function evaluateOllamaBanner() {
@@ -81,25 +105,39 @@ function scrollToBottom() {
   });
 }
 
-watch(() => chatStore.activeConversation?.messages.length, () => scrollToBottom());
+watch(
+  () => chatStore.activeConversation?.messages.length,
+  () => scrollToBottom(),
+);
 // .at(-1) 是 ES2022，旧 WKWebView 不支持 → 用 length-1 兼容写法
-watch(() => {
-  const msgs = chatStore.activeConversation?.messages;
-  return msgs && msgs.length > 0 ? msgs[msgs.length - 1].content : undefined;
-}, () => scrollToBottom());
+watch(
+  () => {
+    const msgs = chatStore.activeConversation?.messages;
+    return msgs && msgs.length > 0 ? msgs[msgs.length - 1].content : undefined;
+  },
+  () => scrollToBottom(),
+);
 // 流式输出时跟随滚动
-watch(() => chatStore.streamingContent, () => scrollToBottom());
-watch(() => chatStore.streamingReasoning, () => scrollToBottom());
+watch(
+  () => chatStore.streamingContent,
+  () => scrollToBottom(),
+);
+watch(
+  () => chatStore.streamingReasoning,
+  () => scrollToBottom(),
+);
 
 function handleSend(text: string, images: ImageAttachment[], files: FileAttachment[]) {
   chatStore.sendMessage(
     text,
     images.length > 0 ? images : undefined,
-    files.length > 0 ? files : undefined
+    files.length > 0 ? files : undefined,
   );
 }
 
-function handleStop() { chatStore.stopStreaming(); }
+function handleStop() {
+  chatStore.stopStreaming();
+}
 
 function onPersonaChange(e: Event) {
   chatStore.setPersona((e.target as HTMLSelectElement).value);
@@ -112,18 +150,26 @@ function exportMarkdown() {
   let md = `# ${conv.title}\n\n`;
   for (const m of conv.messages) {
     md += m.role === "user" ? `### 你\n\n${m.content}\n\n` : `### 道生一\n\n${m.content}\n\n`;
-    if (m.reasoning_content) md += `<details><summary>🧠 思考过程</summary>\n\n${m.reasoning_content}\n\n</details>\n\n`;
-    if (m.images?.length) m.images.forEach((img, i) => md += `![图片${i + 1}](${img.base64.slice(0, 50)}...)\n\n`);
+    if (m.reasoning_content)
+      md += `<details><summary>🧠 思考过程</summary>\n\n${m.reasoning_content}\n\n</details>\n\n`;
+    if (m.images?.length)
+      m.images.forEach((img, i) => (md += `![图片${i + 1}](${img.base64.slice(0, 50)}...)\n\n`));
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-  a.download = `${conv.title}.md`; a.click();
+  a.download = `${conv.title}.md`;
+  a.click();
 }
 
 // 快捷键
 function onKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === "n") { e.preventDefault(); chatStore.createConversation(); }
-  if (e.key === "Escape" && chatStore.isStreaming) { chatStore.stopStreaming(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+    e.preventDefault();
+    chatStore.createConversation();
+  }
+  if (e.key === "Escape" && chatStore.isStreaming) {
+    chatStore.stopStreaming();
+  }
 }
 
 onMounted(() => {
@@ -147,9 +193,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <!-- 顶部栏 -->
       <header class="topbar">
         <div class="topbar__left">
-          <button class="topbar__btn" title="切换侧边栏" @click="ui.toggleSidebar()">
-            ☰
-          </button>
+          <button class="topbar__btn" title="切换侧边栏" @click="ui.toggleSidebar()">☰</button>
           <AppLogo :size="22" class="topbar__logo" />
           <h1 class="topbar__title">道生一</h1>
         </div>
@@ -161,7 +205,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             @change="onPersonaChange"
           >
             <option value="">🧑 通用助手</option>
-            <option v-for="p in PERSONAS" :key="p.id" :value="p.id">{{ p.emoji }} {{ p.name }}</option>
+            <option v-for="p in PERSONAS" :key="p.id" :value="p.id">
+              {{ p.emoji }} {{ p.name }}
+            </option>
           </select>
           <div
             v-if="chatStore.usageAggTotal > 0"
@@ -174,10 +220,19 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               v-if="chatStore.cacheHitRate !== null"
               class="stat stat--cache"
               :title="`缓存命中 ${chatStore.cacheHitTotal.toLocaleString()} tok / 未命中 ${chatStore.cacheMissTotal.toLocaleString()} tok`"
-            >缓存 {{ chatStore.cacheHitRate.toFixed(0) }}%</span>
+              >缓存 {{ chatStore.cacheHitRate.toFixed(0) }}%</span
+            >
           </div>
-          <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown"><Download :size="17" /></button>
-          <button class="topbar__btn" title="清空对话" @click="chatStore.clearCurrentConversation()"><Trash2 :size="17" /></button>
+          <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">
+            <Download :size="17" />
+          </button>
+          <button
+            class="topbar__btn"
+            title="清空对话"
+            @click="chatStore.clearCurrentConversation()"
+          >
+            <Trash2 :size="17" />
+          </button>
           <button class="topbar__btn" title="切换主题" @click="toggleTheme">
             <Moon v-if="theme === 'light'" :size="17" />
             <Sun v-else :size="17" />
@@ -188,18 +243,40 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         </div>
       </header>
 
+      <!-- 浏览器预览模式警示：非 Tauri 环境（vite dev/preview 预览）无本地文件写入等桌面能力 -->
+      <div v-if="browserModeBanner && !isDesktop" class="ollama-banner ollama-banner--warn">
+        <span
+          >⚠️ 浏览器预览模式：本地文件写入 / 读取 / 打开、系统命令等桌面能力不可用——agent 无法把
+          文件直接写入磁盘。请切换到「道生一」桌面应用窗口（npm run tauri dev
+          打开、带系统菜单的窗口）使用完整功能。</span
+        >
+        <button class="ollama-banner__close" title="关闭" @click="browserModeBanner = false">
+          ✕
+        </button>
+      </div>
+
       <!-- Ollama 本地视觉模型引导横幅（硬件允许时） -->
       <div v-if="ollamaBanner" class="ollama-banner">
-        <span>💡 检测到本地视觉模型（Ollama + llava-phi3）未就绪，你的硬件足以支持，可免费在本机识别图片。</span>
+        <span
+          >💡 检测到本地视觉模型（Ollama +
+          llava-phi3）未就绪，你的硬件足以支持，可免费在本机识别图片。</span
+        >
         <button class="ollama-banner__btn" @click="openSettings('ollama')">一键部署</button>
         <button class="ollama-banner__close" title="关闭" @click="ollamaBanner = false">✕</button>
       </div>
 
       <!-- 硬件不足时：建议配置线上视觉模型 API -->
       <div v-if="ollamaNotRecBanner" class="ollama-banner ollama-banner--warn">
-        <span>⚠️ {{ hardwareMessage || '你的硬件可能不适合本地部署视觉模型，建议配置线上视觉模型 API。' }}</span>
+        <span
+          >⚠️
+          {{
+            hardwareMessage || "你的硬件可能不适合本地部署视觉模型，建议配置线上视觉模型 API。"
+          }}</span
+        >
         <button class="ollama-banner__btn" @click="openSettings('api')">配置线上 API</button>
-        <button class="ollama-banner__close" title="关闭" @click="ollamaNotRecBanner = false">✕</button>
+        <button class="ollama-banner__close" title="关闭" @click="ollamaNotRecBanner = false">
+          ✕
+        </button>
       </div>
 
       <!-- 消息区域 -->
@@ -207,19 +284,33 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         <div class="messages-inner">
           <!-- 空状态 -->
           <div
-            v-if="!chatStore.activeConversation || chatStore.activeConversation.messages.length === 0"
+            v-if="
+              !chatStore.activeConversation || chatStore.activeConversation.messages.length === 0
+            "
             class="empty-state"
           >
             <div class="empty-state__icon"><AppLogo :size="56" /></div>
             <h2>道生一</h2>
             <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
             <div class="empty-state__tips">
-              <div class="tip-card"><span class="tip-key"><MessageSquarePlus :size="14" /> ⌘/Ctrl + N</span> 新建对话</div>
-              <div class="tip-card"><span class="tip-key"><Terminal :size="14" /> /run</span> 执行终端命令</div>
-              <div class="tip-card"><span class="tip-key"><FileText :size="14" /> /read</span> 读取本地文件</div>
-              <div class="tip-card"><span class="tip-key"><Paperclip :size="14" /> 粘贴图片</span> 本地视觉识别</div>
-              <div class="tip-card"><span class="tip-key"><AlarmClock :size="14" /> 定时任务</span> 后台自动执行</div>
-              <div class="tip-card"><span class="tip-key"><Stethoscope :size="14" /> 诊断</span> 系统健康与日志</div>
+              <div class="tip-card">
+                <span class="tip-key"><MessageSquarePlus :size="14" /> ⌘/Ctrl + N</span> 新建对话
+              </div>
+              <div class="tip-card">
+                <span class="tip-key"><Terminal :size="14" /> /run</span> 执行终端命令
+              </div>
+              <div class="tip-card">
+                <span class="tip-key"><FileText :size="14" /> /read</span> 读取本地文件
+              </div>
+              <div class="tip-card">
+                <span class="tip-key"><Paperclip :size="14" /> 粘贴图片</span> 本地视觉识别
+              </div>
+              <div class="tip-card">
+                <span class="tip-key"><AlarmClock :size="14" /> 定时任务</span> 后台自动执行
+              </div>
+              <div class="tip-card">
+                <span class="tip-key"><Stethoscope :size="14" /> 诊断</span> 系统健康与日志
+              </div>
             </div>
           </div>
 
@@ -255,7 +346,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
     </div>
 
     <!-- 设置弹窗 -->
-    <SettingsDialog v-if="ui.settingsOpen" :initial-tab="ui.settingsTab" @close="ui.closeSettings()" />
+    <SettingsDialog
+      v-if="ui.settingsOpen"
+      :initial-tab="ui.settingsTab"
+      @close="ui.closeSettings()"
+    />
 
     <!-- 关于道生一 -->
     <AboutDialog v-if="ui.aboutOpen" @close="ui.closeAbout()" />
@@ -285,176 +380,321 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   flex-shrink: 0;
   border-right: 1px solid var(--border-color);
   background: var(--bg-sidebar);
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+  transition:
+    width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.25s ease;
   overflow: hidden;
 }
-.sidebar--collapsed { width: 0; opacity: 0; }
+.sidebar--collapsed {
+  width: 0;
+  opacity: 0;
+}
 
 .main-area {
-  flex: 1; display: flex; flex-direction: column; min-width: 0;
-  position: relative; background: var(--bg-primary);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+  background: var(--bg-primary);
 }
 
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 20px; height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: 54px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
-.topbar__left { display: flex; align-items: center; gap: 12px; }
-.topbar__logo { display: flex; }
+.topbar__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.topbar__logo {
+  display: flex;
+}
 .topbar__title {
-  font-size: 16px; font-weight: 700; color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
   letter-spacing: -0.01em;
   background: linear-gradient(135deg, var(--accent-color), #06b6d4);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
   background-clip: text;
 }
-.topbar__right { display: flex; align-items: center; gap: 6px; }
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .topbar__persona {
-  appearance: none; -webkit-appearance: none;
-  height: 28px; padding: 0 26px 0 12px;
-  border: 1px solid var(--border-color); border-radius: 16px;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 28px;
+  padding: 0 26px 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
   background-color: var(--bg-secondary);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
-  color: var(--text-secondary); font-size: 11px; line-height: 1; font-family: inherit;
-  cursor: pointer; outline: none; max-width: 160px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.topbar__persona:focus { border-color: var(--accent-color); }
-.topbar__persona option { background: var(--bg-secondary); color: var(--text-primary); }
+.topbar__persona:focus {
+  border-color: var(--accent-color);
+}
+.topbar__persona option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
 
 .topbar__stats {
-  display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 12px; margin-right: 4px;
-  border: 1px solid var(--border-color); border-radius: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px;
+  margin-right: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
   background: var(--bg-secondary);
 }
 .topbar__stats .stat {
-  font-size: 11px; font-weight: 600; color: var(--text-secondary);
-  font-variant-numeric: tabular-nums; white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .topbar__stats .stat--cache {
-  color: var(--accent-color); font-weight: 700;
+  color: var(--accent-color);
+  font-weight: 700;
 }
 
 .topbar__btn {
-  width: 34px; height: 34px; border: none; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-secondary); font-size: 15px;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: all 0.2s;
 }
-.topbar__btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.topbar__btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
 
 .messages-container {
-  flex: 1; overflow-y: auto; overflow-x: hidden;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg-primary);
   scroll-behavior: smooth;
 }
 
 /* 消息内容居中容器：小屏填满可用宽度，大屏封顶 1400px，减少高分屏全屏时的两侧空白 */
 .messages-inner {
-  max-width: min(100% - 48px, 1400px); margin: 0 auto; min-height: 100%;
-  display: flex; flex-direction: column;
+  max-width: min(100% - 48px, 1400px);
+  margin: 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
   padding: 16px 24px 28px;
 }
 
 .empty-state {
-  flex: 1; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; text-align: center; padding: 40px 24px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px 24px;
 }
 .empty-state__icon {
-  width: 80px; height: 80px; border-radius: 24px;
+  width: 80px;
+  height: 80px;
+  border-radius: 24px;
   background: var(--accent-light);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 40px; margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  margin-bottom: 20px;
   box-shadow: var(--shadow-md);
 }
 .empty-state h2 {
-  font-size: 24px; font-weight: 700; color: var(--text-primary);
-  margin: 0 0 8px; letter-spacing: -0.02em;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
 }
 .empty-state p {
-  font-size: 14px; color: var(--text-secondary);
-  max-width: 420px; line-height: 1.6; margin-bottom: 28px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 420px;
+  line-height: 1.6;
+  margin-bottom: 28px;
 }
 .empty-state__tips {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
-  max-width: 560px; width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  max-width: 560px;
+  width: 100%;
 }
 .tip-card {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 14px 10px; border: 1px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-elevated);
-  font-size: 12px; color: var(--text-secondary);
-  transition: border-color .2s, transform .15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition:
+    border-color 0.2s,
+    transform 0.15s;
 }
-.tip-card:hover { border-color: var(--accent-color); transform: translateY(-1px); }
+.tip-card:hover {
+  border-color: var(--accent-color);
+  transform: translateY(-1px);
+}
 .tip-key {
-  font-size: 12px; font-weight: 600; color: var(--accent-color);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-color);
   font-variant-numeric: tabular-nums;
 }
 
 .stop-bar {
-  position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 10;
 }
 .stop-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 18px; border: 1.5px solid var(--danger-color);
-  border-radius: 24px; background: var(--bg-elevated);
-  color: var(--danger-color); font-size: 13px; font-weight: 500;
-  cursor: pointer; box-shadow: var(--shadow-md); transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border: 1.5px solid var(--danger-color);
+  border-radius: 24px;
+  background: var(--bg-elevated);
+  color: var(--danger-color);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: all 0.2s;
 }
 .stop-btn:hover {
-  background: var(--danger-color); color: #fff;
-  transform: translateY(-1px); box-shadow: var(--shadow-lg);
+  background: var(--danger-color);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
 }
-.stop-btn:active { transform: translateY(0); }
+.stop-btn:active {
+  transform: translateY(0);
+}
 
 /* 切换模型配置提示 overlay */
 .switch-overlay {
-  position: absolute; inset: 0; z-index: 50;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,.35); backdrop-filter: blur(2px);
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
 }
 .switch-overlay__box {
-  padding: 16px 28px; border-radius: 14px;
-  background: var(--bg-elevated); border: 1px solid var(--border-color);
-  color: var(--text-primary); font-size: 14px; font-weight: 600;
+  padding: 16px 28px;
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
   box-shadow: var(--shadow-md);
 }
 
 /* Ollama 引导横幅 */
 .ollama-banner {
-  display: flex; align-items: center; gap: 12px;
-  padding: 8px 16px; margin: 8px 16px 0;
-  background: linear-gradient(135deg, rgba(99,102,241,.12), rgba(34,197,94,.1));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  margin: 8px 16px 0;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(34, 197, 94, 0.1));
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  font-size: 13px; color: var(--text-primary);
+  font-size: 13px;
+  color: var(--text-primary);
   flex-shrink: 0;
 }
-.ollama-banner span { flex: 1; }
+.ollama-banner span {
+  flex: 1;
+}
 .ollama-banner__btn {
-  padding: 4px 12px; border: none; border-radius: 6px;
-  background: var(--accent-color); color: #fff;
-  font-size: 12px; cursor: pointer; white-space: nowrap;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
 }
-.ollama-banner__btn:hover { background: var(--accent-hover); }
+.ollama-banner__btn:hover {
+  background: var(--accent-hover);
+}
 .ollama-banner--warn {
-  background: linear-gradient(135deg, rgba(245,158,11,.16), rgba(239,68,68,.1));
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(239, 68, 68, 0.1));
 }
-.ollama-banner--warn .ollama-banner__btn { background: #f59e0b; }
-.ollama-banner--warn .ollama-banner__btn:hover { background: #d97706; }
+.ollama-banner--warn .ollama-banner__btn {
+  background: #f59e0b;
+}
+.ollama-banner--warn .ollama-banner__btn:hover {
+  background: #d97706;
+}
 .ollama-banner__close {
-  background: none; border: none; color: var(--text-secondary);
-  cursor: pointer; font-size: 12px; padding: 4px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px;
 }
-.ollama-banner__close:hover { color: var(--text-primary); }
+.ollama-banner__close:hover {
+  color: var(--text-primary);
+}
 </style>

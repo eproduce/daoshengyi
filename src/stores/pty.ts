@@ -22,14 +22,17 @@ export const usePtyStore = defineStore("pty", () => {
     try {
       const list = await invoke<{ id: number; command: string; started_at: number }[]>("pty_list");
       const prev = new Map(sessions.value.map((s) => [s.id, s]));
-      sessions.value = list.map((p) => prev.get(p.id) ?? {
-        id: p.id,
-        command: p.command,
-        startedAt: p.started_at,
-        running: true,
-        offset: 0,
-        output: "",
-      });
+      sessions.value = list.map(
+        (p) =>
+          prev.get(p.id) ?? {
+            id: p.id,
+            command: p.command,
+            startedAt: p.started_at,
+            running: true,
+            offset: 0,
+            output: "",
+          },
+      );
       if (activeId.value !== null && !sessions.value.some((s) => s.id === activeId.value)) {
         activeId.value = sessions.value[0]?.id ?? null;
       }

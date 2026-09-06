@@ -24,7 +24,9 @@ export function materializeTemplate(t: WorkflowTemplate): WorkflowGraph {
   const map = new Map<string, string>();
   for (const n of t.graph.nodes) map.set(n.id, freshId("wf"));
   const remapStr = (s: string): string =>
-    s.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (m, id: string) => (map.has(id) ? `{{${map.get(id)}}}` : m));
+    s.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (m, id: string) =>
+      map.has(id) ? `{{${map.get(id)}}}` : m,
+    );
   const remapVal = (v: unknown): unknown => {
     if (typeof v === "string") return remapStr(v);
     if (Array.isArray(v)) return v.map(remapVal);
@@ -58,9 +60,35 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     graph: {
       nodes: [
         { id: "user", type: "text", label: "用户问题", config: { text: "{{user}}" }, x: 40, y: 40 },
-        { id: "llm1", type: "llm", label: "规划搜索词", config: { prompt: "基于问题提炼 2-3 个搜索关键词，只输出关键词，逗号分隔。问题：{{user}}" }, x: 220, y: 40 },
-        { id: "tool1", type: "tool", label: "联网搜索", config: { tool: "web_search", toolArgs: { query: "{{llm1}}" } }, x: 400, y: 40 },
-        { id: "llm2", type: "llm", label: "综合回答", config: { prompt: "基于以下搜索结果回答用户问题，引用关键信息并给出结论。\n用户问题：{{user}}\n搜索结果：{{tool1}}\n请用结构化 Markdown 输出。" }, x: 580, y: 40 },
+        {
+          id: "llm1",
+          type: "llm",
+          label: "规划搜索词",
+          config: {
+            prompt: "基于问题提炼 2-3 个搜索关键词，只输出关键词，逗号分隔。问题：{{user}}",
+          },
+          x: 220,
+          y: 40,
+        },
+        {
+          id: "tool1",
+          type: "tool",
+          label: "联网搜索",
+          config: { tool: "web_search", toolArgs: { query: "{{llm1}}" } },
+          x: 400,
+          y: 40,
+        },
+        {
+          id: "llm2",
+          type: "llm",
+          label: "综合回答",
+          config: {
+            prompt:
+              "基于以下搜索结果回答用户问题，引用关键信息并给出结论。\n用户问题：{{user}}\n搜索结果：{{tool1}}\n请用结构化 Markdown 输出。",
+          },
+          x: 580,
+          y: 40,
+        },
         { id: "end", type: "end", label: "输出", config: {}, x: 760, y: 40 },
       ],
       edges: [
@@ -79,7 +107,17 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     graph: {
       nodes: [
         { id: "user", type: "text", label: "原文", config: { text: "{{user}}" }, x: 40, y: 40 },
-        { id: "llm1", type: "llm", label: "润色", config: { prompt: "润色以下文案：优化表达、修正语法、保持原意，输出润色后结果并附简短说明。\n原文：{{user}}" }, x: 220, y: 40 },
+        {
+          id: "llm1",
+          type: "llm",
+          label: "润色",
+          config: {
+            prompt:
+              "润色以下文案：优化表达、修正语法、保持原意，输出润色后结果并附简短说明。\n原文：{{user}}",
+          },
+          x: 220,
+          y: 40,
+        },
         { id: "end", type: "end", label: "输出", config: {}, x: 420, y: 40 },
       ],
       edges: [
@@ -96,7 +134,17 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     graph: {
       nodes: [
         { id: "user", type: "text", label: "工作要点", config: { text: "{{user}}" }, x: 40, y: 40 },
-        { id: "llm1", type: "llm", label: "生成日报", config: { prompt: "根据以下工作要点生成结构化日报（今日完成/明日计划/风险与求助）。\n工作要点：{{user}}\n输出 Markdown。" }, x: 240, y: 40 },
+        {
+          id: "llm1",
+          type: "llm",
+          label: "生成日报",
+          config: {
+            prompt:
+              "根据以下工作要点生成结构化日报（今日完成/明日计划/风险与求助）。\n工作要点：{{user}}\n输出 Markdown。",
+          },
+          x: 240,
+          y: 40,
+        },
         { id: "end", type: "end", label: "输出", config: {}, x: 460, y: 40 },
       ],
       edges: [
@@ -113,10 +161,38 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     graph: {
       nodes: [
         { id: "user", type: "text", label: "错误信息", config: { text: "{{user}}" }, x: 40, y: 80 },
-        { id: "llm1", type: "llm", label: "严重级别", config: { prompt: "判断以下错误信息的严重级别，只输出「严重」或「轻微」：\n{{user}}" }, x: 220, y: 80 },
-        { id: "cond", type: "condition", label: "是否严重", config: { expression: "llm1 contains \"严重\"" }, x: 420, y: 80 },
-        { id: "serious", type: "llm", label: "严重处理", config: { prompt: "错误很严重，请给出紧急处理步骤与排查建议。\n错误：{{user}}" }, x: 620, y: 20 },
-        { id: "minor", type: "llm", label: "轻微处理", config: { prompt: "错误较轻微，请给出简单排查建议。\n错误：{{user}}" }, x: 620, y: 160 },
+        {
+          id: "llm1",
+          type: "llm",
+          label: "严重级别",
+          config: { prompt: "判断以下错误信息的严重级别，只输出「严重」或「轻微」：\n{{user}}" },
+          x: 220,
+          y: 80,
+        },
+        {
+          id: "cond",
+          type: "condition",
+          label: "是否严重",
+          config: { expression: 'llm1 contains "严重"' },
+          x: 420,
+          y: 80,
+        },
+        {
+          id: "serious",
+          type: "llm",
+          label: "严重处理",
+          config: { prompt: "错误很严重，请给出紧急处理步骤与排查建议。\n错误：{{user}}" },
+          x: 620,
+          y: 20,
+        },
+        {
+          id: "minor",
+          type: "llm",
+          label: "轻微处理",
+          config: { prompt: "错误较轻微，请给出简单排查建议。\n错误：{{user}}" },
+          x: 620,
+          y: 160,
+        },
         { id: "end", type: "end", label: "输出", config: {}, x: 840, y: 90 },
       ],
       edges: [

@@ -1,0 +1,14 @@
+# 构建产物与外部目录
+dist
+node_modules
+src-tauri
+target
+coverage
+
+# 第三方生成文件
+package-lock.json
+
+# 文档/手写中文内容保持原样（避免格式化破坏排版）
+docs
+README.md
+*.md

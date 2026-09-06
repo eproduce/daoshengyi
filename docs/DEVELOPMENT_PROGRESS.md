@@ -2,11 +2,45 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-05**
+> **最后更新：2026-09-06**
+
+---
+
+## 2026-09-06
+
+### ✅ 浏览器预览模式警示条 + 「agent 不写文件」根因确认（App.vue）
+- **现象**：用户反馈「agent 不输出文件了，以前能生成 HTML 且在对话里点击」。排查发现 agent 实际尝试 `write_file` 失败后回退为「代码 + 手动保存」。
+- **根因**：用户在**纯浏览器页面**（`vite dev`/`preview` 直开的标签页）里对话——无 Tauri 后端（`__TAURI_INTERNALS__` 不存在，控制台 `Cannot read properties of undefined (reading 'transformCallback')`），一切本地 invoke（写文件/读文件/打开文件）必然失败，**与代码/CSP 无关**。桌面窗口（`tauri dev`，PID 窗口「道生一 - AI Agent」）实测**写入正常、链接可点击**，功能无回归。
+- **修复（App.vue）**：桌面检测（复用既有 `__TAURI_INTERNALS__` 判定）→ 非 Tauri 环境顶部显示黄色警示条「⚠️ 浏览器预览模式：本地文件写入/读取/打开、系统命令等桌面能力不可用…请切换到桌面应用窗口」，可手动关闭（复用 `.ollama-banner--warn` 样式，无新增样式）。
+- **验证**：npm run lint / npm test 全绿；桌面窗口实测生成文件正常
+- **经验**：桌面 Agent 应用用浏览器直开 dev/preview 页面调试时，**后端能力静默不可用**且 UI 与真窗口无异，极易误导「功能坏了」——非桌面环境需显式警示。
+
+### ✅ 精确编辑失败自纠增强：锚点失配不再让模型直接放弃（chat.ts）
+- **背景**：用户实测长 HTML 分段写入时遇到 `❌ 工具调用失败: replace 未找到文本（第 1 次出现）："<!--MORE--><!--MORE-->\n</html>"`——模型执行 `replace_string` 的 `old_text` 与文件实际占位布局（换行/占位数量）不一致，Rust `compute_edits` 按设计安全拒绝（不写盘、不猜）。根因是**模型对运行中文件状态的跟踪失真**；而失败回填提示「请直接回答或调整参数重试」给了模型**直接向用户报告失败**而不自纠的台阶（静态提示词 435 行的 read 核对引导未被遵循）。
+- **修复**（chat.ts 工具循环 catch 分支）：对 `replace_string / insert_string / delete_file` 且错误含「未找到文本/锚点」的失败，注入**强制自纠指令**——先 `read_file`（长文件用较大 offset 读末尾）核对文件中实际存在的精确原文 → 逐字复制构造 `old_text/anchor`（可用 occurrence）→ 重试成功；**禁止臆测、禁止原样重试、禁止直接向用户报告失败**。
+- **验证**：npm run lint 0 错 / npm test 全绿 / dev HMR 生效
+- **注（根因可选后续）**：分段占位可改为**唯一递增**（`<!--MORE-1-->`…）从源头消除多占位歧义；本次先以失败自纠兜底。
 
 ---
 
 ## 2026-09-05
+
+### ✅ 待办三连：CSP 非 null + 前端 ESLint/Prettier + 构建 code-splitting（2026-09-05 第二批）
+> 承接上批「待做（需人工/决策）」中三项近期工程化项全部落地（远期工作流 embedding 项未动，见文末注）。
+- **CSP 非 null（`src-tauri/tauri.conf.json` app.security）**：
+  - 从 `null` 改为显式策略（`csp` 生产 + `devCsp` 开发）：`script-src 'self'`（禁内联/外部脚本注入 = 主要 XSS 防线）、`object-src 'none'`、`base-uri 'self'`、`form-action 'none'`、`frame-ancestors 'none'`；`style-src 'self' 'unsafe-inline'`（Vue 动态 style 必需）；`img/media-src` 放行 `data: blob: asset: http://asset.localhost` + 远程 https/http（聊天内远程图/附件图）；`font-src` 含 KaTeX 本地字体；`connect-src` = `ipc: http://ipc.localhost`（Tauri IPC 官方）+ 本机 http `127.0.0.1:* localhost:*`（Ollama/LM Studio）+ 任意 `https:`（用户可配置模型 API/DuckDuckGo）；devCsp 额外放行 `ws://127.0.0.1:*`（HMR）。
+  - **取舍**：因前端直接 fetch 用户可配置任意 API 地址，`connect-src` 对远程网络开放（`https:` + 本机 http），但**非 https 的远程 http API 未放行**（安全性折衷，如需可自行追加）。
+  - 验证：Tauri 启动无解析/注入报错；dev 重启后页面完整渲染、控制台无任何 CSP 阻断消息；IPC/记忆系统正常（`[memory] 记忆维护完成`）。
+- **前端 ESLint + Prettier（新配置 + CI 门禁）**：
+  - 依赖：eslint 9（flat config）+ typescript-eslint 8 + eslint-plugin-vue 10（`flat/recommended`）+ eslint-config-prettier + prettier 3 + globals。
+  - `eslint.config.mjs`：忽略 dist/node_modules/src-tauri/scripts/docs；规则务实调优——`no-explicit-any` off（流式/工具动态数据）、`no-unused-vars` warn 不阻断、`vue/multi-word-component-names` off、`vue/no-v-html` off、`no-irregular-whitespace` 字符串/注释内跳过（中文文案全角空格排版）。
+  - `.prettierrc.json`：printWidth 100 / 双引号 / 分号 / 尾逗号 all / lf，与既有代码风格一致；`.prettierignore` 排除 src-tauri/docs/md/lock。
+  - package.json 增 `lint` / `lint:fix` / `format` / `format:check`；CI（ci.yml）frontend job 加 ESLint + Prettier 检查步骤。
+  - **全仓 `prettier --write` 一次性格式化**（64 文件，语义不变——与早前全仓 rustfmt 同理；测试/类型/构建全绿佐证无行为变化）。存量 lint 问题清零：文档文本正则转义修复（skills-catalog `\s`→`\\s`，让提示词正确展示 `\s`）、目录树 emoji 正则加 `u` 标记、可选链断言改写、`prefer-const` 等；四处精密正则（LOCAL_FILE_RE/inlineRule/去噪/占位）加行级 `eslint-disable-line` 保语义。
+- **构建 code-splitting（`vite.config.ts` build.rollupOptions.output.manualChunks）**：大第三方库独立分块——katex / highlight.js / @vue-flow+d3 / marked / lucide-vue-next / @tauri-apps / vue+pinia，其余 node_modules 保持默认分组（避免空 vendor chunk）。
+  - 效果：入口 `index` chunk **959.10 kB → 303.71 kB**（gzip 342.9→136.3 kB，约 -68%），>500kB 告警消除，各 vendor chunk 独立可长缓存。
+- **验证**：npm test 全绿（含本地文件链接/markdown-math/workflow 正则回归）/ npm run lint 0 错 / npm run format:check 通过 / npm run build（vue-tsc + vite）通过 / tauri dev 重启正常。
+- **注**：远期项「工作流 embedding 向量检索 + 成功工具序列自动提炼成工作流」未在本批实施（涉及前后端架构决策与数据模型设计，建议单独规划一轮）。
 
 ### ✅ 工程化/产品化优化批次：CI 质量门禁 + Vitest + 本地错误日志 + 依赖自动化
 > 背景：工程化评估发现四项短板——测试是手写 runner（无框架、CI Node20 跑不了原生 TS）、CI 只打包不测试、无 Lint/Format 门禁、无依赖自动更新。全部落地并推 GitHub。

@@ -54,29 +54,47 @@ function fmtMem(mb: number): string {
   <div class="health-panel">
     <div class="health-panel__head">
       <h3><Stethoscope :size="17" /> 运行时诊断</h3>
-      <button class="btn-icon" :disabled="loading" title="刷新" @click="refresh">{{ loading ? "…" : "⟳" }}</button>
+      <button class="btn-icon" :disabled="loading" title="刷新" @click="refresh">
+        {{ loading ? "…" : "⟳" }}
+      </button>
     </div>
     <p v-if="error" class="health-error">{{ error }}</p>
 
     <!-- 系统信息 -->
     <div v-if="diag" class="health-grid">
-      <div class="health-cell"><span class="health-label">系统</span>{{ diag.os }} · {{ diag.arch }}</div>
-      <div class="health-cell"><span class="health-label">应用版本</span>v{{ diag.app_version }}</div>
       <div class="health-cell">
-        <span class="health-label">内存</span>{{ fmtMem(diag.mem_total_mb) }} · 已用 {{ diag.mem_used_percent }}%
-        <div class="mini-bar"><div class="mini-bar__fill" :style="{ width: diag.mem_used_percent + '%' }"></div></div>
+        <span class="health-label">系统</span>{{ diag.os }} · {{ diag.arch }}
       </div>
       <div class="health-cell">
-        <span class="health-label">磁盘</span>可用 {{ diag.disk_free_gb }} GB / {{ diag.disk_total_gb }} GB
-        <div class="mini-bar"><div class="mini-bar__fill" :style="{ width: (diag.disk_free_gb / Math.max(1, diag.disk_total_gb)) * 100 + '%' }"></div></div>
+        <span class="health-label">应用版本</span>v{{ diag.app_version }}
+      </div>
+      <div class="health-cell">
+        <span class="health-label">内存</span>{{ fmtMem(diag.mem_total_mb) }} · 已用
+        {{ diag.mem_used_percent }}%
+        <div class="mini-bar">
+          <div class="mini-bar__fill" :style="{ width: diag.mem_used_percent + '%' }"></div>
+        </div>
+      </div>
+      <div class="health-cell">
+        <span class="health-label">磁盘</span>可用 {{ diag.disk_free_gb }} GB /
+        {{ diag.disk_total_gb }} GB
+        <div class="mini-bar">
+          <div
+            class="mini-bar__fill"
+            :style="{ width: (diag.disk_free_gb / Math.max(1, diag.disk_total_gb)) * 100 + '%' }"
+          ></div>
+        </div>
       </div>
       <div class="health-cell"><span class="health-label">运行时长</span>{{ diag.uptime }}</div>
     </div>
 
     <!-- 安全审计（O6：doctor 式配置自检） -->
     <div v-if="security" class="health-sec">
-      <div class="health-log__title">安全审计
-        <template v-if="security.some((c) => !c.ok)">（{{ security.filter((c) => !c.ok).length }} 项需关注）</template>
+      <div class="health-log__title">
+        安全审计
+        <template v-if="security.some((c) => !c.ok)"
+          >（{{ security.filter((c) => !c.ok).length }} 项需关注）</template
+        >
       </div>
       <div v-for="c in security" :key="c.id" class="health-sec__row" :class="c.ok ? 'ok' : 'warn'">
         <span class="health-sec__dot">{{ c.ok ? "✅" : "⚠️" }}</span>
@@ -97,43 +115,136 @@ function fmtMem(mb: number): string {
 </template>
 
 <style scoped>
-.health-panel { display: flex; flex-direction: column; gap: 12px; }
-.health-panel__head { display: flex; align-items: center; justify-content: space-between; }
-.health-panel__head h3 { margin: 0; font-size: 14px; }
+.health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.health-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.health-panel__head h3 {
+  margin: 0;
+  font-size: 14px;
+}
 .btn-icon {
-  width: 28px; height: 28px; border: none; border-radius: 6px;
-  background: var(--bg-secondary, #1a1a30); color: var(--text-secondary, #aaa);
-  font-size: 15px; cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--bg-secondary, #1a1a30);
+  color: var(--text-secondary, #aaa);
+  font-size: 15px;
+  cursor: pointer;
 }
-.health-error { color: #f87171; font-size: 12px; margin: 0; }
+.health-error {
+  color: #f87171;
+  font-size: 12px;
+  margin: 0;
+}
 
-.health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.health-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
 .health-cell {
-  background: #151528; border: 1px solid #2a2a45; border-radius: 8px;
-  padding: 10px; font-size: 12px; color: #ddd; line-height: 1.6;
+  background: #151528;
+  border: 1px solid #2a2a45;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: #ddd;
+  line-height: 1.6;
 }
-.health-label { display: block; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
-.mini-bar { height: 6px; background: #22223a; border-radius: 3px; margin-top: 5px; overflow: hidden; }
-.mini-bar__fill { height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); border-radius: 3px; }
+.health-label {
+  display: block;
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mini-bar {
+  height: 6px;
+  background: #22223a;
+  border-radius: 3px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.mini-bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4ade80, #22c55e);
+  border-radius: 3px;
+}
 
-.health-log { display: flex; flex-direction: column; min-height: 0; }
-.health-sec { display: flex; flex-direction: column; gap: 6px; }
-.health-sec__row {
-  display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
-  border: 1px solid #2a2a45; border-radius: 8px; font-size: 12px; line-height: 1.6;
+.health-log {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.health-sec__row.ok { background: #0f2016; border-color: #1f4d2e; }
-.health-sec__row.warn { background: #2a1f0a; border-color: #6b4a12; }
-.health-sec__dot { font-size: 12px; line-height: 1.5; }
-.health-sec__body { display: flex; flex-direction: column; color: #ddd; }
-.health-sec__body b { font-size: 12px; color: #eee; }
-.health-sec__detail { font-size: 11px; color: #9aa; }
-.health-sec__row.warn .health-sec__body b { color: #ffd479; }
-.health-log__title { font-size: 12px; color: #bbb; margin-bottom: 6px; }
+.health-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.health-sec__row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border: 1px solid #2a2a45;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.health-sec__row.ok {
+  background: #0f2016;
+  border-color: #1f4d2e;
+}
+.health-sec__row.warn {
+  background: #2a1f0a;
+  border-color: #6b4a12;
+}
+.health-sec__dot {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.health-sec__body {
+  display: flex;
+  flex-direction: column;
+  color: #ddd;
+}
+.health-sec__body b {
+  font-size: 12px;
+  color: #eee;
+}
+.health-sec__detail {
+  font-size: 11px;
+  color: #9aa;
+}
+.health-sec__row.warn .health-sec__body b {
+  color: #ffd479;
+}
+.health-log__title {
+  font-size: 12px;
+  color: #bbb;
+  margin-bottom: 6px;
+}
 .health-log__body {
-  flex: 1; background: #0d0d1a; border: 1px solid #2a2a45; border-radius: 8px;
-  padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px; line-height: 1.5; color: #9fe6a0; overflow: auto;
-  white-space: pre-wrap; word-break: break-all; max-height: 300px;
+  flex: 1;
+  background: #0d0d1a;
+  border: 1px solid #2a2a45;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9fe6a0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
 }
 </style>

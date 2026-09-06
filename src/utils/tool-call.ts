@@ -10,11 +10,18 @@ function parseJsonObject(s: string): ToolCall | null {
   try {
     const parsed = JSON.parse(s);
     // 兼容 DeepSeek DSML 原生 tool_call 用 name 字段、自定义 <tool_call> 用 tool 字段
-    const tool = typeof parsed.tool === "string" ? parsed.tool : typeof parsed.name === "string" ? parsed.name : "";
+    const tool =
+      typeof parsed.tool === "string"
+        ? parsed.tool
+        : typeof parsed.name === "string"
+          ? parsed.name
+          : "";
     if (tool && parsed.arguments && typeof parsed.arguments === "object") {
       return { server: parsed.server || "default", tool, arguments: parsed.arguments };
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
@@ -71,7 +78,8 @@ export function hasToolCallIntent(text: string): boolean {
 /// 从模型手写的伪卡片「### 🔧 调用工具：\`tool\` + 参数 JSON 代码块」中提取工具调用。
 /// 模型可能把历史消息里的 UI 卡片格式误当成工具调用格式写在正文里，
 /// 这里兜底识别，让工具仍能真正执行（否则卡片只是文本、工具不执行、回复中断）。
-const FAKE_TOOL_CARD_RE = /###\s*🔧\s*调用工具：\s*`?([\w-]+)`?[\s\S]*?```(?:json)?\s*([\s\S]*?)\s*```/i;
+const FAKE_TOOL_CARD_RE =
+  /###\s*🔧\s*调用工具：\s*`?([\w-]+)`?[\s\S]*?```(?:json)?\s*([\s\S]*?)\s*```/i;
 function parseFakeToolCard(content: string): ToolCall | null {
   const m = content.match(FAKE_TOOL_CARD_RE);
   if (!m) return null;
@@ -82,7 +90,9 @@ function parseFakeToolCard(content: string): ToolCall | null {
     if (args && typeof args === "object" && !Array.isArray(args)) {
       return { server: "default", tool, arguments: args as Record<string, unknown> };
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
@@ -116,7 +126,7 @@ export function formatToolResultPreview(tool: string | undefined, result: string
   const looksLikeTree =
     /^(?:【目录】|目录\s)/.test(raw) ||
     /(?:^|\n)[├└│─]/.test(raw) ||
-    /(?:^|\n)[📁📄]/.test(raw) ||
+    /(?:^|\n)[📁📄]/u.test(raw) ||
     lowerName.includes("tree") ||
     lowerName.includes("dir");
 
@@ -124,8 +134,8 @@ export function formatToolResultPreview(tool: string | undefined, result: string
     const lines = raw
       .replace(/^【目录】.*?\n\n?/i, "")
       .split(/\n/)
-      .map(line => line.trimEnd())
-      .filter(line => line.length > 0)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0)
       .slice(0, 24);
 
     if (lines.length === 0) return raw.slice(0, 300);
@@ -163,13 +173,18 @@ export function stripToolJson(text: string): string {
   while ((m = re.exec(t)) !== null) {
     try {
       const p = JSON.parse(m[0]);
-      const key = p && typeof p === "object" ? (p.tool || p.name) : undefined;
+      const key = p && typeof p === "object" ? p.tool || p.name : undefined;
       if (typeof key === "string") {
         toRemove.push(m[0]);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   for (const s of toRemove) t = t.split(s).join("");
   // 清理行尾残留的冒号/句号，以及多余空行
-  return t.replace(/[：:]\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  return t
+    .replace(/[：:]\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

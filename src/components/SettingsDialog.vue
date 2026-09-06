@@ -17,9 +17,45 @@ import AuditPanel from "./AuditPanel.vue";
 import UndoPanel from "./UndoPanel.vue";
 import PtyPanel from "./PtyPanel.vue";
 import { PROMPT_TEMPLATES } from "@/data/prompt-templates";
-import { Settings, KeyRound, Puzzle, Brain, ChartColumn, Stethoscope, AlarmClock, Globe, Folder, ShieldAlert, Cpu, Monitor, BookOpen, Shield, GitBranch, Keyboard, Database, MessagesSquare, ListChecks, History, Terminal as TerminalIcon } from "lucide-vue-next";
+import {
+  Settings,
+  KeyRound,
+  Puzzle,
+  Brain,
+  ChartColumn,
+  Stethoscope,
+  AlarmClock,
+  Globe,
+  Folder,
+  ShieldAlert,
+  Cpu,
+  Monitor,
+  BookOpen,
+  Shield,
+  GitBranch,
+  Keyboard,
+  Database,
+  MessagesSquare,
+  ListChecks,
+  History,
+  Terminal as TerminalIcon,
+} from "lucide-vue-next";
 
-type SettingsTabId = "api" | "mcp" | "ollama" | "stats" | "health" | "tasks" | "memory" | "kb" | "im" | "audit" | "undo" | "permissions" | "shortcuts" | "pty";
+type SettingsTabId =
+  | "api"
+  | "mcp"
+  | "ollama"
+  | "stats"
+  | "health"
+  | "tasks"
+  | "memory"
+  | "kb"
+  | "im"
+  | "audit"
+  | "undo"
+  | "permissions"
+  | "shortcuts"
+  | "pty";
 const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
@@ -28,11 +64,21 @@ const emit = defineEmits<{
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
 const activeTab = ref<SettingsTabId>("api");
-watch(() => props.initialTab, (t) => { if (t) activeTab.value = t; }, { immediate: true });
+watch(
+  () => props.initialTab,
+  (t) => {
+    if (t) activeTab.value = t;
+  },
+  { immediate: true },
+);
 
 // --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
 function verdictText(v: string) {
-  return v === "recommended" ? "✅ 推荐本地部署" : v === "warning" ? "⚠️ 可部署，但占用资源较高" : "❌ 不推荐本地部署";
+  return v === "recommended"
+    ? "✅ 推荐本地部署"
+    : v === "warning"
+      ? "⚠️ 可部署，但占用资源较高"
+      : "❌ 不推荐本地部署";
 }
 
 onMounted(() => {
@@ -64,8 +110,10 @@ const availableModels = ref<string[]>([]);
 // 回填已持久化的模型列表：打开设置/切换配置时自动恢复（重启后无需重新获取）
 watch(
   () => editingProfile.value.availableModels,
-  (v) => { availableModels.value = v ?? []; },
-  { immediate: true }
+  (v) => {
+    availableModels.value = v ?? [];
+  },
+  { immediate: true },
 );
 const loadingModels = ref(false);
 const modelError = ref("");
@@ -130,11 +178,19 @@ function saveWorkspace() {
 // 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/ yolo（全部自动批准）
 const APPROVAL_MODES = [
   { value: "manual" as const, label: "手动确认", desc: "危险命令先弹窗询问，确认后执行" },
-  { value: "smart" as const, label: "Smart 智能审批", desc: "辅助模型判断安全则自动放行，判定有风险再询问" },
-  { value: "yolo" as const, label: "YOLO 全部放行", desc: "危险命令自动批准执行，不询问（高风险）" },
+  {
+    value: "smart" as const,
+    label: "Smart 智能审批",
+    desc: "辅助模型判断安全则自动放行，判定有风险再询问",
+  },
+  {
+    value: "yolo" as const,
+    label: "YOLO 全部放行",
+    desc: "危险命令自动批准执行，不询问（高风险）",
+  },
 ];
 const approvalMode = ref<"manual" | "smart" | "yolo">(
-  getSettings().approvalMode || (getSettings().yoloMode ? "yolo" : "manual")
+  getSettings().approvalMode || (getSettings().yoloMode ? "yolo" : "manual"),
 );
 function onApprovalModeChange(mode: "manual" | "smart" | "yolo") {
   approvalMode.value = mode;
@@ -154,8 +210,14 @@ const disabledTools = ref((getSettings().disabledTools ?? []).join("\n"));
 const allowedPaths = ref((getSettings().allowedPaths ?? []).join("\n"));
 function savePermissions() {
   updateSettings({
-    disabledTools: disabledTools.value.split("\n").map((s) => s.trim()).filter(Boolean),
-    allowedPaths: allowedPaths.value.split("\n").map((s) => s.trim()).filter(Boolean),
+    disabledTools: disabledTools.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    allowedPaths: allowedPaths.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
   });
 }
 
@@ -170,28 +232,50 @@ const execRules = ref("");
 const execTestCmd = ref("");
 const execTestResult = ref("");
 async function loadExecRules() {
-  try { execRules.value = await invoke<string>("list_exec_rules"); } catch { /* 读取失败保持空 */ }
+  try {
+    execRules.value = await invoke<string>("list_exec_rules");
+  } catch {
+    /* 读取失败保持空 */
+  }
 }
 async function saveExecRules() {
   try {
     await invoke("save_exec_rules", { content: execRules.value });
     notify("命令执行策略已保存");
-  } catch (e) { notify(`保存失败：${e}`); }
+  } catch (e) {
+    notify(`保存失败：${e}`);
+  }
 }
 async function resetExecRules() {
   try {
     await invoke("reset_exec_rules");
     await loadExecRules();
     notify("已恢复默认命令执行策略");
-  } catch (e) { notify(`恢复失败：${e}`); }
+  } catch (e) {
+    notify(`恢复失败：${e}`);
+  }
 }
 async function testExecRule() {
-  if (!execTestCmd.value.trim()) { execTestResult.value = ""; return; }
+  if (!execTestCmd.value.trim()) {
+    execTestResult.value = "";
+    return;
+  }
   try {
-    const r = await invoke<{ decision: string; matched: string | null }>("test_command_policy", { command: execTestCmd.value.trim() });
-    const label = r.decision === "allow" ? "✅ 放行" : r.decision === "deny" ? "⛔ 拦截" : r.decision === "prompt" ? "⚠️ 需确认" : "（未命中规则，走默认审批）";
-    execTestResult.value = `决策：${label}${r.matched ? `　命中规则：\`${r.matched}\`` : ""}`;
-  } catch (e) { execTestResult.value = `测试失败：${e}`; }
+    const r = await invoke<{ decision: string; matched: string | null }>("test_command_policy", {
+      command: execTestCmd.value.trim(),
+    });
+    const label =
+      r.decision === "allow"
+        ? "✅ 放行"
+        : r.decision === "deny"
+          ? "⛔ 拦截"
+          : r.decision === "prompt"
+            ? "⚠️ 需确认"
+            : "（未命中规则，走默认审批）";
+    execTestResult.value = `决策：${label}${r.matched ? `　命中规则：\`${r.matched}\`` : ""}`; // eslint-disable-line no-irregular-whitespace
+  } catch (e) {
+    execTestResult.value = `测试失败：${e}`;
+  }
 }
 
 // 知识库 RAG 自动注入：开启后每次对话前自动检索默认知识库并注入相关分块（会话首轮）
@@ -233,7 +317,9 @@ function saveShortcuts() {
   invoke("apply_global_shortcuts", {
     toggle: shortcutToggle.value.trim() || "CommandOrControl+Shift+Space",
     newChat: shortcutNewChat.value.trim() || "CommandOrControl+Shift+K",
-  }).catch(() => { /* 注册失败（被占用）由 Rust 日志记录 */ });
+  }).catch(() => {
+    /* 注册失败（被占用）由 Rust 日志记录 */
+  });
 }
 function resetShortcuts() {
   shortcutToggle.value = "CommandOrControl+Shift+Space";
@@ -300,672 +386,1274 @@ function handleDelete() {
       <div class="settings-dialog__body">
         <!-- 左侧菜单 -->
         <nav class="settings-nav">
-          <button :class="['settings-tab', { active: activeTab === 'api' }]" @click="activeTab = 'api'"><span class="settings-tab__icon"><KeyRound :size="15" /></span>API 配置</button>
-          <button :class="['settings-tab', { active: activeTab === 'mcp' }]" @click="activeTab = 'mcp'"><span class="settings-tab__icon"><Puzzle :size="15" /></span>插件</button>
-          <button :class="['settings-tab', { active: activeTab === 'ollama' }]" @click="activeTab = 'ollama'"><span class="settings-tab__icon"><Brain :size="15" /></span>本地模型</button>
-          <button :class="['settings-tab', { active: activeTab === 'stats' }]" @click="activeTab = 'stats'"><span class="settings-tab__icon"><ChartColumn :size="15" /></span>用量统计</button>
-          <button :class="['settings-tab', { active: activeTab === 'health' }]" @click="activeTab = 'health'"><span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断</button>
-          <button :class="['settings-tab', { active: activeTab === 'tasks' }]" @click="activeTab = 'tasks'"><span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务</button>
-          <button :class="['settings-tab', { active: activeTab === 'memory' }]" @click="activeTab = 'memory'"><span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆</button>
-          <button :class="['settings-tab', { active: activeTab === 'kb' }]" @click="activeTab = 'kb'"><span class="settings-tab__icon"><Database :size="15" /></span>知识库</button>
-          <button :class="['settings-tab', { active: activeTab === 'im' }]" @click="activeTab = 'im'"><span class="settings-tab__icon"><MessagesSquare :size="15" /></span>即时聊天</button>
-          <button :class="['settings-tab', { active: activeTab === 'audit' }]" @click="activeTab = 'audit'"><span class="settings-tab__icon"><ListChecks :size="15" /></span>审计</button>
-          <button :class="['settings-tab', { active: activeTab === 'undo' }]" @click="activeTab = 'undo'"><span class="settings-tab__icon"><History :size="15" /></span>撤销</button>
-          <button :class="['settings-tab', { active: activeTab === 'pty' }]" @click="activeTab = 'pty'"><span class="settings-tab__icon"><TerminalIcon :size="15" /></span>终端</button>
-          <button :class="['settings-tab', { active: activeTab === 'permissions' }]" @click="activeTab = 'permissions'"><span class="settings-tab__icon"><Shield :size="15" /></span>权限</button>
-          <button :class="['settings-tab', { active: activeTab === 'shortcuts' }]" @click="activeTab = 'shortcuts'"><span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键</button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'api' }]"
+            @click="activeTab = 'api'"
+          >
+            <span class="settings-tab__icon"><KeyRound :size="15" /></span>API 配置
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'mcp' }]"
+            @click="activeTab = 'mcp'"
+          >
+            <span class="settings-tab__icon"><Puzzle :size="15" /></span>插件
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'ollama' }]"
+            @click="activeTab = 'ollama'"
+          >
+            <span class="settings-tab__icon"><Brain :size="15" /></span>本地模型
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'stats' }]"
+            @click="activeTab = 'stats'"
+          >
+            <span class="settings-tab__icon"><ChartColumn :size="15" /></span>用量统计
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'health' }]"
+            @click="activeTab = 'health'"
+          >
+            <span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'tasks' }]"
+            @click="activeTab = 'tasks'"
+          >
+            <span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'memory' }]"
+            @click="activeTab = 'memory'"
+          >
+            <span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'kb' }]"
+            @click="activeTab = 'kb'"
+          >
+            <span class="settings-tab__icon"><Database :size="15" /></span>知识库
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'im' }]"
+            @click="activeTab = 'im'"
+          >
+            <span class="settings-tab__icon"><MessagesSquare :size="15" /></span>即时聊天
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'audit' }]"
+            @click="activeTab = 'audit'"
+          >
+            <span class="settings-tab__icon"><ListChecks :size="15" /></span>审计
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'undo' }]"
+            @click="activeTab = 'undo'"
+          >
+            <span class="settings-tab__icon"><History :size="15" /></span>撤销
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'pty' }]"
+            @click="activeTab = 'pty'"
+          >
+            <span class="settings-tab__icon"><TerminalIcon :size="15" /></span>终端
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'permissions' }]"
+            @click="activeTab = 'permissions'"
+          >
+            <span class="settings-tab__icon"><Shield :size="15" /></span>权限
+          </button>
+          <button
+            :class="['settings-tab', { active: activeTab === 'shortcuts' }]"
+            @click="activeTab = 'shortcuts'"
+          >
+            <span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键
+          </button>
         </nav>
 
         <!-- 右侧内容 -->
         <div class="settings-content">
-        <!-- API 配置 -->
-        <div v-show="activeTab === 'api'">
-        <!-- 配置列表 -->
-        <div class="profile-tabs">
-          <button
-            v-for="p in chatStore.profiles"
-            :key="p.id"
-            class="profile-tab"
-            :class="{ 'profile-tab--active': editingId === p.id && !isNew }"
-            @click="selectProfile(p.id)"
-          >
-            {{ p.name }}
-          </button>
-          <button class="profile-tab profile-tab--add" @click="startNew">＋</button>
-        </div>
-
-        <!-- 编辑表单 -->
-        <div class="form-group">
-          <label>配置名称</label>
-          <input
-            v-model="editingProfile.name"
-            type="text"
-            placeholder="如: DeepSeek"
-          />
-        </div>
-
-        <div class="form-group">
-          <label>API 地址</label>
-          <input
-            v-model="editingProfile.baseUrl"
-            type="text"
-            placeholder="https://api.deepseek.com"
-          />
-          <span class="form-hint">API 基础地址</span>
-        </div>
-
-        <div class="form-group">
-          <label>API Key</label>
-          <input
-            v-model="editingProfile.apiKey"
-            type="password"
-            placeholder="sk-..."
-          />
-          <span class="form-hint">您的 API 密钥</span>
-        </div>
-
-        <div class="form-group">
-          <label>模型</label>
-          <div class="model-row">
-            <div class="model-select">
-              <input
-                v-model="editingProfile.model"
-                type="text"
-                placeholder="deepseek-v4-flash"
-                @focus="showModelDropdown = true"
-                @input="showModelDropdown = true"
-                @blur="onModelBlur"
-              />
-              <div
-                v-if="showModelDropdown && filteredModels.length > 0"
-                class="model-select__dropdown"
+          <!-- API 配置 -->
+          <div v-show="activeTab === 'api'">
+            <!-- 配置列表 -->
+            <div class="profile-tabs">
+              <button
+                v-for="p in chatStore.profiles"
+                :key="p.id"
+                class="profile-tab"
+                :class="{ 'profile-tab--active': editingId === p.id && !isNew }"
+                @click="selectProfile(p.id)"
               >
-                <div
-                  v-for="m in filteredModels"
-                  :key="m"
-                  class="model-select__option"
-                  :class="{ on: m === editingProfile.model }"
-                  @mousedown.prevent="pickModel(m)"
-                >{{ m }}</div>
+                {{ p.name }}
+              </button>
+              <button class="profile-tab profile-tab--add" @click="startNew">＋</button>
+            </div>
+
+            <!-- 编辑表单 -->
+            <div class="form-group">
+              <label>配置名称</label>
+              <input v-model="editingProfile.name" type="text" placeholder="如: DeepSeek" />
+            </div>
+
+            <div class="form-group">
+              <label>API 地址</label>
+              <input
+                v-model="editingProfile.baseUrl"
+                type="text"
+                placeholder="https://api.deepseek.com"
+              />
+              <span class="form-hint">API 基础地址</span>
+            </div>
+
+            <div class="form-group">
+              <label>API Key</label>
+              <input v-model="editingProfile.apiKey" type="password" placeholder="sk-..." />
+              <span class="form-hint">您的 API 密钥</span>
+            </div>
+
+            <div class="form-group">
+              <label>模型</label>
+              <div class="model-row">
+                <div class="model-select">
+                  <input
+                    v-model="editingProfile.model"
+                    type="text"
+                    placeholder="deepseek-v4-flash"
+                    @focus="showModelDropdown = true"
+                    @input="showModelDropdown = true"
+                    @blur="onModelBlur"
+                  />
+                  <div
+                    v-if="showModelDropdown && filteredModels.length > 0"
+                    class="model-select__dropdown"
+                  >
+                    <div
+                      v-for="m in filteredModels"
+                      :key="m"
+                      class="model-select__option"
+                      :class="{ on: m === editingProfile.model }"
+                      @mousedown.prevent="pickModel(m)"
+                    >
+                      {{ m }}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn-secondary btn-fetch"
+                  :disabled="loadingModels"
+                  @click="fetchModels"
+                >
+                  {{ loadingModels ? "获取中…" : "获取模型" }}
+                </button>
+              </div>
+              <span
+                v-if="modelError"
+                class="form-hint"
+                :class="{ 'form-hint--error': availableModels.length === 0 && !loadingModels }"
+                >{{ modelError }}</span
+              >
+              <span v-else class="form-hint"
+                >可手动输入，或点击「获取模型」从厂商拉取可用模型列表</span
+              >
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>最大 Token</label>
+                <input
+                  v-model.number="editingProfile.maxTokens"
+                  type="number"
+                  min="1"
+                  max="128000"
+                />
+              </div>
+              <div class="form-group">
+                <label>上下文消息数</label>
+                <input
+                  v-model.number="editingProfile.maxContextMessages"
+                  type="number"
+                  min="4"
+                  max="200"
+                />
               </div>
             </div>
-            <button
-              type="button"
-              class="btn-secondary btn-fetch"
-              :disabled="loadingModels"
-              @click="fetchModels"
+
+            <!-- 思考模式 (DeepSeek) -->
+            <div class="form-group">
+              <label class="toggle-row">
+                <span>思考模式 (DeepSeek R1/V4)</span>
+                <input
+                  v-model="editingProfile.thinkingEnabled"
+                  type="checkbox"
+                  class="toggle-input"
+                />
+              </label>
+              <span class="form-hint">开启后模型先深度思考再回答，响应更慢但质量更高</span>
+            </div>
+
+            <div class="form-group">
+              <label class="toggle-row">
+                <span><Globe :size="14" /> 联网搜索</span>
+                <input
+                  v-model="editingProfile.enableWebSearch"
+                  type="checkbox"
+                  class="toggle-input"
+                />
+              </label>
+              <span class="form-hint">允许模型搜索互联网获取最新信息</span>
+            </div>
+
+            <div class="form-group">
+              <label>系统提示词</label>
+              <textarea
+                v-model="editingProfile.systemPrompt"
+                class="form-textarea"
+                placeholder="你是一个有帮助的AI助手。"
+                rows="3"
+              ></textarea>
+              <span class="form-hint">定义 AI 的角色和行为方式</span>
+            </div>
+
+            <!-- 提示词模板 -->
+            <div class="form-group">
+              <label>📚 提示词模板</label>
+              <select
+                class="form-select"
+                :value="selectedTemplateId"
+                @change="applyTemplate(($event.target as HTMLSelectElement).value)"
+              >
+                <option value="" disabled>选择角色模板一键应用...</option>
+                <option v-for="t in PROMPT_TEMPLATES" :key="t.id" :value="t.id">
+                  {{ t.icon }} {{ t.name }} — {{ t.description }}
+                </option>
+              </select>
+              <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
+            </div>
+
+            <!-- Agent 工作区 -->
+            <div class="form-group">
+              <label><Folder :size="14" /> Agent 工作区</label>
+              <input
+                v-model="workspace"
+                type="text"
+                placeholder="/path/to/project"
+                @blur="saveWorkspace"
+                @keyup.enter="saveWorkspace"
+              />
+              <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
+            </div>
+
+            <!-- 危险命令审批模式 -->
+            <div class="form-group">
+              <label class="form-label"><ShieldAlert :size="14" /> 危险命令审批模式</label>
+              <div class="approval-modes">
+                <button
+                  v-for="m in APPROVAL_MODES"
+                  :key="m.value"
+                  :class="['approval-mode', { active: approvalMode === m.value }]"
+                  @click="onApprovalModeChange(m.value)"
+                >
+                  <span class="approval-mode-name">{{ m.label }}</span>
+                  <span class="approval-mode-desc">{{ m.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint"
+                >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span
+              >
+            </div>
+
+            <!-- 辅助任务模型 -->
+            <div class="form-group">
+              <label class="form-label"><Puzzle :size="14" /> 辅助任务模型</label>
+              <select :value="auxiliaryProfileId" class="form-select" @change="onAuxProfileChange">
+                <option value="">跟随主模型</option>
+                <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+              <span class="form-hint"
+                >用于 Smart
+                智能审批、子代理等辅助任务；可选更便宜/更快的模型，节省主模型额度。不配置则跟随主模型。</span
+              >
+            </div>
+
+            <!-- P-A12 模型路由：按任务类型自动选模型 -->
+            <div class="form-group">
+              <label class="form-label"><GitBranch :size="14" /> 模型路由（按任务类型）</label>
+              <label class="form-label" style="font-size: 12px; font-weight: 400"
+                >摘要 / 记忆辅助模型</label
+              >
+              <select v-model="routeSummarize" class="form-select" @change="saveRouting">
+                <option value="">跟随辅助/主模型</option>
+                <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+              <label class="form-label" style="font-size: 12px; font-weight: 400; margin-top: 8px"
+                >编程子代理模型</label
+              >
+              <select v-model="routeCoding" class="form-select" @change="saveRouting">
+                <option value="">跟随辅助/主模型</option>
+                <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+              <span class="form-hint"
+                >摘要/记忆提取、编程子代理等任务可指定专门模型（如更便宜的或本地
+                Ollama）；未配置则跟随「辅助任务模型」，再跟随主模型。</span
+              >
+            </div>
+          </div>
+
+          <!-- MCP 服务器管理 -->
+          <div v-show="activeTab === 'mcp'"><McpSettings /></div>
+
+          <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
+          <div v-show="activeTab === 'ollama'" class="ollama-panel">
+            <h3><Cpu :size="17" /> 本地视觉模型（Ollama）</h3>
+            <p class="ollama-desc">
+              用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。
+            </p>
+            <div v-if="ollamaStore.hw" class="hw-card">
+              <div class="hw-card__title">
+                <Monitor :size="15" /> 硬件评估
+                <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span>
+              </div>
+              <div class="hw-card__row">
+                CPU：{{ ollamaStore.hw.cpu_cores }} 核{{
+                  ollamaStore.hw.cpu_brand ? " · " + ollamaStore.hw.cpu_brand : ""
+                }}
+              </div>
+              <div class="hw-card__row">内存：{{ ollamaStore.hw.memory_gb }} GB</div>
+              <div class="hw-card__row">
+                显卡：{{ ollamaStore.hw.gpu_name || "核显"
+                }}{{
+                  ollamaStore.hw.gpu_memory_mb ? " · " + ollamaStore.hw.gpu_memory_mb + " MB" : ""
+                }}{{ ollamaStore.hw.has_metal ? " · Metal" : "" }}
+              </div>
+              <div class="hw-card__verdict" :class="'hw-card__verdict--' + ollamaStore.hw.verdict">
+                {{ verdictText(ollamaStore.hw.verdict) }}
+              </div>
+              <p class="hw-card__msg">{{ ollamaStore.hw.message }}</p>
+            </div>
+            <div v-if="!ollamaStore.status" class="ollama-loading">正在检测 Ollama 环境...</div>
+            <template v-else>
+              <div class="ollama-status">
+                <div class="ollama-item">
+                  <span
+                    class="ollama-dot"
+                    :class="
+                      ollamaStore.status.installed
+                        ? 'green'
+                        : ollamaStore.status.installing
+                          ? 'yellow'
+                          : 'red'
+                    "
+                  ></span>
+                  Ollama 程序：{{
+                    ollamaStore.status.installed
+                      ? "已安装"
+                      : ollamaStore.status.installing
+                        ? "正在安装中..."
+                        : "未安装"
+                  }}
+                </div>
+                <div class="ollama-item">
+                  <span
+                    class="ollama-dot"
+                    :class="ollamaStore.status.running ? 'green' : 'red'"
+                  ></span>
+                  Ollama 服务：{{ ollamaStore.status.running ? "运行中" : "未运行" }}
+                </div>
+                <div v-if="ollamaStore.status.running" class="ollama-item">
+                  <span class="ollama-dot" :class="ollamaStore.hasLlava ? 'green' : 'red'"></span>
+                  视觉模型 llava-phi3：{{ ollamaStore.hasLlava ? "已部署" : "未部署" }}
+                </div>
+                <div
+                  v-if="ollamaStore.status.running && ollamaStore.status.models.length"
+                  class="ollama-models"
+                >
+                  已部署模型：{{ ollamaStore.status.models.join(", ") }}
+                </div>
+              </div>
+              <button
+                v-if="ollamaStore.hw?.verdict === 'not_recommended'"
+                class="btn-primary"
+                @click="activeTab = 'api'"
+              >
+                配置线上视觉模型 API
+              </button>
+              <button
+                v-else
+                class="btn-primary"
+                :disabled="ollamaStore.busy"
+                @click="ollamaStore.deploy()"
+              >
+                {{
+                  ollamaStore.busy
+                    ? "部署中..."
+                    : ollamaStore.status.installed && ollamaStore.hasLlava
+                      ? "重新检测"
+                      : "一键部署"
+                }}
+              </button>
+              <p v-if="ollamaStore.hw?.verdict !== 'not_recommended'" class="ollama-hint">
+                首次部署将安装 Ollama 并下载约 2GB
+                模型，耗时较长；关闭此界面会继续在后台下载，可稍后回来查看进度。
+              </p>
+            </template>
+            <div
+              v-if="ollamaStore.percent !== null && ollamaStore.percent < 100"
+              class="ollama-bar"
             >
-              {{ loadingModels ? "获取中…" : "获取模型" }}
+              <div class="ollama-bar__fill" :style="{ width: ollamaStore.percent + '%' }"></div>
+              <span class="ollama-bar__label">{{ Math.round(ollamaStore.percent) }}%</span>
+            </div>
+            <div v-if="ollamaStore.progress" class="ollama-progress">
+              {{ ollamaStore.progress }}
+            </div>
+          </div>
+
+          <!-- 用量统计 -->
+          <div v-show="activeTab === 'stats'"><UsageStats /></div>
+
+          <!-- 运行时诊断 -->
+          <div v-show="activeTab === 'health'"><HealthPanel /></div>
+
+          <!-- 定时任务 -->
+          <div v-show="activeTab === 'tasks'"><ScheduledTasks /></div>
+
+          <!-- 长期记忆 -->
+          <div v-show="activeTab === 'memory'"><MemoryPanel /></div>
+
+          <!-- 即时聊天（IM 网关：钉钉/飞书/企微） -->
+          <div v-show="activeTab === 'im'"><ImGatewayPanel /></div>
+
+          <!-- 审计：工具调用全记录（筛选/回放/导出） -->
+          <div v-show="activeTab === 'audit'"><AuditPanel /></div>
+
+          <!-- 撤销：文件操作回放（编辑/新建/删除快照，一键回滚） -->
+          <div v-show="activeTab === 'undo'"><UndoPanel /></div>
+          <div v-show="activeTab === 'pty'"><PtyPanel /></div>
+
+          <!-- 知识库 RAG 自动注入 -->
+          <div v-show="activeTab === 'kb'">
+            <h3><Database :size="17" /> 知识库</h3>
+            <p class="ollama-desc">
+              RAG 知识库通过 Agent 工具（kb_create / kb_add /
+              kb_search）建立；此处可开启「自动注入」：开启后每个会话首轮自动检索默认知识库的相关分块注入上下文，回答更贴合你的文档，无需手动检索。同一会话只注入一次，精细引用时仍可让
+              Agent 手动 kb_search。
+            </p>
+            <div class="form-group approval-mode">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="ragEnabled" type="checkbox" @change="saveRag" />
+                <span>知识库自动注入（会话首轮 RAG）</span>
+              </label>
+              <span class="form-hint"
+                >开启后，每个新会话的首条消息会自动检索「默认知识库」并将命中的分块作为上下文注入给模型。</span
+              >
+            </div>
+            <div class="form-group">
+              <label>默认知识库</label>
+              <select v-model="ragKb" @change="saveRag">
+                <option value="">— 未配置 —</option>
+                <option v-for="k in kbList" :key="k.name" :value="k.name">
+                  {{ k.name }}（{{ k.chunks }} 分块）
+                </option>
+              </select>
+              <span class="form-hint"
+                >选择后作为自动检索的知识库；可让 Agent 用 kb_create 新建知识库、kb_add
+                录入文档。</span
+              >
+            </div>
+            <div v-if="kbList.length === 0" class="form-hint">
+              暂无知识库。可在对话中让 Agent 调用「创建知识库 / 添加文档」来建立。
+            </div>
+            <button class="btn-ghost" style="margin-top: 4px" @click="refreshKb">
+              刷新知识库列表
             </button>
           </div>
-          <span
-            v-if="modelError"
-            class="form-hint"
-            :class="{ 'form-hint--error': availableModels.length === 0 && !loadingModels }"
-          >{{ modelError }}</span>
-          <span v-else class="form-hint">可手动输入，或点击「获取模型」从厂商拉取可用模型列表</span>
-        </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label>最大 Token</label>
-            <input v-model.number="editingProfile.maxTokens" type="number" min="1" max="128000" />
+          <!-- P-A7 权限矩阵：工具级开关 + 路径白名单 -->
+          <div v-show="activeTab === 'permissions'">
+            <h3><Shield :size="17" /> 权限矩阵</h3>
+            <p class="ollama-desc">
+              工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent
+              的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。
+            </p>
+            <div class="form-group approval-mode">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="fileEditConfirm" type="checkbox" @change="saveEditConfirm" />
+                <span>文件编辑需确认（Agent 改文件前先预览 diff，你确认后才写入）</span>
+              </label>
+              <span class="form-hint"
+                >开启后，Agent 调用 replace_string / insert_string / delete_file 会先弹出
+                diff/路径确认框，点「应用」才真正写盘；关闭则保持自动应用（可用「禁用工具」白名单保护文件）。</span
+              >
+            </div>
+            <div class="form-group">
+              <label>禁用工具（每行一个工具名）</label>
+              <textarea
+                v-model="disabledTools"
+                rows="5"
+                placeholder="如：write_file&#10;subagent_delegate&#10;puppeteer_screenshot"
+                class="form-textarea"
+                @change="savePermissions"
+              ></textarea>
+              <span class="form-hint"
+                >在此列出的工具会被直接拦截（提示「已在权限矩阵中禁用」）。常见用途：禁用
+                write_file/delete_file 防止 Agent 改文件、禁用浏览器工具防止弹窗。</span
+              >
+            </div>
+            <div class="form-group">
+              <label>路径白名单（每行一个目录）</label>
+              <textarea
+                v-model="allowedPaths"
+                rows="5"
+                placeholder="如：/Users/wanghuan/op&#10;~/Pictures"
+                class="form-textarea"
+                @change="savePermissions"
+              ></textarea>
+              <span class="form-hint"
+                >配置后 Agent 的 list_dir / 文件编辑 / git / 测试 /
+                项目分析等工具只能访问这些目录；留空 = 不限制。</span
+              >
+            </div>
+            <div class="form-group">
+              <label>命令执行策略（规则文件，持久化）</label>
+              <textarea
+                v-model="execRules"
+                rows="10"
+                spellcheck="false"
+                class="exec-rules-editor"
+                placeholder="allow | deny | prompt &lt;命令前缀&gt;&#10;如：allow git status&#10;    deny rm -rf"
+              ></textarea>
+              <div class="exec-rule-actions">
+                <input
+                  v-model="execTestCmd"
+                  placeholder="输入命令测试决策，如：git push --force origin main"
+                  @keyup.enter="testExecRule"
+                />
+                <button class="btn-secondary" @click="testExecRule">测试</button>
+              </div>
+              <p v-if="execTestResult" class="form-hint">{{ execTestResult }}</p>
+              <div class="exec-rule-actions">
+                <button class="btn-primary" @click="saveExecRules">保存</button>
+                <button class="btn-secondary" @click="resetExecRules">恢复默认</button>
+              </div>
+              <span class="form-hint"
+                >语法：<code>allow | deny | prompt &lt;命令前缀&gt;</code>（按 token
+                前缀匹配，文件顺序优先、首条命中生效）。deny 直接拦截；allow
+                直接放行（即使命中内置危险模式）；prompt 必须确认。示例：<code
+                  >allow git status</code
+                >
+                不再确认、<code>deny rm -rf</code>
+                直接拦截。未命中规则时按默认三档审批（manual/smart/yolo）。</span
+              >
+            </div>
           </div>
-          <div class="form-group">
-            <label>上下文消息数</label>
-            <input v-model.number="editingProfile.maxContextMessages" type="number" min="4" max="200" />
-          </div>
-        </div>
 
-        <!-- 思考模式 (DeepSeek) -->
-        <div class="form-group">
-          <label class="toggle-row">
-            <span>思考模式 (DeepSeek R1/V4)</span>
-            <input v-model="editingProfile.thinkingEnabled" type="checkbox" class="toggle-input" />
-          </label>
-          <span class="form-hint">开启后模型先深度思考再回答，响应更慢但质量更高</span>
-        </div>
-
-        <div class="form-group">
-          <label class="toggle-row">
-            <span><Globe :size="14" /> 联网搜索</span>
-            <input v-model="editingProfile.enableWebSearch" type="checkbox" class="toggle-input" />
-          </label>
-          <span class="form-hint">允许模型搜索互联网获取最新信息</span>
-        </div>
-
-        <div class="form-group">
-          <label>系统提示词</label>
-          <textarea
-            v-model="editingProfile.systemPrompt"
-            class="form-textarea"
-            placeholder="你是一个有帮助的AI助手。"
-            rows="3"
-          ></textarea>
-          <span class="form-hint">定义 AI 的角色和行为方式</span>
-        </div>
-
-        <!-- 提示词模板 -->
-        <div class="form-group">
-          <label>📚 提示词模板</label>
-          <select
-            class="form-select"
-            :value="selectedTemplateId"
-            @change="applyTemplate(($event.target as HTMLSelectElement).value)"
-          >
-            <option value="" disabled>选择角色模板一键应用...</option>
-            <option
-              v-for="t in PROMPT_TEMPLATES"
-              :key="t.id"
-              :value="t.id"
-            >
-              {{ t.icon }} {{ t.name }} — {{ t.description }}
-            </option>
-          </select>
-          <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
-        </div>
-
-        <!-- Agent 工作区 -->
-        <div class="form-group">
-          <label><Folder :size="14" /> Agent 工作区</label>
-          <input
-            v-model="workspace"
-            type="text"
-            placeholder="/path/to/project"
-            @blur="saveWorkspace"
-            @keyup.enter="saveWorkspace"
-          />
-          <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
-        </div>
-
-        <!-- 危险命令审批模式 -->
-        <div class="form-group">
-          <label class="form-label"><ShieldAlert :size="14" /> 危险命令审批模式</label>
-          <div class="approval-modes">
-            <button
-              v-for="m in APPROVAL_MODES"
-              :key="m.value"
-              :class="['approval-mode', { active: approvalMode === m.value }]"
-              @click="onApprovalModeChange(m.value)"
-            >
-              <span class="approval-mode-name">{{ m.label }}</span>
-              <span class="approval-mode-desc">{{ m.desc }}</span>
+          <!-- Phase 5 全局快捷键 -->
+          <div v-show="activeTab === 'shortcuts'">
+            <h3><Keyboard :size="17" /> 全局快捷键</h3>
+            <p class="ollama-desc">
+              全局快捷键在应用最小化/隐藏到后台时仍生效。格式：修饰键 + 键名（如
+              CommandOrControl+Shift+Space）。仅支持单个非修饰键 + 修饰键组合。
+            </p>
+            <div class="form-group">
+              <label>显示 / 隐藏主窗口（快速召唤）</label>
+              <input
+                v-model="shortcutToggle"
+                placeholder="CommandOrControl+Shift+Space"
+                @change="saveShortcuts"
+              />
+              <span class="form-hint"
+                >macOS 用 Command / ⌘；Windows/Linux 用 Control /
+                Ctrl。例：CommandOrControl+Shift+Space、CommandOrControl+Alt+D</span
+              >
+            </div>
+            <div class="form-group">
+              <label>新建对话</label>
+              <input
+                v-model="shortcutNewChat"
+                placeholder="CommandOrControl+Shift+K"
+                @change="saveShortcuts"
+              />
+              <span class="form-hint"
+                >保存后立即生效（注销旧快捷键并按新配置重新注册）。若提示被占用，说明与其他应用冲突，请换一个组合。</span
+              >
+            </div>
+            <button class="settings-reset-btn" @click="resetShortcuts">
+              恢复默认（⌘⇧Space / ⌘⇧K）
             </button>
           </div>
-          <span class="form-hint">检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span>
-        </div>
-
-        <!-- 辅助任务模型 -->
-        <div class="form-group">
-          <label class="form-label"><Puzzle :size="14" /> 辅助任务模型</label>
-          <select :value="auxiliaryProfileId" class="form-select" @change="onAuxProfileChange">
-            <option value="">跟随主模型</option>
-            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-          <span class="form-hint">用于 Smart 智能审批、子代理等辅助任务；可选更便宜/更快的模型，节省主模型额度。不配置则跟随主模型。</span>
-        </div>
-
-        <!-- P-A12 模型路由：按任务类型自动选模型 -->
-        <div class="form-group">
-          <label class="form-label"><GitBranch :size="14" /> 模型路由（按任务类型）</label>
-          <label class="form-label" style="font-size:12px;font-weight:400">摘要 / 记忆辅助模型</label>
-          <select v-model="routeSummarize" class="form-select" @change="saveRouting">
-            <option value="">跟随辅助/主模型</option>
-            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-          <label class="form-label" style="font-size:12px;font-weight:400;margin-top:8px">编程子代理模型</label>
-          <select v-model="routeCoding" class="form-select" @change="saveRouting">
-            <option value="">跟随辅助/主模型</option>
-            <option v-for="p in chatStore.profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-          <span class="form-hint">摘要/记忆提取、编程子代理等任务可指定专门模型（如更便宜的或本地 Ollama）；未配置则跟随「辅助任务模型」，再跟随主模型。</span>
         </div>
       </div>
 
-      <!-- MCP 服务器管理 -->
-      <div v-show="activeTab === 'mcp'"><McpSettings /></div>
-
-      <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
-      <div v-show="activeTab === 'ollama'" class="ollama-panel">
-        <h3><Cpu :size="17" /> 本地视觉模型（Ollama）</h3>
-        <p class="ollama-desc">用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。</p>
-        <div v-if="ollamaStore.hw" class="hw-card">
-          <div class="hw-card__title"><Monitor :size="15" /> 硬件评估 <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span></div>
-          <div class="hw-card__row">CPU：{{ ollamaStore.hw.cpu_cores }} 核{{ ollamaStore.hw.cpu_brand ? ' · ' + ollamaStore.hw.cpu_brand : '' }}</div>
-          <div class="hw-card__row">内存：{{ ollamaStore.hw.memory_gb }} GB</div>
-          <div class="hw-card__row">显卡：{{ ollamaStore.hw.gpu_name || '核显' }}{{ ollamaStore.hw.gpu_memory_mb ? ' · ' + ollamaStore.hw.gpu_memory_mb + ' MB' : '' }}{{ ollamaStore.hw.has_metal ? ' · Metal' : '' }}</div>
-          <div class="hw-card__verdict" :class="'hw-card__verdict--' + ollamaStore.hw.verdict">{{ verdictText(ollamaStore.hw.verdict) }}</div>
-          <p class="hw-card__msg">{{ ollamaStore.hw.message }}</p>
-        </div>
-        <div v-if="!ollamaStore.status" class="ollama-loading">正在检测 Ollama 环境...</div>
-        <template v-else>
-          <div class="ollama-status">
-            <div class="ollama-item">
-              <span class="ollama-dot" :class="ollamaStore.status.installed ? 'green' : (ollamaStore.status.installing ? 'yellow' : 'red')"></span>
-              Ollama 程序：{{ ollamaStore.status.installed ? '已安装' : (ollamaStore.status.installing ? '正在安装中...' : '未安装') }}
-            </div>
-            <div class="ollama-item">
-              <span class="ollama-dot" :class="ollamaStore.status.running ? 'green' : 'red'"></span>
-              Ollama 服务：{{ ollamaStore.status.running ? '运行中' : '未运行' }}
-            </div>
-            <div class="ollama-item" v-if="ollamaStore.status.running">
-              <span class="ollama-dot" :class="ollamaStore.hasLlava ? 'green' : 'red'"></span>
-              视觉模型 llava-phi3：{{ ollamaStore.hasLlava ? '已部署' : '未部署' }}
-            </div>
-            <div v-if="ollamaStore.status.running && ollamaStore.status.models.length" class="ollama-models">
-              已部署模型：{{ ollamaStore.status.models.join(', ') }}
-            </div>
-          </div>
-          <button
-            v-if="ollamaStore.hw?.verdict === 'not_recommended'"
-            class="btn-primary"
-            @click="activeTab = 'api'"
-          >配置线上视觉模型 API</button>
-          <button
-            v-else
-            class="btn-primary"
-            :disabled="ollamaStore.busy"
-            @click="ollamaStore.deploy()"
-          >
-            {{ ollamaStore.busy ? '部署中...' : (ollamaStore.status.installed && ollamaStore.hasLlava ? '重新检测' : '一键部署') }}
-          </button>
-          <p class="ollama-hint" v-if="ollamaStore.hw?.verdict !== 'not_recommended'">首次部署将安装 Ollama 并下载约 2GB 模型，耗时较长；关闭此界面会继续在后台下载，可稍后回来查看进度。</p>
-        </template>
-        <div v-if="ollamaStore.percent !== null && ollamaStore.percent < 100" class="ollama-bar">
-          <div class="ollama-bar__fill" :style="{ width: ollamaStore.percent + '%' }"></div>
-          <span class="ollama-bar__label">{{ Math.round(ollamaStore.percent) }}%</span>
-        </div>
-        <div v-if="ollamaStore.progress" class="ollama-progress">{{ ollamaStore.progress }}</div>
+      <div class="settings-dialog__footer">
+        <!-- 删除/保存 只对「API 配置」页生效（针对正在编辑的模型配置），其余页只保留关闭 -->
+        <button
+          v-if="activeTab === 'api' && !isNew && chatStore.profiles.length > 1"
+          class="btn-danger"
+          @click="handleDelete"
+        >
+          删除此配置
+        </button>
+        <div class="settings-dialog__footer-spacer"></div>
+        <button class="btn-secondary" @click="emit('close')">取消</button>
+        <button v-if="activeTab === 'api'" class="btn-primary" @click="handleSave">保存</button>
       </div>
-
-      <!-- 用量统计 -->
-      <div v-show="activeTab === 'stats'"><UsageStats /></div>
-
-      <!-- 运行时诊断 -->
-      <div v-show="activeTab === 'health'"><HealthPanel /></div>
-
-      <!-- 定时任务 -->
-      <div v-show="activeTab === 'tasks'"><ScheduledTasks /></div>
-
-      <!-- 长期记忆 -->
-      <div v-show="activeTab === 'memory'"><MemoryPanel /></div>
-
-      <!-- 即时聊天（IM 网关：钉钉/飞书/企微） -->
-      <div v-show="activeTab === 'im'"><ImGatewayPanel /></div>
-
-      <!-- 审计：工具调用全记录（筛选/回放/导出） -->
-      <div v-show="activeTab === 'audit'"><AuditPanel /></div>
-
-      <!-- 撤销：文件操作回放（编辑/新建/删除快照，一键回滚） -->
-      <div v-show="activeTab === 'undo'"><UndoPanel /></div>
-      <div v-show="activeTab === 'pty'"><PtyPanel /></div>
-
-      <!-- 知识库 RAG 自动注入 -->
-      <div v-show="activeTab === 'kb'">
-        <h3><Database :size="17" /> 知识库</h3>
-        <p class="ollama-desc">RAG 知识库通过 Agent 工具（kb_create / kb_add / kb_search）建立；此处可开启「自动注入」：开启后每个会话首轮自动检索默认知识库的相关分块注入上下文，回答更贴合你的文档，无需手动检索。同一会话只注入一次，精细引用时仍可让 Agent 手动 kb_search。</p>
-        <div class="form-group approval-mode">
-          <label class="memory-config__toggle" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" v-model="ragEnabled" @change="saveRag" />
-            <span>知识库自动注入（会话首轮 RAG）</span>
-          </label>
-          <span class="form-hint">开启后，每个新会话的首条消息会自动检索「默认知识库」并将命中的分块作为上下文注入给模型。</span>
-        </div>
-        <div class="form-group">
-          <label>默认知识库</label>
-          <select v-model="ragKb" @change="saveRag">
-            <option value="">— 未配置 —</option>
-            <option v-for="k in kbList" :key="k.name" :value="k.name">{{ k.name }}（{{ k.chunks }} 分块）</option>
-          </select>
-          <span class="form-hint">选择后作为自动检索的知识库；可让 Agent 用 kb_create 新建知识库、kb_add 录入文档。</span>
-        </div>
-        <div v-if="kbList.length === 0" class="form-hint">暂无知识库。可在对话中让 Agent 调用「创建知识库 / 添加文档」来建立。</div>
-        <button class="btn-ghost" @click="refreshKb" style="margin-top: 4px">刷新知识库列表</button>
-      </div>
-
-      <!-- P-A7 权限矩阵：工具级开关 + 路径白名单 -->
-      <div v-show="activeTab === 'permissions'">
-        <h3><Shield :size="17" /> 权限矩阵</h3>
-        <p class="ollama-desc">工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent 的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。</p>
-        <div class="form-group approval-mode">
-          <label class="memory-config__toggle" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" v-model="fileEditConfirm" @change="saveEditConfirm" />
-            <span>文件编辑需确认（Agent 改文件前先预览 diff，你确认后才写入）</span>
-          </label>
-          <span class="form-hint">开启后，Agent 调用 replace_string / insert_string / delete_file 会先弹出 diff/路径确认框，点「应用」才真正写盘；关闭则保持自动应用（可用「禁用工具」白名单保护文件）。</span>
-        </div>
-        <div class="form-group">
-          <label>禁用工具（每行一个工具名）</label>
-          <textarea
-            v-model="disabledTools"
-            rows="5"
-            placeholder="如：write_file&#10;subagent_delegate&#10;puppeteer_screenshot"
-            class="form-textarea"
-            @change="savePermissions"
-          ></textarea>
-          <span class="form-hint">在此列出的工具会被直接拦截（提示「已在权限矩阵中禁用」）。常见用途：禁用 write_file/delete_file 防止 Agent 改文件、禁用浏览器工具防止弹窗。</span>
-        </div>
-        <div class="form-group">
-          <label>路径白名单（每行一个目录）</label>
-          <textarea
-            v-model="allowedPaths"
-            rows="5"
-            placeholder="如：/Users/wanghuan/op&#10;~/Pictures"
-            class="form-textarea"
-            @change="savePermissions"
-          ></textarea>
-          <span class="form-hint">配置后 Agent 的 list_dir / 文件编辑 / git / 测试 / 项目分析等工具只能访问这些目录；留空 = 不限制。</span>
-        </div>
-        <div class="form-group">
-          <label>命令执行策略（规则文件，持久化）</label>
-          <textarea
-            v-model="execRules"
-            rows="10"
-            spellcheck="false"
-            class="exec-rules-editor"
-            placeholder="allow | deny | prompt &lt;命令前缀&gt;&#10;如：allow git status&#10;    deny rm -rf"
-          ></textarea>
-          <div class="exec-rule-actions">
-            <input v-model="execTestCmd" placeholder="输入命令测试决策，如：git push --force origin main" @keyup.enter="testExecRule" />
-            <button class="btn-secondary" @click="testExecRule">测试</button>
-          </div>
-          <p v-if="execTestResult" class="form-hint">{{ execTestResult }}</p>
-          <div class="exec-rule-actions">
-            <button class="btn-primary" @click="saveExecRules">保存</button>
-            <button class="btn-secondary" @click="resetExecRules">恢复默认</button>
-          </div>
-          <span class="form-hint">语法：<code>allow | deny | prompt &lt;命令前缀&gt;</code>（按 token 前缀匹配，文件顺序优先、首条命中生效）。deny 直接拦截；allow 直接放行（即使命中内置危险模式）；prompt 必须确认。示例：<code>allow git status</code> 不再确认、<code>deny rm -rf</code> 直接拦截。未命中规则时按默认三档审批（manual/smart/yolo）。</span>
-        </div>
-      </div>
-
-      <!-- Phase 5 全局快捷键 -->
-      <div v-show="activeTab === 'shortcuts'">
-        <h3><Keyboard :size="17" /> 全局快捷键</h3>
-        <p class="ollama-desc">全局快捷键在应用最小化/隐藏到后台时仍生效。格式：修饰键 + 键名（如 CommandOrControl+Shift+Space）。仅支持单个非修饰键 + 修饰键组合。</p>
-        <div class="form-group">
-          <label>显示 / 隐藏主窗口（快速召唤）</label>
-          <input v-model="shortcutToggle" placeholder="CommandOrControl+Shift+Space" @change="saveShortcuts" />
-          <span class="form-hint">macOS 用 Command / ⌘；Windows/Linux 用 Control / Ctrl。例：CommandOrControl+Shift+Space、CommandOrControl+Alt+D</span>
-        </div>
-        <div class="form-group">
-          <label>新建对话</label>
-          <input v-model="shortcutNewChat" placeholder="CommandOrControl+Shift+K" @change="saveShortcuts" />
-          <span class="form-hint">保存后立即生效（注销旧快捷键并按新配置重新注册）。若提示被占用，说明与其他应用冲突，请换一个组合。</span>
-        </div>
-        <button class="settings-reset-btn" @click="resetShortcuts">恢复默认（⌘⇧Space / ⌘⇧K）</button>
-      </div>
-        </div>
-      </div>
-
-    <div class="settings-dialog__footer">
-      <!-- 删除/保存 只对「API 配置」页生效（针对正在编辑的模型配置），其余页只保留关闭 -->
-      <button
-        v-if="activeTab === 'api' && !isNew && chatStore.profiles.length > 1"
-        class="btn-danger"
-        @click="handleDelete"
-      >
-        删除此配置
-      </button>
-      <div class="settings-dialog__footer-spacer"></div>
-      <button class="btn-secondary" @click="emit('close')">取消</button>
-      <button v-if="activeTab === 'api'" class="btn-primary" @click="handleSave">保存</button>
     </div>
-  </div>
   </div>
 </template>
 
 <style scoped>
 .settings-overlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.5); backdrop-filter: blur(4px);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 100; animation: fadeIn .2s;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.2s;
 }
 
 .settings-dialog {
-  width: 640px; height: min(85vh, 720px);
-  background: var(--bg-elevated); border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl); overflow: hidden;
-  animation: scaleIn .25s cubic-bezier(0.4, 0, 0.2, 1);
-  display: flex; flex-direction: column;
+  width: 640px;
+  height: min(85vh, 720px);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  animation: scaleIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-color);
 }
 
 .settings-dialog__header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
-.settings-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.settings-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
 
 /* 左侧菜单 */
 .settings-nav {
-  width: 168px; flex-shrink: 0; border-right: 1px solid var(--border-color);
-  padding: 12px 8px; display: flex; flex-direction: column; gap: 2px;
-  overflow-y: auto; background: var(--bg-secondary);
+  width: 168px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-color);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
 }
 .settings-tab {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 9px 12px; border: none; border-radius: 8px;
-  background: transparent; color: var(--text-secondary); font-size: 13px;
-  cursor: pointer; text-align: left; transition: all .15s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
 }
-.settings-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
-.settings-tab.active { background: var(--accent-bg); color: var(--accent-color); font-weight: 600; }
-.settings-tab__icon { width: 20px; text-align: center; flex-shrink: 0; }
+.settings-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-tab.active {
+  background: var(--accent-bg);
+  color: var(--accent-color);
+  font-weight: 600;
+}
+.settings-tab__icon {
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
 
 .btn-close {
-  width: 32px; height: 32px; border: none; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-secondary); font-size: 16px;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: all .15s;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
 }
-.btn-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
 
 .settings-dialog__body {
-  display: flex; flex-direction: row; gap: 0;
-  overflow: hidden; flex: 1; min-height: 0; padding: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
 }
 
 /* 右侧内容区：各 panel 在此滚动 */
 .settings-content {
-  flex: 1; min-width: 0; overflow-y: auto;
-  padding: 20px 24px; display: flex; flex-direction: column; gap: 18px;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.profile-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.profile-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .profile-tab {
-  padding: 6px 16px; border: 1.5px solid var(--border-color);
-  border-radius: 22px; background: var(--bg-secondary);
-  color: var(--text-secondary); font-size: 12px; font-weight: 550;
-  cursor: pointer; transition: all .2s;
+  padding: 6px 16px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 22px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.2s;
 }
-.profile-tab:hover { border-color: var(--accent-color); color: var(--text-primary); }
+.profile-tab:hover {
+  border-color: var(--accent-color);
+  color: var(--text-primary);
+}
 .profile-tab--active {
-  background: var(--accent-color); border-color: var(--accent-color); color: #fff;
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #fff;
 }
-.profile-tab--add { font-size: 18px; padding: 4px 12px; }
+.profile-tab--add {
+  font-size: 18px;
+  padding: 4px 12px;
+}
 
-.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .form-group label {
-  font-size: 12px; font-weight: 650; color: var(--text-secondary);
-  text-transform: uppercase; letter-spacing: .04em;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .form-group input {
-  padding: 10px 14px; border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-secondary);
-  color: var(--text-primary); font-size: 13px; font-family: inherit;
-  outline: none; transition: all .2s;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: all 0.2s;
 }
 .form-group input:focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
-.form-hint { font-size: 11px; color: var(--text-muted); }
+.form-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .settings-reset-btn {
-  padding: 8px 14px; border: 1.5px solid var(--border-color); border-radius: var(--radius-md);
-  background: var(--bg-secondary); color: var(--text-secondary); font-size: 12px; cursor: pointer; transition: all .2s;
+  padding: 8px 14px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
-.settings-reset-btn:hover { border-color: var(--accent-color); color: var(--accent-color); }
-.approval-modes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.settings-reset-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+.approval-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
 .approval-mode {
-  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-  border: 1.5px solid var(--border-color); border-radius: var(--radius-md);
-  background: var(--bg-secondary); color: var(--text-primary); cursor: pointer;
-  text-align: left; font-family: inherit; transition: all .15s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: all 0.15s;
 }
-.approval-mode:hover { border-color: var(--accent-color); }
-.approval-mode.active { border-color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, transparent); }
-.approval-mode-name { font-size: 13px; font-weight: 600; white-space: nowrap; }
-.approval-mode-desc { font-size: 11px; color: var(--text-muted); }
-.form-select { width: 100%; } /* 背景/边框/hover/focus 统一走全局 select 样式（main.css） */
+.approval-mode:hover {
+  border-color: var(--accent-color);
+}
+.approval-mode.active {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+.approval-mode-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.approval-mode-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.form-select {
+  width: 100%;
+} /* 背景/边框/hover/focus 统一走全局 select 样式（main.css） */
 .form-textarea {
-  padding: 10px 14px; border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-secondary);
-  color: var(--text-primary); font-size: 13px; font-family: inherit;
-  outline: none; resize: vertical; transition: all .2s;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  transition: all 0.2s;
 }
 .form-textarea:focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
-.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
 
-.model-row { display: flex; align-items: center; gap: 8px; }
-.model-select { position: relative; flex: 1; min-width: 0; }
-.model-select input { width: 100%; box-sizing: border-box; }
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-select {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.model-select input {
+  width: 100%;
+  box-sizing: border-box;
+}
 .model-select__dropdown {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
-  max-height: 240px; overflow-y: auto; z-index: 60;
-  background: var(--bg-elevated); border: 1px solid var(--border-color);
-  border-radius: var(--radius-md); box-shadow: var(--shadow-xl);
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 60;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
 }
 .model-select__option {
-  padding: 8px 14px; font-size: 13px; cursor: pointer;
-  color: var(--text-primary); transition: background .12s;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 0.12s;
 }
-.model-select__option:hover { background: var(--bg-hover); }
-.model-select__option.on { color: var(--accent-color); font-weight: 600; }
+.model-select__option:hover {
+  background: var(--bg-hover);
+}
+.model-select__option.on {
+  color: var(--accent-color);
+  font-weight: 600;
+}
 .btn-fetch {
-  padding: 10px 14px; font-size: 12px; white-space: nowrap; flex-shrink: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.form-hint--error { color: #f87171; }
+.form-hint--error {
+  color: #f87171;
+}
 
 .exec-rules-editor {
-  width: 100%; box-sizing: border-box;
+  width: 100%;
+  box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px; line-height: 1.5;
-  background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-color); border-radius: var(--radius-md);
-  padding: 10px 12px; outline: none; resize: vertical; transition: all .2s;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  outline: none;
+  resize: vertical;
+  transition: all 0.2s;
 }
 .exec-rules-editor:focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
-.exec-rule-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.exec-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
 .exec-rule-actions input {
-  flex: 1; padding: 8px 10px; font-size: 12px; min-width: 0;
-  background: var(--bg-secondary); color: var(--text-primary);
-  border: 1px solid var(--border-color); border-radius: var(--radius-md); outline: none;
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 12px;
+  min-width: 0;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  outline: none;
 }
-.exec-rule-actions input:focus { border-color: var(--accent-color); }
-.exec-rule-actions .btn-primary, .exec-rule-actions .btn-secondary { padding: 8px 16px; }
+.exec-rule-actions input:focus {
+  border-color: var(--accent-color);
+}
+.exec-rule-actions .btn-primary,
+.exec-rule-actions .btn-secondary {
+  padding: 8px 16px;
+}
 .form-group code {
-  background: var(--bg-secondary); padding: 1px 5px; border-radius: 4px;
-  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  background: var(--bg-secondary);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
 }
 
 .toggle-row {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   cursor: pointer;
 }
 .toggle-input {
-  width: 40px; height: 22px;
-  appearance: none; -webkit-appearance: none;
-  background: var(--border-color); border-radius: 12px;
-  position: relative; cursor: pointer; transition: background .2s;
+  width: 40px;
+  height: 22px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--border-color);
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
 }
 .toggle-input::after {
-  content: ''; position: absolute; top: 2px; left: 2px;
-  width: 18px; height: 18px; border-radius: 50%;
-  background: #fff; transition: transform .2s;
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
 }
-.toggle-input:checked { background: var(--accent-color); }
-.toggle-input:checked::after { transform: translateX(18px); }
+.toggle-input:checked {
+  background: var(--accent-color);
+}
+.toggle-input:checked::after {
+  transform: translateX(18px);
+}
 
 .settings-dialog__footer {
-  display: flex; align-items: center; gap: 10px;
-  padding: 16px 24px; border-top: 1px solid var(--border-color); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
-.settings-dialog__footer-spacer { flex: 1; }
+.settings-dialog__footer-spacer {
+  flex: 1;
+}
 
-.btn-primary, .btn-secondary, .btn-danger {
-  padding: 9px 22px; border: none; border-radius: var(--radius-md);
-  font-size: 13px; font-weight: 650; cursor: pointer;
-  transition: all .2s cubic-bezier(0.4, 0, 0.2, 1);
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  padding: 9px 22px;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.btn-primary { background: var(--accent-color); color: #fff; }
-.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 4px 12px rgba(99,102,241,.3); }
+.btn-primary {
+  background: var(--accent-color);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
 .btn-secondary {
-  background: var(--bg-secondary); color: var(--text-primary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
   border: 1px solid var(--border-color);
 }
-.btn-secondary:hover { background: var(--bg-hover); }
-.btn-ghost {
-  background: transparent; color: var(--text-secondary);
-  border: 1px solid var(--border-color); border-radius: var(--radius-md);
-  padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all .2s;
+.btn-secondary:hover {
+  background: var(--bg-hover);
 }
-.btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
-.btn-danger { background: var(--danger-bg); color: var(--danger-color); }
-.btn-danger:hover { background: rgba(239,68,68,.15); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.btn-danger {
+  background: var(--danger-bg);
+  color: var(--danger-color);
+}
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
 
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 @keyframes scaleIn {
-  from { opacity: 0; transform: scale(.94) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 /* --- Ollama 本地视觉模型面板 --- */
-.ollama-panel { display: flex; flex-direction: column; gap: 12px; }
-.ollama-panel h3 { margin: 0; font-size: 16px; }
-.ollama-desc { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
-.ollama-loading { color: var(--text-secondary); font-size: 13px; padding: 8px 0; }
-.ollama-status { display: flex; flex-direction: column; gap: 8px; padding: 12px;
-  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; }
-.ollama-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.ollama-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.ollama-dot.green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.5); }
-.ollama-dot.yellow { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,.5); animation: ollama-blink 1s ease-in-out infinite; }
-.ollama-dot.red { background: #ef4444; }
-@keyframes ollama-blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-.ollama-models { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
-.ollama-panel .btn-primary { align-self: flex-start; margin-top: 4px; }
-.ollama-panel .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
-.ollama-hint { margin: 0; color: var(--text-secondary); font-size: 12px; }
-.ollama-progress { white-space: pre-wrap; font-size: 13px; line-height: 1.6; padding: 10px 12px;
-  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;
-  color: var(--text-primary); max-height: 200px; overflow-y: auto; }
-.ollama-bar { position: relative; height: 22px; background: var(--bg-secondary);
-  border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
-.ollama-bar__fill { height: 100%; background: linear-gradient(90deg, var(--accent-color), #22c55e);
-  transition: width .3s ease; }
-.ollama-bar__label { position: absolute; inset: 0; display: flex; align-items: center;
-  justify-content: center; font-size: 12px; font-weight: 600; color: var(--text-primary);
-  text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.ollama-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ollama-panel h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.ollama-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ollama-loading {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 8px 0;
+}
+.ollama-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.ollama-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.ollama-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ollama-dot.green {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+.ollama-dot.yellow {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+  animation: ollama-blink 1s ease-in-out infinite;
+}
+.ollama-dot.red {
+  background: #ef4444;
+}
+@keyframes ollama-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.ollama-models {
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.ollama-panel .btn-primary {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.ollama-panel .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ollama-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ollama-progress {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ollama-bar {
+  position: relative;
+  height: 22px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ollama-bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-color), #22c55e);
+  transition: width 0.3s ease;
+}
+.ollama-bar__label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
 
 /* 硬件评估卡片 */
-.hw-card { display: flex; flex-direction: column; gap: 6px; padding: 12px;
-  background: var(--bg-secondary); border: 1px solid var(--border-color);
-  border-radius: 8px; font-size: 13px; }
-.hw-card__title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
-.hw-score { font-size: 11px; font-weight: 500; color: var(--text-secondary);
-  background: var(--bg-hover); padding: 1px 8px; border-radius: 10px; }
-.hw-card__row { color: var(--text-secondary); }
-.hw-card__verdict { font-weight: 600; margin-top: 4px; }
-.hw-card__verdict--recommended { color: #22c55e; }
-.hw-card__verdict--warning { color: #f59e0b; }
-.hw-card__verdict--not_recommended { color: #ef4444; }
-.hw-card__msg { margin: 0; color: var(--text-secondary); line-height: 1.6;
-  border-top: 1px dashed var(--border-color); padding-top: 8px; }
+.hw-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.hw-card__title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hw-score {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+.hw-card__row {
+  color: var(--text-secondary);
+}
+.hw-card__verdict {
+  font-weight: 600;
+  margin-top: 4px;
+}
+.hw-card__verdict--recommended {
+  color: #22c55e;
+}
+.hw-card__verdict--warning {
+  color: #f59e0b;
+}
+.hw-card__verdict--not_recommended {
+  color: #ef4444;
+}
+.hw-card__msg {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  border-top: 1px dashed var(--border-color);
+  padding-top: 8px;
+}
 </style>

@@ -26,7 +26,9 @@ function loadSkills(): Skill[] {
 }
 
 /** 解析 .md 文件 frontmatter */
-function parseMd(md: string): { name: string; description: string; prompt: string; category: string; author?: string } | null {
+function parseMd(
+  md: string,
+): { name: string; description: string; prompt: string; category: string; author?: string } | null {
   const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   if (fmMatch) {
     const front = fmMatch[1];
@@ -146,7 +148,9 @@ export const useSkillStore = defineStore("skill", () => {
       s.author ? `author: ${s.author}` : "",
       s.version ? `version: ${s.version}` : "",
       "---",
-    ].filter((l) => l !== "").join("\n");
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
     return fm + "\n\n" + s.prompt;
   }
 
@@ -174,18 +178,34 @@ export const useSkillStore = defineStore("skill", () => {
 
   function toggleSkill(id: string) {
     const s = skills.value.find((x) => x.id === id);
-    if (s) { s.enabled = !s.enabled; s.updatedAt = Date.now(); }
+    if (s) {
+      s.enabled = !s.enabled;
+      s.updatedAt = Date.now();
+    }
   }
 
   // 批量启用/禁用
   function setAllEnabled(enabled: boolean) {
-    skills.value.forEach((s) => { s.enabled = enabled; s.updatedAt = Date.now(); });
+    skills.value.forEach((s) => {
+      s.enabled = enabled;
+      s.updatedAt = Date.now();
+    });
   }
 
   return {
-    skills, addSkill, updateSkill, removeSkill, toggleSkill,
-    enabledSkills, enabledPrompts,
-    installFromCatalog, importFromMd, importFromUrl, importFromFile,
-    exportAsMd, isInstalled, setAllEnabled,
+    skills,
+    addSkill,
+    updateSkill,
+    removeSkill,
+    toggleSkill,
+    enabledSkills,
+    enabledPrompts,
+    installFromCatalog,
+    importFromMd,
+    importFromUrl,
+    importFromFile,
+    exportAsMd,
+    isInstalled,
+    setAllEnabled,
   };
 });

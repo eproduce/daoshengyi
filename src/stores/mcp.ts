@@ -2,7 +2,12 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { v4 as uuidv4 } from "./uuid";
-import { initSettings, getSettings, updateSettings, type McpServerPersist } from "@/api/appSettings";
+import {
+  initSettings,
+  getSettings,
+  updateSettings,
+  type McpServerPersist,
+} from "@/api/appSettings";
 import { pickBrowserPath } from "@/utils/browser-select";
 
 interface McpServerConfig {
@@ -34,8 +39,10 @@ function migrateConfig<T extends { command: string; args: string; enabled: boole
     (cmd.includes("npx") || cmd.includes("uvx") || cmd.includes("pip") || cmd === "");
   if (isBrokenFetch) {
     console.warn(
-      "[道生一] 已自动禁用外部 fetch MCP「" + (c as { name?: string }).name + "」：npm 上该包名被安全研究占位无法使用，" +
-      "且应用已内置 fetch_page 工具（抓网页转文本），无需外部 MCP。"
+      "[道生一] 已自动禁用外部 fetch MCP「" +
+        (c as { name?: string }).name +
+        "」：npm 上该包名被安全研究占位无法使用，" +
+        "且应用已内置 fetch_page 工具（抓网页转文本），无需外部 MCP。",
     );
     return { ...c, enabled: false };
   }
@@ -81,9 +88,17 @@ export function detectBrowsers(force = false): Promise<BrowserInfo[]> {
     return Promise.resolve(browsersCache);
   }
   browsersLoading = invoke<BrowserInfo[]>("detect_browsers")
-    .then((list) => { browsersCache = list || []; return browsersCache; })
-    .catch(() => { browsersCache = []; return browsersCache; })
-    .finally(() => { browsersLoading = null; });
+    .then((list) => {
+      browsersCache = list || [];
+      return browsersCache;
+    })
+    .catch(() => {
+      browsersCache = [];
+      return browsersCache;
+    })
+    .finally(() => {
+      browsersLoading = null;
+    });
   return browsersLoading;
 }
 
@@ -100,7 +115,9 @@ export async function resolveBrowserPath(engine: string): Promise<string | null>
  *  硬编码了 Edge 路径（旧配置），只要本机探测到 Chrome/默认浏览器就会用探测结果，
  *  避免「本机有 Chrome 却硬用不存在的 Edge 导致启动失败」。仅当探测失败才回退。
  *  用户手动在 env 里配置的路径若真实存在，则优先尊重。 */
-async function applyPuppeteerEnv<T extends { command: string; args: string; env?: Record<string, string> }>(c: T): Promise<T> {
+async function applyPuppeteerEnv<
+  T extends { command: string; args: string; env?: Record<string, string> },
+>(c: T): Promise<T> {
   const cmd = (c.command ?? "").toLowerCase();
   const args = c.args ?? "";
   const isPuppeteer = cmd.includes("npx") && /\bserver-puppeteer\b/.test(args);
@@ -119,7 +136,8 @@ async function applyPuppeteerEnv<T extends { command: string; args: string; env?
     }
   }
   // 用户已显式配置启动参数则尊重；否则补默认视口=窗口大小，让页面占满窗口
-  if (!env.PUPPETEER_LAUNCH_OPTIONS) env.PUPPETEER_LAUNCH_OPTIONS = PUPPETEER_DEFAULT_LAUNCH_OPTIONS;
+  if (!env.PUPPETEER_LAUNCH_OPTIONS)
+    env.PUPPETEER_LAUNCH_OPTIONS = PUPPETEER_DEFAULT_LAUNCH_OPTIONS;
   return { ...c, env };
 }
 
@@ -134,7 +152,9 @@ function loadLegacy(): McpServerConfig[] {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
     return s ? (JSON.parse(s) as McpServerConfig[]).map((c) => migrateConfig(c)) : [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 // 持久化形态 → 运行时形态（补运行时状态）
@@ -154,7 +174,12 @@ export const useMcpStore = defineStore("mcp", () => {
   function save() {
     updateSettings({
       mcpServers: servers.value.map((s) => ({
-        id: s.id, name: s.name, command: s.command, args: s.args, enabled: s.enabled, env: s.env,
+        id: s.id,
+        name: s.name,
+        command: s.command,
+        args: s.args,
+        enabled: s.enabled,
+        env: s.env,
       })),
     });
   }
@@ -173,7 +198,9 @@ export const useMcpStore = defineStore("mcp", () => {
       const settings = await initSettings();
       if (settings.mcpServers.length > 0) {
         // 浏览器内核 env 异步应用（探测已装浏览器 + 按设置/默认选择）
-        const applied = await Promise.all(settings.mcpServers.map((p) => applyPuppeteerEnv(migrateConfig(p))));
+        const applied = await Promise.all(
+          settings.mcpServers.map((p) => applyPuppeteerEnv(migrateConfig(p))),
+        );
         servers.value = applied.map(toConfig);
         if (legacy) localStorage.removeItem(STORAGE_KEY);
       } else if (legacy) {
@@ -191,20 +218,28 @@ export const useMcpStore = defineStore("mcp", () => {
   /** 按需连接所有已启用的 MCP 服务器（并发 + 每台限时，避免某台启动慢阻塞对话发送）
    *  注意：跳过浏览器类服务器（连接即弹窗），它们由模型主动请求（__connect__）时才连接。 */
   async function autoConnectEnabled() {
-    const pending = servers.value.filter((s) => s.enabled && !s.connected && !isBrowserServer(s.name, s.command));
+    const pending = servers.value.filter(
+      (s) => s.enabled && !s.connected && !isBrowserServer(s.name, s.command),
+    );
     // 并发连接所有启用的服务器；每台限时 10 秒，失败/超时跳过不阻塞，用已连上的工具兜底
-    await Promise.all(pending.map((s) =>
-      Promise.race([
-        connect(s.id),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`连接超时（10 秒）`)), 10000)
-        ),
-      ]).catch((e) => {
-        console.warn(`[道生一] MCP「${s.name}」连接失败:`, e);
-      })
-    ));
+    await Promise.all(
+      pending.map((s) =>
+        Promise.race([
+          connect(s.id),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`连接超时（10 秒）`)), 10000),
+          ),
+        ]).catch((e) => {
+          console.warn(`[道生一] MCP「${s.name}」连接失败:`, e);
+        }),
+      ),
+    );
     // 刷新 chat store 的工具缓存，使工具提示可注入
-    try { await syncToChat(); } catch { /* ignore */ }
+    try {
+      await syncToChat();
+    } catch {
+      /* ignore */
+    }
   }
 
   function add(config: Omit<McpServerConfig, "id" | "connected" | "toolCount">) {
@@ -212,21 +247,25 @@ export const useMcpStore = defineStore("mcp", () => {
   }
 
   function update(id: string, patch: Partial<McpServerConfig>) {
-    const s = servers.value.find(x => x.id === id);
+    const s = servers.value.find((x) => x.id === id);
     if (s) Object.assign(s, patch);
   }
 
   async function remove(id: string) {
-    const s = servers.value.find(x => x.id === id);
+    const s = servers.value.find((x) => x.id === id);
     // 删除已连接服务器时先断开（终止进程），避免进程残留
     if (s && s.connected) {
-      try { await invoke("mcp_disconnect", { name: s.name }); } catch { /* ignore */ }
+      try {
+        await invoke("mcp_disconnect", { name: s.name });
+      } catch {
+        /* ignore */
+      }
     }
-    servers.value = servers.value.filter(x => x.id !== id);
+    servers.value = servers.value.filter((x) => x.id !== id);
   }
 
   async function connect(id: string) {
-    const s = servers.value.find(x => x.id === id);
+    const s = servers.value.find((x) => x.id === id);
     if (!s) return;
     // MCP 依赖 Rust 后端，仅在 Tauri 桌面环境可用
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
@@ -238,9 +277,12 @@ export const useMcpStore = defineStore("mcp", () => {
         const applied = await applyPuppeteerEnv(s);
         Object.assign(s, applied);
       }
-      const args = s.args.split(/\s+/).filter(a => a.length > 0);
+      const args = s.args.split(/\s+/).filter((a) => a.length > 0);
       const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
-        name: s.name, command: s.command, args, env: s.env || {},
+        name: s.name,
+        command: s.command,
+        args,
+        env: s.env || {},
       });
       s.connected = true;
       s.toolCount = tools.length;
@@ -253,18 +295,21 @@ export const useMcpStore = defineStore("mcp", () => {
 
   /// 按服务器名连接（供 chat store 按需激活未连接的服务器，如浏览器自动化）
   async function connectByName(name: string): Promise<string[]> {
-    const s = servers.value.find(x => x.name === name);
+    const s = servers.value.find((x) => x.name === name);
     if (!s) throw new Error(`未找到 MCP 服务器「${name}」`);
-    const args = s.args.split(/\s+/).filter(a => a.length > 0);
+    const args = s.args.split(/\s+/).filter((a) => a.length > 0);
     const tools = await invoke<{ name: string; description: string }[]>("mcp_connect", {
-      name: s.name, command: s.command, args, env: s.env || {},
+      name: s.name,
+      command: s.command,
+      args,
+      env: s.env || {},
     });
     s.connected = true;
     s.toolCount = tools.length;
-    return tools.map(t => t.name);
+    return tools.map((t) => t.name);
   }
 
-  const connectedCount = () => servers.value.filter(s => s.connected).length;
+  const connectedCount = () => servers.value.filter((s) => s.connected).length;
   const totalTools = () => servers.value.reduce((sum, s) => sum + s.toolCount, 0);
 
   // 同步到 chat store 的 MCP 缓存
@@ -272,12 +317,14 @@ export const useMcpStore = defineStore("mcp", () => {
     try {
       const { refreshMcpTools } = await import("./chat");
       await refreshMcpTools();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   /// 断开指定服务器（kill 进程，浏览器类服务器随之关闭浏览器，形成使用闭环）
   async function disconnect(id: string) {
-    const s = servers.value.find(x => x.id === id);
+    const s = servers.value.find((x) => x.id === id);
     if (!s || !s.connected) return;
     try {
       await invoke("mcp_disconnect", { name: s.name });
@@ -291,7 +338,11 @@ export const useMcpStore = defineStore("mcp", () => {
   async function disconnectAll() {
     const ids = servers.value.filter((s) => s.connected).map((s) => s.id);
     for (const id of ids) {
-      try { await disconnect(id); } catch { /* ignore */ }
+      try {
+        await disconnect(id);
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -306,8 +357,18 @@ export const useMcpStore = defineStore("mcp", () => {
   }
 
   return {
-    servers, add, update, remove, connect, connectByName,
-    connectEnabled: autoConnectEnabled, disconnect, disconnectAll, markDisconnected,
-    connectedCount, totalTools, syncToChat,
+    servers,
+    add,
+    update,
+    remove,
+    connect,
+    connectByName,
+    connectEnabled: autoConnectEnabled,
+    disconnect,
+    disconnectAll,
+    markDisconnected,
+    connectedCount,
+    totalTools,
+    syncToChat,
   };
 });

@@ -9,7 +9,7 @@ export interface ReviewAction {
 
 /** 构造记忆复习提示词：把事实列表（含 id）交给 LLM 找出过时/矛盾/重复项。 */
 export function buildReviewPrompt(
-  facts: { id: string; fact: string; fact_type: string; importance: number }[]
+  facts: { id: string; fact: string; fact_type: string; importance: number }[],
 ): string {
   const list = facts
     .map((f) => `- id=${f.id} | ${f.fact}（${f.fact_type}，重要度 ${f.importance}）`)
@@ -30,7 +30,11 @@ export function parseReviewActions(raw: string): ReviewAction[] {
   try {
     const cleaned = raw.replace(/```json|```/g, "").trim();
     const arr = JSON.parse(cleaned) as Array<{
-      action?: string; id?: string; from_id?: string; into_id?: string; reason?: string;
+      action?: string;
+      id?: string;
+      from_id?: string;
+      into_id?: string;
+      reason?: string;
     }>;
     if (!Array.isArray(arr)) return [];
     const out: ReviewAction[] = [];
@@ -38,7 +42,12 @@ export function parseReviewActions(raw: string): ReviewAction[] {
       const action = it.action === "merge" ? "merge" : it.action === "delete" ? "delete" : null;
       const id = String(it.id ?? it.from_id ?? "").trim();
       if (!action || !id) continue;
-      out.push({ action, id, intoId: it.into_id ? String(it.into_id).trim() : undefined, reason: it.reason });
+      out.push({
+        action,
+        id,
+        intoId: it.into_id ? String(it.into_id).trim() : undefined,
+        reason: it.reason,
+      });
     }
     return out;
   } catch {

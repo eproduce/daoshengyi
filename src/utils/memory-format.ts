@@ -9,7 +9,13 @@ export interface MemoryFact {
   created_at: number;
 }
 
-const TYPE_LABEL: Record<string, string> = { preference: "偏好", info: "信息", decision: "决策", todo: "待办", workflow: "工作流" };
+const TYPE_LABEL: Record<string, string> = {
+  preference: "偏好",
+  info: "信息",
+  decision: "决策",
+  todo: "待办",
+  workflow: "工作流",
+};
 export function factTypeLabel(t: string): string {
   return TYPE_LABEL[t] || t;
 }
@@ -37,7 +43,9 @@ export function formatMemoriesBlock(title: string, facts: MemoryFact[], maxChars
   if (!facts.length) return "";
   let block = `## ${title}\n` + facts.map(formatFactLine).join("\n");
   if (block.length > maxChars) {
-    block = block.slice(0, maxChars) + `\n…（记忆过多已按相关度截断：共 ${facts.length} 条，仅保留前 ${maxChars} 字符）`;
+    block =
+      block.slice(0, maxChars) +
+      `\n…（记忆过多已按相关度截断：共 ${facts.length} 条，仅保留前 ${maxChars} 字符）`;
   }
   return block;
 }
@@ -52,6 +60,6 @@ export function pickForgetCandidates(facts: MemoryFact[], now = Date.now()): Mem
     (f) =>
       f.fact_type !== "preference" &&
       f.importance <= 2 &&
-      (f.last_accessed == null || f.last_accessed < cutoff)
+      (f.last_accessed == null || f.last_accessed < cutoff),
   );
 }

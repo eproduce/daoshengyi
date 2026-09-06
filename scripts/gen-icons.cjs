@@ -69,10 +69,16 @@ async function main() {
     <!-- 一（横条） -->
     <rect x="13" y="37" width="38" height="6" rx="3" fill="#000000"/>
   </svg>`;
-  await sharp(Buffer.from(traySvg)).resize(32, 32).png().toFile(path.join(ICONS_DIR, "tray-icon.png"));
+  await sharp(Buffer.from(traySvg))
+    .resize(32, 32)
+    .png()
+    .toFile(path.join(ICONS_DIR, "tray-icon.png"));
   console.log("  tray-icon.png (32x32 模板图) ✅");
 
   console.log("\n全部完成！");
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

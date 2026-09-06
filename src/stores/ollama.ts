@@ -28,7 +28,7 @@ export const useOllamaStore = defineStore("ollama", () => {
   let unlisten: (() => void) | null = null;
 
   const hasLlava = computed(
-    () => status.value?.models.some((m) => m.includes("llava-phi3")) ?? false
+    () => status.value?.models.some((m) => m.includes("llava-phi3")) ?? false,
   );
 
   // 注册全局进度监听（只注册一次，应用生命周期内持续接收）
@@ -43,20 +43,26 @@ export const useOllamaStore = defineStore("ollama", () => {
       if (typeof p.text === "string") progress.value = p.text;
       if (typeof p.percent === "number") percent.value = p.percent;
     })
-      .then((u) => { unlisten = u; })
+      .then((u) => {
+        unlisten = u;
+      })
       .catch(() => {});
   }
 
   async function refreshStatus() {
     try {
       status.value = await invoke<OllamaStatus>("ollama_status");
-    } catch { status.value = null; }
+    } catch {
+      status.value = null;
+    }
   }
 
   async function refreshHardware() {
     try {
       hw.value = await invoke<HardwareInfo>("check_hardware");
-    } catch { hw.value = null; }
+    } catch {
+      hw.value = null;
+    }
   }
 
   // 应用启动时初始化：注册监听 + 首次检测
@@ -79,5 +85,16 @@ export const useOllamaStore = defineStore("ollama", () => {
     busy.value = false;
   }
 
-  return { status, hw, busy, progress, percent, hasLlava, init, refreshStatus, refreshHardware, deploy };
+  return {
+    status,
+    hw,
+    busy,
+    progress,
+    percent,
+    hasLlava,
+    init,
+    refreshStatus,
+    refreshHardware,
+    deploy,
+  };
 });

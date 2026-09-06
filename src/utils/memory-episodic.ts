@@ -8,9 +8,7 @@ export interface EpisodicItem {
 }
 
 /** 构造跨会话汇总提示词：把会话摘要列表交给 LLM，提炼跨会话共同主题。 */
-export function buildEpisodicPrompt(
-  summaries: { summary: string; created_at?: number }[]
-): string {
+export function buildEpisodicPrompt(summaries: { summary: string; created_at?: number }[]): string {
   const list = summaries.map((s, i) => `${i + 1}. ${s.summary}`).join("\n");
   return (
     "你是长期记忆库的分层整理员。下面是一批**单次会话摘要**（episodic 层）。\n" +
@@ -34,8 +32,12 @@ export function parseEpisodic(raw: string): EpisodicItem[] {
     if (!Array.isArray(arr)) return [];
     const out: EpisodicItem[] = [];
     for (const it of arr) {
-      const title = String(it.title ?? "").trim().slice(0, 12);
-      const summary = String(it.summary ?? "").trim().slice(0, 600);
+      const title = String(it.title ?? "")
+        .trim()
+        .slice(0, 12);
+      const summary = String(it.summary ?? "")
+        .trim()
+        .slice(0, 600);
       if (!title || !summary) continue;
       out.push({ title, summary });
     }

@@ -70,7 +70,10 @@ function buildConfig(): Record<string, unknown> {
   return {
     platform: platform.value,
     enabled: enabled.value,
-    whitelist: whitelist.value.split("\n").map((s) => s.trim()).filter(Boolean),
+    whitelist: whitelist.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
     trigger: trigger.value,
     system_prompt: systemPrompt.value,
     max_context: maxContext.value,
@@ -100,7 +103,9 @@ function save() {
 async function refresh() {
   try {
     status.value = await invoke<ImStatus>("im_status");
-  } catch { /* 后端暂不可用 */ }
+  } catch {
+    /* 后端暂不可用 */
+  }
 }
 
 async function start() {
@@ -130,7 +135,11 @@ function fmtTime(ms: number) {
 const PLATFORMS = [
   { id: "dingtalk", label: "钉钉（stream 长连接）", desc: "机器人 Client ID/Secret，无需公网" },
   { id: "feishu", label: "飞书（应用长连接）", desc: "自建应用 App ID/Secret，无需公网" },
-  { id: "wecom", label: "企业微信（只推不接）", desc: "应用消息主动推送；接收需公网回调，桌面端不适用" },
+  {
+    id: "wecom",
+    label: "企业微信（只推不接）",
+    desc: "应用消息主动推送；接收需公网回调，桌面端不适用",
+  },
 ];
 
 onMounted(() => {
@@ -145,29 +154,51 @@ onUnmounted(() => {
 <template>
   <div class="im-panel">
     <h3 class="im-title">💬 即时聊天（IM 网关）</h3>
-    <p class="im-desc">在钉钉 / 飞书 / 企业微信里发消息 → Agent 自动思考并回复，实现「远程驱动」。配置并保存后点「启动」，网关后台常驻监听（钉钉/飞书长连接无需公网；企微只推不接）。</p>
+    <p class="im-desc">
+      在钉钉 / 飞书 / 企业微信里发消息 → Agent
+      自动思考并回复，实现「远程驱动」。配置并保存后点「启动」，网关后台常驻监听（钉钉/飞书长连接无需公网；企微只推不接）。
+    </p>
 
     <div class="im-form">
-      <label class="im-toggle">
-        <input type="checkbox" v-model="enabled" /> 启用 IM 网关
-      </label>
+      <label class="im-toggle"> <input v-model="enabled" type="checkbox" /> 启用 IM 网关 </label>
 
       <div class="im-field">
         <span>平台</span>
         <select v-model="platform">
           <option value="">— 选择平台 —</option>
-          <option v-for="p in PLATFORMS" :key="p.id" :value="p.id">{{ p.label }}（{{ p.desc }}）</option>
+          <option v-for="p in PLATFORMS" :key="p.id" :value="p.id">
+            {{ p.label }}（{{ p.desc }}）
+          </option>
         </select>
       </div>
 
       <template v-if="platform === 'dingtalk'">
-        <div class="im-field"><span>Client ID（AppKey）</span><input v-model="dClientId" type="password" placeholder="钉钉开放平台机器人 Client ID" /></div>
-        <div class="im-field"><span>Client Secret（AppSecret）</span><input v-model="dClientSecret" type="password" placeholder="钉钉机器人 Client Secret" /></div>
-        <div class="im-field"><span>Robot Code（可选，机器人发送用）</span><input v-model="dRobotCode" placeholder="钉钉机器人的 robotCode" /></div>
+        <div class="im-field">
+          <span>Client ID（AppKey）</span
+          ><input v-model="dClientId" type="password" placeholder="钉钉开放平台机器人 Client ID" />
+        </div>
+        <div class="im-field">
+          <span>Client Secret（AppSecret）</span
+          ><input v-model="dClientSecret" type="password" placeholder="钉钉机器人 Client Secret" />
+        </div>
+        <div class="im-field">
+          <span>Robot Code（可选，机器人发送用）</span
+          ><input v-model="dRobotCode" placeholder="钉钉机器人的 robotCode" />
+        </div>
       </template>
       <template v-else-if="platform === 'feishu'">
-        <div class="im-field"><span>App ID</span><input v-model="fAppId" type="password" placeholder="飞书自建应用 App ID" /></div>
-        <div class="im-field"><span>App Secret</span><input v-model="fAppSecret" type="password" placeholder="飞书应用 App Secret（32 字节）" /></div>
+        <div class="im-field">
+          <span>App ID</span
+          ><input v-model="fAppId" type="password" placeholder="飞书自建应用 App ID" />
+        </div>
+        <div class="im-field">
+          <span>App Secret</span
+          ><input
+            v-model="fAppSecret"
+            type="password"
+            placeholder="飞书应用 App Secret（32 字节）"
+          />
+        </div>
         <div class="im-field">
           <span>回复接收人类型</span>
           <select v-model="fReceiveType">
@@ -178,19 +209,61 @@ onUnmounted(() => {
         </div>
       </template>
       <template v-else-if="platform === 'wecom'">
-        <div class="im-field"><span>Corp ID</span><input v-model="wCorpId" type="password" placeholder="企业微信企业 ID" /></div>
-        <div class="im-field"><span>Corp Secret</span><input v-model="wCorpSecret" type="password" placeholder="应用 Secret" /></div>
-        <div class="im-field"><span>AgentId</span><input v-model="wAgentId" placeholder="应用 AgentId（数字）" /></div>
-        <div class="im-field"><span>默认接收人 touser（可选，留空用会话 id）</span><input v-model="wTouser" placeholder="如 @all 或成员 UserID" /></div>
+        <div class="im-field">
+          <span>Corp ID</span
+          ><input v-model="wCorpId" type="password" placeholder="企业微信企业 ID" />
+        </div>
+        <div class="im-field">
+          <span>Corp Secret</span
+          ><input v-model="wCorpSecret" type="password" placeholder="应用 Secret" />
+        </div>
+        <div class="im-field">
+          <span>AgentId</span><input v-model="wAgentId" placeholder="应用 AgentId（数字）" />
+        </div>
+        <div class="im-field">
+          <span>默认接收人 touser（可选，留空用会话 id）</span
+          ><input v-model="wTouser" placeholder="如 @all 或成员 UserID" />
+        </div>
       </template>
 
       <div class="im-subsection">
         <span class="im-subsection__title">📣 主动推送（群机器人 Webhook，可选）</span>
-        <span class="im-subsection__hint">与「接收」相互独立：只填 Webhook 即可让 Agent 用 send_im 单向推送，无需应用凭据、无需启动网关。</span>
-        <div class="im-field"><span>飞书群机器人 Webhook</span><input v-model="fWebhook" type="password" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></div>
-        <div class="im-field"><span>企业微信群机器人 Webhook</span><input v-model="wWebhook" type="password" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." /></div>
-        <div class="im-field"><span>钉钉群机器人 Webhook</span><input v-model="dWebhook" type="password" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." /></div>
-        <div class="im-field"><span>钉钉加签密钥（可选）</span><input v-model="dSecret" type="password" placeholder="SEC...（钉钉安全设置选「加签」时填写）" /></div>
+        <span class="im-subsection__hint"
+          >与「接收」相互独立：只填 Webhook 即可让 Agent 用 send_im
+          单向推送，无需应用凭据、无需启动网关。</span
+        >
+        <div class="im-field">
+          <span>飞书群机器人 Webhook</span
+          ><input
+            v-model="fWebhook"
+            type="password"
+            placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
+          />
+        </div>
+        <div class="im-field">
+          <span>企业微信群机器人 Webhook</span
+          ><input
+            v-model="wWebhook"
+            type="password"
+            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+          />
+        </div>
+        <div class="im-field">
+          <span>钉钉群机器人 Webhook</span
+          ><input
+            v-model="dWebhook"
+            type="password"
+            placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+          />
+        </div>
+        <div class="im-field">
+          <span>钉钉加签密钥（可选）</span
+          ><input
+            v-model="dSecret"
+            type="password"
+            placeholder="SEC...（钉钉安全设置选「加签」时填写）"
+          />
+        </div>
       </div>
 
       <div class="im-field">
@@ -212,8 +285,8 @@ onUnmounted(() => {
 
       <div class="im-actions">
         <button class="im-btn" @click="save">保存配置</button>
-        <button class="im-btn im-btn--primary" @click="start" :disabled="busy">▶ 启动网关</button>
-        <button class="im-btn im-btn--danger" @click="stop" :disabled="busy">⏹ 停止</button>
+        <button class="im-btn im-btn--primary" :disabled="busy" @click="start">▶ 启动网关</button>
+        <button class="im-btn im-btn--danger" :disabled="busy" @click="stop">⏹ 停止</button>
         <span v-if="saveMsg" class="im-savemsg">{{ saveMsg }}</span>
       </div>
     </div>
@@ -221,8 +294,12 @@ onUnmounted(() => {
     <div class="im-status">
       <div class="im-status__head">
         <b>运行状态</b>
-        <span class="im-status__dot" :class="status?.running ? 'on' : 'off'">{{ status?.running ? "运行中" : "已停止" }}</span>
-        <span v-if="status?.running" class="im-status__meta">平台：{{ status.platform_label }} · 已处理 {{ status.handled }} 条</span>
+        <span class="im-status__dot" :class="status?.running ? 'on' : 'off'">{{
+          status?.running ? "运行中" : "已停止"
+        }}</span>
+        <span v-if="status?.running" class="im-status__meta"
+          >平台：{{ status.platform_label }} · 已处理 {{ status.handled }} 条</span
+        >
       </div>
       <div v-if="status?.last_error" class="im-status__err">⚠️ {{ status.last_error }}</div>
       <div class="im-status__cols">
@@ -233,8 +310,14 @@ onUnmounted(() => {
         <div class="im-status__col">
           <b>最近消息</b>
           <div v-if="!(status?.messages || []).length" class="im-status__empty">暂无消息</div>
-          <div v-for="(m, i) in (status?.messages || []).slice(-8).reverse()" :key="i" class="im-status__msg">
-            <span class="im-status__msg-meta">{{ fmtTime(m.ts) }} [{{ m.chat }}] {{ m.sender }}</span>
+          <div
+            v-for="(m, i) in (status?.messages || []).slice(-8).reverse()"
+            :key="i"
+            class="im-status__msg"
+          >
+            <span class="im-status__msg-meta"
+              >{{ fmtTime(m.ts) }} [{{ m.chat }}] {{ m.sender }}</span
+            >
             <div class="im-status__msg-text">{{ m.text }}</div>
             <div v-if="m.reply" class="im-status__msg-reply">→ {{ m.reply }}</div>
           </div>
@@ -245,45 +328,193 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.im-panel { display: flex; flex-direction: column; gap: 10px; }
-.im-title { font-size: 15px; font-weight: 700; margin: 0; }
-.im-desc { font-size: 12px; color: var(--text-secondary, #777); line-height: 1.6; margin: 0; }
-.im-form { display: flex; flex-direction: column; gap: 8px; background: var(--bg-soft, #f6f6f6); border-radius: 8px; padding: 10px; }
-.im-subsection { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px; border: 1px dashed var(--border, #ddd); border-radius: 8px; }
-.im-subsection__title { font-size: 13px; font-weight: 700; color: var(--text, #222); }
-.im-subsection__hint { font-size: 11px; color: var(--text-secondary, #999); line-height: 1.5; }
-.im-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.im-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary, #666); }
-.im-field input, .im-field textarea {
-  padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #ddd);
-  background: var(--bg-input, #fff); color: var(--text, #222); font-size: 13px; font-family: inherit;
+.im-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.im-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+.im-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #777);
+  line-height: 1.6;
+  margin: 0;
+}
+.im-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-soft, #f6f6f6);
+  border-radius: 8px;
+  padding: 10px;
+}
+.im-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px dashed var(--border, #ddd);
+  border-radius: 8px;
+}
+.im-subsection__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #222);
+}
+.im-subsection__hint {
+  font-size: 11px;
+  color: var(--text-secondary, #999);
+  line-height: 1.5;
+}
+.im-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.im-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+}
+.im-field input,
+.im-field textarea {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg-input, #fff);
+  color: var(--text, #222);
+  font-size: 13px;
+  font-family: inherit;
 }
 /* select 单独处理：走主题变量 + background-color（不覆盖全局箭头），与设置面板统一 */
 .im-field select {
-  padding: 6px 28px 6px 8px; border-radius: 6px; border: 1px solid var(--border-color);
-  background-color: var(--bg-secondary); color: var(--text-primary); font-size: 13px; font-family: inherit;
+  padding: 6px 28px 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
 }
-.im-actions { display: flex; gap: 8px; align-items: center; }
-.im-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border, #ddd); background: var(--bg-input, #fff); color: var(--text); cursor: pointer; font-size: 13px; }
-.im-btn:hover { border-color: #4c8dff; color: #4c8dff; }
-.im-btn:disabled { opacity: .5; cursor: default; }
-.im-btn--primary { background: #2e7d32; color: #fff; border-color: #2e7d32; }
-.im-btn--danger { color: #c62828; border-color: #c6282866; }
-.im-savemsg { font-size: 12px; }
-.im-status { display: flex; flex-direction: column; gap: 6px; }
-.im-status__head { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.im-status__dot { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
-.im-status__dot.on { background: #2e7d3222; color: #2e7d32; }
-.im-status__dot.off { background: #99999922; color: #777; }
-.im-status__meta { font-size: 12px; color: var(--text-secondary, #888); }
-.im-status__err { font-size: 12px; color: #c62828; }
-.im-status__cols { display: flex; gap: 12px; }
-.im-status__col { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.im-status__col b { font-size: 12px; }
-.im-status__log { font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--bg-soft, #f5f5f5); border-radius: 6px; padding: 6px 8px; margin: 0; max-height: 140px; overflow-y: auto; color: var(--text, #222); }
-.im-status__empty { font-size: 12px; color: var(--text-secondary, #888); }
-.im-status__msg { font-size: 11px; border-left: 2px solid var(--border, #ddd); padding-left: 6px; margin-bottom: 4px; }
-.im-status__msg-meta { color: var(--text-secondary, #999); }
-.im-status__msg-text { word-break: break-word; }
-.im-status__msg-reply { color: #2e7d32; word-break: break-word; }
+.im-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.im-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg-input, #fff);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.im-btn:hover {
+  border-color: #4c8dff;
+  color: #4c8dff;
+}
+.im-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.im-btn--primary {
+  background: #2e7d32;
+  color: #fff;
+  border-color: #2e7d32;
+}
+.im-btn--danger {
+  color: #c62828;
+  border-color: #c6282866;
+}
+.im-savemsg {
+  font-size: 12px;
+}
+.im-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.im-status__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.im-status__dot {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.im-status__dot.on {
+  background: #2e7d3222;
+  color: #2e7d32;
+}
+.im-status__dot.off {
+  background: #99999922;
+  color: #777;
+}
+.im-status__meta {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+.im-status__err {
+  font-size: 12px;
+  color: #c62828;
+}
+.im-status__cols {
+  display: flex;
+  gap: 12px;
+}
+.im-status__col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.im-status__col b {
+  font-size: 12px;
+}
+.im-status__log {
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-soft, #f5f5f5);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0;
+  max-height: 140px;
+  overflow-y: auto;
+  color: var(--text, #222);
+}
+.im-status__empty {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+.im-status__msg {
+  font-size: 11px;
+  border-left: 2px solid var(--border, #ddd);
+  padding-left: 6px;
+  margin-bottom: 4px;
+}
+.im-status__msg-meta {
+  color: var(--text-secondary, #999);
+}
+.im-status__msg-text {
+  word-break: break-word;
+}
+.im-status__msg-reply {
+  color: #2e7d32;
+  word-break: break-word;
+}
 </style>

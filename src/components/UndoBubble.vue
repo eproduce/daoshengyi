@@ -7,8 +7,12 @@ import { notify } from "@/utils/dialog";
 import { Undo2, Loader2 } from "lucide-vue-next";
 
 interface UndoItem {
-  id: number; action: string; path: string; backup: string;
-  existed: boolean; created_at: number;
+  id: number;
+  action: string;
+  path: string;
+  backup: string;
+  existed: boolean;
+  created_at: number;
 }
 const items = ref<UndoItem[]>([]);
 const loading = ref(false);
@@ -35,8 +39,13 @@ async function undo() {
   }
 }
 
-function onChanged() { refresh(); }
-onMounted(() => { refresh(); window.addEventListener("undo-changed", onChanged); });
+function onChanged() {
+  refresh();
+}
+onMounted(() => {
+  refresh();
+  window.addEventListener("undo-changed", onChanged);
+});
 onUnmounted(() => window.removeEventListener("undo-changed", onChanged));
 
 const label = computed(() => {
@@ -50,7 +59,13 @@ const label = computed(() => {
 
 <template>
   <Teleport to="body">
-    <button v-if="items.length && label" class="undo-bubble" :disabled="loading" title="撤销最近一次文件操作（恢复操作前状态）" @click="undo">
+    <button
+      v-if="items.length && label"
+      class="undo-bubble"
+      :disabled="loading"
+      title="撤销最近一次文件操作（恢复操作前状态）"
+      @click="undo"
+    >
       <Loader2 v-if="loading" :size="14" class="undo-spin" />
       <Undo2 v-else :size="14" />
       撤销：{{ label }}
@@ -74,12 +89,24 @@ const label = computed(() => {
   color: var(--accent-color, #4c8dff);
   font-size: 13px;
   font-weight: 600;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
   cursor: pointer;
-  transition: all .15s;
+  transition: all 0.15s;
 }
-.undo-bubble:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 0, 0, .22); }
-.undo-bubble:disabled { opacity: .6; cursor: default; }
-.undo-spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.undo-bubble:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+}
+.undo-bubble:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.undo-spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 </style>

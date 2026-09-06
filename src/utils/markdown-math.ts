@@ -30,12 +30,21 @@ const CJK_ADJACENT = "\\u4e00-\\u9fa5\\u3000-\\u303f\\uff00-\\uffef";
 function protectCodeSpans(s: string) {
   const blocks: string[] = [];
   const text = s
-    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, (m) => { blocks.push(m); return `${MATH_PH}b${blocks.length - 1}${MATH_PH}`; })
-    .replace(/`+[^`\n]*?`+/g, (m) => { blocks.push(m); return `${MATH_PH}i${blocks.length - 1}${MATH_PH}`; });
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, (m) => {
+      blocks.push(m);
+      return `${MATH_PH}b${blocks.length - 1}${MATH_PH}`;
+    })
+    .replace(/`+[^`\n]*?`+/g, (m) => {
+      blocks.push(m);
+      return `${MATH_PH}i${blocks.length - 1}${MATH_PH}`;
+    });
   return {
     text,
     restore(t: string) {
-      return t.replace(new RegExp(`${MATH_PH}[bi](\\d+)${MATH_PH}`, "g"), (_, idx) => blocks[Number(idx)]);
+      return t.replace(
+        new RegExp(`${MATH_PH}[bi](\\d+)${MATH_PH}`, "g"),
+        (_, idx) => blocks[Number(idx)],
+      );
     },
   };
 }
@@ -58,16 +67,18 @@ export function normalizeMath(s: string): string {
     .replace(/\\\[([\s\S]*?)\\\]/g, (_, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
     // $...$ 内 | → \vert（KaTeX 渲染 |；避免被当表格列分隔符切碎单元格）。
     // \vert 后必须带空格（否则 \vertG 被解析成不存在的命令 vertG）。先 $$ 再 $。
-    .replace(/\$\$([\s\S]*?)\$\$/g, (_, body: string) => `$$${body.replace(/\|/g, "\\vert ") }$$`)
-    .replace(/\$([^$\n]+?)\$/g, (_, body: string) => `$${body.replace(/\|/g, "\\vert ") }$`)
+    .replace(/\$\$([\s\S]*?)\$\$/g, (_, body: string) => `$$${body.replace(/\|/g, "\\vert ")}$$`)
+    .replace(/\$([^$\n]+?)\$/g, (_, body: string) => `$${body.replace(/\|/g, "\\vert ")}$`)
     // 占位保护公式段（内部已是 \vert，无需再动）
     .replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*?\$/g, (m) => {
-      mathBlocks.push(m); return `${MATH_PH}m${mathBlocks.length - 1}${MATH_PH}`;
+      mathBlocks.push(m);
+      return `${MATH_PH}m${mathBlocks.length - 1}${MATH_PH}`;
     })
     // 占位保护表格分隔行（整行只含 | - : 空格）：其 | 紧贴 -，会被下方内容竖线转义误伤成
     // \|，导致 wrapBareMathInTables 识别不了表格块 → 裸数学包裹失效（顾此失彼的根因）
     .replace(/^\s*\|?[\s:|-]+\|?\s*$/gm, (m) => {
-      sepRows.push(m); return `${MATH_PH}s${sepRows.length - 1}${MATH_PH}`;
+      sepRows.push(m);
+      return `${MATH_PH}s${sepRows.length - 1}${MATH_PH}`;
     })
     // 内容竖线转义：$ 外紧贴非空白的 |（绝对值 |x|、|f'(x)|）→ \|（marked 表格内按转义
     // 竖线处理、不切分）；两侧空白的 |（列分隔符 `| A |`、集合 {x | x}）保持不变
@@ -78,12 +89,16 @@ export function normalizeMath(s: string): string {
     // 替换串 \\$$$1 = 字面反斜杠 + 字面$（$$）+ 捕获组1（$1）
     .replace(/\$(\d[\d,]*(?:\.\d+)?)/g, "\\$$$1")
     // 恢复公式段
-    .replace(new RegExp(`${MATH_PH}m(\\d+)${MATH_PH}`, "g"), (_, i: string) => mathBlocks[Number(i)]);
+    .replace(
+      new RegExp(`${MATH_PH}m(\\d+)${MATH_PH}`, "g"),
+      (_, i: string) => mathBlocks[Number(i)],
+    );
   // 表格单元格裸数学自动包裹：恢复公式段后、恢复代码块前执行（含 $ 的单元格跳过）
   return restore(wrapBareMathInTables(out));
 }
 
-const MATH_FN_RE = /(?:^|[^A-Za-z])(?:ln|log|lg|sin|cos|tan|sec|csc|cot|exp|sinh|cosh|tanh|arcsin|arccos|arctan)(?=$|[^A-Za-z])/;
+const MATH_FN_RE =
+  /(?:^|[^A-Za-z])(?:ln|log|lg|sin|cos|tan|sec|csc|cot|exp|sinh|cosh|tanh|arcsin|arccos|arctan)(?=$|[^A-Za-z])/;
 
 /** 是否含中文（含中文的单元格不做裸数学包裹，避免误判）。 */
 export function hasChinese(t: string): boolean {
@@ -106,11 +121,17 @@ export function wrapBareMathInTables(s: string): string {
     const isSep = /^\s*\|?[\s:|-]+\|?\s*$/.test(next) && next.includes("|") && next.includes("-");
     if (lines[i].includes("|") && isSep) {
       // 表头也走裸数学包裹（纯数学表头如「∫ x dx」应渲染成 KaTeX；含中文的表头安全跳过）
-      out.push(wrapRowMath(lines[i])); out.push(next); i += 2;
+      out.push(wrapRowMath(lines[i]));
+      out.push(next);
+      i += 2;
       while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
-        out.push(wrapRowMath(lines[i])); i++;
+        out.push(wrapRowMath(lines[i]));
+        i++;
       }
-    } else { out.push(lines[i]); i++; }
+    } else {
+      out.push(lines[i]);
+      i++;
+    }
   }
   return out.join("\n");
 }
@@ -118,25 +139,28 @@ export function wrapBareMathInTables(s: string): string {
 function wrapRowMath(row: string): string {
   // 先占位转义竖线 \|，避免按 | split 时把转义竖线当列分隔符
   const esc = row.replace(/\\\|/g, "\u0001");
-  return esc.split("|").map((cell) => {
-    const restored = cell.replace(/\u0001/g, "\\|");
-    const t = restored.trim();
-    if (!t || t.includes("$") || hasChinese(t)) return restored;
-    if (isBareMath(t)) {
-      // Unicode 数学符号 → KaTeX 命令（KaTeX 不认 √/∞/∑/≠/≤/≥/− 等裸 Unicode）；
-      // markdown 转义竖线 \| → KaTeX \vert（否则成双竖线范数）
-      const math = t
-        .replace(/\\\|/g, "\\vert ")
-        .replace(/−/g, "-")
-        .replace(/√\(([^()]*)\)/g, "\\sqrt{$1}")
-        .replace(/√/g, "\\sqrt ")
-        .replace(/∞/g, "\\infty")
-        .replace(/∑/g, "\\sum")
-        .replace(/≠/g, "\\neq")
-        .replace(/≤/g, "\\le")
-        .replace(/≥/g, "\\ge");
-      return restored.replace(t, `$${math}$`);
-    }
-    return restored;
-  }).join("|");
+  return esc
+    .split("|")
+    .map((cell) => {
+      const restored = cell.replace(/\u0001/g, "\\|"); // eslint-disable-line no-control-regex
+      const t = restored.trim();
+      if (!t || t.includes("$") || hasChinese(t)) return restored;
+      if (isBareMath(t)) {
+        // Unicode 数学符号 → KaTeX 命令（KaTeX 不认 √/∞/∑/≠/≤/≥/− 等裸 Unicode）；
+        // markdown 转义竖线 \| → KaTeX \vert（否则成双竖线范数）
+        const math = t
+          .replace(/\\\|/g, "\\vert ")
+          .replace(/−/g, "-")
+          .replace(/√\(([^()]*)\)/g, "\\sqrt{$1}")
+          .replace(/√/g, "\\sqrt ")
+          .replace(/∞/g, "\\infty")
+          .replace(/∑/g, "\\sum")
+          .replace(/≠/g, "\\neq")
+          .replace(/≤/g, "\\le")
+          .replace(/≥/g, "\\ge");
+        return restored.replace(t, `$${math}$`);
+      }
+      return restored;
+    })
+    .join("|");
 }
