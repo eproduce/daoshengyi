@@ -809,18 +809,21 @@ async fn send_message(
     config: api::ApiConfig,
     mut messages: Vec<api::ChatMessage>,
     request_id: String,
+    tools: Option<serde_json::Value>,
 ) -> Result<(), String> {
     middleware::preprocess_messages(&mut messages);
     let has_image = messages.iter().any(|m| m.content.is_array());
+    let has_tools = tools.is_some();
     let log_msg = format!(
-        "[send_message] model={} 消息数={} 含图片={}",
+        "[send_message] model={} 消息数={} 含图片={} 原生tools={}",
         config.model,
         messages.len(),
-        has_image
+        has_image,
+        has_tools
     );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
-    let mut stream = match api::stream_chat(config, messages).await {
+    let mut stream = match api::stream_chat(config, messages, tools).await {
         Ok(s) => s,
         Err(e) => {
             let em = format!("[send_message] stream_chat 失败: {}", e);
@@ -834,6 +837,8 @@ async fn send_message(
     // 必须把不完整的行累积到缓冲区，直到遇到换行符才解析，否则会丢字。
     let mut buf = String::new();
     let mut delta_count = 0usize;
+    // 原生 function calling：累积整轮流式返回的 tool_calls 分片，结束时合并为结构化工具调用
+    let mut tool_deltas: Vec<api::StreamToolCallDelta> = Vec::new();
     while let Some(chunk) = stream.next().await {
         // 用户点「停止」：前端 cancel_stream 把 request_id 加入取消集合 → 下一个 chunk 到达即停
         if CANCELLED_STREAMS
@@ -862,6 +867,9 @@ async fn send_message(
                         let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let ch = delta.cache_hit.unwrap_or(0);
                         let cm = delta.cache_miss.unwrap_or(0);
+                        if let Some(tc) = &delta.tool_calls {
+                            tool_deltas.extend(tc.iter().cloned());
+                        }
                         // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
                         if let Some(c) = &delta.content {
                             if c.contains('\u{FFFD}') {
@@ -901,6 +909,7 @@ async fn send_message(
                                 "tokens": delta.tokens,
                                 "cache_hit": delta.cache_hit,
                                 "cache_miss": delta.cache_miss,
+                                "tool_calls": delta.tool_calls,
                             }),
                         );
                     }
@@ -921,6 +930,9 @@ async fn send_message(
     // 处理最后可能残留的不完整行
     if let Some(delta) = api::parse_sse_line(buf.trim()) {
         delta_count += 1;
+        if let Some(tc) = &delta.tool_calls {
+            tool_deltas.extend(tc.iter().cloned());
+        }
         let _ = app.emit(
             "sse-delta",
             &serde_json::json!({
@@ -930,6 +942,21 @@ async fn send_message(
                 "tokens": delta.tokens,
                 "cache_hit": delta.cache_hit,
                 "cache_miss": delta.cache_miss,
+                "tool_calls": delta.tool_calls,
+            }),
+        );
+    }
+    // 原生 function calling：把整轮累积的 tool_calls 分片合并为结构化调用并发给前端执行
+    if !tool_deltas.is_empty() {
+        let calls = api::resolve_tool_calls(&tool_deltas);
+        let tm = format!("[sse] 原生 tool_calls 共 {} 个", calls.len());
+        eprintln!("{}", tm);
+        append_log(&app, &tm);
+        let _ = app.emit(
+            "sse-tool-calls",
+            &serde_json::json!({
+                "request_id": request_id,
+                "tool_calls": calls,
             }),
         );
     }
