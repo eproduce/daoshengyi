@@ -790,15 +790,16 @@ function isVagueBody(s: string): boolean {
   );
 }
 
-/// 任务收尾兜底：若存在任务计划且仍处于 待办/进行中 的步骤，统一标记为 done
-///（避免「实际工作已完成但进度卡差一步没标 done」；failed 步骤保留，便于复盘）。
+/// 任务收尾兜底：把「确实已开始执行」的进行中步骤标记为 done，
+/// 但**绝不把「从未执行」的待办步骤标成 done**（避免「啥也没干却全部标完成」的假完成）。
+/// failed 步骤保留，便于复盘。
 function markTaskPlanDoneIfPending(): void {
   const chat = useChatStore();
   const plan = chat.taskPlan;
   if (!plan) return;
   let changed = false;
   const steps = plan.steps.map((s) => {
-    if (s.status === "pending" || s.status === "doing") {
+    if (s.status === "doing") {
       changed = true;
       return { ...s, status: "done" as const };
     }
@@ -816,6 +817,12 @@ function isTaskPlanAllDone(): boolean {
 /// 当前是否处于【任务模式】。
 function isTaskModeActive(): boolean {
   return getModeById(activeModeId.value)?.id === "task";
+}
+
+/// 是否为「实际工作」类工具（会产生真实副作用/数据）；
+/// plan_task / plan_update 只是计划可视化，不算是真正干活。
+function isRealWorkTool(tool: string): boolean {
+  return tool !== "plan_task" && tool !== "plan_update";
 }
 
 const MAX_TOOL_RESULT_CHARS = 6000;
@@ -3856,6 +3863,8 @@ export const useChatStore = defineStore("chat", () => {
       // 主循环：发起流式；若返回工具调用则执行并把结果回填上下文后继续
       let round = 0;
       let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
+      let didRealWork = false; // 本轮是否真正执行过“实际工作”类工具（非 plan_*）
+      let fakeCompletionWarned = false; // 是否已就“假完成”给出纠正（至多一次）
       let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
@@ -3949,6 +3958,23 @@ export const useChatStore = defineStore("chat", () => {
             });
             continue; // 重新发起一轮流式
           }
+          // 防“假完成”：任务模式下若建了计划、却全程没执行任何实际工作工具，
+          // 不能作为最终答案退出（避免只播报计划就宣称“全部完成”）。
+          if (isTaskModeActive() && useChatStore().taskPlan && !didRealWork && !fakeCompletionWarned) {
+            fakeCompletionWarned = true;
+            round++;
+            dbg(`[loop] 任务模式但未执行任何实际工具，第 ${round} 轮强制要求真正执行`);
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你创建了任务计划，但到目前为止**还没有执行任何实际操作**（未调用任何文件/命令/测试/检索等工具），不能算完成，更不要声称“全部完成”。\n" +
+                "请二选一：\n" +
+                "1) 真正去执行目标：调用相应工具（如 list_dir / read_file / write_file / run_command / run_tests / web_search 等）完成工作并验证结果；\n" +
+                "2) 若确实无需任何工具即可回答，直接在正文给出完整答案并说明“无需工具即可完成”。",
+            });
+            continue;
+          }
           break; // 无工具调用 → 最终答案，退出循环
         }
 
@@ -3970,6 +3996,7 @@ export const useChatStore = defineStore("chat", () => {
         // 报「Tool xxx not found」；反之，MCP/浏览器工具（puppeteer_*）若被写成
         // app/builtin，则由 resolveToolServer 路由回真实服务器，避免误报「未知内置工具」。
         const toolServer = resolveToolServer(tc.server, tc.tool);
+        if (isRealWorkTool(tc.tool)) didRealWork = true; // 记录确实执行了实际工作
         // 实时显示"正在调用工具"
         const serverName = toolServer !== "app" ? `（${toolServer}）` : "";
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
