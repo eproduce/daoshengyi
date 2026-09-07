@@ -2,7 +2,23 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-06**
+> **最后更新：2026-09-08**
+
+---
+
+## 2026-09-08
+
+### ✅ 原生 function calling 大改造（agent 可靠性主线，6 commits：286441b/16b2eb3/98b8f33/eab92a6/75c75b5/a9712f9）
+> 用户核心问题：「模型相同，为何你能 agent 不能」→ 定位根因：agent 工具循环依赖**文本 `<tool_call>` JSON 正则解析**（DSML 变体 / 标签截断 / DeepSeek 思考模式把调用写进 reasoning 被吞），调用层脆弱。借鉴 Copilot/harness 模式，升级为 **OpenAI 原生 function calling（结构化 tools + tool_calls）**，全程带测试逐步提交。
+- **Stage1 Rust 通路（286441b）**：`api.rs` `stream_chat(config,messages,tools?)` 写 `body.tools`+`tool_choice=auto`；`parse_sse_line` 解析 `delta.tool_calls`（按 index 分片）；新增 `resolve_tool_calls(deltas)` 按 index 合并分片为 `[{id,type:"function",function:{name,arguments}}]`；`lib.rs` `send_message` 累积整轮 tool_deltas、结束发 `sse-tool-calls`{request_id,tool_calls} 事件。cargo test 91。
+- **Stage2A Rust 消息透传（16b2eb3）**：`ChatMessage` 加 `tool_calls:Option<Value>` + `tool_call_id:Option<String>`（`#[serde(default,skip_serializing_if)]`——assistant.tool_calls / role:tool 续接必需，缺省省略兼容旧纯文本请求）；补全 8 处构造点。cargo 95。
+- **Stage2B 前端工具 schema（98b8f33）**：`src/data/builtin-params.ts`（43 内置工具显式 OpenAI 参数 schema：type object/properties/required 只列必需/additionalProperties true）+ `src/utils/tool-schema.ts`（`buildNativeToolRegistry`：内置名直用、MCP 与内置同名加服务器 slug `_` 前缀消歧、ensureUnique `_N` 后缀、byName 反查 {server,tool,kind}、函数名须 `^[A-Za-z0-9_-]{1,64}$`（**点号非法**）、MCP inputSchema 直用、GENERIC_PARAMETERS 兜底、`supportsNativeTools` 域名白名单、MAX_NATIVE_TOOLS=80）+ 8 单测。
+- **Stage2C chat.ts 主循环原生集成（eab92a6）**：构建注册表（`localStorage daoshengyi_native_tools=0` 可关）→ sp 追加「原生工具调用（本会话生效）」覆盖说明 → `streamRound(msgs,tools?)` 原生模式**禁用 reasoning/content 文本提前解析**（DeepSeek 思考里也手写 `<tool_call>` 计划文本，绝不能提前结束本轮；原生以结构化 tool_calls 为准）、加 `sse-tool-calls` 监听、invoke 带 tools、轮末文本解析兜底 → `handleNativeRound`：assistant(tool_calls) 原样回填 + 逐个 byName 反查执行（未知函数名→错误回填 role:tool）+ role:tool/tool_call_id 回填 + 卡片 UI → 主循环 try/catch：**首轮 tools 报错自动降级文本模式**（nativeToolsOn=null 重试同轮）。
+- **回归修复①任务模式先建计划（75c75b5）**：实测「任务模式分析项目结构无任务卡片」——原生模式下模型直接原生调 `analyze_project`（实际工具）跳过 `plan_task`，而旧「任务模式首轮强制 plan_task」护栏只在文本 !tc（无工具调用）分支 → 原生/文本两路径都补护栏：任务模式下若 planTask 未建、本轮调用的是实际工作工具（非 plan_task/plan_update）→ 丢弃该轮工具意图、注入 user 强制先 plan_task 再 continue。
+- **回归修复②防假完成 2（a9712f9）**：实测「计划卡片一出来就全部完成」——模型 plan_task 后紧跟 plan_update 把 pending 步骤直接标 done（没干活）。修：模块级 `planRealWork` 标记（plan_task 建计划重置 false；`callMcpTool` 中央漏斗对非 plan_* 工具置 true）；`plan_update` 里 `status==="done" && !planRealWork` 直接 throw 引导「先 doing + 真实执行后再 done」——不区分 pending/doing（防先 doing 再 done 的绕过）。
+- **验证**：cargo 95 / vitest 12 / vue-tsc 全绿；任务模式「分析 op/daoshengyi 项目结构」实测通过——先出 3 步计划卡片、步骤逐条 doing→done、工具真实执行、最终报告完整交付（37917 tokens / ¥0.39）。
+- **经验**：Tauri 事件 FIFO 保序（sse-tool-calls 在 sse-done 前，监听安全）；role:tool 结果不套 `<tool_result>` 文本；助手消息 content 空串可接受；原生模式更易让模型“跳过规划直接干活/没干活先标完成”，任务护栏须同时覆盖原生与文本两路径。
+- **待做**：①把**子代理循环（runSubagentLoop，仍文本 ReAct chat_once）升级为原生 function calling**，与主代理对齐（另一脆弱点）；②工具名/降级等路径再补前端单测；③OpenClaw §3.13 第二批剩余 O5 IM 配对审批。
 
 ---
 
