@@ -813,6 +813,11 @@ function isTaskPlanAllDone(): boolean {
   return !!plan && plan.steps.length > 0 && plan.steps.every((s) => s.status === "done");
 }
 
+/// 当前是否处于【任务模式】。
+function isTaskModeActive(): boolean {
+  return getModeById(activeModeId.value)?.id === "task";
+}
+
 const MAX_TOOL_RESULT_CHARS = 6000;
 function truncateToolResult(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
@@ -3850,6 +3855,7 @@ export const useChatStore = defineStore("chat", () => {
 
       // 主循环：发起流式；若返回工具调用则执行并把结果回填上下文后继续
       let round = 0;
+      let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
       let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
@@ -3861,6 +3867,20 @@ export const useChatStore = defineStore("chat", () => {
           `[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`,
         );
         if (!tc) {
+          // 任务模式但尚未创建任务计划：模型可能在思考中反复"要建计划"却没真正调用
+          // → 强制它立即 plan_task，避免空想太久。
+          if (isTaskModeActive() && !useChatStore().taskPlan && !planNudged) {
+            planNudged = true;
+            round++;
+            dbg(`[loop] 任务模式尚未建计划，第 ${round} 轮强制要求 plan_task`);
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你处于【任务模式】，但还没有创建任务计划。请**立即**调用 plan_task 为当前目标创建任务计划（参数 {\"title\":\"目标标题\",\"steps\":[\"子步骤1\",\"子步骤2\",...]}），再用 plan_update 逐步标记进度并执行。不要继续空想。",
+            });
+            continue;
+          }
           // 模型**尝试**了工具调用（正文出现闭合标记）但解析失败：
           // 空 <tool_call></tool_call>、JSON 不合法、或写成「### 🔧 调用工具」卡片文本。
           // 这些都不会真正执行工具 → 回复中断（用户看到"断了"）。
