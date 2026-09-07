@@ -4105,6 +4105,27 @@ export const useChatStore = defineStore("chat", () => {
         const nativeCalls = roundResult.nativeCalls ?? null;
         // 原生工具调用（可多个）→ 结构化执行并把结果（role:tool）回填后继续下一轮
         if (nativeCalls && nativeCalls.length > 0) {
+          // 任务模式护栏（原生路径）：目标须先建计划再干活。模型若直接原生调用了实际工具
+          // （如 analyze_project）而计划还没建 → 丢弃本轮调用，强制先 plan_task，
+          // 让下一轮以原生 plan_task 开头重建计划（保证任务进度卡片出现）。
+          const hasPlanCall = nativeCalls.some((c) => {
+            const nm = c.function?.name;
+            const ref = nm ? nativeRegistry?.byName.get(nm) : null;
+            return ref?.kind === "builtin" && ref.tool === "plan_task";
+          });
+          if (isTaskModeActive() && !useChatStore().taskPlan && !planNudged && !hasPlanCall) {
+            planNudged = true;
+            round++;
+            dbg(`[loop] 任务模式（原生）未建计划，第 ${round} 轮强制要求 plan_task`);
+            rustMsgs.push({
+              role: "user",
+              content:
+                "⚠️ 你处于【任务模式】，但还没有创建任务计划。你上一条直接要调用实际工作工具而跳过了规划。\n" +
+                '请**立即**用原生工具调用 `plan_task` 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），' +
+                "再用 `plan_update` 逐步标记进度并执行；在计划建立前**不要**调用其它实际工作工具。",
+            });
+            continue;
+          }
           dbg(`[loop] 第 ${round} 轮返回原生 tool_calls ${nativeCalls.length} 个`);
           await handleNativeRound(nativeCalls, roundResult.content);
           round++;
@@ -4217,6 +4238,28 @@ export const useChatStore = defineStore("chat", () => {
             continue;
           }
           break; // 无工具调用 → 最终答案，退出循环
+        }
+
+        // 任务模式护栏（文本路径）：模型要执行**实际工作**工具却还没建计划 → 强制先
+        // plan_task（plan_task/plan_update 不算实际工作，可正常执行并顺带建计划）。
+        if (
+          isTaskModeActive() &&
+          !useChatStore().taskPlan &&
+          !planNudged &&
+          isRealWorkTool(tc.tool)
+        ) {
+          planNudged = true;
+          round++;
+          dbg(`[loop] 任务模式（文本）未建计划，第 ${round} 轮强制要求 plan_task`);
+          rustMsgs.push({ role: "assistant", content: roundResult.content });
+          rustMsgs.push({
+            role: "user",
+            content:
+              "⚠️ 你处于【任务模式】，但还没有创建任务计划。你正准备执行实际工作而跳过了规划。\n" +
+              '请**立即**调用 plan_task 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），' +
+              "再用 plan_update 逐步标记进度并执行；在计划建立前不要调用其它实际工作工具。",
+          });
+          continue;
         }
 
         round++;
