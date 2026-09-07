@@ -807,6 +807,12 @@ function markTaskPlanDoneIfPending(): void {
   if (changed) chat.setTaskPlan({ ...plan, steps });
 }
 
+/// 任务计划是否已全部完成（存在计划且所有步骤均为 done）。
+function isTaskPlanAllDone(): boolean {
+  const plan = useChatStore().taskPlan;
+  return !!plan && plan.steps.length > 0 && plan.steps.every((s) => s.status === "done");
+}
+
 const MAX_TOOL_RESULT_CHARS = 6000;
 function truncateToolResult(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
@@ -3973,9 +3979,12 @@ export const useChatStore = defineStore("chat", () => {
           });
           streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
           rustMsgs.push({ role: "assistant", content: roundResult.content });
-          // 接近工具轮次上限时，明确要求模型收尾，避免它一直探索目录而始终不输出最终答案
-          const closingHint =
-            round >= MAX_TOOL_ROUNDS - 3
+          // 承接上一轮工作的收尾提示：接近工具轮次上限，或任务计划已全部完成后，
+          // 明确要求模型停止继续探索/重复工作，直接输出最终交付汇报。
+          const planDoneAll = isTaskPlanAllDone();
+          const closingHint = planDoneAll
+            ? "\n\n✅ 任务计划已全部完成。请**立即停止继续调用工具**，直接在正文给出**完整、详细的最终交付汇报**（做了什么、各步骤结果、最终结论）；不要再新增或重复任何步骤。"
+            : round >= MAX_TOOL_ROUNDS - 3
               ? "\n\n⚠️ 已接近工具调用次数上限（剩余次数有限）。请基于**当前已获取的全部目录/文件结果**直接给出完整、详细的最终分析总结，**不要再调用更多工具**。"
               : "";
           rustMsgs.push({
