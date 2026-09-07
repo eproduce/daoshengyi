@@ -557,6 +557,10 @@ async function closeBrowserIfOpen(): Promise<void> {
 /// 本次消息会话内是否已用 puppeteer_navigate 打开过网页（拦截未导航就 fill/click）。
 /// 每次新消息重置（上一任务的浏览器已断开）。
 let browserNavigated = false;
+/// P-A5 防假完成：当前任务计划是否已执行过**实际工作**工具（plan_task/plan_update 不算）。
+/// plan_task 建计划时重置为 false；调用实际工具（callMcpTool 非 plan_*）时置 true。
+/// 供 plan_update 拒绝「还没干活就把待办步骤标完成」——杜绝计划卡片秒变全部完成。
+let planRealWork = false;
 /// 浏览器尚未导航就执行页面操作（fill/click/…）时抛出的错误——在浏览器串行锁内判定，
 /// 由 callMcpTool 捕获转成友好提示返回（保持原有行为，只是把判定移进锁内，以正确看到
 /// 队列中前一个 navigate 执行后的真实状态，避免并行子代理时误判「未打开网页」）。
@@ -610,6 +614,9 @@ export async function callMcpTool(
   if (!isToolAllowedByMode(mode, tool)) {
     return `⛔ 当前「${mode?.name || "速答"}」模式不允许调用工具「${tool}」。请直接作答，或切换到其他模式后再调用工具。`;
   }
+  // P-A5 防假完成：记录“当前计划已发生实际工作”（plan_task/plan_update 不算），
+  // 供 plan_update 拒绝「还没干活就把待办步骤标完成」。
+  if (isRealWorkTool(tool)) planRealWork = true;
   // 内置工具（应用自带，无需 MCP 服务器）。容错：模型常把 MCP/浏览器工具（如 puppeteer_*）
   // 误填 server 为 app/builtin 或缺省——若工具名能在已连接 MCP 工具缓存中找到，转发到其
   // 真实服务器，避免误报「未知内置工具: xxx」。
@@ -1768,6 +1775,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         steps: rawSteps.map((t) => ({ text: t, status: "pending" as const })),
         createdAt: Date.now(),
       };
+      planRealWork = false; // 新计划刚建立，尚未执行任何实际操作
       chat.setTaskPlan(plan);
       return (
         "✅ 已创建任务计划「" +
@@ -1791,6 +1799,19 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       }
       if (!["pending", "doing", "done", "failed"].includes(status)) {
         throw new Error("plan_update 的 status 必须是 pending/doing/done/failed");
+      }
+      // P-A5 防假完成：本计划还没执行任何**实际操作**（planRealWork=false），就标记任何
+      // 步骤完成 = 假装完成（用户看到“卡片一出来就全 done”）。必须先真正调用实际工具
+      // 干活（或先标 doing 表示开始执行）——完成该步后（或已做过实际工作后）才能标 done。
+      // 注意这里不区分当前 pending/doing：模型先 doing 再 done、但全程没真干活的绕过同样拦截。
+      if (status === "done" && !planRealWork) {
+        throw new Error(
+          `plan_update 想把第 ${stepIdx + 1} 步「${plan.steps[stepIdx].text}」标记完成，` +
+            "但本计划还没有执行任何实际操作（不能“没干活就标完成”）。\n" +
+            "请先真正执行该步骤：开始时用 plan_update 把该步标记为 doing，调用实际工具" +
+            "（如 list_dir/read_file/write_file/run_command/web_search 等）完成对应工作后，" +
+            "再把它标记为 done。",
+        );
       }
       plan.steps[stepIdx].status = status as PlanStepStatus;
       chat.setTaskPlan({ ...plan }); // 触发响应式更新
