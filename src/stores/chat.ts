@@ -48,6 +48,27 @@ import {
   type WorkflowGraph,
 } from "@/utils/workflow-engine";
 import { markExternalToolResult } from "@/utils/untrusted";
+import {
+  buildNativeToolRegistry,
+  supportsNativeTools,
+  type OpenAIFunctionTool,
+  type NativeToolRegistry,
+} from "@/utils/tool-schema";
+
+/** 原生 function calling：Rust resolve 后经 sse-tool-calls 回传的结构化调用 */
+export interface NativeToolCallMsg {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/** 发给 Rust 的消息：原生模式可携带 tool_calls（assistant）或 tool_call_id（tool 结果） */
+export interface AgentMsg {
+  role: string;
+  content: unknown;
+  tool_calls?: NativeToolCallMsg[];
+  tool_call_id?: string;
+}
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
 async function dbg(msg: string): Promise<void> {
@@ -3482,6 +3503,33 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
 
+      // ---- 原生 function calling（Stage 2）：构建本会话的 OpenAI tools 注册表 ----
+      // 把「内置工具 + MCP 工具」映射成唯一函数名发给模型；模型以结构化 tool_calls 返回，
+      // 取代脆弱的文本 <tool_call> 解析。仅对明确支持原生 tools 的端点启用；
+      // 可用 localStorage "daoshengyi_native_tools"="0" 强制关闭（回退文本模式）。
+      let nativeDisabled = false;
+      try {
+        nativeDisabled = localStorage.getItem("daoshengyi_native_tools") === "0";
+      } catch {
+        /* ignore */
+      }
+      let nativeRegistry: NativeToolRegistry | null = null;
+      if (!nativeDisabled && supportsNativeTools(config.baseUrl || "")) {
+        nativeRegistry = buildNativeToolRegistry({
+          builtins: BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc })),
+          mcp: mcpToolsCache.map((t) => ({
+            server: t.server,
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            kind: "mcp",
+          })),
+        });
+      }
+      // 传入 streamRound 的 tools 数组（null=关闭原生，走文本 <tool_call>）
+      let nativeToolsOn: OpenAIFunctionTool[] | null =
+        nativeRegistry && nativeRegistry.tools.length > 0 ? nativeRegistry.tools : null;
+
       // 注入当前日期（防止日期幻觉），作为系统提示基础。
       // 用"天"粒度：每天只变一次，system 前缀稳定 → 历史消息可整段命中缓存。
       let spBase = config.systemPrompt || "你是道生一，一个AI桌面助手。";
@@ -3502,6 +3550,15 @@ export const useChatStore = defineStore("chat", () => {
       // 注入 MCP 工具（工具描述相对稳定）
       const mcpPrompt = getMcpToolsPrompt();
       if (mcpPrompt) sp = sp ? `${sp}\n\n${mcpPrompt}` : mcpPrompt;
+
+      // 原生 function calling：当 tools 走 API（tool_choice=auto）时，上文文本模式
+      // 的「唯一方式是输出 <tool_call> JSON」引导已不适用 → 追加覆盖说明，让模型改用
+      // 原生结构化 tool_calls，避免在正文手写 JSON 标记（仍保留文本解析作为兜底）。
+      if (nativeToolsOn) {
+        sp = `${sp}\n\n## 原生工具调用（本会话生效，覆盖上文文本标记说明）\n` +
+          "本会话通过 **原生 function calling**（API `tools` 参数）提供全部工具。**需要调用工具时请直接返回模型原生 tool_calls**（结构化调用），系统会自动执行并把你需要的结果作为 tool 消息回填；你不必、也不要在回复正文中手写 `<tool_call>…</tool_call>`、DSML 标记或“### 🔧 调用工具”卡片。\n" +
+          "正文（content）只用于输出最终回答、过程说明或总结；调用工具请用原生 tool_calls。";
+      }
 
       // ---- 易变上下文：每次提问都不同 → 追加到最新用户消息末尾，不进 system ----
       // 若放进 system，每次提问 system 都变，会从 system 开始打断前缀缓存；
@@ -3642,7 +3699,7 @@ export const useChatStore = defineStore("chat", () => {
       const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
       const histStart = Math.max(0, histAll.length - maxCtx);
       const hist = histAll.slice(histStart);
-      const rustMsgs: { role: string; content: unknown }[] = [];
+      const rustMsgs: AgentMsg[] = [];
       // O1 智能上下文压缩：记录每条历史对应的原始会话消息序号（用于定位已被摘要覆盖的最老段）
       const rustOrig: (number | null)[] = [];
       if (sp) {
@@ -3749,10 +3806,20 @@ export const useChatStore = defineStore("chat", () => {
       const MAX_TOOL_ROUNDS = 32;
 
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
-      // 返回 toolCall 非空 → 本轮流式输出的是一段工具调用（需执行后继续）；为 null → 最终答案。
+      // - 传入 tools（原生 function calling）时：模型以结构化 tool_calls 返回工具调用，
+      //   经 sse-tool-calls 事件捕获；文本 <tool_call> 检测仅作兜底（延迟到轮末解析）。
+      // - 返回 toolCall 非空 → 文本模式工具调用（需执行后继续）；
+      // - 返回 nativeCalls 非空 → 原生模式工具调用（一个或多个）；
+      // - 两者都空 → 最终答案。
       async function streamRound(
-        msgs: { role: string; content: unknown }[],
-      ): Promise<{ toolCall: ToolCall | null; content: string }> {
+        msgs: AgentMsg[],
+        tools?: OpenAIFunctionTool[] | null,
+      ): Promise<{
+        toolCall: ToolCall | null;
+        content: string;
+        nativeCalls?: NativeToolCallMsg[] | null;
+      }> {
+        const nativeToolsActive = !!tools && tools.length > 0;
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
         const requestId = uuidv4(); // 本轮请求唯一 id：事件过滤，避免旧请求的 sse-delta/done 串扰新一轮
         activeStreamRequestId = requestId; // 暴露给 stopStreaming，用于取消 Rust 端生成
@@ -3764,6 +3831,7 @@ export const useChatStore = defineStore("chat", () => {
         });
         const roundUnlisten: UnlistenFn[] = [];
         let toolCall: ToolCall | null = null;
+        let nativeCalls: NativeToolCallMsg[] | null = null;
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
         let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
 
@@ -3783,8 +3851,10 @@ export const useChatStore = defineStore("chat", () => {
               reasoningBuffer += d.reasoning_content;
               // DeepSeek 思考模式把工具调用计划（<tool_call>{JSON}</tool_call>）写在
               // reasoning（隐藏思考）里、content 只留简短正文 → 必须也从 reasoning 检测，
-              // 否则工具永不执行、回复中断（现象：思考很长但正文只有一句话"断了"）
-              if (!toolCall && hasCompleteToolCall(reasoningBuffer)) {
+              // 否则工具永不执行、回复中断（现象：思考很长但正文只有一句话"断了"）。
+              // 原生 function calling 模式下禁用此检测：思考里手写的 <tool_call> 只是计划文本，
+              // 真实工具调用以结构化 tool_calls 返回，绝不能因推理文本提前结束本轮。
+              if (!nativeToolsActive && !toolCall && hasCompleteToolCall(reasoningBuffer)) {
                 const parsed = parseToolCall(reasoningBuffer);
                 if (parsed) {
                   toolCall = parsed;
@@ -3802,8 +3872,9 @@ export const useChatStore = defineStore("chat", () => {
               streamingContent.value = visibleText(toolBuffer);
               // 检测到完整的工具调用闭合标记才解析（避免把流式中途的半截 JSON 当工具调用）；
               // 兼容标准 </tool_call> 与 DeepSeek DSML </｜DSML｜tool_call｜> 闭合标记，
-              // 解析成功 → 提前结束本轮流式，转去执行工具
-              if (!toolCall && hasCompleteToolCall(toolBuffer)) {
+              // 解析成功 → 提前结束本轮流式，转去执行工具。
+              // 原生模式禁用提前解析：正文如出现标记文本，留到轮末作为兜底统一解析。
+              if (!nativeToolsActive && !toolCall && hasCompleteToolCall(toolBuffer)) {
                 const parsed = parseToolCall(toolBuffer);
                 if (parsed) {
                   toolCall = parsed;
@@ -3822,6 +3893,20 @@ export const useChatStore = defineStore("chat", () => {
             if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
             if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
           }),
+          // 原生 function calling：Rust 在流式结束时（sse-done 前）把整轮累积的
+          // tool_calls 分片合并成结构化调用发来 → 捕获后交给主循环执行。
+          await listen<{
+            request_id?: string;
+            tool_calls?: NativeToolCallMsg[];
+          }>("sse-tool-calls", (e) => {
+            if (e.payload.request_id && e.payload.request_id !== requestId) return;
+            if (e.payload.tool_calls && e.payload.tool_calls.length > 0) {
+              nativeCalls = e.payload.tool_calls;
+              dbg(
+                `[round ${requestId.slice(0, 8)}] 收到原生 tool_calls ${e.payload.tool_calls.length} 个`,
+              );
+            }
+          }),
           await listen<{ request_id?: string; error?: string }>("sse-error", (e) => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return;
             rejectDone(new Error(e.payload.error || "模型流式错误"));
@@ -3835,8 +3920,15 @@ export const useChatStore = defineStore("chat", () => {
         // 发起流式（不 await）。注意：stream_chat 失败（网络/Key/模型名错误）时 Rust 直接
         // return Err 而不会 emit sse-error，必须把 invoke 的真实错误也交给 rejectDone，
         // 否则前端只会干等到 120 秒超时；正常路径 invoke resolve、重复 reject 无害。
-        dbg(`[round ${requestId.slice(0, 8)}] 发起 send_message，messages=${msgs.length}`);
-        invoke("send_message", { requestId, config: rustCfg, messages: msgs }).catch((e) => {
+        dbg(
+          `[round ${requestId.slice(0, 8)}] 发起 send_message，messages=${msgs.length}，原生tools=${nativeToolsActive}`,
+        );
+        invoke("send_message", {
+          requestId,
+          config: rustCfg,
+          messages: msgs,
+          ...(tools && tools.length ? { tools } : {}),
+        }).catch((e) => {
           dbg(
             `[round ${requestId.slice(0, 8)}] invoke send_message 错误: ${e instanceof Error ? e.message : String(e)}`,
           );
@@ -3857,7 +3949,123 @@ export const useChatStore = defineStore("chat", () => {
         } finally {
           roundUnlisten.forEach((f) => f());
         }
-        return { toolCall, content: toolBuffer };
+        // 原生模式兜底：模型若没走原生 tool_calls、却在正文手写了完整 <tool_call>
+        // （可能仍遵循文本指令），轮末统一按文本解析执行，避免“写了不执行”。
+        if (nativeToolsActive && !nativeCalls && !toolCall && hasCompleteToolCall(toolBuffer)) {
+          const parsed = parseToolCall(toolBuffer);
+          if (parsed) {
+            toolCall = parsed;
+            dbg(
+              `[round ${requestId.slice(0, 8)}] 原生模式正文文本工具调用兜底 ${parsed.server}/${parsed.tool}`,
+            );
+          }
+        }
+        return { toolCall, content: toolBuffer, nativeCalls };
+      }
+
+      // 原生 function calling：执行一轮返回的结构化工具调用（一个或多个）。
+      // 流程：把 assistant 消息（含 tool_calls）回填 → 逐个执行 → 每个结果以
+      // role:"tool" + tool_call_id 回填 → 主循环继续下一轮。
+      async function handleNativeRound(
+        calls: NativeToolCallMsg[],
+        roundContent: string,
+      ): Promise<void> {
+        const normCalls: NativeToolCallMsg[] = calls.map((c) => ({
+          id: c.id || `call_${uuidv4()}`,
+          type: "function",
+          function: {
+            name: c.function?.name || "",
+            arguments: c.function?.arguments || "{}",
+          },
+        }));
+        // assistant 消息带 tool_calls 原样回填（OpenAI/DeepSeek 续接必需）
+        rustMsgs.push({
+          role: "assistant",
+          content: visibleText(roundContent),
+          tool_calls: normCalls,
+        });
+        dbg(`[tool-native] 本轮 ${normCalls.length} 个原生工具调用`);
+        for (const call of normCalls) {
+          if (stopRequested) break;
+          const fnName = call.function?.name || "";
+          const ref = nativeRegistry?.byName.get(fnName) ?? null;
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(call.function?.arguments || "{}") as Record<string, unknown>;
+          } catch {
+            args = {};
+          }
+          const startTool = Date.now();
+          const argsStr = JSON.stringify(args, null, 2);
+          if (!ref) {
+            // 模型返回了未注册函数名：把错误作为 tool 结果反馈，让它换正确的工具
+            const err = `未知工具「${fnName}」：不在本会话可用工具列表中。请从系统给出的函数列表选择正确的工具名（不要臆造）。`;
+            dbg(`[tool-native] 未知工具 ${fnName}`);
+            toolChain.push(`> ❌ 工具调用失败: \`${err}\``);
+            toolCards.push({
+              name: fnName,
+              server: "?",
+              status: "error",
+              durationMs: Date.now() - startTool,
+              argsPreview: argsStr.slice(0, 300),
+              error: err.slice(0, 300),
+            });
+            streamingContent.value = `> ❌ 工具调用失败: \`${err}\``;
+            rustMsgs.push({ role: "tool", tool_call_id: call.id, content: `错误: ${err}` });
+            continue;
+          }
+          const { server, tool } = ref;
+          if (isRealWorkTool(tool)) didRealWork = true;
+          const serverName = server !== "app" ? `（${server}）` : "";
+          streamingContent.value = `🔧 正在调用工具：${tool}${serverName}...`;
+          dbg(`[tool-native] 开始执行 ${server}/${tool}，args=${argsStr.slice(0, 120)}`);
+          try {
+            const result = await callToolStoppable(server, tool, args);
+            if (stopRequested) break;
+            const clipped = formatToolResultPreview(tool, result);
+            const card =
+              `### 🔧 调用工具：\`${tool}\`\n\n` +
+              `<details><summary>参数</summary>\n\n\`\`\`json\n${argsStr.slice(0, 400)}\n\`\`\`\n\n</details>` +
+              `\n<details><summary>✅ 工具结果</summary>\n\n\`\`\`\n${clipped}\n\`\`\`\n\n</details>`;
+            toolChain.push(card);
+            toolCards.push({
+              name: tool,
+              server,
+              status: "done",
+              durationMs: Date.now() - startTool,
+              argsPreview: argsStr.slice(0, 300),
+              resultPreview: clipped.slice(0, 300),
+            });
+            streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
+            // role:"tool" 结果原样回填（无需 <tool_result> 文本包裹，API 原生语义）
+            rustMsgs.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: truncateToolResult(result),
+            });
+            dbg(`[tool-native] ${tool} 执行成功，结果长度=${result.length}`);
+          } catch (e: unknown) {
+            if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环
+            const err = e instanceof Error ? e.message : String(e);
+            dbg(`[tool-native] ${tool} 执行失败: ${err}`);
+            const card = `> ❌ 工具调用失败: \`${err}\``;
+            toolChain.push(card);
+            toolCards.push({
+              name: tool,
+              server,
+              status: "error",
+              durationMs: Date.now() - startTool,
+              argsPreview: argsStr.slice(0, 300),
+              error: err.slice(0, 300),
+            });
+            streamingContent.value = card;
+            rustMsgs.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: `错误: ${truncateToolResult(err)}`,
+            });
+          }
+        }
       }
 
       // 主循环：发起流式；若返回工具调用则执行并把结果回填上下文后继续
@@ -3865,12 +4073,45 @@ export const useChatStore = defineStore("chat", () => {
       let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
       let didRealWork = false; // 本轮是否真正执行过“实际工作”类工具（非 plan_*）
       let fakeCompletionWarned = false; // 是否已就“假完成”给出纠正（至多一次）
-      let roundResult: { toolCall: ToolCall | null; content: string } | null = null;
+      let roundResult: {
+        toolCall: ToolCall | null;
+        content: string;
+        nativeCalls?: NativeToolCallMsg[] | null;
+      } | null = null;
+      let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
-        dbg(`[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}`);
-        roundResult = await streamRound(rustMsgs);
+        dbg(
+          `[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}，原生=${!!nativeToolsOn}`,
+        );
+        try {
+          roundResult = await streamRound(rustMsgs, nativeToolsOn);
+        } catch (e) {
+          // 端点不支持原生 tools（或首轮异常与 tools 相关）→ 降级文本模式重试本
+          // 轮（错误发生在内容产出前，rustMsgs 未变）；仅对“本会话已启用原生”的首轮生效。
+          const em = e instanceof Error ? e.message : String(e);
+          const toolsRelated =
+            /tool|function|tool_calls/i.test(em) || /argument/i.test(em);
+          if (nativeToolsOn && !nativeDegraded && round === 0 && toolsRelated) {
+            nativeDegraded = true;
+            nativeToolsOn = null;
+            nativeRegistry = null;
+            dbg(`[loop] 原生 tools 首轮报错（${em.slice(0, 120)}）→ 降级文本模式重试`);
+            continue; // 不动 round，重发同一轮（不带 tools）
+          }
+          throw e;
+        }
         if (stopRequested) break; // 本轮流式返回后仍被停止 → 不再处理/重试
+        const nativeCalls = roundResult.nativeCalls ?? null;
+        // 原生工具调用（可多个）→ 结构化执行并把结果（role:tool）回填后继续下一轮
+        if (nativeCalls && nativeCalls.length > 0) {
+          dbg(`[loop] 第 ${round} 轮返回原生 tool_calls ${nativeCalls.length} 个`);
+          await handleNativeRound(nativeCalls, roundResult.content);
+          round++;
+          if (round >= MAX_TOOL_ROUNDS) break; // 达到轮次上限，停止循环
+          if (totalMsgChars(rustMsgs) > MAX_CONTEXT_CHARS) break; // 上下文总长保护
+          continue;
+        }
         const tc = roundResult.toolCall;
         dbg(
           `[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`,
