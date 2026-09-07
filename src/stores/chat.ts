@@ -416,6 +416,7 @@ function getMcpToolsPrompt(): string {
     "- 执行过程中**逐步更新进度**：开始某步前 plan_update 标记 doing，完成后标记 done，某步失败标记 failed 并说明原因、调整计划后继续（Plan→Act→Observe→修正）。\n" +
     "- 每一步的实际工作（搜索/读文件/编辑/验证）照常调用对应工具完成，plan 工具只负责**进度可视化**，不要用 plan 工具代替实际工作。\n" +
     "- **全部步骤 done 后**，在正文给出完整、结构化、可执行的最终回答（结论 / 具体改动 / 结果 / 下一步建议）。\n" +
+    "- **收尾前**：当实际工作全部完成、即将给出最终回答时，把计划中还处于 **待办/进行中** 的步骤**逐一** plan_update 标记为 done（不要遗漏最后几步）；确有关键步骤失败的保留 failed 并说明原因。\n" +
     "- 简单任务（1-2 步）不要使用 plan 工具，避免冗余，**但【任务模式】除外**：任务模式下用户给出的目标是需交付的任务，即使看似简单，也先 plan_task 建计划再执行。\n" +
     "- **【任务模式】硬性要求**：把用户请求视为目标；需多步/多工具/有交付物就必须先 plan_task，再逐步执行（plan_update 标记进度），并**自主连续执行到全部完成**，不要中途停下征求确认（应用层权限确认除外）。";
   // P-M4：多子代理结果冲突时必须仲裁而非任取其一
@@ -786,6 +787,23 @@ function isVagueBody(s: string): boolean {
       sc,
     ) || /无关|与问题不相关/.test(sc)
   );
+}
+
+/// 任务收尾兜底：若存在任务计划且仍处于 待办/进行中 的步骤，统一标记为 done
+///（避免「实际工作已完成但进度卡差一步没标 done」；failed 步骤保留，便于复盘）。
+function markTaskPlanDoneIfPending(): void {
+  const chat = useChatStore();
+  const plan = chat.taskPlan;
+  if (!plan) return;
+  let changed = false;
+  const steps = plan.steps.map((s) => {
+    if (s.status === "pending" || s.status === "doing") {
+      changed = true;
+      return { ...s, status: "done" as const };
+    }
+    return s;
+  });
+  if (changed) chat.setTaskPlan({ ...plan, steps });
 }
 
 const MAX_TOOL_RESULT_CHARS = 6000;
@@ -4018,6 +4036,9 @@ export const useChatStore = defineStore("chat", () => {
           dbg(`[loop] 收尾轮失败: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
+      // 任务收尾：若存在未完成的任务计划，把剩余 待办/进行中 步骤统一标记为 done
+      //（确定性兜底，避免“实际做完但进度卡差一步没标 done”；failed 保留）。
+      markTaskPlanDoneIfPending();
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
     } catch (err: unknown) {
