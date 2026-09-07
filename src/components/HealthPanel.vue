@@ -25,6 +25,8 @@ interface SecurityCheck {
 const security = ref<SecurityCheck[] | null>(null);
 const error = ref("");
 const loading = ref(false);
+const probe = ref("");
+const probing = ref(false);
 
 async function refresh() {
   loading.value = true;
@@ -44,6 +46,20 @@ async function refresh() {
 }
 
 onMounted(refresh);
+
+// 原生 function-calling 探针：检测当前模型端点是否支持结构化 tools 调用
+//（决定 agent 工具循环能否从“文本 <tool_call> 解析”升级为 harness 式原生 function calling）
+async function runProbe() {
+  probing.value = true;
+  probe.value = "正在探测（A: 不带 thinking / B: 带 thinking）…";
+  try {
+    probe.value = await invoke<string>("probe_native_tools");
+  } catch (e) {
+    probe.value = `探针失败: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    probing.value = false;
+  }
+}
 
 function fmtMem(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
@@ -103,6 +119,22 @@ function fmtMem(mb: number): string {
           <span class="health-sec__detail">{{ c.detail }}</span>
         </div>
       </div>
+    </div>
+
+    <!-- 原生 function-calling 探针（架构升级可行性检查） -->
+    <div class="health-probe">
+      <div class="health-log__title">
+        原生工具调用探针（Native tools）
+        <button
+          class="probe-btn"
+          :disabled="probing"
+          @click="runProbe"
+          title="检测当前模型是否支持原生 function calling（结构化 tool_calls）"
+        >
+          {{ probing ? "探测中…" : "运行探针" }}
+        </button>
+      </div>
+      <pre class="health-log__body health-probe__body">{{ probe || "（点“运行探针”检测端点是否支持原生 tools，用于评估把 agent 工具循环升级为 harness 式 function calling）" }}</pre>
     </div>
 
     <!-- 日志查看 -->

@@ -1868,6 +1868,15 @@ fn load_active_api_config(app_dir: &std::path::Path) -> Result<api::ApiConfig, S
     })
 }
 
+/// 探针：检测当前模型端点是否支持「原生 function calling（tools）」。
+/// 决定 agent 工具循环是否可切到原生 function calling（规避思考模式吞工具调用/文本 JSON 解析脆弱）。
+#[tauri::command]
+async fn probe_native_tools(app: tauri::AppHandle) -> Result<String, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_active_api_config(&app_dir)?;
+    api::probe_native_tools(config).await
+}
+
 /// IM 回复生成器：读当前活跃模型配置，调 chat_once 生成回复
 struct LlmReplyGen {
     app_dir: std::path::PathBuf,
@@ -5606,6 +5615,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             app_version,
+            probe_native_tools,
             send_message,
             chat_once,
             load_conversations,

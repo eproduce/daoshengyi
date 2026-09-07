@@ -241,3 +241,133 @@ pub async fn chat_once(
         cache_miss,
     })
 }
+
+/// 探针：检测当前端点/模型是否支持「原生 function calling（tools）」。
+/// 背景：思考模式下用“文本 <tool_call> 解析”很脆弱（DSML/截断/工具调用被 reasoning 吞掉），
+/// 若端点支持原生 tools，agent 工具循环应优先用原生 function calling，文本解析降为兜底。
+/// 只读探测，不触碰用户密钥。返回可读报告。
+pub async fn probe_native_tools(config: ApiConfig) -> Result<String, String> {
+    let base_url = config.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+
+    let tools = serde_json::json!([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "查询指定城市的当前天气",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": { "type": "string", "description": "城市名，如 北京" }
+                },
+                "required": ["city"]
+            }
+        }
+    }]);
+    let messages = serde_json::json!([
+        { "role": "system", "content": "你是一个支持工具调用的助手。当用户请求匹配某函数时，必须调用 tools 中的函数。" },
+        { "role": "user", "content": "帮我查一下北京的天气。" }
+    ]);
+
+    let mut report = String::new();
+    report.push_str(&format!("模型: {}\n端点: {}\n\n", config.model, base_url));
+
+    // A=不带 thinking（原生 tools 是否可用）；B=带 thinking（当前实际配置，仅当开启 thinking 时）
+    let mut variants: Vec<(String, bool)> = vec![("A. 不带 thinking".to_string(), false)];
+    if config.thinking_enabled {
+        variants.push(("B. 带 thinking（当前配置）".to_string(), true));
+    } else {
+        variants[0].0 = "A. 不带 thinking（当前配置）".to_string();
+    }
+
+    for (label, use_thinking) in variants {
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "messages": messages,
+            "stream": false,
+            "max_tokens": 512,
+            "temperature": 0.0,
+            "tools": tools,
+            "tool_choice": "auto",
+        });
+        if use_thinking {
+            body["thinking"] = serde_json::json!({"type": "enabled"});
+            body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
+        }
+
+        report.push_str(&format!("== {} ==\n", label));
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("客户端构建失败: {}", e))?;
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("网络错误: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            report.push_str(&format!(
+                "  ❌ HTTP {status}（可能不支持 tools 参数，或端点报错）：\n  {}\n\n",
+                text.chars().take(400).collect::<String>()
+            ));
+            continue;
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let msg = &json["choices"][0]["message"];
+        let finish = json["choices"][0]["finish_reason"]
+            .as_str()
+            .unwrap_or("");
+        let content_len = msg["content"].as_str().map(|s| s.len()).unwrap_or(0);
+        let reasoning_len = msg
+            .get("reasoning_content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        match msg.get("tool_calls") {
+            Some(arr) if arr.as_array().map(|a| !a.is_empty()).unwrap_or(false) => {
+                let tc = &arr[0];
+                let name = tc["function"]["name"].as_str().unwrap_or("");
+                let args = tc["function"]["arguments"].as_str().unwrap_or("");
+                report.push_str(&format!(
+                    "  ✅ 原生 tool_calls 生效！ finish={finish} reasoning={reasoning_len}字符 content={content_len}字符\n",
+                ));
+                report.push_str(&format!("     → {name}({args})\n"));
+            }
+            _ => {
+                let content = msg["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect::<String>();
+                report.push_str(&format!(
+                    "  ⚠️ 未返回原生 tool_calls。 finish={finish} reasoning={reasoning_len}字符 content={content_len}字符\n",
+                ));
+                if !content.is_empty() {
+                    report.push_str(&format!("     content 开头: {content}\n"));
+                }
+                report.push_str(&format!(
+                    "     原始 message 字段: {}\n",
+                    serde_json::to_string(&json["choices"][0])
+                        .unwrap_or_else(|_| "(序列化失败)".into())
+                ));
+            }
+        }
+        report.push('\n');
+    }
+
+    report.push_str(
+        "结论建议：若任一档返回原生 tool_calls，则 agent 工具循环应改为优先用原生 function calling \
+（结构化 tool_calls，无需手写/解析文本 JSON），文本 <tool_call> 解析降为兜底，可彻底规避\
+思考模式吞工具调用 / DSML 变体 / 标签截断等问题。",
+    );
+    Ok(report)
+}
