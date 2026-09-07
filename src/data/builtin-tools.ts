@@ -180,7 +180,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "run_command",
-    desc: '**执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` / `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先用专用工具，只读优先、慎用写/删/安装类。',
+    desc: '**执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` / `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时**不要**用 `open -a "<浏览器>" "<网址>"`——浏览器已在运行时该命令**不会可靠跳转**（退出码 0 不代表已加载目标页）；请改用浏览器自动化工具（server「浏览器自动化」的 `puppeteer_navigate`）在本地弹出浏览器并真实加载；`open -a` 只用于**纯启动应用/打开文件/文件夹**。',
   },
 ];
 

@@ -322,7 +322,7 @@ function getMcpToolsPrompt(): string {
     toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
     '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {"url": "完整网址"}\n' +
-    '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
+    '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
     '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。\n' +
     '- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {"goal": "子任务目标", "context": "可选补充上下文", "allow_tools": true, "role": "可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。' +
@@ -335,7 +335,7 @@ function getMcpToolsPrompt(): string {
     '\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {"path": "绝对路径或以 ~/ 开头", "content": "文件内容"}。文件已存在时不会覆盖，返回提示。' +
     '\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。' +
     '\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {"path": "目录绝对路径"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。' +
-    '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。\n' +
+    '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用浏览器自动化工具 `puppeteer_navigate`（server「浏览器自动化」）真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
@@ -389,12 +389,13 @@ function getMcpToolsPrompt(): string {
     "\n\n## 命令执行与打开本机应用（run_command）\n" +
     "- **你具备本机命令行能力**：调用 run_command 可执行 shell 命令（受命令执行策略门禁；危险/破坏性命令会被拦截或需用户确认，勿尝试绕过）。\n" +
     '- 用户要「打开/启动某应用、文件夹或文件」时**不要声称做不到**——macOS 用 run_command 执行 `open -a "应用名"`（例：照片→`open -a Photos`、访达→`open .`）或 `open "文件/文件夹/照片库路径"`（例：`open "/Users/wanghuan/Pictures/Photos Library.photoslibrary"` 会打开「照片」）。\n' +
+    '\n- **「打开浏览器访问某网址」≠「启动应用」**：用户说「打开 XX 浏览器」「打开浏览器跳转某页 / 去某网站」时，目标是浏览器**真实打开并加载该网址**——请用浏览器自动化工具（server「浏览器自动化」的 `puppeteer_navigate`，会在本地弹出浏览器并真实加载）；**不要**用 `open -a "<浏览器>" "<网址>"`：浏览器已在运行时该命令**不会可靠跳转**（退出码 0 只代表命令执行成功，不代表已加载目标页），且无法回读页面确认——**禁止仅凭退出码 0 就回报「已打开并跳转」**。`open -a` 只用于**纯启动应用 / 打开文件/文件夹**（不带网址）。\n' +
     "- 能用专用工具（git / run_tests / list_dir / read_file / replace_string / workflow_*）完成的优先用专用工具；run_command 用于其余命令（GUI 启动、构建脚本、brew、系统查询等）。只读优先，慎用写/删/安装类。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
-    "\n\n## 强制要求（实时/时效信息）\n" +
-    "涉及任何**实时/时效性信息**（天气、新闻、股票、汇率、比分、价格、最新政策、当前现状、日期时间等）时，" +
-    "**必须先调用 web_search 或 fetch_page 获取真实数据**，严禁凭记忆编造温度、数值、价格、事件或新闻。\n" +
+    "\n\n## 联网搜索使用纪律（重要）\n" +
+    "**不要默认联网**：普通闲聊、纯知识/常识问答、写作/翻译/润色、代码、数学、本地文件与文档处理等，直接凭自身知识与本地工具作答即可，**不需要也不应**为了“保险”去 web_search / fetch_page。\n" +
+    "仅当**回答依赖无法从既有知识确定的当前/外部信息**（新闻、天气、实时行情/价格、汇率、比分、最新政策、他人网站的具体内容、用户明确要求搜索/查证等）时，才调用 web_search 或 fetch_page 获取真实数据；**严禁**凭记忆编造此类温度、数值、价格、事件或新闻。\n" +
     "若工具确实拿不到数据（搜索无结果、页面无法访问），请明确告知用户「无法获取」，不要编造。";
   // 搜索/查证类回复格式规范：整理成人类可读，禁止原样粘贴工具输出
   const searchFormat =
@@ -479,14 +480,14 @@ function getMcpToolsPrompt(): string {
     "\n\n## MCP 服务器工具（特性各异，请按需选择）\n" +
     mcpToolsCache.map((t) => `- **${t.name}** (${t.server}): ${t.description}`).join("\n") +
     pending +
-    "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。不确定时可先用 web_search 或 fetch_page 探索。" +
+    "\n\n工具选择由你根据任务自行判断：静态网页正文用 fetch_page；需要打开浏览器、点击/输入/截图或抓取动态渲染内容用浏览器工具；本地文件读写用文件系统；回忆历史信息用记忆。先判断问题是否依赖**当前/外部信息**：确实需要（新闻/实时/价格/最新政策/用户明确要求搜索）才 web_search / fetch_page；纯知识问答直接作答，**不要把搜索当成默认第一步**。" +
     "\n\n## 文件系统使用要点\n" +
     "- 查看目录**优先用 list_dir 只列一层**（能看到该目录下的子目录/文件清单），不要用 directory_tree 递归列整个目录树。\n" +
     "- directory_tree 会递归展开全部子目录（含 .git、node_modules、target、build 等海量文件），结果巨大且会被截断，无法完整看到；禁止对含这些大目录的项目用它。\n" +
     "- 正确做法：先 list_dir 看顶层 → 针对需要的子目录再用 list_dir 逐层深入 → 读关键文件用 read_file。\n" +
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点\n" +
-    "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、搜索、点击或操作页面时，**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
+    "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、跳转某网址、搜索、点击或操作页面时（含「打开 XX 浏览器去某网站/首页」这类带浏览器名的说法）——**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
     '- 若浏览器工具不在上方工具列表（按需激活），直接用 `{"server":"浏览器自动化","tool":"puppeteer_navigate",...}` 调用即可，系统会自动连接浏览器。\n' +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- **操作顺序**：先用 puppeteer_navigate 打开目标页面 → 等渲染完成 → 再 puppeteer_fill 输入 / puppeteer_click 点击 / puppeteer_evaluate 提取 / puppeteer_screenshot 截图。**不要跳过导航直接尝试输入或点击**（没打开页面无从操作）。\n" +

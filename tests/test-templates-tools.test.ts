@@ -1225,13 +1225,23 @@ console.log("\n== 自动联网搜索触发门槛（shouldSkipAutoSearch） ==");
   assert(shouldSkipAutoSearch("把这段代码画成流程图") === true, "画流程图跳过搜索");
   assert(shouldSkipAutoSearch("做一张海报") === true, "做海报跳过搜索");
 
-  // 明确联网意图：仍搜索
-  assert(shouldSkipAutoSearch("把最近 AI 新闻整理成表格") === false, "含联网意图词(新闻)不跳过");
-  assert(shouldSkipAutoSearch("怎么画好一幅山水画（想学教程）") === false, "学画画教程需搜索");
+  // 明确需要实时/外部信息或显式要求搜索：仍搜索
+  assert(shouldSkipAutoSearch("把最近 AI 新闻整理成表格") === false, "要整理的是外部新闻(需先搜)");
+  assert(shouldSkipAutoSearch("怎么画好一幅山水画（想学教程）") === false, "想学教程需搜索");
   assert(shouldSkipAutoSearch("今天的天气怎么样") === false, "天气查询需搜索");
   assert(shouldSkipAutoSearch("2026 最新入学政策是什么") === false, "政策/最新需搜索");
-  assert(shouldSkipAutoSearch("如何学习 Rust 编程") === false, "教程类需搜索");
+  assert(shouldSkipAutoSearch("今天有什么新闻") === false, "要新闻需搜索");
+  assert(shouldSkipAutoSearch("查一下 iPhone 17 的价格") === false, "显式查价格需搜索");
+  assert(shouldSkipAutoSearch("2026 年最新的 AI 产品有哪些") === false, "最新需搜索");
   assert(shouldSkipAutoSearch("") === true, "空消息跳过");
+
+  // 意图正向回归：默认不搜，仅明确需要才搜（修复「无论发什么都先搜索」）
+  assert(shouldSkipAutoSearch("打开edge浏览器跳转到google首页") === true, "打开浏览器去某网址是本地操作不搜索（用户场景）");
+  assert(shouldSkipAutoSearch("你好") === true, "闲聊不搜索");
+  assert(shouldSkipAutoSearch("解释一下什么是区块链") === true, "纯知识问答不搜索");
+  assert(shouldSkipAutoSearch("如何学习 Rust 编程") === true, "学习类纯知识问答不自动搜索");
+  assert(shouldSkipAutoSearch("帮我写一封邮件给客户") === true, "写作类不搜索");
+  assert(shouldSkipAutoSearch("帮我把这段代码改成 async") === true, "代码修改不搜索");
 }
 
 console.log("\n== 本地文件路径链接化（LOCAL_FILE_RE 扩展名长优先） ==");
