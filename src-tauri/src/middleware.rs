@@ -20,6 +20,8 @@ pub fn preprocess_messages(messages: &mut Vec<ChatMessage>) {
         let identity_msg = ChatMessage {
             role: "system".to_string(),
             content: serde_json::Value::String(APP_IDENTITY.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
         };
         messages.insert(0, identity_msg);
     }

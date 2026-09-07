@@ -23,7 +23,18 @@ pub struct ApiConfig {
 pub struct ChatMessage {
     pub role: String,
     pub content: serde_json::Value,
+    /// 原生 function calling：assistant 消息携带的结构化工具调用（OpenAI 风格
+    /// `[{id,type:"function",function:{name,arguments}}]`），续接对话时必须原样回传。
+    /// 仅聊天请求走前端注入；缺失时序列化省略，不影响旧的纯文本请求。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+    /// 原生 function calling：`role:"tool"` 结果消息必须携带的 `tool_call_id`，
+    /// 用于把结果关联回上一条 assistant 消息里的某个调用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
+
+
 
 /// 发送流式聊天请求，返回 SSE 事件流。
 /// `tools`：可选的 OpenAI 风格 function schema 数组；传入即启用「原生 function calling」，
@@ -563,5 +574,66 @@ mod tests {
             arguments: Some("{}".into()),
         }];
         assert!(resolve_tool_calls(&frags).is_empty());
+    }
+
+    #[test]
+    fn chat_message_serializes_tool_calls_passthrough() {
+        // assistant 消息带 tool_calls → 序列化必须原样包含（续接对话需要回传）
+        let tool_calls = serde_json::json!([
+            {"id": "call_1", "type": "function", "function": {"name": "create_file", "arguments": "{\"path\":\"/tmp/a.txt\"}"}}
+        ]);
+        let msg = ChatMessage {
+            role: "assistant".into(),
+            content: serde_json::Value::String("".into()),
+            tool_calls: Some(tool_calls.clone()),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["tool_calls"], tool_calls);
+        assert!(json.get("tool_call_id").is_none(), "None 字段应省略");
+    }
+
+    #[test]
+    fn chat_message_serializes_tool_call_id_passthrough() {
+        // role:"tool" 结果消息 → 序列化必须带 tool_call_id 关联回调用
+        let msg = ChatMessage {
+            role: "tool".into(),
+            content: serde_json::Value::String("文件已写入".into()),
+            tool_calls: None,
+            tool_call_id: Some("call_9".into()),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["tool_call_id"], "call_9");
+        assert!(json.get("tool_calls").is_none(), "None 字段应省略");
+    }
+
+    #[test]
+    fn chat_message_deserializes_missing_native_fields() {
+        // 旧的纯文本请求没有 tool_calls/tool_call_id → 反序列化不报错、字段为 None
+        let json = r#"{"role":"user","content":"你好"}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn chat_message_roundtrips_native_conversation() {
+        // 模拟一轮原生 function calling 的完整续接消息（assistant.tool_calls + tool 结果）
+        let messages = serde_json::json!([
+            {"role": "user", "content": "创建文件"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "create_file", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "ok", "tool_call_id": "call_1"}
+        ]);
+        let msgs: Vec<ChatMessage> = serde_json::from_value(messages).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1].tool_calls.as_ref().unwrap()[0]["id"], "call_1");
+        assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call_1"));
+        // 再序列化回 JSON 必须仍包含原生字段
+        let out = serde_json::to_value(&msgs).unwrap();
+        assert_eq!(out[1]["tool_calls"][0]["function"]["name"], "create_file");
+        assert_eq!(out[2]["tool_call_id"], "call_1");
     }
 }

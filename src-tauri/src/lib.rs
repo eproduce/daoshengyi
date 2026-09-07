@@ -1922,12 +1922,16 @@ impl im::ReplyGenerator for LlmReplyGen {
         let mut msgs = vec![api::ChatMessage {
             role: "system".into(),
             content: serde_json::Value::String(sys.into()),
+            tool_calls: None,
+            tool_call_id: None,
         }];
         for (role, text) in history {
             let r = if role == "user" { "user" } else { "assistant" };
             msgs.push(api::ChatMessage {
                 role: r.into(),
                 content: serde_json::Value::String(text),
+                tool_calls: None,
+                tool_call_id: None,
             });
         }
         let r = api::chat_once(config, msgs).await?;
@@ -1977,8 +1981,8 @@ pub fn run_exec(args: Vec<String>) -> i32 {
         };
         let sys = "你是「道生一」AI 助手（非交互执行模式）。直接、完整地回答用户的请求；可以给出结论、代码、要点，不要输出寒暄。";
         let msgs = vec![
-            api::ChatMessage { role: "system".into(), content: serde_json::Value::String(sys.into()) },
-            api::ChatMessage { role: "user".into(), content: serde_json::Value::String(prompt.clone()) },
+            api::ChatMessage { role: "system".into(), content: serde_json::Value::String(sys.into()), tool_calls: None, tool_call_id: None },
+            api::ChatMessage { role: "user".into(), content: serde_json::Value::String(prompt.clone()), tool_calls: None, tool_call_id: None },
         ];
         if json_mode {
             println!("{}", serde_json::json!({ "type": "turn_start", "prompt": prompt }));
@@ -4382,18 +4386,24 @@ async fn queue_turn(
     let mut api_msgs = vec![api::ChatMessage {
         role: "system".into(),
         content: serde_json::Value::String(sys.into()),
+        tool_calls: None,
+        tool_call_id: None,
     }];
     for m in history.iter().take(30) {
         if m.role == "user" || m.role == "assistant" {
             api_msgs.push(api::ChatMessage {
                 role: m.role.clone(),
                 content: serde_json::Value::String(m.content.clone()),
+                tool_calls: None,
+                tool_call_id: None,
             });
         }
     }
     api_msgs.push(api::ChatMessage {
         role: "user".into(),
         content: serde_json::Value::String(text.clone()),
+        tool_calls: None,
+        tool_call_id: None,
     });
     // 后台任务独立新建 Database（State 引用不能逃逸到 'static 任务）
     let task_db = db::Database::new(app_dir.clone()).map_err(|e| e.to_string())?;
