@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import ChatHistory from "./components/ChatHistory.vue";
 import ChatMessage from "./components/ChatMessage.vue";
 import TaskPlanCard from "./components/TaskPlanCard.vue";
@@ -31,6 +31,8 @@ import {
   AlarmClock,
   Stethoscope,
   Square,
+  ListChecks,
+  Network,
 } from "lucide-vue-next";
 
 const chatStore = useChatStore();
@@ -97,6 +99,35 @@ watch([() => ollamaStore.busy, () => ollamaStore.status, () => ollamaStore.hw], 
   evaluateOllamaBanner();
 });
 const messagesContainer = ref<HTMLDivElement>();
+
+// ── 底部辅助面板（任务计划 / 子代理）────────────────────────────
+// 两面板原先同时竖排在消息流底部，纵向占空间大。改为输入框上方的停靠面板：
+// 用 tab 切换「任务 / 子代理」同一时刻只显示一个；无内容时整块隐藏；可整体折叠成细条。
+const hasPlan = computed(() => !!chatStore.taskPlan);
+const hasSub = computed(() => chatStore.subagents.length > 0);
+const runningSubs = computed(
+  () => chatStore.subagents.filter((s) => s.status === "running").length,
+);
+const dockCollapsed = ref(false);
+const bottomTab = ref<"task" | "sub">("task");
+const dockVisible = computed(() => (hasPlan.value || hasSub.value) && !dockCollapsed.value);
+const dockActiveHasContent = computed(() =>
+  bottomTab.value === "task" ? hasPlan.value : hasSub.value,
+);
+const dockReopenLabel = computed(() => {
+  if (hasPlan.value && hasSub.value) return "任务 / 子代理";
+  if (hasPlan.value) return "任务";
+  return "子代理";
+});
+function pickDockTab(t: "task" | "sub") {
+  bottomTab.value = t;
+  dockCollapsed.value = false;
+}
+watch([hasPlan, hasSub], ([p, s]) => {
+  // 内容变化时自动切到“有内容”的那一页（两者都有时保持用户选择）
+  if (!p && s && bottomTab.value !== "sub") bottomTab.value = "sub";
+  else if (p && !s && bottomTab.value !== "task") bottomTab.value = "task";
+});
 
 function scrollToBottom() {
   requestAnimationFrame(() => {
@@ -321,11 +352,48 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               :key="msg.id"
               :message="msg"
             />
-            <SubagentPanel />
-            <!-- 任务计划卡片放在对话区底部（输入框上方），避免在顶部被用户忽略 -->
-            <TaskPlanCard />
           </template>
         </div>
+      </div>
+
+      <!-- 底部辅助面板（任务计划 / 子代理）：tab 切换、可折叠，避免与消息争占纵向空间 -->
+      <div v-if="dockVisible" class="bottom-dock">
+        <div class="bottom-dock__tabbar">
+          <button
+            v-if="hasPlan"
+            class="bd-tab"
+            :class="{ 'bd-tab--active': bottomTab === 'task' }"
+            title="任务计划进度"
+            @click="pickDockTab('task')"
+          >
+            <ListChecks :size="14" /> 任务
+          </button>
+          <button
+            v-if="hasSub"
+            class="bd-tab"
+            :class="{ 'bd-tab--active': bottomTab === 'sub' }"
+            title="子代理进度"
+            @click="pickDockTab('sub')"
+          >
+            <Network :size="14" /> 子代理
+            <span v-if="runningSubs > 0" class="bd-badge">{{ runningSubs }}</span>
+          </button>
+          <span class="bd-spacer"></span>
+          <button class="bd-toggle" title="折叠面板" @click="dockCollapsed = true">
+            收起 ▾
+          </button>
+        </div>
+        <div class="bottom-dock__body">
+          <TaskPlanCard v-if="bottomTab === 'task' && hasPlan" />
+          <SubagentPanel v-else-if="bottomTab === 'sub' && hasSub" />
+          <div v-if="!dockActiveHasContent" class="bottom-dock__empty">（该页暂无内容）</div>
+        </div>
+      </div>
+      <!-- 折叠后仅留一条细恢复条 -->
+      <div v-else-if="hasPlan || hasSub" class="bottom-dock__reopen">
+        <button class="bd-toggle" title="展开任务 / 子代理面板" @click="dockCollapsed = false">
+          {{ dockReopenLabel }} ▴
+        </button>
       </div>
 
       <!-- 输入区域 -->
@@ -592,6 +660,101 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   font-weight: 600;
   color: var(--accent-color);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 底部辅助面板（任务 / 子代理）dock：tab 切换 + 可折叠 ── */
+.bottom-dock {
+  flex-shrink: 0;
+  padding: 4px 12px 2px;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
+}
+.bottom-dock__tabbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(100% - 16px, 1400px);
+  margin: 0 auto;
+}
+.bd-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.bd-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.bd-tab--active {
+  color: var(--accent-color);
+  background: var(--accent-light);
+  border-color: color-mix(in srgb, var(--accent-color) 35%, transparent);
+}
+.bd-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.bd-spacer {
+  flex: 1;
+}
+.bd-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 10px;
+  transition: all 0.15s;
+}
+.bd-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.bottom-dock__body {
+  max-width: min(100% - 16px, 1400px);
+  margin: 0 auto;
+  max-height: 44vh;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+.bottom-dock__empty {
+  padding: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+.bottom-dock__reopen {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding: 1px 0 3px;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
+}
+.bottom-dock__reopen .bd-toggle {
+  color: var(--accent-color);
 }
 
 .stop-bar {
