@@ -319,6 +319,8 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <!-- 对话栈：消息区与底部 dock（任务/子代理）共享纵向空间，dock 最多占此栈 1/4 -->
+      <div class="chat-stack">
       <!-- 消息区域 -->
       <div ref="messagesContainer" class="messages-container">
         <div class="messages-inner">
@@ -404,6 +406,8 @@ onUnmounted(() => {
           {{ dockReopenLabel }} ▴
         </button>
       </div>
+      </div>
+      <!-- /对话栈 -->
 
       <!-- 输入区域 -->
       <ChatInput
@@ -563,8 +567,15 @@ onUnmounted(() => {
   border: 2px solid var(--bg-elevated);
 }
 
+.chat-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .messages-container {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--bg-primary);
@@ -650,8 +661,13 @@ onUnmounted(() => {
 }
 
 /* ── 底部辅助面板（任务 / 子代理）dock：tab 切换 + 可折叠 ── */
+/* dock 在对话栈内：高度随内容自适应，但最多占对话栈 1/4（超出内部滚动），避免压占消息区 */
 .bottom-dock {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  max-height: 25%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 4px 12px 2px;
   background: var(--bg-primary);
   border-top: 1px solid var(--border-color);
@@ -720,10 +736,11 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 .bottom-dock__body {
+  flex: 1 1 auto;
+  min-height: 0;
   max-width: min(100% - 16px, 1400px);
+  width: 100%;
   margin: 0 auto;
-  /* 任务 / 子代理两 tab 展开高度一致（固定统一高度，切换不跳变）；内容多时在内部滚动 */
-  height: clamp(120px, 36vh, 380px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 2px 0 6px;
