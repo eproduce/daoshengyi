@@ -51,6 +51,7 @@ import { markExternalToolResult } from "@/utils/untrusted";
 import {
   buildNativeToolRegistry,
   supportsNativeTools,
+  parseNativeArguments,
   type OpenAIFunctionTool,
   type NativeToolRegistry,
 } from "@/utils/tool-schema";
@@ -2403,12 +2404,7 @@ async function runSubagentLoop(
           });
           continue;
         }
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(call.function?.arguments || "{}") as Record<string, unknown>;
-        } catch {
-          args = {};
-        }
+        const args = parseNativeArguments(call.function?.arguments);
         let result: string;
         try {
           result = await callToolStoppable(ref.server, ref.tool, args);
@@ -4125,12 +4121,7 @@ export const useChatStore = defineStore("chat", () => {
           if (stopRequested) break;
           const fnName = call.function?.name || "";
           const ref = nativeRegistry?.byName.get(fnName) ?? null;
-          let args: Record<string, unknown> = {};
-          try {
-            args = JSON.parse(call.function?.arguments || "{}") as Record<string, unknown>;
-          } catch {
-            args = {};
-          }
+          const args = parseNativeArguments(call.function?.arguments);
           const startTool = Date.now();
           const argsStr = JSON.stringify(args, null, 2);
           if (!ref) {

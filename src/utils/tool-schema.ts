@@ -64,11 +64,30 @@ export function isValidNativeName(name: string): boolean {
   return NAME_RE.test(name);
 }
 
-/** 候选名唯一化：已被占用则在末尾追加 _2/_3/...（超出 64 字符先截断基名；函数名不允许点号） */
+/**
+ * 解析模型返回的 `function.arguments` JSON 字符串为参数对象。
+ * 原生 function calling 返回的 arguments 是字符串，可能为 ""/非法 JSON/非对象
+ * （模型偶发）→ 一律容错回退空对象，绝不让解析异常打断工具执行。
+ * 主代理 handleNativeRound 与子代理 runSubagentLoop 共用。
+ */
+export function parseNativeArguments(jsonStr?: string | null): Record<string, unknown> {
+  if (!jsonStr) return {};
+  const t = jsonStr.trim();
+  if (!t) return {};
+  try {
+    const v = JSON.parse(t);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 候选名唯一化：保证最终名 ≤64 且 ASCII 合法。
+ * 超长（>60）先截断基名（函数名上限 64、留 "_N" 后缀空间）；被占用则追加 _2/_3/...。 */
 function ensureUnique(base: string, used: Set<string>): string {
-  if (!used.has(base)) return base;
-  const cap = 60; // 留出 "_N" 后缀空间
+  const cap = 60;
   const trimmed = base.length > cap ? base.slice(0, cap) : base;
+  if (!used.has(trimmed)) return trimmed;
   let n = 2;
   while (used.has(`${trimmed}_${n}`)) n++;
   return `${trimmed}_${n}`;
