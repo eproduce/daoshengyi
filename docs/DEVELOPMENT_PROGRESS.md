@@ -23,7 +23,11 @@
   - 前端 `chatOnce(config, convo, tools?)` 支持带 tools；`runSubagentLoop` **原生优先**——allowTools + 端点支持 + 未关停时构建注册表（角色限定时只注册放行内置工具，无角色限定则内置+MCP），子代理系统提示追加共享常量 `NATIVE_TOOLS_NOTE`（主/子代理一致，压制文本 `<tool_call>` 引导）；模型返回结构化 tool_calls → 回填 `assistant.tool_calls` + 逐个 `byName` 反查执行（角色约束/未知工具都以 role:tool 回填）+ `role:tool`/`tool_call_id` 结果；文本 `<tool_call>` 解析保留为兜底。
   - 主代理原生 tool 结果补 **O4 外部内容边界**（`markExternalToolResult` 包裹）——修复 Stage2C 原生路径漏包外部抓取结果的防注入回归。
   - 验证：vue-tsc / vitest 12 / cargo 98 全绿。
-- **待做**：①子代理原生循环真机实测（subagent_delegate / subagent_parallel，看日志 `[chat_once] … 原生tools=true … tool_calls=N`）；②工具名/降级路径再补前端单测；③OpenClaw §3.13 剩余 O5 IM 配对审批。
+- **Stage3 收尾：原生链路补测（8e2f1c3）**：`ensureUnique` 超长名截断修正（无冲突超 64 也会截断，防非法函数名）；新增纯函数 `parseNativeArguments`（arguments JSON 容错解析）主/子代理复用；+5 边界单测 → vitest 17。
+- **O5 IM 配对审批（159f543 + d8c67ae，§3.13 第二批 🟡 完成）**：
+  - Rust：`im.rs` 加 `PendingPair`/`pair_code_for`（6 位码）/`is_im_allowed`（白名单 ∪ 运行期 approved）纯函数；`ImGatewayState` 加 `pending`/`approved`；`ImGateway` 未知会话（白名单非空时）不再静默忽略 → 登记待审批 + 发 `im-pair-request` 事件 + 回引导（`with_app` 绑定 AppHandle，测试用 Option 兼容）；`im_pending_pairs`/`im_pair_approve`（持久化进 im_config.whitelist + 运行期即时生效）/`im_pair_decline` 三命令。+3 单测 → cargo 101。
+  - 前端：`main.ts` 全局监听 `im-pair-request` → `askConfirm` 弹窗（含会话 ID/发送者/配对码）→ 批准/拒绝调 `im_pair_approve`/`im_pair_decline`。
+- **待做**：①子代理原生循环真机实测（subagent_delegate / subagent_parallel，看日志 `[chat_once] … 原生tools=true … tool_calls=N`）；②IM 配对审批真机实测（启用白名单 + 陌生会话触发弹窗）。
 
 ---
 
