@@ -25,7 +25,7 @@ it("parseTipDelay：合法非负数字生效，非法/空回退默认", () => {
   expect(parseTipDelay("1.5", DEFAULT_TOOLTIP_DELAY)).toBe(2); // 四舍五入
 });
 
-it("computeTipRect：空间足够时放元素下方居中", () => {
+it("computeTipRect：空间足够时放元素下方并水平居中", () => {
   // 元素：x 100..200，y 200..260；视口 1000x800；浮层 200x40
   const p = computeTipRect(
     { left: 100, top: 200, right: 200, bottom: 260 },
@@ -36,7 +36,8 @@ it("computeTipRect：空间足够时放元素下方居中", () => {
   );
   expect(p.above).toBe(false);
   expect(p.top).toBe(260 + 8); // bottom + gap
-  expect(p.left).toBe(150); // 中心锚点（translateX(-50%) 后居中）
+  // left 为浮层左上角：元素中心 150 − 宽一半 100 = 50，整块 [50,250] 居中于元素
+  expect(p.left).toBe(50);
 });
 
 it("computeTipRect：底部空间不足翻到上方", () => {
@@ -53,11 +54,20 @@ it("computeTipRect：下方不够翻上方、上方也不够时贴顶（不越�
   expect(p.top).toBeGreaterThanOrEqual(8);
 });
 
-it("computeTipRect：左右夹紧不溢出视口", () => {
-  // 元素贴右边缘：中心会超出 → 夹到 (vw - margin - w/2)
+it("computeTipRect：左右边缘整体夹紧、宽度不被压缩（防折行）", () => {
+  // 元素贴右边缘（x 900..1000）：整块应右对齐贴边，left = vw - margin - estW = 792，
+  // 保证 left + estW <= vw - 8（不越界），且宽度始终=estW（不因剩余空间压窄）
   const p = computeTipRect({ left: 900, top: 100, right: 1000, bottom: 160 }, 1000, 800, 200, 40);
-  expect(p.left).toBeLessThanOrEqual(1000 - 8 - 200 / 2);
-  // 元素贴左边缘：夹到左边界
+  expect(p.left).toBe(1000 - 8 - 200);
+  expect(p.left + 200).toBeLessThanOrEqual(1000 - 8);
+  // 元素贴左边缘（x 0..100）：浮层左缘贴 margin=8，右缘仍在视口内
   const p2 = computeTipRect({ left: 0, top: 100, right: 100, bottom: 160 }, 1000, 800, 200, 40);
-  expect(p2.left).toBeGreaterThanOrEqual(8 + 200 / 2);
+  expect(p2.left).toBe(8);
+  expect(p2.left + 200).toBeLessThanOrEqual(1000 - 8);
+});
+
+it("computeTipRect：居中元素两侧都有富余时保持原中心对齐", () => {
+  // 元素中心 300，浮层 200 宽 → 左缘 200，不触发钳制
+  const p = computeTipRect({ left: 200, top: 100, right: 400, bottom: 160 }, 1000, 800, 200, 40);
+  expect(p.left).toBe(200);
 });

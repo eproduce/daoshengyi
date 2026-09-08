@@ -41,8 +41,10 @@ export interface RectLike {
 }
 
 /**
- * 计算浮层锚点位置：默认在元素下方 gap 处居中；下方放不下则翻到上方；
- * 左右超出视口时夹紧（保证浮层完整可见）。estW/estH 为浮层实际宽高。
+ * 计算浮层位置（left/top 为浮层左上角，最终以原尺寸渲染、不依赖 translateX）：
+ * 默认在元素下方 gap 处、与元素水平居中；下方放不下则翻到上方；
+ * 水平方向整体夹紧在视口内（边缘时贴边移动整块浮层，不压窄宽度、避免文字折行）。
+ * estW/estH 为浮层实际宽高。
  */
 export function computeTipRect(
   r: RectLike,
@@ -60,10 +62,11 @@ export function computeTipRect(
     top = r.top - gap - estH;
     if (top < margin) top = margin;
   }
-  // 中心锚点；浮层宽度可能超出左右 → 夹紧（translateX(-50%) 校正后的中心允许范围）
-  const minC = margin + estW / 2;
-  const maxC = viewportW - margin - estW / 2;
-  const left = Math.min(Math.max(r.left + (r.right - r.left) / 2, minC), Math.max(minC, maxC));
+  // 水平：先按元素中心对齐，再整体夹到 [margin, viewportW-margin-estW]；
+  // 视口窄到放不下整块时（上限 < margin）退化为贴左边缘，也不压缩文字宽度。
+  const centerX = r.left + (r.right - r.left) / 2;
+  const maxL = viewportW - margin - estW;
+  const left = Math.min(Math.max(centerX - estW / 2, margin), Math.max(margin, maxL));
   return { left, top, above };
 }
 
@@ -114,9 +117,12 @@ function show(origin: HTMLElement, delay: number) {
     t.classList.add("app-tip--show");
     const r = origin.getBoundingClientRect();
     const p = computeTipRect(r, window.innerWidth, window.innerHeight, t.offsetWidth, t.offsetHeight);
+    // 锁定测量宽度 + 直接按左上角定位（不再 translateX(-50%)）：
+    // 防止边缘钳位后浏览器按剩余空间二次布局，把文字压窄成多行。
+    t.style.width = `${t.offsetWidth}px`;
+    t.style.transform = "none";
     t.style.left = `${p.left}px`;
     t.style.top = `${p.top}px`;
-    t.style.transform = "translateX(-50%)";
     curOrigin = origin;
   }, Math.max(0, delay));
 }
