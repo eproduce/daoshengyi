@@ -688,6 +688,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <button
             v-if="!chatStore.activeProfile?.thinkingEnabled"
             class="ci-pill"
+            title="开启思考模式（模型先展示推理过程再回答）"
             @click="toggleThinking"
           >
             <svg
@@ -707,6 +708,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <button
             v-else
             class="ci-pill active ci-pill-think"
+            title="思考模式已开启 · 点击调整思考深度"
             @click.stop="showReasoningDropdown = !showReasoningDropdown"
           >
             <svg
@@ -761,6 +763,11 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         <button
           class="ci-pill"
           :class="{ active: chatStore.activeProfile?.enableWebSearch }"
+          :title="
+            chatStore.activeProfile?.enableWebSearch
+              ? '点击关闭联网搜索（模型将不再搜索互联网）'
+              : '点击开启联网搜索（允许模型搜索互联网获取最新信息）'
+          "
           @click="toggleWebSearch"
         >
           <svg
