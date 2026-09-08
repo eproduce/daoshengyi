@@ -2192,16 +2192,31 @@ function withMathRule(sp: string): string {
   return `${sp}\n\n${MATH_FORMAT_RULE}`;
 }
 
+/// 原生 function calling 的系统提示覆盖说明：当 tools 走 API（tool_choice=auto）时，
+/// 提示词里「唯一方式是输出 <tool_call> JSON」的文本引导已不适用 → 追加覆盖说明，
+/// 让模型改用原生结构化 tool_calls（文本解析仍作为兜底保留）。主代理与子代理共用。
+const NATIVE_TOOLS_NOTE =
+  "\n\n## 原生工具调用（本会话生效，覆盖上文文本标记说明）\n" +
+  "本会话通过 **原生 function calling**（API `tools` 参数）提供全部工具。**需要调用工具时请直接返回模型原生 tool_calls**（结构化调用），系统会自动执行并把你需要的结果作为 tool 消息回填；你不必、也不要在回复正文中手写 `<tool_call>…</tool_call>`、DSML 标记或“### 🔧 调用工具”卡片。\n" +
+  "正文（content）只用于输出最终回答、过程说明或总结；调用工具请用原生 tool_calls。";
+
 /// 非流式模型请求（chat_once）带前端超时兜底：
-/// 网络/服务端偶尔会无响应，超时返回 null，避免 ReAct 循环一直等待导致气泡卡死为空泡泡
+/// 网络/服务端偶尔会无响应，超时返回 null，避免子代理循环一直等待导致任务卡死为空
+/// `tools`：可选 OpenAI 风格 function schema 数组 → Rust chat_once 启用原生 function
+/// calling，返回 message.tool_calls。
 const CHAT_ONCE_TIMEOUT_MS = 60000;
-async function chatOnce(config: ApiConfig, convo: { role: string; content: string }[]) {
+async function chatOnce(
+  config: ApiConfig,
+  convo: AgentMsg[],
+  tools?: OpenAIFunctionTool[] | null,
+) {
   return Promise.race([
     invoke<{
       content: string;
       reasoning_content?: string;
       cache_hit?: number;
       cache_miss?: number;
+      tool_calls?: NativeToolCallMsg[];
     }>("chat_once", {
       config: {
         base_url: config.baseUrl,
@@ -2217,6 +2232,7 @@ async function chatOnce(config: ApiConfig, convo: { role: string; content: strin
         enable_web_search: config.enableWebSearch,
       },
       messages: convo,
+      ...(tools && tools.length ? { tools } : {}),
     }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), CHAT_ONCE_TIMEOUT_MS)),
   ]);
@@ -2284,6 +2300,8 @@ function buildSubagentSysPrompt(context: string, allowTools: boolean, roleId?: s
 /// 独立上下文 + 独立工具结果回填，为多 agent 协作打基础。
 /// 与主代理差异：非流式（chat_once）+ 无 UI 流式副作用（后台任务，面板只显示状态）。
 /// opts.allowTools 可关闭（纯对话子代理）；返回最终结论文本。
+/// Stage3：allowTools 且端点支持时走原生 function calling（结构化 tools/tool_calls）；
+/// 文本 <tool_call> 解析保留为兜底（与主代理一致）。
 async function runSubagentLoop(
   config: ApiConfig,
   sysPrompt: string,
@@ -2294,22 +2312,121 @@ async function runSubagentLoop(
   const maxRounds = opts.maxRounds || 8;
   // P-M3 角色工具集强制约束：非空时只允许调用这些工具（提示词过滤只是引导，这里是兜底）
   const allowed = opts.allowedTools && opts.allowedTools.length ? new Set(opts.allowedTools) : null;
-  const msgs: { role: string; content: string }[] = [
-    { role: "system", content: sysPrompt },
+
+  // 原生 function calling 注册表：allowTools + 端点支持 + 未被强制关闭 → 启用。
+  // 有角色限定时只注册该角色放行的内置工具；无角色限定则内置 + MCP 全量（与主代理一致）。
+  let subNativeDisabled = false;
+  try {
+    subNativeDisabled = localStorage.getItem("daoshengyi_native_tools") === "0";
+  } catch {
+    /* ignore */
+  }
+  let subRegistry: NativeToolRegistry | null = null;
+  if (allowTools && !subNativeDisabled && supportsNativeTools(config.baseUrl || "")) {
+    let builtins = BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc }));
+    if (allowed) builtins = builtins.filter((b) => allowed.has(b.name));
+    subRegistry = buildNativeToolRegistry({
+      builtins,
+      mcp: allowed
+        ? []
+        : mcpToolsCache.map((t) => ({
+            server: t.server,
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            kind: "mcp" as const,
+          })),
+    });
+  }
+  const subTools: OpenAIFunctionTool[] | null =
+    subRegistry && subRegistry.tools.length > 0 ? subRegistry.tools : null;
+  // 原生模式：给子代理系统提示也追加「原生 tool_calls」覆盖说明（压制文本 <tool_call> 引导）
+  const effectiveSys = subTools ? `${sysPrompt}${NATIVE_TOOLS_NOTE}` : sysPrompt;
+
+  const msgs: AgentMsg[] = [
+    { role: "system", content: effectiveSys },
     { role: "user", content: `子任务：${goal}` },
   ];
   for (let round = 0; round < maxRounds; round++) {
     if (stopRequested) throw new AgentStoppedError();
-    // 每轮 chatOnce 与停止信号 race：点停止后立即抛 AgentStoppedError，不等 60s 超时。
-    // 用 kind 标记而非 .then(throw)，避免 race 已结算后停止信号才触发导致 unhandled rejection
+    // 每轮 chatOnce（原生模式带 tools）与停止信号 race：点停止后立即抛 AgentStoppedError，
+    // 不等 60s 超时。用 kind 标记而非 .then(throw)，避免 race 已结算后停止信号才触发
+    // 导致 unhandled rejection。
     const raced = await Promise.race([
-      chatOnce(config, msgs).then((d) => ({ kind: "ok" as const, data: d })),
+      chatOnce(config, msgs, subTools).then((d) => ({ kind: "ok" as const, data: d })),
       waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
     ]);
     if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
     if (raced.data === null) throw new Error("子代理执行超时或失败");
     const data = raced.data;
     const content = data.content || "";
+
+    // 原生优先：模型返回结构化 tool_calls（可多个）→ 回填 assistant.tool_calls 并逐个执行
+    if (data.tool_calls && data.tool_calls.length > 0) {
+      const normCalls: NativeToolCallMsg[] = data.tool_calls.map((c) => ({
+        id: c.id || `call_${uuidv4()}`,
+        type: "function",
+        function: {
+          name: c.function?.name || "",
+          arguments: c.function?.arguments || "{}",
+        },
+      }));
+      msgs.push({
+        role: "assistant",
+        content:
+          stripToolJson(content).trim() ||
+          `（调用工具 ${normCalls
+            .map((x) => x.function?.name)
+            .filter(Boolean)
+            .join("/")}）`,
+        tool_calls: normCalls,
+      });
+      for (const call of normCalls) {
+        if (stopRequested) throw new AgentStoppedError(); // 执行工具前
+        const fnName = call.function?.name || "";
+        const ref = subRegistry?.byName.get(fnName) ?? null;
+        if (!ref) {
+          // 未知函数名 → 错误回填 role:tool，让它改用正确的工具
+          msgs.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: `错误: 未知工具「${fnName}」：不在本会话可用工具列表中，请从系统给出的函数列表选择正确的工具名。`,
+          });
+          continue;
+        }
+        // P-M3 角色工具集约束：不允许的工具不执行，回填提示改用允许工具
+        if (allowed && !allowed.has(ref.tool)) {
+          msgs.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: `⚠️ 你当前角色不允许调用工具「${ref.tool}」。本角色允许的工具：${opts.allowedTools!.join("、")}。请改用允许的工具继续，或基于已有信息直接给出结论。`,
+          });
+          continue;
+        }
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function?.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          args = {};
+        }
+        let result: string;
+        try {
+          result = await callToolStoppable(ref.server, ref.tool, args);
+        } catch (e) {
+          if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
+          result = `错误: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        if (stopRequested) throw new AgentStoppedError(); // 工具返回后
+        msgs.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: truncateToolResult(markExternalToolResult(ref.tool, result)),
+        });
+      }
+      continue; // 结果已回填，继续下一轮
+    }
+
+    // 文本兜底：模型仍输出文本 <tool_call>（或未启用原生）→ 沿用原文本解析执行
     const tc = parseToolCall(content);
     if (tc && allowTools) {
       const server = resolveToolServer(tc.server, tc.tool);
@@ -3573,12 +3690,10 @@ export const useChatStore = defineStore("chat", () => {
       if (mcpPrompt) sp = sp ? `${sp}\n\n${mcpPrompt}` : mcpPrompt;
 
       // 原生 function calling：当 tools 走 API（tool_choice=auto）时，上文文本模式
-      // 的「唯一方式是输出 <tool_call> JSON」引导已不适用 → 追加覆盖说明，让模型改用
-      // 原生结构化 tool_calls，避免在正文手写 JSON 标记（仍保留文本解析作为兜底）。
+      // 的「唯一方式是输出 <tool_call> JSON」引导已不适用 → 追加覆盖说明（共享常量，
+      // 与子代理一致），让模型改用原生结构化 tool_calls（文本解析仍保留作兜底）。
       if (nativeToolsOn) {
-        sp = `${sp}\n\n## 原生工具调用（本会话生效，覆盖上文文本标记说明）\n` +
-          "本会话通过 **原生 function calling**（API `tools` 参数）提供全部工具。**需要调用工具时请直接返回模型原生 tool_calls**（结构化调用），系统会自动执行并把你需要的结果作为 tool 消息回填；你不必、也不要在回复正文中手写 `<tool_call>…</tool_call>`、DSML 标记或“### 🔧 调用工具”卡片。\n" +
-          "正文（content）只用于输出最终回答、过程说明或总结；调用工具请用原生 tool_calls。";
+        sp = `${sp}${NATIVE_TOOLS_NOTE}`;
       }
 
       // ---- 易变上下文：每次提问都不同 → 追加到最新用户消息末尾，不进 system ----
@@ -4058,11 +4173,13 @@ export const useChatStore = defineStore("chat", () => {
               resultPreview: clipped.slice(0, 300),
             });
             streamingContent.value = card; // 展示卡片（下一轮流式在其后追加最终答案）
-            // role:"tool" 结果原样回填（无需 <tool_result> 文本包裹，API 原生语义）
+            // role:"tool" 结果原样回填（无需 <tool_result> 文本包裹，API 原生语义）。
+            // O4：外部抓取类工具结果仍先 markExternalToolResult 包裹【不可信内容】边界，
+            // 防注入；再截断防上下文膨胀。
             rustMsgs.push({
               role: "tool",
               tool_call_id: call.id,
-              content: truncateToolResult(result),
+              content: truncateToolResult(markExternalToolResult(tool, result)),
             });
             dbg(`[tool-native] ${tool} 执行成功，结果长度=${result.length}`);
           } catch (e: unknown) {
