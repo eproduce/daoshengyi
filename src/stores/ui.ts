@@ -11,6 +11,7 @@ export const useUiStore = defineStore("ui", {
     aboutOpen: false,
     skillsOpen: false,
     workflowOpen: false,
+    undoOpen: false,
     sidebarVisible: true,
     themeToggleCounter: 0, // 菜单「切换主题」→ App.vue watch 后调用 toggleTheme
     exportCounter: 0, // 菜单「导出对话」→ App.vue watch 后触发导出
@@ -40,6 +41,12 @@ export const useUiStore = defineStore("ui", {
     },
     closeWorkflow() {
       this.workflowOpen = false;
+    },
+    openUndo() {
+      this.undoOpen = true;
+    },
+    closeUndo() {
+      this.undoOpen = false;
     },
     toggleSidebar() {
       this.sidebarVisible = !this.sidebarVisible;

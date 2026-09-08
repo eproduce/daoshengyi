@@ -9,7 +9,7 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import AboutDialog from "./components/AboutDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
 import DiffConfirmDialog from "./components/DiffConfirmDialog.vue";
-import UndoBubble from "./components/UndoBubble.vue";
+import UndoHistoryDialog from "./components/UndoHistoryDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
@@ -17,6 +17,7 @@ import { useOllamaStore } from "./stores/ollama";
 import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { formatCost } from "@/utils/tokens";
+import { invoke } from "@tauri-apps/api/core";
 import type { ImageAttachment, FileAttachment } from "@/types";
 import {
   Download,
@@ -32,6 +33,7 @@ import {
   Stethoscope,
   ListChecks,
   Network,
+  Undo2,
 } from "lucide-vue-next";
 
 const chatStore = useChatStore();
@@ -198,13 +200,32 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// 撤销历史入口角标：有可撤销的文件编辑时顶部按钮亮红点（文件级记录跨会话保留，
+// 只在打开面板时展示，不再常驻浮动气泡）
+const hasUndo = ref(false);
+async function refreshHasUndo() {
+  try {
+    const rows = await invoke<unknown[]>("list_undo", { limit: 1 });
+    hasUndo.value = !!(rows && rows.length > 0);
+  } catch {
+    hasUndo.value = false;
+  }
+}
+function onUndoChangedEvent() {
+  void refreshHasUndo();
+}
 onMounted(() => {
   if (chatStore.conversations.length === 0) chatStore.createConversation();
   scrollToBottom();
   document.addEventListener("keydown", onKeydown);
   checkOllamaOnStart();
+  window.addEventListener("undo-changed", onUndoChangedEvent);
+  void refreshHasUndo();
 });
-onUnmounted(() => document.removeEventListener("keydown", onKeydown));
+onUnmounted(() => {
+  document.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("undo-changed", onUndoChangedEvent);
+});
 </script>
 
 <template>
@@ -249,6 +270,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               >缓存 {{ chatStore.cacheHitRate.toFixed(0) }}%</span
             >
           </div>
+          <button
+            class="topbar__btn topbar__btn--undo"
+            title="撤销历史（文件编辑）"
+            @click="ui.openUndo()"
+          >
+            <Undo2 :size="17" />
+            <span v-if="hasUndo" class="tb-undo-dot" />
+          </button>
           <button class="topbar__btn" title="导出 Markdown" @click="exportMarkdown">
             <Download :size="17" />
           </button>
@@ -417,11 +446,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
     <!-- 可视化工作流（Phase 3） -->
     <WorkflowDialog v-if="ui.workflowOpen" @close="ui.closeWorkflow()" />
 
+    <!-- 撤销历史面板（独立弹窗：集中列全部可撤销文件编辑，逐个回滚） -->
+    <UndoHistoryDialog v-if="ui.undoOpen" @close="ui.closeUndo()" />
+
     <!-- P-A4 应用内 diff 确认（文件编辑需确认时弹出） -->
     <DiffConfirmDialog />
-
-    <!-- 会话内撤销气泡（最近文件操作可一键回滚） -->
-    <UndoBubble />
   </div>
 </template>
 
@@ -564,6 +593,19 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .topbar__btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.topbar__btn--undo {
+  position: relative;
+}
+.tb-undo-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger-color);
+  border: 2px solid var(--bg-elevated);
 }
 
 .messages-container {

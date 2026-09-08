@@ -1,10 +1,15 @@
 <script setup lang="ts">
 // 撤销操作回放面板（§4.3 撤销待做项）：查看会话内所有可撤销的文件操作
 // （编辑/新建/删除快照），一键回滚或导出。数据源：Rust undo_history 表。
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Undo2, Download, ChevronRight } from "lucide-vue-next";
 import { notify } from "@/utils/dialog";
+
+// 写/删文件后会派发 undo-changed（chat.ts notifyUndoChanged）→ 面板实时刷新
+function onUndoChanged() {
+  void refresh();
+}
 
 interface UndoRow {
   id: number;
@@ -76,7 +81,11 @@ function exportJson() {
   a.click();
 }
 
-onMounted(refresh);
+onMounted(() => {
+  window.addEventListener("undo-changed", onUndoChanged);
+  void refresh();
+});
+onUnmounted(() => window.removeEventListener("undo-changed", onUndoChanged));
 </script>
 
 <template>
