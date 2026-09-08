@@ -609,7 +609,13 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <rect x="5" y="5" width="14" height="14" rx="2" />
         </svg>
       </button>
-      <button v-else class="ci-send" :disabled="!canSend()" @click="handleSend">
+      <button
+        v-else
+        class="ci-send"
+        :disabled="!canSend()"
+        title="发送（Enter）"
+        @click="handleSend"
+      >
         <svg
           width="16"
           height="16"
