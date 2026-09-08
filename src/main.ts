@@ -1,11 +1,13 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import App from "./App.vue";
 import { useMcpStore } from "./stores/mcp";
 import { useOllamaStore } from "./stores/ollama";
 import { useChatStore } from "./stores/chat";
 import { useUiStore } from "./stores/ui";
+import { askConfirm } from "./utils/dialog";
 import { installGlobalErrorLog } from "./utils/error-log";
 import "./assets/styles/main.css";
 
@@ -109,3 +111,24 @@ document.addEventListener("copy", (e) => {
     /* 异常时回退系统默认复制 */
   }
 });
+
+// ── O5 IM 配对审批：网关收到未知发送者消息时登记待审批并发此事件 → 桌面端弹确认 ──
+// 批准 → im_pair_approve（写入白名单并持久化）；拒绝 → im_pair_decline（移除待审批）
+listen<{ chat_id: string; sender: string; code: string }>("im-pair-request", async (e) => {
+  const p = e.payload;
+  if (!p || !p.chat_id) return;
+  const ok = await askConfirm(
+    `收到新的 IM 会话请求：\n\n会话 ID：${p.chat_id}\n发送者：${p.sender}\n配对码：${p.code}\n\n是否批准该会话加入白名单（批准后即可自动回复）？`,
+    "warning",
+  );
+  try {
+    if (ok) {
+      await invoke("im_pair_approve", { chatId: p.chat_id });
+    } else {
+      await invoke("im_pair_decline", { chatId: p.chat_id });
+    }
+  } catch (err) {
+    // 审批命令失败不弹二次窗；状态/日志可在「即时聊天」面板查看
+    console.warn("[im-pair]", err);
+  }
+}).catch(() => {});
