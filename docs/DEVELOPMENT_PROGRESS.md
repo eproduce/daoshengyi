@@ -27,7 +27,8 @@
 - **O5 IM 配对审批（159f543 + d8c67ae，§3.13 第二批 🟡 完成）**：
   - Rust：`im.rs` 加 `PendingPair`/`pair_code_for`（6 位码）/`is_im_allowed`（白名单 ∪ 运行期 approved）纯函数；`ImGatewayState` 加 `pending`/`approved`；`ImGateway` 未知会话（白名单非空时）不再静默忽略 → 登记待审批 + 发 `im-pair-request` 事件 + 回引导（`with_app` 绑定 AppHandle，测试用 Option 兼容）；`im_pending_pairs`/`im_pair_approve`（持久化进 im_config.whitelist + 运行期即时生效）/`im_pair_decline` 三命令。+3 单测 → cargo 101。
   - 前端：`main.ts` 全局监听 `im-pair-request` → `askConfirm` 弹窗（含会话 ID/发送者/配对码）→ 批准/拒绝调 `im_pair_approve`/`im_pair_decline`。
-- **待做**：①子代理原生循环真机实测（subagent_delegate / subagent_parallel，看日志 `[chat_once] … 原生tools=true … tool_calls=N`）；②IM 配对审批真机实测（启用白名单 + 陌生会话触发弹窗）。
+- **待做**：②IM 配对审批真机实测（启用白名单 + 陌生会话触发弹窗）。
+- **子代理真机实测发现并修复（34ccaa0）**：`subagent_parallel` 派 3 个「研究助手(researcher)」并行分析本地 src/src-tauri/tests 目录——因 researcher 角色工具集缺本地读取工具（`list_dir/read_file/analyze_project`）全部如实宣告无法完成 → 给 researcher 补这三个**只读本地调研**工具 + 定位/提示词更新（联网调研 + 只读本地目录/源码分析，明示“不要声称无法读取本地文件”），仍不授写/命令类工具（保持只读研究语义）。原生子代理链路本身正常（三路并行跑通、失败输出诚实规范）。待用户重测同一并行调研任务。
 
 ---
 
