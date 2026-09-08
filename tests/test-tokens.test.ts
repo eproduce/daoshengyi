@@ -6,6 +6,7 @@ import {
   getPricing,
   estimateCost,
   formatCost,
+  modelContextWindowTokens,
 } from "../src/utils/tokens.ts";
 
 function assert(cond: boolean, name: string, detail = "") {
@@ -78,5 +79,31 @@ assert(
   estimateMessageTokens("内容", "推理") === 4,
   "content+reasoning",
   `got ${estimateMessageTokens("内容", "推理")}`,
+);
+
+console.log("\n== modelContextWindowTokens ==");
+assert(
+  modelContextWindowTokens("https://api.deepseek.com", "deepseek-v4-flash") === 1_000_000,
+  "DeepSeek 1M",
+);
+assert(
+  modelContextWindowTokens("https://dashscope.aliyuncs.com", "qwen-max") === 1_000_000,
+  "DashScope/Qwen 1M",
+);
+assert(
+  modelContextWindowTokens("https://api.anthropic.com", "claude-sonnet") === 200_000,
+  "Anthropic 200k",
+);
+assert(
+  modelContextWindowTokens("https://api.openai.com/v1", "gpt-4o") === 128_000,
+  "gpt-4o 128k",
+);
+assert(
+  modelContextWindowTokens("https://api.openai.com/v1", "o3") === 200_000,
+  "o 系列 200k",
+);
+assert(
+  modelContextWindowTokens("https://custom.llm.example.com", "") === 128_000,
+  "未知端点回退 128k",
 );
 it("脚本式断言（顶层执行）", () => {});

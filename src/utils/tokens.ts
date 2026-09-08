@@ -35,6 +35,25 @@ export function estimateMessageTokens(content: string, reasoning?: string): numb
   return estimateTokens(content) + estimateTokens(reasoning || "");
 }
 
+/// 估算模型 context window（tokens）。依据 base_url / 模型名启发式推断；
+/// 未知端点保守返回 128k。供输入框“上下文已用/总量”指示器与发送前预警使用。
+export function modelContextWindowTokens(baseUrl: string, model?: string): number {
+  const u = (baseUrl || "").toLowerCase();
+  const m = (model || "").toLowerCase();
+  if (u.includes("deepseek")) return 1_000_000;
+  if (u.includes("dashscope") || u.includes("qwen") || u.includes("gemini")) return 1_000_000;
+  if (u.includes("anthropic")) return 200_000;
+  if (u.includes("openai") || u.includes("openrouter")) {
+    // o 系列 / gpt-5 大窗口；其余 gpt 系列按 128k
+    if (/o[0-9]|gpt-5|o-series/.test(m)) return 200_000;
+    return 128_000;
+  }
+  if (u.includes("moonshot")) return 128_000;
+  if (u.includes("zhipu") || u.includes("bigmodel")) return 128_000;
+  if (u.includes("siliconflow") || u.includes("volces")) return 128_000;
+  return 128_000;
+}
+
 // --- 模型价格表（人民币 元 / 1M tokens）---
 // 数据来源：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
 // 采用高峰时段价格（保守估算），输入区分缓存命中/未命中

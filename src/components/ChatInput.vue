@@ -9,6 +9,7 @@ import SkillManager from "./SkillManager.vue";
 import { Settings } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
+import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
 import { MODES } from "@/data/modes-catalog";
 
 const chatStore = useChatStore();
@@ -473,6 +474,38 @@ onUnmounted(() => {
   unlistenDrag?.();
 });
 
+// ── 上下文用量指示（类似 harness）：发送/停止按钮左侧显示“已用 / 总量” ──
+// 已用 = 当前会话将发送的最近消息文本估算 token（图片按 ~850/张粗估）；
+// 总量 = 模型 context window（按端点/模型推断）。
+const ctxLimit = computed(() =>
+  modelContextWindowTokens(
+    chatStore.currentConfig?.baseUrl || "",
+    chatStore.currentConfig?.model,
+  ),
+);
+const ctxUsed = computed(() => {
+  const conv = chatStore.activeConversation;
+  if (!conv || !conv.messages.length) return 0;
+  const maxCtx = chatStore.currentConfig?.maxContextMessages || 50;
+  const list = conv.messages.slice(-maxCtx);
+  let n = 0;
+  for (const m of list) {
+    if (m.role === "system") continue;
+    if (typeof m.content === "string") n += estimateMessageTokens(m.content);
+    if (m.images?.length) n += m.images.length * 850;
+  }
+  return n;
+});
+const ctxPct = computed(() =>
+  ctxLimit.value ? Math.min(100, Math.round((ctxUsed.value / ctxLimit.value) * 100)) : 0,
+);
+const ctxWarn = computed(() => ctxPct.value >= 80);
+function fmtCtx(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
+}
+
 const effortLabels: Record<string, string> = { low: "低", high: "高", max: "最大" };
 </script>
 
@@ -531,6 +564,18 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span class="ci-slash-desc">{{ c.desc }}</span>
         </div>
       </div>
+      <!-- 上下文用量指示（估算已用/模型总量），位于停止/发送按钮左侧 -->
+      <span
+        v-if="chatStore.activeConversation"
+        class="ci-ctx"
+        :class="{ 'ci-ctx--warn': ctxWarn }"
+        :title="`当前会话上下文估算 ${fmtCtx(ctxUsed)} / ${fmtCtx(ctxLimit)} tokens（含图片按 ~850/张粗估，不含系统/技能/RAG 注入）；≥80% 变红预警`"
+      >
+        <span class="ci-ctx__num"
+          >{{ fmtCtx(ctxUsed) }}<i class="ci-ctx__sep">/</i>{{ fmtCtx(ctxLimit) }}</span
+        >
+        <span class="ci-ctx__bar"><i :style="{ width: ctxPct + '%' }" /></span>
+      </span>
       <button
         v-if="disabled"
         class="ci-send ci-stop"
@@ -933,6 +978,56 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 .ci-stop:active {
   transform: scale(0.94);
+}
+
+/* 上下文用量指示（发送/停止按钮左侧） */
+.ci-ctx {
+  flex-shrink: 0;
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin: 0 4px 6px 2px;
+  padding: 0 8px 0 10px;
+  border-left: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  line-height: 1.25;
+  user-select: none;
+  cursor: default;
+}
+.ci-ctx__num {
+  display: flex;
+  gap: 3px;
+  font-weight: 600;
+}
+.ci-ctx__sep {
+  opacity: 0.5;
+}
+.ci-ctx--warn .ci-ctx__num {
+  color: var(--danger-color);
+  font-weight: 700;
+}
+.ci-ctx__bar {
+  display: block;
+  width: 64px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-color);
+  overflow: hidden;
+}
+.ci-ctx__bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent-color);
+  border-radius: 2px;
+  transition: width 0.2s;
+}
+.ci-ctx--warn .ci-ctx__bar i {
+  background: var(--danger-color);
 }
 
 /* Slash 命令面板 */
