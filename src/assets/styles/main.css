@@ -339,3 +339,25 @@ select option {
 [class*="__btn"] svg.lucide {
   vertical-align: -0.15em;
 }
+
+/* ── 全局自定义 Tooltip 浮层（utils/tooltip.ts 注入 body） ── */
+.app-tip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 280px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(18, 18, 22, 0.94);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  white-space: normal;
+  word-break: break-word;
+}
+.app-tip--show {
+  opacity: 1;
+}

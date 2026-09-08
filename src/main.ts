@@ -9,10 +9,13 @@ import { useChatStore } from "./stores/chat";
 import { useUiStore } from "./stores/ui";
 import { askConfirm } from "./utils/dialog";
 import { installGlobalErrorLog } from "./utils/error-log";
+import { initGlobalTooltips } from "./utils/tooltip";
 import "./assets/styles/main.css";
 
 // 全局错误本地日志：在应用挂载前安装，捕获 Vue 初始化期与运行期未捕获错误
 installGlobalErrorLog();
+// 全局自定义 Tooltip：接管所有带 title 的元素 → 更快、样式统一的深色浮层（替代原生 title）
+initGlobalTooltips();
 
 const app = createApp(App);
 const pinia = createPinia();
