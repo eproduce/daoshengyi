@@ -108,23 +108,36 @@ function show(origin: HTMLElement, delay: number) {
     }
     const t = tip();
     t.textContent = text;
-    const maxW = Math.min(280, window.innerWidth - 24);
-    t.style.maxWidth = `${maxW}px`;
     // 先移出视口再测量，避免闪现于错误位置
     t.style.left = "-9999px";
     t.style.top = "-9999px";
     t.style.transform = "none";
-    // 关键：清掉上一次显示残留的锁定宽度，按本次文本重新测量——
-    // 否则单例浮层被前一个 tooltip 的宽钉死，后续文字会被压窄成多行。
+    // 清掉上一次显示残留的内联样式（宽度锁定 / 折行策略 / 上限），
+    // 否则单例浮层会被前一个 tooltip 的宽或 nowrap 状态污染。
     t.style.width = "";
+    t.style.maxWidth = "";
+    t.style.whiteSpace = "";
     t.classList.add("app-tip--show");
-    const tipW = t.offsetWidth;
-    const tipH = t.offsetHeight;
-    const r = origin.getBoundingClientRect();
-    const p = computeTipRect(r, window.innerWidth, window.innerHeight, tipW, tipH);
-    // 锁定本次测量宽度 + 直接按左上角定位（不再 translateX(-50%)）：
+
+    // —— 单行优先：先以 nowrap 测完整单行宽度（不再受 280 上限截断）——
+    t.style.whiteSpace = "nowrap";
+    t.style.maxWidth = "none";
+    let tipW = t.offsetWidth;
+    let tipH = t.offsetHeight;
+    if (tipW > window.innerWidth - 16) {
+      // 单行宽都放不下视口（极少数超长文案）→ 退回折行并限宽
+      t.style.whiteSpace = "";
+      const wrapMax = Math.min(280, window.innerWidth - 24);
+      t.style.maxWidth = `${wrapMax}px`;
+      t.style.width = "";
+      tipW = t.offsetWidth;
+      tipH = t.offsetHeight;
+    }
+    // 锁定测量宽高 + 直接按左上角定位（不再 translateX(-50%)）：
     // 防止边缘钳位后浏览器按剩余空间二次布局，把文字压窄成多行。
     t.style.width = `${tipW}px`;
+    const r = origin.getBoundingClientRect();
+    const p = computeTipRect(r, window.innerWidth, window.innerHeight, tipW, tipH);
     t.style.left = `${p.left}px`;
     t.style.top = `${p.top}px`;
     curOrigin = origin;
