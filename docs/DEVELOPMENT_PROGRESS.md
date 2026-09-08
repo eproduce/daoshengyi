@@ -18,7 +18,12 @@
 - **回归修复②防假完成 2（a9712f9）**：实测「计划卡片一出来就全部完成」——模型 plan_task 后紧跟 plan_update 把 pending 步骤直接标 done（没干活）。修：模块级 `planRealWork` 标记（plan_task 建计划重置 false；`callMcpTool` 中央漏斗对非 plan_* 工具置 true）；`plan_update` 里 `status==="done" && !planRealWork` 直接 throw 引导「先 doing + 真实执行后再 done」——不区分 pending/doing（防先 doing 再 done 的绕过）。
 - **验证**：cargo 95 / vitest 12 / vue-tsc 全绿；任务模式「分析 op/daoshengyi 项目结构」实测通过——先出 3 步计划卡片、步骤逐条 doing→done、工具真实执行、最终报告完整交付（37917 tokens / ¥0.39）。
 - **经验**：Tauri 事件 FIFO 保序（sse-tool-calls 在 sse-done 前，监听安全）；role:tool 结果不套 `<tool_result>` 文本；助手消息 content 空串可接受；原生模式更易让模型“跳过规划直接干活/没干活先标完成”，任务护栏须同时覆盖原生与文本两路径。
-- **待做**：①把**子代理循环（runSubagentLoop，仍文本 ReAct chat_once）升级为原生 function calling**，与主代理对齐（另一脆弱点）；②工具名/降级等路径再补前端单测；③OpenClaw §3.13 第二批剩余 O5 IM 配对审批。
+- **Stage3 子代理原生 function calling（b0a1492 + 2a8aeaf，接上「待做①」）**：
+  - Rust `api::chat_once(config, messages, tools?)`：写 `body.tools` + `tool_choice=auto`；非流式响应解析 `message.tool_calls`（新纯函数 `extract_message_tool_calls` + 3 单测 → cargo 98）；`ChatOnceResult` 加 `tool_calls` 字段；Tauri `chat_once` 命令加 `tools` 参数、其余 3 个调用点透传 `None`。
+  - 前端 `chatOnce(config, convo, tools?)` 支持带 tools；`runSubagentLoop` **原生优先**——allowTools + 端点支持 + 未关停时构建注册表（角色限定时只注册放行内置工具，无角色限定则内置+MCP），子代理系统提示追加共享常量 `NATIVE_TOOLS_NOTE`（主/子代理一致，压制文本 `<tool_call>` 引导）；模型返回结构化 tool_calls → 回填 `assistant.tool_calls` + 逐个 `byName` 反查执行（角色约束/未知工具都以 role:tool 回填）+ `role:tool`/`tool_call_id` 结果；文本 `<tool_call>` 解析保留为兜底。
+  - 主代理原生 tool 结果补 **O4 外部内容边界**（`markExternalToolResult` 包裹）——修复 Stage2C 原生路径漏包外部抓取结果的防注入回归。
+  - 验证：vue-tsc / vitest 12 / cargo 98 全绿。
+- **待做**：①子代理原生循环真机实测（subagent_delegate / subagent_parallel，看日志 `[chat_once] … 原生tools=true … tool_calls=N`）；②工具名/降级路径再补前端单测；③OpenClaw §3.13 剩余 O5 IM 配对审批。
 
 ---
 
