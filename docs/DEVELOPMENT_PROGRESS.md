@@ -29,6 +29,12 @@
   - 前端：`main.ts` 全局监听 `im-pair-request` → `askConfirm` 弹窗（含会话 ID/发送者/配对码）→ 批准/拒绝调 `im_pair_approve`/`im_pair_decline`。
 - **待做**：②IM 配对审批真机实测（启用白名单 + 陌生会话触发弹窗）。
 - **子代理真机实测发现并修复（34ccaa0）**：`subagent_parallel` 派 3 个「研究助手(researcher)」并行分析本地 src/src-tauri/tests 目录——因 researcher 角色工具集缺本地读取工具（`list_dir/read_file/analyze_project`）全部如实宣告无法完成 → 给 researcher 补这三个**只读本地调研**工具 + 定位/提示词更新（联网调研 + 只读本地目录/源码分析，明示“不要声称无法读取本地文件”），仍不授写/命令类工具（保持只读研究语义）。原生子代理链路本身正常（三路并行跑通、失败输出诚实规范）。待用户重测同一并行调研任务。
+- **UI 一轮精修（dock / 停止 / 上下文用量 / 撤销历史 / persona，0fd63db/79cc21c/8205d0e/0cdbb7c/f10b775/2057960）**：
+  - 底部 dock（`.bottom-dock` + tabbar：任务/子代理），body 用 `height: clamp(120px,36vh,380px)` 布局；dock 内任务卡/子代理面板统一高度。
+  - 移除全局浮动 stop 按钮 + `handleStop`/Square（发送钮在 dock 打开时转停止）；顶栏加撤销历史按钮（`Undo2` + `tb-undo-dot`，UndoBubble 让位于面板）→ 新 `UndoHistoryDialog.vue`（Teleport 模态，内嵌 UndoPanel，`undo-changed` 事件实时刷新，Esc/X 关闭）；`ui.ts` 加 `undoOpen/openUndo/closeUndo`。
+  - ChatInput 底部工具栏新增 context 用量指示（`ci-ctx`：used/total + 迷你进度条，≥80% 变红）与 persona 下拉 pill（从顶栏迁移到底部，含「通用助手（关闭角色）」）；发送钮补 `title="发送（Enter）"`；补图标 ListChecks/Network/Undo2。
+  - 辅助：`scripts/audit-tooltips.mjs` 扫描 icon button 缺 title。
+- **自定义 Tooltip 替换原生 title（cc3865a）**：新增 `src/utils/tooltip.ts`——事件委托（capture pointerover/out）+ 单例 `.app-tip` 浮层接管所有 `[title]` 元素（不逐模板改造）：显示前把 title 备份到 `data-orig-title` + `aria-label`（防双提示、保读屏）；先移出视口量 offsetWidth/Height 再二次定位；纯函数 `tipText`/`parseTipDelay`/`computeTipRect`（默认下方居中、放不下翻上方、左右夹紧防溢出）拆出可测；`data-tip-delay` 单元素调延迟、`data-tip-no-custom` 保留原生提示；滚动/缩放自动隐藏；`main.ts` 启动 `initGlobalTooltips()`（幂等）+ `main.css` `.app-tip` 深色样式（圆角/阴影/淡入）。+5 单测 → vitest 23。
 
 ---
 
