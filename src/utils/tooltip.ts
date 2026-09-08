@@ -114,13 +114,17 @@ function show(origin: HTMLElement, delay: number) {
     t.style.left = "-9999px";
     t.style.top = "-9999px";
     t.style.transform = "none";
+    // 关键：清掉上一次显示残留的锁定宽度，按本次文本重新测量——
+    // 否则单例浮层被前一个 tooltip 的宽钉死，后续文字会被压窄成多行。
+    t.style.width = "";
     t.classList.add("app-tip--show");
+    const tipW = t.offsetWidth;
+    const tipH = t.offsetHeight;
     const r = origin.getBoundingClientRect();
-    const p = computeTipRect(r, window.innerWidth, window.innerHeight, t.offsetWidth, t.offsetHeight);
-    // 锁定测量宽度 + 直接按左上角定位（不再 translateX(-50%)）：
+    const p = computeTipRect(r, window.innerWidth, window.innerHeight, tipW, tipH);
+    // 锁定本次测量宽度 + 直接按左上角定位（不再 translateX(-50%)）：
     // 防止边缘钳位后浏览器按剩余空间二次布局，把文字压窄成多行。
-    t.style.width = `${t.offsetWidth}px`;
-    t.style.transform = "none";
+    t.style.width = `${tipW}px`;
     t.style.left = `${p.left}px`;
     t.style.top = `${p.top}px`;
     curOrigin = origin;
