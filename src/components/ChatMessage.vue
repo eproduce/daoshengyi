@@ -30,6 +30,22 @@ const previewImage = ref<ImageAttachment | null>(null);
 const showReasoning = ref(true);
 const copied = ref(false);
 
+// 流式「深度思考」滚动跟随：思考文本在 store 中持续追加，滚动条需跟着吸底。
+// 仅在用户原本就贴底（距底 <32px）时自动吸底；若用户上翻查看历史思考则不打扰，
+// 待其滚回底部附近后恢复跟随。
+const streamingReasonRef = ref<HTMLElement | null>(null);
+watch(
+  () => chatStore.streamingReasoning,
+  async () => {
+    const el = streamingReasonRef.value;
+    if (!el) return;
+    await nextTick();
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 32) {
+      el.scrollTop = el.scrollHeight;
+    }
+  },
+);
+
 // 终端命令结果渲染（借鉴 DeepSeek Harness 的 terminal card）
 const isTerminalContent = computed(() => {
   const c = props.message.content;
@@ -302,7 +318,7 @@ watch(
   <div v-if="message.role === 'assistant' && message.streaming" class="message message--assistant">
     <div class="message__avatar"><AppLogo :size="24" /></div>
     <div class="message__body">
-      <div class="message__bubble bubble-active">
+      <div class="message__bubble">
         <!-- 直接绑定 store 的 streaming ref，渲染最快 -->
         <div v-if="chatStore.streamingReasoning" class="msg-reason">
           <div class="reason-head" @click="showReasoning = !showReasoning">
@@ -310,7 +326,7 @@ watch(
             <span class="reason-label"><Brain :size="14" /> 深度思考</span>
             <span v-if="!chatStore.streamingContent" class="reason-badge">进行中</span>
           </div>
-          <div v-show="showReasoning" class="reason-body">{{ chatStore.streamingReasoning }}</div>
+          <div v-show="showReasoning" ref="streamingReasonRef" class="reason-body">{{ chatStore.streamingReasoning }}</div>
         </div>
         <div
           v-if="chatStore.streamingContent"
@@ -513,40 +529,6 @@ watch(
   border-bottom-left-radius: 4px;
 }
 
-/* 动态光圈流转：agent 思考/处理任务时气泡边缘流光旋转（仅 streaming 中的气泡） */
-@property --spin-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-/* 动态光圈：仅描边渐变（background-clip 双背景实现，比 mask-composite 兼容）。
-   原 mask 方案在 WKWebView 下可能失效 → ::before 变成实心彩色层覆盖整个气泡
-   （即“五彩光圈穿透”），这里改用 border 渐变，内容区保持气泡底色，杜绝穿透。 */
-.message--assistant .bubble-active {
-  border: 1.5px solid transparent;
-  background:
-    linear-gradient(var(--bg-assistant-bubble), var(--bg-assistant-bubble)) padding-box,
-    conic-gradient(
-        from var(--spin-angle),
-        var(--accent-color) 0%,
-        #8b5cf6 15%,
-        #22d3ee 30%,
-        var(--accent-color) 45%,
-        transparent 62%,
-        var(--accent-color) 78%,
-        transparent 92%
-      )
-      border-box;
-  animation: spinAngle 2.6s linear infinite;
-}
-.message--assistant .bubble-active::before {
-  display: none;
-}
-@keyframes spinAngle {
-  to {
-    --spin-angle: 360deg;
-  }
-}
 .message--user .message__bubble {
   background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
   border-color: transparent;

@@ -541,7 +541,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
     </div>
 
     <!-- 输入行 -->
-    <div class="ci-wrap">
+    <div class="ci-wrap" :class="{ 'ci-wrap--busy': disabled }">
       <textarea
         ref="textareaRef"
         v-model="inputText"
@@ -1021,6 +1021,39 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-wrap:focus-within {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+}
+/* 生成中（busy=disabled=isStreaming）：输入框旋转流光描边——原 agent 回复气泡的
+   动态光圈迁移至此，让“正在处理”的视觉重心落到发送框；busy 时优先于聚焦高亮 */
+.ci-wrap--busy,
+.ci-wrap--busy:focus-within {
+  border-color: transparent;
+  box-shadow: none;
+}
+.ci-wrap--busy {
+  background:
+    linear-gradient(var(--bg-secondary), var(--bg-secondary)) padding-box,
+    conic-gradient(
+        from var(--ci-spin-angle),
+        var(--accent-color) 0%,
+        #8b5cf6 15%,
+        #22d3ee 30%,
+        var(--accent-color) 45%,
+        transparent 62%,
+        var(--accent-color) 78%,
+        transparent 92%
+      )
+      border-box;
+  animation: ciSpin 2.6s linear infinite;
+}
+@property --ci-spin-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes ciSpin {
+  to {
+    --ci-spin-angle: 360deg;
+  }
 }
 
 .ci-text {
