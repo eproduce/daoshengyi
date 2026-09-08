@@ -30,7 +30,6 @@ import {
   Paperclip,
   AlarmClock,
   Stethoscope,
-  Square,
   ListChecks,
   Network,
 } from "lucide-vue-next";
@@ -164,10 +163,6 @@ function handleSend(text: string, images: ImageAttachment[], files: FileAttachme
     images.length > 0 ? images : undefined,
     files.length > 0 ? files : undefined,
   );
-}
-
-function handleStop() {
-  chatStore.stopStreaming();
 }
 
 function onPersonaChange(e: Event) {
@@ -402,11 +397,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         @send="handleSend"
         @open-settings="ui.openSettings('api')"
       />
-
-      <!-- 停止生成按钮 -->
-      <div v-if="chatStore.isStreaming" class="stop-bar">
-        <button class="stop-btn" @click="handleStop"><Square :size="14" /> 停止生成</button>
-      </div>
 
       <!-- 切换模型配置提示 -->
       <div v-if="chatStore.profileSwitching" class="switch-overlay">
@@ -755,38 +745,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 }
 .bottom-dock__reopen .bd-toggle {
   color: var(--accent-color);
-}
-
-.stop-bar {
-  position: absolute;
-  bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-}
-.stop-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 18px;
-  border: 1.5px solid var(--danger-color);
-  border-radius: 24px;
-  background: var(--bg-elevated);
-  color: var(--danger-color);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  box-shadow: var(--shadow-md);
-  transition: all 0.2s;
-}
-.stop-btn:hover {
-  background: var(--danger-color);
-  color: #fff;
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-lg);
-}
-.stop-btn:active {
-  transform: translateY(0);
 }
 
 /* 切换模型配置提示 overlay */
