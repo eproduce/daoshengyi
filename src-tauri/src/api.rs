@@ -268,13 +268,27 @@ pub struct ChatOnceResult {
     pub reasoning_content: String,
     pub cache_hit: u64,
     pub cache_miss: u64,
+    /// 原生 function calling：非流式响应 `message.tool_calls`（OpenAI 风格
+    /// `[{id,type:"function",function:{name,arguments}}]`），无工具调用时为 None。
+    pub tool_calls: Option<Vec<serde_json::Value>>,
 }
 
-/// 非流式单轮聊天请求，返回完整回复（供 ReAct 工具循环使用）。
-/// 通过 Rust 端 reqwest 发送，避免前端 fetch 跨域被 CORS 拦截导致工具循环失败。
+/// 纯函数：从非流式 /v1/chat/completions 响应中提取 `message.tool_calls`（已完整成组，
+/// 无需分片合并）。无则 None。
+fn extract_message_tool_calls(json: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    json["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .map(|a| a.clone())
+        .filter(|a| !a.is_empty())
+}
+
+/// 非流式单轮聊天请求，返回完整回复（供子代理等后台 ReAct 工具循环使用）。
+/// `tools`：可选 OpenAI 风格 function schema 数组；传入即启用「原生 function calling」，
+/// 模型以结构化 `message.tool_calls` 返回工具调用（而非文本 <tool_call>），更稳。
 pub async fn chat_once(
     config: ApiConfig,
     messages: Vec<ChatMessage>,
+    tools: Option<serde_json::Value>,
 ) -> Result<ChatOnceResult, String> {
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -286,6 +300,10 @@ pub async fn chat_once(
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
     });
+    if let Some(tools) = tools {
+        body["tools"] = tools;
+        body["tool_choice"] = serde_json::json!("auto");
+    }
     if config.thinking_enabled {
         body["thinking"] = serde_json::json!({"type": "enabled"});
         body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
@@ -331,11 +349,13 @@ pub async fn chat_once(
     let cache_miss = usage
         .and_then(|u| u.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()))
         .unwrap_or(0);
+    let tool_calls = extract_message_tool_calls(&json);
     Ok(ChatOnceResult {
         content,
         reasoning_content,
         cache_hit,
         cache_miss,
+        tool_calls,
     })
 }
 
@@ -635,5 +655,59 @@ mod tests {
         let out = serde_json::to_value(&msgs).unwrap();
         assert_eq!(out[1]["tool_calls"][0]["function"]["name"], "create_file");
         assert_eq!(out[2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_once_extracts_message_tool_calls() {
+        // 非流式响应带 message.tool_calls → 完整提取（无需分片合并）
+        let json = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "list_dir", "arguments": "{\"path\":\"/tmp\"}"}},
+                        {"id": "call_2", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                    ]
+                }
+            }]
+        });
+        let calls = extract_message_tool_calls(&json).expect("应有 tool_calls");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["function"]["name"], "list_dir");
+        assert_eq!(calls[1]["id"], "call_2");
+    }
+
+    #[test]
+    fn chat_once_no_tool_calls_returns_none() {
+        // 无 tool_calls（纯文本回复）→ None
+        let json = serde_json::json!({
+            "choices": [{"message": {"content": "最终答案", "tool_calls": []}}]
+        });
+        assert!(extract_message_tool_calls(&json).is_none());
+        let json2 = serde_json::json!({ "choices": [{ "message": { "content": "无工具" } }] });
+        assert!(extract_message_tool_calls(&json2).is_none());
+    }
+
+    #[test]
+    fn chat_once_result_serializes_tool_calls() {
+        let r = ChatOnceResult {
+            content: "".into(),
+            reasoning_content: "".into(),
+            cache_hit: 0,
+            cache_miss: 0,
+            tool_calls: Some(vec![serde_json::json!({
+                "id": "call_x",
+                "type": "function",
+                "function": {"name": "list_dir", "arguments": "{}"}
+            })]),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["tool_calls"][0]["function"]["name"], "list_dir");
+        let r2 = ChatOnceResult {
+            tool_calls: None,
+            ..r
+        };
+        let v2 = serde_json::to_value(&r2).unwrap();
+        assert!(v2["tool_calls"].is_null() || v2.get("tool_calls").is_none());
     }
 }

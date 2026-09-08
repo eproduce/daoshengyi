@@ -752,29 +752,34 @@ fn set_prevent_sleep(guard: State<SleepGuard>, active: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// 非流式单轮聊天（ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch 跨域 CORS 失败
+/// 非流式单轮聊天（子代理等后台 ReAct 工具循环用）：走 Rust reqwest，避免前端 fetch
+/// 跨域 CORS 失败。`tools`：可选 OpenAI 风格 function schema，传入即启用原生 function
+/// calling（返回 message.tool_calls）。
 #[tauri::command]
 async fn chat_once(
     app: tauri::AppHandle,
     config: api::ApiConfig,
     messages: Vec<api::ChatMessage>,
+    tools: Option<serde_json::Value>,
 ) -> Result<api::ChatOnceResult, String> {
     let log_msg = format!(
-        "[chat_once] model={} 消息数={}",
+        "[chat_once] model={} 消息数={} 原生tools={}",
         config.model,
-        messages.len()
+        messages.len(),
+        tools.is_some()
     );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
-    let result = api::chat_once(config, messages).await;
+    let result = api::chat_once(config, messages, tools).await;
     match &result {
         Ok(r) => {
             let m = format!(
-                "[chat_once] 完成 content={} 字符 reasoning={} 字符 cache_hit={} cache_miss={}",
+                "[chat_once] 完成 content={} 字符 reasoning={} 字符 cache_hit={} cache_miss={} tool_calls={}",
                 r.content.len(),
                 r.reasoning_content.len(),
                 r.cache_hit,
-                r.cache_miss
+                r.cache_miss,
+                r.tool_calls.as_ref().map(|v| v.len()).unwrap_or(0)
             );
             eprintln!("{}", m);
             append_log(&app, &m);
@@ -1934,7 +1939,7 @@ impl im::ReplyGenerator for LlmReplyGen {
                 tool_call_id: None,
             });
         }
-        let r = api::chat_once(config, msgs).await?;
+        let r = api::chat_once(config, msgs, None).await?;
         let content = r.content.trim().to_string();
         if content.is_empty() {
             Err("模型返回空回复".into())
@@ -1987,7 +1992,7 @@ pub fn run_exec(args: Vec<String>) -> i32 {
         if json_mode {
             println!("{}", serde_json::json!({ "type": "turn_start", "prompt": prompt }));
         }
-        match api::chat_once(config, msgs).await {
+        match api::chat_once(config, msgs, None).await {
             Ok(r) => {
                 let content = r.content.trim();
                 if json_mode {
@@ -4423,7 +4428,7 @@ async fn queue_turn(
             duration: None,
             cost: None,
         };
-        match api::chat_once(config, api_msgs).await {
+        match api::chat_once(config, api_msgs, None).await {
             Ok(r) => {
                 let _ = task_db.append_message(&user_msg);
                 let _ = task_db.append_message(&db::MsgRow {
