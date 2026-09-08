@@ -547,7 +547,6 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         v-model="inputText"
         class="ci-text"
         :placeholder="placeholder || '输入消息，Enter 发送，Shift+Enter 换行；输入 / 弹出命令'"
-        :disabled="disabled"
         rows="1"
         @input="onInput"
         @keydown="handleKeydown"
@@ -590,10 +589,11 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
         >
         <span class="ci-ctx__bar"><i :style="{ width: ctxPct + '%' }" /></span>
       </span>
+      <!-- 停止生成：仅忙碌时显示（停止会同时取消已排队消息） -->
       <button
         v-if="disabled"
         class="ci-send ci-stop"
-        title="停止生成"
+        title="停止生成（同时取消排队消息）"
         @click="chatStore.stopStreaming()"
       >
         <svg
@@ -609,11 +609,18 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <rect x="5" y="5" width="14" height="14" rx="2" />
         </svg>
       </button>
+      <!-- 发送：空闲=直接发送；忙碌=点击入队，当前回复结束后自动发出 -->
       <button
-        v-else
         class="ci-send"
+        :class="{ 'ci-send--queue': disabled }"
         :disabled="!canSend()"
-        title="发送（Enter）"
+        :title="
+          disabled
+            ? chatStore.pendingCount > 0
+              ? `正在生成中——发送将排队（待发 ${chatStore.pendingCount} 条），当前回复结束后自动发出`
+              : '正在生成中——发送将排队，当前回复结束后自动发出'
+            : '发送（Enter）'
+        "
         @click="handleSend"
       >
         <svg
@@ -629,6 +636,9 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <line x1="12" y1="19" x2="12" y2="5" />
           <polyline points="5 12 12 5 19 12" />
         </svg>
+        <span v-if="disabled && chatStore.pendingCount > 0" class="ci-send-badge">{{
+          chatStore.pendingCount
+        }}</span>
       </button>
     </div>
 
@@ -1031,6 +1041,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 
 .ci-send {
+  position: relative;
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -1043,6 +1054,33 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
   align-items: center;
   justify-content: center;
   transition: all 0.15s;
+}
+/* 忙碌中：发送钮降级为“入队”样式（描边透明底），与右侧红色停止钮区分 */
+.ci-send--queue {
+  background: transparent;
+  color: var(--accent-color);
+  border: 1px solid var(--border-color);
+}
+.ci-send--queue:not(:disabled):hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-color);
+}
+.ci-send-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--danger-color);
+  color: #fff;
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  border: 1px solid var(--bg-secondary);
 }
 .ci-send:disabled {
   opacity: 0.3;

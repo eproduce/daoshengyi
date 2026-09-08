@@ -2645,6 +2645,31 @@ export const useChatStore = defineStore("chat", () => {
   const streamingContent = ref("");
   const streamingReasoning = ref("");
 
+  // 消息排队（类 harness 队列）：agent 正在生成/执行（isStreaming）时用户仍可发送——
+  // 新消息先进队列，当前轮彻底结束后自动逐条发出（串行不打断）。Esc/停止会清空队列。
+  interface PendingTurn {
+    cid: string;
+    text: string;
+    images?: ImageAttachment[];
+    files?: FileAttachment[];
+  }
+  const pendingTurns = ref<PendingTurn[]>([]);
+  const pendingCount = computed(() => pendingTurns.value.length);
+  /** 当前已空闲且队列非空时取出队首自动发送（fromQueue 绕过忙碌守卫） */
+  function drainQueue() {
+    if (pendingTurns.value.length === 0 || isStreaming.value) return;
+    const next = pendingTurns.value.shift()!;
+    dbg(`[queue] 回复结束，取出排队消息自动发送（剩余 ${pendingTurns.value.length} 条）`);
+    void sendMessage(next.text, next.images, next.files, true);
+  }
+  // 切换会话：清空旧会话的排队消息，避免串话到别的会话
+  watch(activeConversationId, () => {
+    if (pendingTurns.value.length > 0) {
+      dbg(`[queue] 会话切换，清空 ${pendingTurns.value.length} 条排队消息`);
+      pendingTurns.value = [];
+    }
+  });
+
   // 任务计划（P-A5 Plan 模式）：复杂任务分解的实时进度，plan_task 创建、plan_update 更新
   const taskPlan = ref<TaskPlan | null>(null);
   function setTaskPlan(plan: TaskPlan | null) {
@@ -3406,6 +3431,8 @@ export const useChatStore = defineStore("chat", () => {
       isStreaming.value = false;
       conv.updatedAt = Date.now();
       scheduleSave();
+      // /run 结束：续跑排队消息
+      drainQueue();
     }
   }
 
@@ -3519,6 +3546,8 @@ export const useChatStore = defineStore("chat", () => {
       isStreaming.value = false;
       conv.updatedAt = Date.now();
       scheduleSave();
+      // /read 结束：续跑排队消息
+      drainQueue();
     }
   }
 
@@ -3527,7 +3556,19 @@ export const useChatStore = defineStore("chat", () => {
     text: string,
     images?: ImageAttachment[],
     attachments?: FileAttachment[],
+    fromQueue = false,
   ) {
+    // 忙时（上一轮仍在生成/执行）用户发来的新消息：入队，等当前轮结束后自动发送
+    if (isStreaming.value && !fromQueue) {
+      pendingTurns.value.push({
+        cid: activeConversationId.value ?? "",
+        text,
+        images,
+        files: attachments,
+      });
+      dbg(`[queue] 忙中收到新消息，已入队（队列 ${pendingTurns.value.length} 条）`);
+      return;
+    }
     // 新消息：重置浏览器「已打开页面」标记（上一任务的浏览器已断开，需重新导航）
     browserNavigated = false;
     // 命令执行指令：/run <命令>
@@ -4628,6 +4669,8 @@ export const useChatStore = defineStore("chat", () => {
       isStreaming.value = false;
       conv.updatedAt = Date.now();
       scheduleSave();
+      // 本轮彻底结束：若队列有待发消息则自动续跑（放在 isStreaming=false 之后）
+      drainQueue();
 
       // 对话结束：用完断开 MCP 服务器，释放资源（浏览器等子进程随之关闭）
       useMcpStore()
@@ -4643,6 +4686,11 @@ export const useChatStore = defineStore("chat", () => {
 
   function stopStreaming() {
     isStreaming.value = false;
+    // 停止 = 取消：同时清空排队消息（避免停止当前后立刻自动续跑，让用户觉得“停不住”）
+    if (pendingTurns.value.length > 0) {
+      dbg(`[queue] 用户停止生成，清空 ${pendingTurns.value.length} 条排队消息`);
+      pendingTurns.value = [];
+    }
     requestStop(); // 立即中断正在运行的子代理/主代理工具循环（不只是改标志）
     // 立刻取消 Rust 端当前流式生成：之前只在前端移除了监听，Rust 仍在继续拉流/emit/耗 token，
     // 用户会感觉「点了停止还在生成」。cancel_stream 让 Rust 在下一个 chunk 到达时停止。
@@ -4787,6 +4835,7 @@ export const useChatStore = defineStore("chat", () => {
     isStreaming,
     streamingContent,
     streamingReasoning,
+    pendingCount,
     switchProfile,
     updateProfile,
     addProfile,
