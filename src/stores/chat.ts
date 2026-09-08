@@ -916,6 +916,9 @@ function isVagueBody(s: string): boolean {
 /// 但**绝不把「从未执行」的待办步骤标成 done**（避免「啥也没干却全部标完成」的假完成）。
 /// failed 步骤保留，便于复盘。
 function markTaskPlanDoneIfPending(): void {
+  // 用户已停止（stopRequested）：打断 ≠ 完成——绝不把“正在做/没做完”的步骤强制标 done，
+  // 保留原状态让用户看到任务实际未完成，而不是“点停止后反而显示全部完成”。
+  if (stopRequested) return;
   const chat = useChatStore();
   const plan = chat.taskPlan;
   if (!plan) return;
@@ -4677,10 +4680,12 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       // 工具循环结束：若执行了工具但正文没有最终答案（streamingContent 仍被工具卡片/占位占用，
-      // 或为空），自动追加一轮强制模型在正文输出完整分析——避免"只有工具调用记录、没有分析结果"
+      // 或为空），自动追加一轮强制模型在正文输出完整分析——避免"只有工具调用记录、没有分析结果"。
+      // 关键：用户已停止（stopRequested）时**绝不追加收尾轮**——否则会再发起一次完整 LLM 请求，
+      // 表现为“点了停止还在继续生成”。
       const sc = streamingContent.value.trim();
       const hasFinalAnswer = !isVagueBody(streamingContent.value);
-      if (toolChain.length > 0 && !hasFinalAnswer) {
+      if (!stopRequested && toolChain.length > 0 && !hasFinalAnswer) {
         dbg(
           `[loop] 工具已执行但正文无实质答案（streamingContent=${sc.length} 字符，判定空洞=${isVagueBody(streamingContent.value)}），追加收尾轮`,
         );
