@@ -2289,13 +2289,22 @@ function buildSubagentSysPrompt(context: string, allowTools: boolean, roleId?: s
     ? `\n\n## 你的角色：${role.emoji} ${role.name}（${role.desc}）\n${role.sysPrompt}`
     : "";
   const toolsPrompt = role ? getRoleToolsPrompt(role.tools) : getMcpToolsPrompt();
-  return (
-    base +
-    rolePart +
-    "\n\n**你可以调用内置工具来完成子任务**——能自己动手查证/修改/测试的，就不要只靠推理猜。调用格式与主代理相同：输出 <tool_call>{...}</tool_call>，系统会执行并把真实结果回填给你。完成后直接给出结论；不要提问、不要编造数据或来源；拿不到的信息请明确说明无法获取。\n\n" +
-    toolsPrompt
-  );
+  // 子代理输出纪律（角色分支的 getRoleToolsPrompt 不含主提示词的 outputRule，必须补）:
+  // DeepSeek 思考模式易把分析全留在 reasoning、正文 content 很小 → 强制结论写正文 +
+  // 探索型任务及时收敛，避免无限逐文件探索耗尽轮次（实测“深度调研”子代理 content≈0
+  // 一直读文件到 maxRounds 上限、只返回一句占位文本）。
+  const outputDiscipline =
+    "\n\n## 输出纪律\n" +
+    "1. 无论你的思考多么详细，**最终结论必须完整、详细地呈现在回复正文**（结构化 Markdown：目录/结论/要点），不要只给一句短结论，更不要只写在思考里。\n" +
+    "2. 探索型任务（分析目录/源码/文档）：用少量批量读取获取足够信息后**及时收敛**，直接输出完整报告；不要为“全面”逐文件无限探索。\n" +
+    "3. 需要调用工具时用原生 tool_calls 或 <tool_call>{...}</tool_call>，系统会执行并回填结果；完成后直接给出结论。";
+  return base + rolePart + outputDiscipline + "\n\n" + toolsPrompt;
 }
+
+/// 子代理接近轮次上限时的收尾引导（附加在工具结果末尾）
+const SUBAGENT_WIND_DOWN_HINT =
+  "\n\n⚠️ 轮次已接近上限：若已获取足够信息，请在**下一轮直接输出完整结论**（正文），" +
+  "不要再探索新文件、不要再调用工具；确实还差一个关键文件时才最多再读 1 次。";
 
 /// P-M1：子代理带工具循环。子代理不仅能对话，还能调内置工具（git/编辑/测试/搜索/记忆），
 /// 独立上下文 + 独立工具结果回填，为多 agent 协作打基础。
@@ -2310,7 +2319,8 @@ async function runSubagentLoop(
   opts: { allowTools?: boolean; maxRounds?: number; allowedTools?: string[] } = {},
 ): Promise<string> {
   const allowTools = opts.allowTools !== false;
-  const maxRounds = opts.maxRounds || 8;
+  // 探索型调研（读目录/源码）需要较多轮次；显式传 maxRounds 的调用方（如 synth=6）覆盖
+  const maxRounds = opts.maxRounds || 20;
   // P-M3 角色工具集强制约束：非空时只允许调用这些工具（提示词过滤只是引导，这里是兜底）
   const allowed = opts.allowedTools && opts.allowedTools.length ? new Set(opts.allowedTools) : null;
 
@@ -2413,10 +2423,12 @@ async function runSubagentLoop(
           result = `错误: ${e instanceof Error ? e.message : String(e)}`;
         }
         if (stopRequested) throw new AgentStoppedError(); // 工具返回后
+        const windDown = round >= maxRounds - 3 ? SUBAGENT_WIND_DOWN_HINT : "";
         msgs.push({
           role: "tool",
           tool_call_id: call.id,
-          content: truncateToolResult(markExternalToolResult(ref.tool, result)),
+          content:
+            truncateToolResult(markExternalToolResult(ref.tool, result)) + windDown,
         });
       }
       continue; // 结果已回填，继续下一轮
@@ -2447,15 +2459,36 @@ async function runSubagentLoop(
         result = `错误: ${e instanceof Error ? e.message : String(e)}`;
       }
       if (stopRequested) throw new AgentStoppedError(); // 工具返回后
+      const windDown = round >= maxRounds - 3 ? SUBAGENT_WIND_DOWN_HINT : "";
       msgs.push({
         role: "user",
-        content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。`,
+        content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。${windDown}`,
       });
       continue;
     }
     return stripToolJson(content).trim() || "（子代理未返回内容）";
   }
-  return "（子代理达到工具轮次上限，请基于已获取信息给出结论）";
+  // 达到轮次上限仍无最终文本（多为探索型任务 content 一直很小）：追加一轮“收尾总结”
+  // ——强制模型基于已获取的工具结果直接输出完整结论（该轮不带 tools、禁止再调工具），
+  // 避免只返回一句“达到轮次上限”占位文本当结论（实测：content≈0 的探索循环撞上限）。
+  if (stopRequested) throw new AgentStoppedError();
+  msgs.push({
+    role: "user",
+    content:
+      "⚠️ 子代理工具调用已达轮次上限。请**立即**基于以上已获取的工具结果与文件内容，" +
+      "在回复正文直接输出**完整、结构化**的最终结论（结构梳理 + 关键点 + 结论）。" +
+      "不要再调用任何工具、不要再读取新文件；若确有关键信息未能覆盖，请如实说明。",
+  });
+  const finRaced = await Promise.race([
+    chatOnce(config, msgs).then((d) => ({ kind: "ok" as const, data: d })),
+    waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
+  ]);
+  if (finRaced.kind === "stop" || stopRequested) throw new AgentStoppedError();
+  if (finRaced.data) {
+    const fin = stripToolJson(finRaced.data.content || "").trim();
+    if (fin) return fin;
+  }
+  return "（子代理达到工具轮次上限，且收尾总结未生成正文内容）";
 }
 
 const DEFAULT_PROFILES: ApiProfile[] = [
