@@ -102,9 +102,33 @@ fn block_msg(host: &str) -> String {
     format!("目标地址 {} 为内网/保留地址，已按 SSRF 策略拦截", host)
 }
 
+/// 非 HTTP(S) 的 URL（file:、data:、无 scheme 裸路径等）返回给用户的**明确引导**；
+/// 正常 http(s) URL 返回 None，交给后续 SSRF 校验。
+/// 背景：agent 常把本地生成的 file:// 或磁盘路径当网页交给 fetch_page 去“验证渲染”，
+/// 但 fetch_page 只抓 HTTP(S) 网页——这里直接点明正确工具，避免晦涩的“无法解析 URL 主机名”。
+pub fn unsupported_scheme_hint(url: &str) -> Option<String> {
+    let s = url.trim().to_lowercase();
+    if s.starts_with("file:") {
+        return Some(
+            "fetch_page 不能抓取本地 file:// 文件（仅支持 HTTP(S) 网页）。读取本地文件内容请用 read_file；验证本地 HTML/页面渲染请用浏览器自动化（puppeteer_navigate 打开后 puppeteer_screenshot 截图），不要用 fetch_page 打开本地文件。"
+                .to_string(),
+        );
+    }
+    if !(s.starts_with("http://") || s.starts_with("https://")) {
+        return Some(format!(
+            "fetch_page 仅支持 http/https 网页 URL（收到无法识别的主机名或 scheme：{}）。请检查 URL 是否完整（形如 https://example.com/page）——本地文件/路径不能用 fetch_page，请改用 read_file 或浏览器自动化。",
+            url.trim()
+        ));
+    }
+    None
+}
+
 /// 主入口：对完整 URL 做 SSRF 判定。通过返回 Ok；命中内网/保留地址返回 Err（含明确原因）。
 pub fn check_url(url: &str, policy: &SsrfPolicy) -> Result<(), String> {
-    let host = extract_host(url).ok_or_else(|| "无法解析 URL 主机名".to_string())?;
+    let host = extract_host(url).ok_or_else(|| {
+        "URL 缺少可解析的主机名（本地 file:// 文件请用 read_file 读取、或浏览器自动化打开验证；网页 URL 需为 http://… 或 https://… 且带域名）"
+            .to_string()
+    })?;
     if !policy.deny_private {
         return Ok(());
     }
@@ -209,6 +233,20 @@ mod tests {
         assert_eq!(extract_host("example.com"), Some("example.com".into()));
         assert_eq!(extract_host(""), None);
         assert_eq!(extract_host("https://"), None);
+    }
+
+    #[test]
+    fn unsupported_scheme_hint_cases() {
+        // file:// 与裸本地路径 → 明确引导（提示走 read_file/浏览器自动化）
+        let f = unsupported_scheme_hint("file:///Users/u/a/攻略.html").unwrap();
+        assert!(f.contains("file://"), "应点名 file 文件");
+        assert!(f.contains("read_file"));
+        let f2 = unsupported_scheme_hint("/Users/u/a/攻略.html").unwrap();
+        assert!(f2.contains("http/https"), "裸路径应提示仅支持 http(s)");
+        assert!(unsupported_scheme_hint("data:text/html,x").is_some());
+        // 正常 http(s) 返回 None（不误伤）
+        assert!(unsupported_scheme_hint("https://example.com/a").is_none());
+        assert!(unsupported_scheme_hint("http://127.0.0.1:8000/x").is_none());
     }
 
     #[test]

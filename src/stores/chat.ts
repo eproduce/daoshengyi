@@ -513,6 +513,7 @@ function getMcpToolsPrompt(): string {
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点\n" +
     "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、跳转某网址、搜索、点击或操作页面时（含「打开 XX 浏览器去某网站/首页」这类带浏览器名的说法）——**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
+    '- **验证本地生成的 HTML/网页渲染**：先 `run_command` 起本地静态服务（如 `python3 -m http.server 8000`，在文件所在目录）或直接用本地文件，再用 `puppeteer_navigate` 打开页面 → `puppeteer_screenshot` 截图核对渲染。**严禁把 `file://` 路径或本地磁盘路径当作网页 URL 交给 `fetch_page`**——fetch_page 只抓取 HTTP(S) 网页并做 SSRF 防护，对本地文件会直接报错（无法解析主机名/被拦截）；本地文件内容用 `read_file` 读取，本地页面渲染验证**必须走浏览器自动化**，不要用 fetch_page 反复重试本地路径。\n' +
     '- 若浏览器工具不在上方工具列表（按需激活），直接用 `{"server":"浏览器自动化","tool":"puppeteer_navigate",...}` 调用即可，系统会自动连接浏览器。\n' +
     "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
     "- **操作顺序**：先用 puppeteer_navigate 打开目标页面 → 等渲染完成 → 再 puppeteer_fill 输入 / puppeteer_click 点击 / puppeteer_evaluate 提取 / puppeteer_screenshot 截图。**不要跳过导航直接尝试输入或点击**（没打开页面无从操作）。\n" +
@@ -562,6 +563,39 @@ let browserNavigated = false;
 /// plan_task 建计划时重置为 false；调用实际工具（callMcpTool 非 plan_*）时置 true。
 /// 供 plan_update 拒绝「还没干活就把待办步骤标完成」——杜绝计划卡片秒变全部完成。
 let planRealWork = false;
+/// P-A6 步骤健康护栏：记录“正在执行哪一步”（plan_update doing 后）及该步内真实工作工具
+/// 的成败，供 plan_update 拒绝「该步工具全部失败却标 done」——防止工具失败后假装完成。
+let curStepForTools = -1; // 0-based；-1 = 未在执行任何具体步骤
+const stepToolOk = new Map<number, number>();
+const stepToolFail = new Map<number, number>();
+/** 真实工作工具执行结果计入当前执行步骤的健康计数（plan_* 可视化不算） */
+function noteToolOutcome(tool: string, ok: boolean) {
+  if (curStepForTools < 0 || !isRealWorkTool(tool)) return;
+  const map = ok ? stepToolOk : stepToolFail;
+  map.set(curStepForTools, (map.get(curStepForTools) ?? 0) + 1);
+}
+/** 某步开始执行（doing）：清空该步历史成败并设为当前步骤 */
+function beginStepHealth(step: number) {
+  curStepForTools = step;
+  stepToolOk.delete(step);
+  stepToolFail.delete(step);
+}
+/** 某步结束（done/failed）：退出该步执行窗口并清其计数 */
+function endStepHealth(step: number) {
+  stepToolOk.delete(step);
+  stepToolFail.delete(step);
+  if (curStepForTools === step) curStepForTools = -1;
+}
+/** 新计划 / 清空计划：复位步骤健康 */
+function resetPlanHealth() {
+  curStepForTools = -1;
+  stepToolOk.clear();
+  stepToolFail.clear();
+}
+/** 该步执行过真实工具但全部失败（成功 0 次、失败 ≥1 次） */
+function stepToolsAllFailed(step: number): boolean {
+  return (stepToolOk.get(step) ?? 0) === 0 && (stepToolFail.get(step) ?? 0) > 0;
+}
 /// 浏览器尚未导航就执行页面操作（fill/click/…）时抛出的错误——在浏览器串行锁内判定，
 /// 由 callMcpTool 捕获转成友好提示返回（保持原有行为，只是把判定移进锁内，以正确看到
 /// 队列中前一个 navigate 执行后的真实状态，避免并行子代理时误判「未打开网页」）。
@@ -1777,6 +1811,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         createdAt: Date.now(),
       };
       planRealWork = false; // 新计划刚建立，尚未执行任何实际操作
+      resetPlanHealth(); // 新计划：清空上一计划的步骤健康状态
       chat.setTaskPlan(plan);
       return (
         "✅ 已创建任务计划「" +
@@ -1813,6 +1848,23 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
             "（如 list_dir/read_file/write_file/run_command/web_search 等）完成对应工作后，" +
             "再把它标记为 done。",
         );
+      }
+      // P-A6 步骤健康护栏：该步工具**全部执行失败**（成功 0 次）却要标 done → 拒绝，
+      // 防「工具失败后把步骤标完成」的假完成（例如验证截图没做成仍宣称该步完成）
+      if (status === "done" && stepToolsAllFailed(stepIdx)) {
+        throw new Error(
+          `plan_update 想把第 ${stepIdx + 1} 步「${plan.steps[stepIdx].text}」标记完成，` +
+            "但该步骤调用的工具全部执行失败（成功 0 次），说明工作并未真正完成，不能标 done。\n" +
+            "请先用 plan_update 把该步标回 doing，修正参数/换用正确工具真正执行成功后，再把它标为 done" +
+            "（提示：本地页面渲染验证用浏览器自动化 puppeteer_* 打开后 puppeteer_screenshot 截图；" +
+            "读取本地文件用 read_file；fetch_page 只能抓取 http(s) 网页）。若该步确实无法完成，请标 failed 并说明原因。",
+        );
+      }
+      // 执行窗口：doing = 开始记录该步内工具成败；done/failed = 退出该步窗口（清计数）
+      if (status === "doing") {
+        beginStepHealth(stepIdx);
+      } else if (status === "done" || status === "failed") {
+        endStepHealth(stepIdx);
       }
       plan.steps[stepIdx].status = status as PlanStepStatus;
       chat.setTaskPlan({ ...plan }); // 触发响应式更新
@@ -2674,6 +2726,7 @@ export const useChatStore = defineStore("chat", () => {
   const taskPlan = ref<TaskPlan | null>(null);
   function setTaskPlan(plan: TaskPlan | null) {
     taskPlan.value = plan;
+    if (!plan) resetPlanHealth(); // 清空计划：同时复位步骤健康状态（P-A6）
   }
 
   // 缓存命中统计（DeepSeek usage.prompt_cache_hit/miss_tokens）
@@ -4223,6 +4276,7 @@ export const useChatStore = defineStore("chat", () => {
           try {
             const result = await callToolStoppable(server, tool, args);
             if (stopRequested) break;
+            noteToolOutcome(tool, true); // 计入当前执行步骤的成功计数
             const clipped = formatToolResultPreview(tool, result);
             const card =
               `### 🔧 调用工具：\`${tool}\`\n\n` +
@@ -4251,6 +4305,7 @@ export const useChatStore = defineStore("chat", () => {
             if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环
             const err = e instanceof Error ? e.message : String(e);
             dbg(`[tool-native] ${tool} 执行失败: ${err}`);
+            noteToolOutcome(tool, false); // 计入当前执行步骤的失败计数
             const card = `> ❌ 工具调用失败: \`${err}\``;
             toolChain.push(card);
             toolCards.push({
@@ -4494,6 +4549,7 @@ export const useChatStore = defineStore("chat", () => {
           // 用户停止时立即中断（不等当前工具跑完），让「停止」即刻生效
           const result = await callToolStoppable(toolServer, tc.tool, tc.arguments);
           if (stopRequested) break; // 工具返回后被停止 → 不再回填继续下一轮
+          noteToolOutcome(tc.tool, true); // 计入当前执行步骤的成功计数
           dbg(
             `[tool] ${tc.tool} 执行成功，结果长度=${result.length}，耗时=${Date.now() - startTool}ms`,
           );
@@ -4529,6 +4585,7 @@ export const useChatStore = defineStore("chat", () => {
           if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环，不当作工具失败
           const err = e instanceof Error ? e.message : String(e);
           dbg(`[tool] ${tc.tool} 执行失败: ${err}`);
+          noteToolOutcome(tc.tool, false); // 计入当前执行步骤的失败计数
           const card = `> ❌ 工具调用失败: \`${err}\``;
           toolChain.push(card);
           toolCards.push({
@@ -4708,6 +4765,7 @@ export const useChatStore = defineStore("chat", () => {
       conv.updatedAt = Date.now();
     }
     taskPlan.value = null; // 新对话清空任务计划
+    resetPlanHealth(); // 复位步骤健康状态（P-A6）
   }
 
   // 重试：移除最后一条 AI 回复，重新发送上一条用户消息

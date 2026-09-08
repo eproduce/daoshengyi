@@ -4859,6 +4859,11 @@ fn ssrf_policy(db: &Database) -> ssrf::SsrfPolicy {
 #[tauri::command]
 async fn fetch_page(db: State<'_, Database>, url: String) -> Result<PageContent, String> {
     eprintln!("[fetch_page] 请求: {}", url);
+    // 非 HTTP(S)/本地 file 快速引导：fetch_page 只抓网页正文；本地文件/渲染验证请走
+    // read_file / 浏览器自动化——避免晦涩的“无法解析 URL 主机名”让 agent 反复用错姿势重试
+    if let Some(hint) = ssrf::unsupported_scheme_hint(&url) {
+        return Err(hint);
+    }
     // O2 SSRF 防护：URL 由 agent/用户提供，先按策略拦截内网/保留地址（命中返回明确错误）
     ssrf::check_url(&url, &ssrf_policy(&db))?;
     let client = reqwest::Client::builder()
