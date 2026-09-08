@@ -11,6 +11,7 @@ import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
 import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
 import { MODES } from "@/data/modes-catalog";
+import { PERSONAS } from "@/data/personas-catalog";
 
 const chatStore = useChatStore();
 
@@ -43,6 +44,12 @@ const reasoningRef = ref<HTMLDivElement>();
 const modeDropdownRef = ref<HTMLDivElement>();
 // 当前 Agent 模式（§3.11：对话/任务/办公/研究/编码/速答）
 const currentMode = computed(() => MODES.find((m) => m.id === chatStore.activeModeId) || MODES[0]);
+// 角色/人设（原在顶栏右上，整合到底部输入工具栏、与「模式」相邻）
+const showPersonaDropdown = ref(false);
+const personaDropdownRef = ref<HTMLDivElement>();
+const currentPersona = computed(
+  () => PERSONAS.find((p) => p.id === chatStore.activePersonaId),
+);
 // 模式记忆（Phase B）：各模式使用频次（下拉显示「常用 ×N」）
 const modeHist = computed(() => chatStore.readModeHist());
 
@@ -243,6 +250,13 @@ function onDocClick(e: MouseEvent) {
   }
   if (showModeDropdown.value && modeDropdownRef.value && !modeDropdownRef.value.contains(t)) {
     showModeDropdown.value = false;
+  }
+  if (
+    showPersonaDropdown.value &&
+    personaDropdownRef.value &&
+    !personaDropdownRef.value.contains(t)
+  ) {
+    showPersonaDropdown.value = false;
   }
 }
 
@@ -757,6 +771,62 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span>{{ chatStore.activeProfile?.enableWebSearch ? "联网" : "离线" }}</span>
         </button>
 
+        <!-- 角色/人设（原在顶栏右上 → 整合到底部工具栏，与「模式」相邻） -->
+        <div class="ci-tool-group">
+          <button
+            class="ci-pill"
+            :class="{ active: chatStore.activePersonaId !== '' }"
+            title="切换角色 / 人设"
+            @click.stop="showPersonaDropdown = !showPersonaDropdown"
+          >
+            <span>{{ currentPersona ? `${currentPersona.emoji} ${currentPersona.name}` : "🧑 通用助手" }}</span>
+            <svg
+              class="ci-chev"
+              width="8"
+              height="8"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <div
+            v-if="showPersonaDropdown"
+            ref="personaDropdownRef"
+            class="ci-drop ci-drop-sm ci-drop-personas"
+            @click.stop
+          >
+            <div
+              v-for="p in PERSONAS"
+              :key="p.id"
+              class="ci-drop-item"
+              :class="{ on: chatStore.activePersonaId === p.id }"
+              @click="
+                chatStore.setPersona(p.id);
+                showPersonaDropdown = false;
+              "
+            >
+              <span class="ci-drop-name"
+                >{{ p.emoji }} {{ p.name
+                }}<span class="ci-drop-cat">{{ p.category }}</span></span
+              >
+              <span class="ci-drop-desc">{{ p.description }}</span>
+              <span v-if="chatStore.activePersonaId === p.id" class="ci-drop-check">✓</span>
+            </div>
+            <div
+              class="ci-drop-foot"
+              @click="
+                chatStore.setPersona('');
+                showPersonaDropdown = false;
+              "
+            >
+              通用助手（关闭角色）
+            </div>
+          </div>
+        </div>
+
         <!-- Agent 模式（§3.11：对话/任务/办公/研究/编码/速答） -->
         <div class="ci-tool-group">
           <button
@@ -1243,6 +1313,17 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
   min-width: 230px;
   max-height: 320px;
   overflow-y: auto;
+}
+.ci-drop-personas {
+  min-width: 250px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.ci-drop-cat {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  font-weight: 400;
 }
 .ci-drop-modes .ci-drop-item {
   display: grid;

@@ -11,7 +11,6 @@ import WorkflowDialog from "./components/WorkflowDialog.vue";
 import DiffConfirmDialog from "./components/DiffConfirmDialog.vue";
 import UndoHistoryDialog from "./components/UndoHistoryDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
-import { PERSONAS } from "./data/personas-catalog";
 import { useChatStore } from "./stores/chat";
 import { useOllamaStore } from "./stores/ollama";
 import { useUiStore, type SettingsTab } from "./stores/ui";
@@ -167,9 +166,6 @@ function handleSend(text: string, images: ImageAttachment[], files: FileAttachme
   );
 }
 
-function onPersonaChange(e: Event) {
-  chatStore.setPersona((e.target as HTMLSelectElement).value);
-}
 
 // 导出对话
 function exportMarkdown() {
@@ -245,17 +241,6 @@ onUnmounted(() => {
           <h1 class="topbar__title">道生一</h1>
         </div>
         <div class="topbar__right">
-          <select
-            class="topbar__persona"
-            :value="chatStore.activePersonaId"
-            title="切换人格 / 对话角色"
-            @change="onPersonaChange"
-          >
-            <option value="">🧑 通用助手</option>
-            <option v-for="p in PERSONAS" :key="p.id" :value="p.id">
-              {{ p.emoji }} {{ p.name }}
-            </option>
-          </select>
           <div
             v-if="chatStore.usageAggTotal > 0"
             class="topbar__stats"
@@ -521,36 +506,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.topbar__persona {
-  appearance: none;
-  -webkit-appearance: none;
-  height: 28px;
-  padding: 0 26px 0 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
-  background-color: var(--bg-secondary);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1;
-  font-family: inherit;
-  cursor: pointer;
-  outline: none;
-  max-width: 160px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar__persona:focus {
-  border-color: var(--accent-color);
-}
-.topbar__persona option {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
 }
 
 .topbar__stats {
