@@ -4161,6 +4161,20 @@ export const useChatStore = defineStore("chat", () => {
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
         let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
 
+        // 空闲超时（替代旧的“固定总时长 120s”）：旧实现从请求发起算 120 秒总时长，
+        // 长思考/大输出（单轮十几万 token 思考 + 持续推流）会超 120s 被误杀，
+        // 表现就是反复“回复生成中断: 模型回复超时（120 秒）”。
+        // 现在改为：只有「连续 IDLE_TIMEOUT_MS 收不到任何本轮数据」才判超时——
+        // 模型在正常吐 token / 返回工具调用就永不中断；真卡死（网络停摆/服务端无响应）仍能兜底。
+        const IDLE_TIMEOUT_MS = 120000;
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        const armIdleTimeout = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            rejectDone(new Error(`模型回复超时（${IDLE_TIMEOUT_MS / 1000} 秒无响应）`));
+          }, IDLE_TIMEOUT_MS);
+        };
+
         roundUnlisten.push(
           await listen<{
             request_id?: string;
@@ -4172,6 +4186,8 @@ export const useChatStore = defineStore("chat", () => {
           }>("sse-delta", (e) => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return; // 忽略其他请求的事件
             const d = e.payload;
+            // 有数据到达 → 模型活跃，重置空闲超时（避免长回复被“总时长”误杀）
+            if (d.reasoning_content || d.content) armIdleTimeout();
             if (d.reasoning_content) {
               streamingReasoning.value += d.reasoning_content;
               reasoningBuffer += d.reasoning_content;
@@ -4226,6 +4242,7 @@ export const useChatStore = defineStore("chat", () => {
             tool_calls?: NativeToolCallMsg[];
           }>("sse-tool-calls", (e) => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return;
+            armIdleTimeout(); // 收到模型返回的工具调用 → 仍活跃，重置空闲超时
             if (e.payload.tool_calls && e.payload.tool_calls.length > 0) {
               nativeCalls = e.payload.tool_calls;
               dbg(
@@ -4264,15 +4281,16 @@ export const useChatStore = defineStore("chat", () => {
         // doneP 加超时兜底：若 Rust 流式一直不返回（网络卡死），超时抛错进入外层 catch，
         // 确保 finally 一定执行、气泡不会卡死成空泡泡；
         // 无论正常结束还是抛错，都要移除本轮监听，避免事件监听泄漏
+        // 首次武装空闲超时：真正“卡死无响应”（从发起起连续 IDLE 秒一个字节都没有）
+        // 才会中断；此后每收到一个 delta/tool_calls 都会重置 → 正常长回复永不误杀。
+        armIdleTimeout();
         try {
           await Promise.race([
             doneP,
             waitStopSignal(), // 用户停止 → 提前结束本轮流式（工具循环随后 break）
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("模型回复超时（120 秒）")), 120000),
-            ),
           ]);
         } finally {
+          if (idleTimer) clearTimeout(idleTimer);
           roundUnlisten.forEach((f) => f());
         }
         // 原生模式兜底：模型若没走原生 tool_calls、却在正文手写了完整 <tool_call>
