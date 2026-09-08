@@ -725,9 +725,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .bottom-dock__body {
   max-width: min(100% - 16px, 1400px);
   margin: 0 auto;
-  max-height: 44vh;
+  /* 任务 / 子代理两 tab 展开高度一致（固定统一高度，切换不跳变）；内容多时在内部滚动 */
+  height: clamp(120px, 36vh, 380px);
   overflow-y: auto;
-  padding-bottom: 4px;
+  overscroll-behavior: contain;
+  padding: 2px 0 6px;
 }
 .bottom-dock__empty {
   padding: 8px;
