@@ -101,6 +101,64 @@ let mcpToolsCache: {
 }[] = [];
 let mcpToolsRefreshing: Promise<void> | null = null;
 
+/// 浏览器自动化（server-puppeteer）常用工具占位定义。
+/// 原生 function calling 会话里，若浏览器服务器「已启用但未连接」，其工具不在 mcpToolsCache
+/// → 注册表没有 puppeteer_* 函数名，模型发不出合法原生调用，只能退化成 osascript + screencapture
+/// 全屏截图 + describe_image 等绕路（截到无关画面、本地视觉模型输出荒谬 → 卡在“渲染核验”）。
+/// 这里把标准 puppeteer 工具预置进注册表；模型原生调用时 callMcpTool 命中「按需激活」分支
+/// 自动连接真实浏览器服务器——与文本模式的按需激活流一致。
+const BROWSER_TOOL_STUBS: { name: string; desc: string }[] = [
+  {
+    name: "puppeteer_navigate",
+    desc: '在本地浏览器打开并加载一个网页（自动等待网络空闲 networkidle2）。参数 {"url": "http(s)://完整网址"}。本地生成的 HTML 可先 run_command 起本地 http.server 再访问。',
+  },
+  {
+    name: "puppeteer_fill",
+    desc: '在页面输入框填入文本（触发输入事件）。参数 {"selector": "CSS 选择器", "value": "要输入的文本"}。',
+  },
+  {
+    name: "puppeteer_click",
+    desc: '点击页面元素。参数 {"selector": "CSS 选择器"}。',
+  },
+  {
+    name: "puppeteer_hover",
+    desc: '悬停页面元素。参数 {"selector": "CSS 选择器"}。',
+  },
+  {
+    name: "puppeteer_select",
+    desc: '选择下拉框选项。参数 {"selector": "CSS 选择器", "value": "选项值"}。',
+  },
+  {
+    name: "puppeteer_evaluate",
+    desc: '在页面执行 JS 并返回结果（如 document.body.innerText 提取渲染后文本，最可靠）。参数 {"function": "JS 函数体字符串"}。',
+  },
+  {
+    name: "puppeteer_screenshot",
+    desc: "对当前页面截图并保存到本地，返回可点击的图片路径（用于视觉核验渲染效果）。",
+  },
+];
+/** 存在“已启用但未连接”的浏览器服务器时，返回其未入缓存的 puppeteer 占位工具，
+ *  供原生注册表预置，让模型能原生触发按需激活、真正驱动浏览器（而非绕路截屏）。 */
+function browserStubTools(): {
+  server: string;
+  name: string;
+  description: string;
+  kind: "mcp";
+}[] {
+  const mcp = useMcpStore();
+  const pending = mcp.servers.find(
+    (s) => s.enabled && !s.connected && isBrowserServer(s.name, s.command),
+  );
+  if (!pending) return [];
+  const cached = new Set(mcpToolsCache.map((t) => t.name));
+  return BROWSER_TOOL_STUBS.filter((s) => !cached.has(s.name)).map((s) => ({
+    server: pending.name,
+    name: s.name,
+    description: s.desc,
+    kind: "mcp" as const,
+  }));
+}
+
 // --- Agent 多模式（§3.11）：当前模式 id。模块级定义（供模块级 callMcpTool 做工具白名单拦截），
 // store 内 setMode 同步写入 localStorage。模式=行为约束提示词 + 工具白名单（modes-catalog）。 ---
 const MODE_KEY = "daoshengyi_mode";
@@ -521,6 +579,7 @@ function getMcpToolsPrompt(): string {
     "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
     "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
     "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（默认 ~/Pictures/道生一截图/daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
+    "- **不要用 screencapture 全屏截图来核验网页**（会截到无关画面，还依赖窗口置顶）；渲染核验用 puppeteer_screenshot 截当前页面。本地视觉模型（describe_image/ocr_image）对复杂页面截图偶尔会输出与图片无关的乱码/幻觉描述——**不要仅凭一段离谱的描述就判定渲染失败**；应以 puppeteer_screenshot 的保存路径给用户查看为准，必要时用 puppeteer_evaluate 读 document.body.innerText 交叉验证。\n" +
     "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
     '\n需要工具时只回复以下格式：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>' +
     "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。"
@@ -3778,13 +3837,18 @@ export const useChatStore = defineStore("chat", () => {
       if (!nativeDisabled && supportsNativeTools(config.baseUrl || "")) {
         nativeRegistry = buildNativeToolRegistry({
           builtins: BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc })),
-          mcp: mcpToolsCache.map((t) => ({
-            server: t.server,
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-            kind: "mcp",
-          })),
+          // 已连接 MCP 工具 + 已启用但未连接浏览器的 puppeteer 占位（保证原生能看到
+          // 浏览器自动化函数名，调用时按需激活连接）
+          mcp: [
+            ...mcpToolsCache.map((t) => ({
+              server: t.server,
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+              kind: "mcp" as const,
+            })),
+            ...browserStubTools(),
+          ],
         });
       }
       // 传入 streamRound 的 tools 数组（null=关闭原生，走文本 <tool_call>）
