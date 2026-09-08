@@ -2048,7 +2048,7 @@ async fn im_start(
     let adapter = im::build_adapter(&cfg)?;
     let reply: std::sync::Arc<dyn im::ReplyGenerator> =
         std::sync::Arc::new(LlmReplyGen { app_dir });
-    let mut gateway = im::ImGateway::new(cfg, adapter, reply, gw_state.clone());
+    let mut gateway = im::ImGateway::new(cfg, adapter, reply, gw_state.clone()).with_app(app);
     let handle = tauri::async_runtime::spawn(async move { gateway.run().await });
     *IM_GATEWAY_HANDLE
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -2083,6 +2083,58 @@ async fn im_status(
     state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
 ) -> Result<im::ImStatus, String> {
     Ok(state.inner().lock().await.snapshot())
+}
+
+/// O5 配对审批：列出待审批的新会话（白名单非空时由网关登记）
+#[tauri::command]
+async fn im_pending_pairs(
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+) -> Result<Vec<im::PendingPair>, String> {
+    Ok(state.inner().lock().await.pending.clone())
+}
+
+/// O5 配对审批：批准某会话——加入运行期 approved（网关立即生效）+ 持久化进配置
+/// im_config.whitelist（下次启动仍生效）。
+#[tauri::command]
+async fn im_pair_approve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+    chat_id: String,
+) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = db::Database::new(app_dir.clone()).map_err(|e| e.to_string())?;
+    let cipher = settings::SecretCipher::new(&app_dir)?;
+    let json = db.get_setting(SETTINGS_KEY)?.unwrap_or_default();
+    let mut settings: settings::AppSettings =
+        serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
+    cipher.decrypt_settings(&mut settings)?;
+    let mut cfg: im::ImConfig =
+        serde_json::from_value(settings.im_config.clone()).unwrap_or_default();
+    if !cfg.whitelist.iter().any(|w| w == &chat_id) {
+        cfg.whitelist.push(chat_id.clone());
+        settings.im_config = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+        cipher.encrypt_settings(&mut settings)?;
+        let out = serde_json::to_string(&settings).map_err(|e| format!("序列化设置失败: {}", e))?;
+        db.set_setting(SETTINGS_KEY, &out)?;
+    }
+    {
+        let mut g = state.inner().lock().await;
+        g.approve_chat(&chat_id);
+        g.push_log(format!("✅ 已批准会话：{}", chat_id));
+    }
+    Ok(())
+}
+
+/// O5 配对审批：拒绝某会话（仅移除待审批，不入白名单）
+#[tauri::command]
+async fn im_pair_decline(
+    state: tauri::State<'_, std::sync::Arc<tokio::sync::Mutex<im::ImGatewayState>>>,
+    chat_id: String,
+) -> Result<(), String> {
+    let mut g = state.inner().lock().await;
+    g.remove_pending(&chat_id);
+    g.push_log(format!("⛔ 已拒绝会话：{}", chat_id));
+    Ok(())
 }
 
 /// O6 安全审计自检：doctor 式核查 execpolicy 兜底 / 路径白名单 / 密钥权限 /
@@ -5745,6 +5797,9 @@ pub fn run() {
             im_start,
             im_stop,
             im_status,
+            im_pending_pairs,
+            im_pair_approve,
+            im_pair_decline,
             read_file,
             open_file,
             file_exists,

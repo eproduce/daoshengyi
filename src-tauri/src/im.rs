@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::Mutex;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
@@ -135,6 +136,36 @@ pub struct ImMessageLog {
     pub reply: String,
 }
 
+/// O5 配对审批：一条待审批的新会话（白名单非空时，未知 chat_id 进入待审批队列）
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingPair {
+    pub chat_id: String,
+    pub sender: String,
+    pub code: String, // 6 位配对码（展示用，本地审批标识）
+    pub ts: u64,
+}
+
+/// O5 配对码：6 位数字（零填充）。由 (chat_id + sender + 时间戳) 哈希取模生成，
+/// 仅作本地审批展示/标识（桌面端确认用），不用于远端鉴权。
+pub fn pair_code_for(chat_id: &str, sender: &str, ts: u64) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    chat_id.hash(&mut h);
+    sender.hash(&mut h);
+    ts.hash(&mut h);
+    format!("{:06}", h.finish() % 1_000_000)
+}
+
+/// O5 判定某会话是否已获准：空白名单 = 不限制（放行）；否则要求命中
+/// 配置白名单（cfg.whitelist）∪ 运行期已批准（approved）。纯函数便于单测。
+pub fn is_im_allowed(whitelist: &[String], approved: &[String], chat_id: &str) -> bool {
+    if whitelist.is_empty() {
+        return true;
+    }
+    whitelist.iter().any(|w| w == chat_id) || approved.iter().any(|a| a == chat_id)
+}
+
 /// 网关共享状态（Arc<Mutex> 供前端查询）
 #[derive(Debug, Default)]
 pub struct ImGatewayState {
@@ -145,6 +176,10 @@ pub struct ImGatewayState {
     pub handled: usize,
     pub logs: VecDeque<String>,
     pub messages: VecDeque<ImMessageLog>,
+    /// O5 配对审批：待审批的新会话（未知 chat_id）
+    pub pending: Vec<PendingPair>,
+    /// O5 运行期已批准 chat_id（approve 后网关立即生效；同时持久化进配置 whitelist）
+    pub approved: Vec<String>,
 }
 
 impl ImGatewayState {
@@ -163,6 +198,29 @@ impl ImGatewayState {
         self.messages.push_back(m);
         if self.messages.len() > 100 {
             self.messages.pop_front();
+        }
+    }
+    /// O5：登记待审批会话（同 chat 已存在则忽略，防刷）
+    pub fn add_pending(&mut self, chat_id: &str, sender: &str, code: String) {
+        if self.pending.iter().any(|p| p.chat_id == chat_id) {
+            return;
+        }
+        self.pending.push(PendingPair {
+            chat_id: chat_id.to_string(),
+            sender: sender.to_string(),
+            code,
+            ts: now_ms(),
+        });
+    }
+    /// O5：移除待审批会话
+    pub fn remove_pending(&mut self, chat_id: &str) {
+        self.pending.retain(|p| p.chat_id != chat_id);
+    }
+    /// O5：批准会话（清除待审批 + 记入运行期 approved，网关立即生效）
+    pub fn approve_chat(&mut self, chat_id: &str) {
+        self.remove_pending(chat_id);
+        if !self.approved.iter().any(|a| a == chat_id) {
+            self.approved.push(chat_id.to_string());
         }
     }
     pub fn snapshot(&self) -> ImStatus {
@@ -190,6 +248,8 @@ pub struct ImGateway {
     adapter: Box<dyn ImAdapter>,
     reply: Arc<dyn ReplyGenerator>,
     state: Arc<Mutex<ImGatewayState>>,
+    /// O5：桌面端 AppHandle（None=无前端可通知，如单元测试；仅用于发射配对确认事件）
+    app: Option<tauri::AppHandle>,
     seen: HashSet<String>,
     history: HashMap<String, VecDeque<(String, String)>>,
     last_reply_at: HashMap<String, u64>,
@@ -217,10 +277,17 @@ impl ImGateway {
             adapter,
             reply,
             state,
+            app: None,
             seen: HashSet::new(),
             history: HashMap::new(),
             last_reply_at: HashMap::new(),
         }
+    }
+
+    /// 绑定桌面端 AppHandle（用于发射「配对审批」确认事件到前端）。
+    pub fn with_app(mut self, app: tauri::AppHandle) -> Self {
+        self.app = Some(app);
+        self
     }
 
     /// 网关主循环（后台任务）：持续拉取并处理消息
@@ -261,11 +328,45 @@ impl ImGateway {
         if self.seen.len() > 20000 {
             self.seen.clear();
         }
-        // 2. 白名单（chat_id）
-        if !self.cfg.whitelist.is_empty() && !self.cfg.whitelist.contains(&m.chat_id) {
-            let mut st = self.state.lock().await;
-            st.push_log(format!("⏭ 忽略非白名单会话：{}", m.chat_id));
-            return;
+        // 2. 白名单（chat_id）+ O5 配对审批：白名单非空且该会话未知时，不直接忽略，
+        //    而是登记「待审批」并发桌面端确认事件（ImGatewayPanel 监听 → askConfirm →
+        //    im_pair_approve 批准后入白名单）；审批前不调 LLM、不回复正文。
+        if !self.cfg.whitelist.is_empty() {
+            let (allowed, already_pending) = {
+                let st = self.state.lock().await;
+                (
+                    is_im_allowed(&self.cfg.whitelist, &st.approved, &m.chat_id),
+                    st.pending.iter().any(|p| p.chat_id == m.chat_id),
+                )
+            };
+            if !allowed {
+                if !already_pending {
+                    let code = pair_code_for(&m.chat_id, &m.sender, now_ms());
+                    {
+                        let mut st = self.state.lock().await;
+                        st.add_pending(&m.chat_id, &m.sender, code.clone());
+                        st.push_log(format!(
+                            "🔐 新会话待审批：{}（{}）code={}",
+                            m.chat_id, m.sender, code
+                        ));
+                    }
+                    // 桌面端审批确认事件（前端 askConfirm → im_pair_approve / im_pair_decline）
+                    if let Some(app) = &self.app {
+                        let _ = app.emit(
+                            "im-pair-request",
+                            serde_json::json!({
+                                "chat_id": m.chat_id,
+                                "sender": m.sender,
+                                "code": code,
+                            }),
+                        );
+                    }
+                    // 给发送者回一条引导（尽力而为，失败不阻塞）
+                    let hint = "🔐 新会话待审批：已在「道生一」桌面端弹出确认，批准后即可与我对话。";
+                    let _ = self.adapter.send_message(&m.chat_id, hint).await;
+                }
+                return;
+            }
         }
         // 3. 触发前缀
         let text = if !self.cfg.trigger.is_empty() {
@@ -1222,5 +1323,51 @@ mod tests {
         assert_eq!(j["errcode"].as_i64(), Some(0));
         assert_eq!(j["access_token"].as_str(), Some("TOKEN123"));
         let _ = client;
+    }
+
+    #[test]
+    fn pair_code_is_six_digits_and_differs() {
+        let c1 = pair_code_for("chatA", "sender1", 111);
+        let c2 = pair_code_for("chatA", "sender1", 112);
+        assert_eq!(c1.len(), 6, "配对码应为 6 位");
+        assert!(c1.chars().all(|ch| ch.is_ascii_digit()));
+        assert_ne!(c1, c2, "时间戳不同应产生不同码");
+    }
+
+    #[test]
+    fn is_im_allowed_checks_whitelist_and_approved() {
+        let wl = vec!["c1".to_string()];
+        let ap = vec!["c2".to_string()];
+        assert!(is_im_allowed(&wl, &ap, "c1"));
+        assert!(is_im_allowed(&wl, &ap, "c2")); // 运行期已批准
+        assert!(!is_im_allowed(&wl, &ap, "c3"));
+        // 白名单空 = 不限制（调用方在空白名单时不会走到该判定）
+        assert!(is_im_allowed(&[], &[], "anything"));
+    }
+
+    #[test]
+    fn gateway_unknown_chat_registers_pending_and_does_not_handle() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut cfg = cfg();
+            cfg.whitelist = vec!["c1".into()];
+            let adapter = Box::new(MockAdapter::new(vec![]));
+            let reply: Arc<dyn ReplyGenerator> = Arc::new(MockReply { ans: "x".into() });
+            let state = Arc::new(Mutex::new(ImGatewayState::default()));
+            // 不绑定 AppHandle（None），事件发射走守卫跳过
+            let mut gw = ImGateway::new(cfg, adapter, reply, state.clone());
+            gw.handle(ImMessage {
+                id: "b".into(),
+                chat_id: "c2".into(),
+                sender: "u".into(),
+                text: "hi".into(),
+            })
+            .await;
+            let st = state.lock().await;
+            assert_eq!(st.handled, 0, "未知会话不应被当作正常消息回复");
+            assert_eq!(st.pending.len(), 1, "未知会话应进入待审批队列");
+            assert_eq!(st.pending[0].chat_id, "c2");
+            assert_eq!(st.pending[0].code.len(), 6);
+        });
     }
 }
