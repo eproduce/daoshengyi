@@ -278,7 +278,7 @@ pub struct ChatOnceResult {
 fn extract_message_tool_calls(json: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
     json["choices"][0]["message"]["tool_calls"]
         .as_array()
-        .map(|a| a.clone())
+        .cloned()
         .filter(|a| !a.is_empty())
 }
 

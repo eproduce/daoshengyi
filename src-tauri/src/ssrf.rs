@@ -10,7 +10,7 @@
 //!
 //! 本模块尽量保持纯函数 + 同步判定，便于离线单测；DNS 解析只在域名场景发生。
 
-use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// SSRF 策略
 #[derive(Debug, Clone)]
@@ -48,17 +48,6 @@ pub fn is_private_ip(ip: &str) -> bool {
             || ipv6_is_link_local(&v6)
             || v6.is_unspecified()
             || v6.is_multicast();
-    }
-    false
-}
-
-/// 环回 / 链路本地 / 未指定：即使命中 allow_private_hosts 也不放行的最危险段
-fn is_loopback_or_link_local(ip: &str) -> bool {
-    if let Ok(v4) = ip.parse::<Ipv4Addr>() {
-        return v4.is_loopback() || v4.is_link_local() || v4.is_unspecified();
-    }
-    if let Ok(v6) = ip.parse::<Ipv6Addr>() {
-        return v6.is_loopback() || ipv6_is_link_local(&v6) || v6.is_unspecified();
     }
     false
 }
@@ -123,6 +112,24 @@ pub fn unsupported_scheme_hint(url: &str) -> Option<String> {
     None
 }
 
+/// 域名是否属于“内网形态”（无需解析也应拦）：单标签主机名（localhost/router/nas…）、
+/// 明确私有/内网后缀（.local/.internal/.lan/.corp/.home.arpa/.localhost）与云元数据域名。
+/// 判定只看 hostname 形态、不依赖系统 DNS——本地代理/翻墙工具常把公网域名解析成
+/// 内网/fake-ip（如 127.0.0.1），若按“解析后 IP”拦截会误伤几乎所有正常网站。
+fn is_internal_hostname(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_lowercase();
+    if !h.contains('.') {
+        return true; // 单标签 = 内网主机名（localhost / router / nas 等）
+    }
+    const INTERNAL_SUFFIXES: [&str; 6] = [
+        ".local", ".internal", ".lan", ".corp", ".home.arpa", ".localhost",
+    ];
+    if INTERNAL_SUFFIXES.iter().any(|s| h.ends_with(s)) {
+        return true;
+    }
+    h == "metadata.google.internal" || h.ends_with(".metadata.google.internal")
+}
+
 /// 主入口：对完整 URL 做 SSRF 判定。通过返回 Ok；命中内网/保留地址返回 Err（含明确原因）。
 pub fn check_url(url: &str, policy: &SsrfPolicy) -> Result<(), String> {
     let host = extract_host(url).ok_or_else(|| {
@@ -132,32 +139,28 @@ pub fn check_url(url: &str, policy: &SsrfPolicy) -> Result<(), String> {
     if !policy.deny_private {
         return Ok(());
     }
-    // 完全白名单：命中即放行（即使解析到私有地址）
+    // 完全白名单：命中即放行
     if host_match(&host, &policy.allow_hosts) {
         return Ok(());
     }
-    // 收集目标 IP：host 本身就是 IP 字面量则直接用；域名则做一次 DNS 解析再按 IP 校验
-    let ips: Vec<String> = if host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok() {
-        vec![host.clone()]
-    } else {
-        match (host.as_str(), 0u16).to_socket_addrs() {
-            Ok(addrs) => addrs.map(|a| a.ip().to_string()).collect(),
-            // 解析失败（NXDOMAIN 等）：请求本身会失败，不在此误拦
-            Err(_) => return Ok(()),
-        }
-    };
-    if ips.is_empty() {
-        return Ok(());
-    }
-    // allow_private_hosts 命中：允许私有地址，但环回/链路本地/未指定仍拦
-    let allow_private = host_match(&host, &policy.allow_private_hosts);
-    if allow_private {
-        if ips.iter().any(|ip| is_loopback_or_link_local(ip)) {
+    let is_ip = host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok();
+    if is_ip {
+        // IP 字面量：直接按私有/保留段拦截（SSRF 主要威胁面：直连内网/云元数据）
+        if is_private_ip(&host) {
             return Err(block_msg(&host));
         }
         return Ok(());
     }
-    if ips.iter().any(|ip| is_private_ip(ip)) {
+    // 域名：仅对“内网形态”主机名拦截；普通公网域名一律放行（不做系统 DNS 解析后 IP
+    // 校验——否则本地代理 fake-ip/DNS 改写会把正常网站误判成内网，表现为“很多网站被
+    // 定义成内网”，导致 fetch_page 抓取权威站点全被拦）。
+    if is_internal_hostname(&host) {
+        // allow_private_hosts：可放行内网形态，但 localhost（环回）等最危险仍拦
+        if host_match(&host, &policy.allow_private_hosts)
+            && !(host == "localhost" || host.starts_with("localhost."))
+        {
+            return Ok(());
+        }
         return Err(block_msg(&host));
     }
     Ok(())
