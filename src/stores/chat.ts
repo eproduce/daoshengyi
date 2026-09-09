@@ -934,6 +934,22 @@ function markTaskPlanDoneIfPending(): void {
   if (changed) chat.setTaskPlan({ ...plan, steps });
 }
 
+/// 用户终止任务：把「正在执行中」的步骤标记为已终止（terminated），与成功/失败区分——
+/// 点停止后任务卡显示「已终止」而不是仍在“进行中”转圈（此前只 stopRequested 不标 done，
+/// 导致 doing 步骤一直转，观感像“剩下的任务还在跑”）。done 保留（确实完成）、
+/// pending 保留（未执行），仅 doing → terminated。
+function markTaskPlanTerminated(): void {
+  const chat = useChatStore();
+  const plan = chat.taskPlan;
+  if (!plan) return;
+  if (plan.steps.some((s) => s.status === "doing")) {
+    const steps = plan.steps.map((s) =>
+      s.status === "doing" ? ({ ...s, status: "terminated" } as const) : s,
+    );
+    chat.setTaskPlan({ ...plan, steps });
+  }
+}
+
 /// 任务计划是否已全部完成（存在计划且所有步骤均为 done）。
 function isTaskPlanAllDone(): boolean {
   const plan = useChatStore().taskPlan;
@@ -1900,7 +1916,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!plan.steps[stepIdx]) {
         throw new Error(`plan_update 步骤序号超出范围（当前共 ${plan.steps.length} 步）`);
       }
-      if (!["pending", "doing", "done", "failed"].includes(status)) {
+      if (!["pending", "doing", "done", "failed", "terminated"].includes(status)) {
         throw new Error("plan_update 的 status 必须是 pending/doing/done/failed");
       }
       // P-A5 防假完成：本计划还没执行任何**实际操作**（planRealWork=false），就标记任何
@@ -4213,6 +4229,31 @@ export const useChatStore = defineStore("chat", () => {
           }, IDLE_TIMEOUT_MS);
         };
 
+        // 流式 UI 更新节流（性能优化）：sse chunk 毫秒级高频到达，若每 chunk 直接
+        // 写 streamingReasoning/streamingContent，Vue 每 chunk 全量重渲染超长文本
+        // （思考累积几十万字符 → 掉帧卡顿）。累积到 requestAnimationFrame
+        // （≤1 次/帧）批量 flush；reasoningBuffer/toolBuffer 仍即时累积（供工具
+        // 检测与解析），不依赖 UI 显示，不受节流影响。
+        let uiRafPending = false;
+        let uiReasoningAppend = "";
+        let uiContentDirty = false;
+        const flushStreamUI = () => {
+          uiRafPending = false;
+          if (uiReasoningAppend) {
+            streamingReasoning.value += uiReasoningAppend;
+            uiReasoningAppend = "";
+          }
+          if (uiContentDirty) {
+            streamingContent.value = visibleText(toolBuffer);
+            uiContentDirty = false;
+          }
+        };
+        const scheduleStreamUI = () => {
+          if (uiRafPending) return;
+          uiRafPending = true;
+          requestAnimationFrame(flushStreamUI);
+        };
+
         roundUnlisten.push(
           await listen<{
             request_id?: string;
@@ -4227,8 +4268,10 @@ export const useChatStore = defineStore("chat", () => {
             // 有数据到达 → 模型活跃，重置空闲超时（避免长回复被“总时长”误杀）
             if (d.reasoning_content || d.content) armIdleTimeout();
             if (d.reasoning_content) {
-              streamingReasoning.value += d.reasoning_content;
+              // UI 更新并入 rAF 节流（reasoningBuffer 仍即时累积，供工具检测/解析）
+              uiReasoningAppend += d.reasoning_content;
               reasoningBuffer += d.reasoning_content;
+              scheduleStreamUI();
               // DeepSeek 思考模式把工具调用计划（<tool_call>{JSON}</tool_call>）写在
               // reasoning（隐藏思考）里、content 只留简短正文 → 必须也从 reasoning 检测，
               // 否则工具永不执行、回复中断（现象：思考很长但正文只有一句话"断了"）。
@@ -4247,9 +4290,11 @@ export const useChatStore = defineStore("chat", () => {
             }
             if (d.content) {
               toolBuffer += d.content;
-              // 实时显示"可见正文"：剔除工具调用标记（含未闭合的半截），
-              // 避免模型连续输出多个工具调用时 <｜DSML｜tool_call｜> 原始标记闪现成乱码
-              streamingContent.value = visibleText(toolBuffer);
+              // 实时显示"可见正文"（统一在 rAF flush 里重算）：剔除工具调用标记
+              // （含未闭合的半截），避免模型连续输出多个工具调用时
+              // <｜DSML｜tool_call｜> 原始标记闪现成乱码
+              uiContentDirty = true;
+              scheduleStreamUI();
               // 检测到完整的工具调用闭合标记才解析（避免把流式中途的半截 JSON 当工具调用）；
               // 兼容标准 </tool_call> 与 DeepSeek DSML </｜DSML｜tool_call｜> 闭合标记，
               // 解析成功 → 提前结束本轮流式，转去执行工具。
@@ -4329,6 +4374,7 @@ export const useChatStore = defineStore("chat", () => {
           ]);
         } finally {
           if (idleTimer) clearTimeout(idleTimer);
+          flushStreamUI(); // 轮末强制落盘剩余 UI 缓冲（不等下一帧），保证不丢尾部
           roundUnlisten.forEach((f) => f());
         }
         // 原生模式兜底：模型若没走原生 tool_calls、却在正文手写了完整 <tool_call>
@@ -4874,6 +4920,8 @@ export const useChatStore = defineStore("chat", () => {
       pendingTurns.value = [];
     }
     requestStop(); // 立即中断正在运行的子代理/主代理工具循环（不只是改标志）
+    // 用户终止会话 → 把进行中任务计划标记为「已终止」，任务卡不再显示“进行中”转圈
+    markTaskPlanTerminated();
     // 立刻取消 Rust 端当前流式生成：之前只在前端移除了监听，Rust 仍在继续拉流/emit/耗 token，
     // 用户会感觉「点了停止还在生成」。cancel_stream 让 Rust 在下一个 chunk 到达时停止。
     if (activeStreamRequestId) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useChatStore } from "../stores/chat";
-import { ListChecks, Circle, Loader2, CheckCircle2, XCircle, X } from "lucide-vue-next";
+import { ListChecks, Circle, Loader2, CheckCircle2, XCircle, Ban, X } from "lucide-vue-next";
 
 const chat = useChatStore();
 const plan = computed(() => chat.taskPlan);
@@ -11,6 +11,11 @@ const percent = computed(() =>
   totalCount.value ? Math.round((doneCount.value / totalCount.value) * 100) : 0,
 );
 const allDone = computed(() => totalCount.value > 0 && doneCount.value === totalCount.value);
+// 用户终止：存在 terminated 步骤且未全部完成 → 任务呈现「已终止」态
+const hasTerminated = computed(
+  () => plan.value?.steps.some((s) => s.status === "terminated") ?? false,
+);
+const terminated = computed(() => hasTerminated.value && !allDone.value);
 
 function close() {
   chat.setTaskPlan(null);
@@ -18,12 +23,22 @@ function close() {
 </script>
 
 <template>
-  <div v-if="plan" class="task-plan" :class="{ 'task-plan--done': allDone }">
+  <div
+    v-if="plan"
+    class="task-plan"
+    :class="{ 'task-plan--done': allDone, 'task-plan--terminated': terminated }"
+  >
     <div class="task-plan__header">
       <ListChecks :size="15" class="lucide task-plan__logo" />
       <span class="task-plan__title">{{ plan.title }}</span>
-      <span class="task-plan__count" :class="{ 'task-plan__count--done': allDone }">
-        {{ allDone ? "✅ 全部完成" : `${doneCount}/${totalCount}` }}
+      <span
+        class="task-plan__count"
+        :class="{
+          'task-plan__count--done': allDone,
+          'task-plan__count--terminated': terminated,
+        }"
+      >
+        {{ allDone ? "✅ 全部完成" : terminated ? "已终止" : `${doneCount}/${totalCount}` }}
       </span>
       <button class="task-plan__close" title="关闭计划" @click="close">
         <X :size="14" class="lucide" />
@@ -54,6 +69,11 @@ function close() {
           :size="14"
           class="lucide step__icon step__icon--failed"
         />
+        <Ban
+          v-else-if="step.status === 'terminated'"
+          :size="14"
+          class="lucide step__icon step__icon--terminated"
+        />
         <Circle v-else :size="14" class="lucide step__icon step__icon--pending" />
         <span class="step__text" :class="{ 'step__text--done': step.status === 'done' }">{{
           step.text
@@ -66,7 +86,9 @@ function close() {
                 ? "进行中"
                 : step.status === "failed"
                   ? "失败"
-                  : "待办"
+                  : step.status === "terminated"
+                    ? "已终止"
+                    : "待办"
           }}
         </span>
       </li>
@@ -87,6 +109,9 @@ function close() {
 }
 .task-plan--done {
   border-color: rgba(52, 211, 153, 0.4);
+}
+.task-plan--terminated {
+  border-color: rgba(245, 158, 11, 0.45);
 }
 .task-plan__header {
   display: flex;
@@ -110,6 +135,10 @@ function close() {
 }
 .task-plan__count--done {
   color: #34d399;
+  font-weight: 600;
+}
+.task-plan__count--terminated {
+  color: #f59e0b;
   font-weight: 600;
 }
 .task-plan__close {
@@ -159,6 +188,9 @@ function close() {
 .step__icon--failed {
   color: #f87171;
 }
+.step__icon--terminated {
+  color: #f59e0b;
+}
 .step__icon--pending {
   color: var(--text-secondary, #666);
 }
@@ -188,6 +220,10 @@ function close() {
 .step__tag--failed {
   background: rgba(248, 113, 113, 0.15);
   color: #f87171;
+}
+.step__tag--terminated {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
 }
 .spin {
   animation: ds-spin 1s linear infinite;

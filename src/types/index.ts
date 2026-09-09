@@ -63,8 +63,8 @@ export interface ChatTool {
   error?: string;
 }
 
-/// 任务计划步骤状态（P-A5 Plan 模式）
-export type PlanStepStatus = "pending" | "doing" | "done" | "failed";
+/// 任务计划步骤状态（P-A5 Plan 模式；terminated=用户终止/打断，与成功失败区分）
+export type PlanStepStatus = "pending" | "doing" | "done" | "failed" | "terminated";
 export interface PlanStep {
   text: string;
   status: PlanStepStatus;
