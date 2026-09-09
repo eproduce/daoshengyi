@@ -306,21 +306,43 @@ async function run() {
         llmCall: async (prompt, opts) => {
           const cfg = chatStore.getAuxConfig();
           if (!cfg.baseUrl || !cfg.apiKey) throw new Error("未配置 API 地址/Key");
-          const data = await invoke<{ content?: string }>("chat_once", {
-            config: {
-              base_url: cfg.baseUrl,
-              api_key: cfg.apiKey,
-              model: opts?.model || cfg.model,
-              max_tokens: cfg.maxTokens,
-              temperature: 0.3,
-              thinking_enabled: cfg.thinkingEnabled ?? false,
-              reasoning_effort: cfg.reasoningEffort ?? "low",
-              system_prompt: "你是道生一工作流中的一个处理节点，根据输入上下文给出结果。",
-              enable_web_search: false,
-            },
-            messages: [{ role: "user", content: prompt }],
-          });
-          return data?.content || "（模型未返回内容）";
+          // 工作流 LLM 节点可靠产出：
+          // ① 结果必须完整写入正文（content）——system prompt 明示，不再让模型“只给简短摘要”；
+          // ② reasoning 兜底：正文空时退回思考内容，杜绝“空返回/（模型未返回内容）”；
+          // ③ max_tokens ≥4096（配置更大则用配置），配合 Rust chat_once 超时放宽，
+          //    避免长输入/长输出被旧 120s 总时长误杀（此前 ≈50% 随机失败、~500 字截断）；
+          // ④ 空返回自动重试一次（引擎/服务端偶发）。
+          const invokeOnce = async () => {
+            const data = await invoke<{ content?: string; reasoning_content?: string }>(
+              "chat_once",
+              {
+                config: {
+                  base_url: cfg.baseUrl,
+                  api_key: cfg.apiKey,
+                  model: opts?.model || cfg.model,
+                  max_tokens: Math.max(cfg.maxTokens || 0, 4096),
+                  temperature: 0.3,
+                  thinking_enabled: cfg.thinkingEnabled ?? false,
+                  reasoning_effort: cfg.reasoningEffort ?? "low",
+                  system_prompt:
+                    "你是道生一工作流中的一个处理节点。你必须把最终结果**完整**写入回复正文（content），" +
+                    "结构清晰、按需展开细节，不要只写简短摘要；若开启思考，思考过程放思考区，正文仍要给出完整结果。",
+                  enable_web_search: false,
+                },
+                messages: [{ role: "user", content: prompt }],
+              },
+            );
+            const content = (data?.content || "").trim();
+            if (content) return content;
+            const reasoning = (data?.reasoning_content || "").trim();
+            if (reasoning) return reasoning; // 正文空 → 用思考内容兜底
+            throw new Error("模型未返回内容");
+          };
+          try {
+            return await invokeOnce();
+          } catch {
+            return await invokeOnce(); // 自动重试一次
+          }
         },
         toolCall: async (tool, args) => callMcpTool("app", tool, args),
       },

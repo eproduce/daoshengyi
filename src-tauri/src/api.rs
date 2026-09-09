@@ -309,8 +309,12 @@ pub async fn chat_once(
         body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
     }
 
+    // 非流式单次请求超时（chat_once 供子代理 / 工作流 LLM 节点 / IM 回复使用）：
+    // 固定 120s 整体 deadline 会间歇性误杀长输入/长输出（生成常超 120s，表现≈随机失败、
+    // 长文截断）；连接阶段仍 10s 防卡，整体放宽到 600s——服务端只要持续响应就等它完成。
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| format!("客户端构建失败: {}", e))?;
     let response = client
