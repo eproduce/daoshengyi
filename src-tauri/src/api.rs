@@ -34,7 +34,54 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
 }
 
-
+/// 发送 POST 请求到 OpenAI 兼容端点，连接阶段失败自动重试。
+///
+/// `error sending request for url` 这类网络错误几乎都发生在**连接建立阶段**
+/// （DNS 解析 / 本地代理切换 / TLS 握手 / 连接重置）——瞬时抖动居多，一次失败就让
+/// 整个 agent 会话中断，体验很差。HTTP 状态码错误（401/429/5xx）已进入响应阶段、
+/// 不会走到这里，交由调用方处理。因此对 `.send()` 返回 Err 最多重试 3 次
+/// （0.5s/1s 退避）：响应头尚未收到，重发请求不会产生重复生成内容。
+async fn post_chat_with_retry(
+    url: &str,
+    api_key: &str,
+    body: String,
+    connect_timeout: std::time::Duration,
+    total_timeout: Option<std::time::Duration>,
+) -> Result<reqwest::Response, String> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let mut builder = reqwest::Client::builder().connect_timeout(connect_timeout);
+        if let Some(t) = total_timeout {
+            builder = builder.timeout(t);
+        }
+        let client = builder.build().map_err(|e| format!("客户端构建失败: {}", e))?;
+        match client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(r) => return Ok(r),
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                let backoff_ms = 500u64 * (1 << (attempt - 1));
+                let warn = format!(
+                    "[api] 连接失败（第 {}/{} 次）：{}，{}ms 后自动重试",
+                    attempt,
+                    MAX_ATTEMPTS,
+                    e,
+                    backoff_ms
+                );
+                eprintln!("{}", warn);
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+            Err(e) => return Err(format!("网络错误: {}", e)),
+        }
+    }
+}
 
 /// 发送流式聊天请求，返回 SSE 事件流。
 /// `tools`：可选的 OpenAI 风格 function schema 数组；传入即启用「原生 function calling」，
@@ -65,15 +112,16 @@ pub async fn stream_chat(
         body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
     }
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| format!("网络错误: {}", e))?;
+    // 连接阶段失败（DNS/代理/TLS 等瞬时抖动）由 post_chat_with_retry 自动重试；
+    // 流式一旦建立，整体不做总超时（长思考/长输出可持续推流，空闲由前端兜底）。
+    let response = post_chat_with_retry(
+        &url,
+        &config.api_key,
+        body.to_string(),
+        std::time::Duration::from_secs(10),
+        None,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -312,19 +360,15 @@ pub async fn chat_once(
     // 非流式单次请求超时（chat_once 供子代理 / 工作流 LLM 节点 / IM 回复使用）：
     // 固定 120s 整体 deadline 会间歇性误杀长输入/长输出（生成常超 120s，表现≈随机失败、
     // 长文截断）；连接阶段仍 10s 防卡，整体放宽到 600s——服务端只要持续响应就等它完成。
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| format!("客户端构建失败: {}", e))?;
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| format!("网络错误: {}", e))?;
+    // 连接阶段瞬时失败（DNS/代理/TLS）由 post_chat_with_retry 自动重试。
+    let response = post_chat_with_retry(
+        &url,
+        &config.api_key,
+        body.to_string(),
+        std::time::Duration::from_secs(10),
+        Some(std::time::Duration::from_secs(600)),
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -417,18 +461,15 @@ pub async fn probe_native_tools(config: ApiConfig) -> Result<String, String> {
         }
 
         report.push_str(&format!("== {} ==\n", label));
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| format!("客户端构建失败: {}", e))?;
-        let resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| format!("网络错误: {}", e))?;
+        // 探针也用带连接重试的发送（网络瞬时抖动不至于误判“不支持 tools”）
+        let resp = post_chat_with_retry(
+            &url,
+            &config.api_key,
+            body.to_string(),
+            std::time::Duration::from_secs(10),
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
