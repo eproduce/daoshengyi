@@ -33,16 +33,22 @@ const copied = ref(false);
 // 流式「深度思考」滚动跟随：思考文本在 store 中持续追加，滚动条需跟着吸底。
 // 仅在用户原本就贴底（距底 <32px）时自动吸底；若用户上翻查看历史思考则不打扰，
 // 待其滚回底部附近后恢复跟随。
+// 性能：改为 rAF 合并（配合 chat.ts 的流式 rAF 节流，最多每帧一次 layout 读取/滚动），
+// 不在每个文本更新里串 nextTick+scrollHeight 读取，避免长思考下滚动容器反复重排。
 const streamingReasonRef = ref<HTMLElement | null>(null);
+let reasonScrollRaf: number | null = null;
 watch(
   () => chatStore.streamingReasoning,
-  async () => {
-    const el = streamingReasonRef.value;
-    if (!el) return;
-    await nextTick();
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 32) {
-      el.scrollTop = el.scrollHeight;
-    }
+  () => {
+    if (reasonScrollRaf !== null) return;
+    reasonScrollRaf = requestAnimationFrame(() => {
+      reasonScrollRaf = null;
+      const el = streamingReasonRef.value;
+      if (!el) return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 32) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
   },
 );
 
