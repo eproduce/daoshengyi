@@ -4183,7 +4183,12 @@ export const useChatStore = defineStore("chat", () => {
       // DeepSeek 思考模式把工具调用写在 reasoning，且一次只规划一个工具、逐目录探索，
       // 轮次需求高（本次 list_directory×2 + read_multiple_files×2 就到 7 轮）——上限过低
       // 会导致最后一个工具被丢弃、无最终答案。故提高到 20 并在接近上限时提示收尾。
-      const MAX_TOOL_ROUNDS = 32;
+      // 2026-09-10：32→48。实测长任务（生成大报告：write_file + 分段 insert_string×N +
+      // replace_string×N + 验证 run_command）第 31 轮仍在写正文就被上限掐断 → 模型没机会
+      // 输出「plan_update 标末步 done + 最终汇报」，收尾轮又因不执行工具而正文空 →
+      // markTaskPlanDoneIfPending 把 doing 兜底标 done，出现「计划全完成却无正文输出」。
+      // 上限放大到 48 让收尾动作有足够轮次；MAX_CONTEXT_CHARS 仍会兜底防上下文失控。
+      const MAX_TOOL_ROUNDS = 48;
 
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
       // - 传入 tools（原生 function calling）时：模型以结构化 tool_calls 返回工具调用，
@@ -4791,26 +4796,54 @@ export const useChatStore = defineStore("chat", () => {
         dbg(
           `[loop] 工具已执行但正文无实质答案（streamingContent=${sc.length} 字符，判定空洞=${isVagueBody(streamingContent.value)}），追加收尾轮`,
         );
+        // 收尾轮强制要求「纯正文最终交付汇报」：此时工具已基本执行完毕，若模型仍尝试
+        // 输出 <tool_call>（常见是 plan_update 想标末步 done），收尾轮并不会执行它 →
+        // 正文被 stripToolJson 剥空，出现「只有工具卡片 + 空正文」，随后兜底标 done
+        // 又造成「计划全完成却无任何文字输出」的假象。因此明确告知：本轮不执行工具、
+        // 计划收尾由系统自动处理，只允许输出实实在在的汇报正文。
         rustMsgs.push({
           role: "user",
           content:
-            "你之前的回复只声明了要做的事（如访问官网 / 进一步查询）或仅有过程性描述，没有给出实际内容。请基于已获取的工具结果，把**完整、详细、结构化的最终回答**直接写在回复正文中（结论 / 步骤 / 要点）；若确实还需信息，可输出 <tool_call> 调用工具继续获取后再作答。不要只写过程声明，不要输出空 <tool_call>。",
+            "工具执行已结束，本回复为最终交付汇报轮：请把**完整、详细、结构化的最终回答**直接写在回复正文中" +
+            "（做了什么 / 各步骤结果 / 最终结论 / 产物保存位置）。\n" +
+            "⚠️ 本轮**不会执行任何工具调用**（包括 plan_update/plan_task——写了也不会执行，任务计划收尾由系统自动完成）。" +
+            "请不要输出 <tool_call> 标记，也不要只写「已完成 / 全部完成 / 正在收尾」这类无实质内容的短句；" +
+            "请给出**实实在在的交付内容**（结论、要点、数据、路径等）。",
         });
         try {
           const fr = await streamRound(rustMsgs);
           const fc = stripToolJson(fr.content).trim();
-          if (fc.length > 0) {
+          // 收尾轮产出也要防空洞：正文为空、只剩工具标记、或仍是一句"完成"短声明，
+          // 都不算最终答案 → 退回思考摘要（剥标记后截尾）作为可见兜底，
+          // 避免「空正文却显示计划全部完成」。仍无任何可用内容则给显式失败提示。
+          if (fc.length > 0 && !isVagueBody(fc)) {
             streamingContent.value = fc;
           } else if (streamingReasoning.value) {
-            streamingContent.value = `（模型正文未输出，以下为思考摘要）\n\n${streamingReasoning.value.slice(-2000)}`;
+            const fallback = stripToolJson(streamingReasoning.value).trim().slice(-3000);
+            streamingContent.value = fallback
+              ? `（模型正文未输出实质内容，以下为思考摘要）\n\n${fallback}`
+              : "⚠️ 模型未输出最终汇报正文。上方为已完成的工具执行记录，可据此查看产物或重发消息继续。";
+          } else {
+            streamingContent.value =
+              "⚠️ 模型未输出最终汇报正文。上方为已完成的工具执行记录，可据此查看产物或重发消息继续。";
           }
         } catch (e) {
           dbg(`[loop] 收尾轮失败: ${e instanceof Error ? e.message : String(e)}`);
+          // 收尾轮异常时也保证用户能看到可读内容，而不是空正文配「计划全完成」
+          if (!streamingContent.value || isVagueBody(streamingContent.value)) {
+            streamingContent.value =
+              "⚠️ 最终汇报生成失败，但上方工具执行已基本完成。可查看已生成的产物或重新发送消息重试。";
+          }
         }
       }
       // 任务收尾：若存在未完成的任务计划，把剩余 待办/进行中 步骤统一标记为 done
       //（确定性兜底，避免“实际做完但进度卡差一步没标 done”；failed 保留）。
-      markTaskPlanDoneIfPending();
+      // 2026-09-10 守卫：仅当本轮确实产出了**实质正文交付**（非空洞）才做兜底标 done。
+      // 若模型既没真正执行内容、正文仍空洞（收尾轮也失败等），保留 doing 状态而非
+      // 标 done —— 避免「啥都没输出却把计划显示成全部完成」的假象。
+      if (!isVagueBody(streamingContent.value)) {
+        markTaskPlanDoneIfPending();
+      }
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
     } catch (err: unknown) {
