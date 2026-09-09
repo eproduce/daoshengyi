@@ -2,9 +2,26 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-08**
+> **最后更新：2026-09-09**
 
 ---
+
+## 2026-09-09
+
+### ✅ S3 技能包结构化——渐进式披露注入（commit 3d1b8f3，Codex 整合第三批 🟡）
+> 目标：技能从「单 prompt 全量注入」升级为 Codex SKILL.md 式「路由清单 + 按需加载」，解决「技能一多全量注入挤爆上下文 / 稀释注意力」。
+- **类型**（types/index.ts）：`Skill`/`SkillCatalogItem` 扩展 `whenToUse`（适用场景）/`references`（参考资料）/`tags`（命中关键词，目录条目自动带入）。
+- **路由纯函数**（新增 `src/utils/skill-router.ts`，无 IO 可测）：`buildSkillRoutingTable` 生成每技能一行的轻量路由清单（name+category+whenToUse/description 首句，**不含 prompt 正文**）；`skillKeywordsOf`（name 进 strong / tags+whenToUse+英文词进 weak；无 tags 的自定义技能回退 description 中文短语，含停用词过滤）；`scoreSkillMatch`（name 直呼 +4、weak 每中 +1）；`matchSkillsForMessage(text, skills, maxHits=2)` 按当前请求命中 topN。
+- **chat.ts 渐进披露**：阈值 `SKILL_DIRECT_INJECT_MAX_SKILLS=2`/`SKILL_DIRECT_INJECT_CHARS=2000`——启用技能 ≤2 或指令 ≤2000 字符 → **维持原全量注入**（不破坏小库体验、system 前缀稳定可缓存）；超过 → system 只放「可用技能路由」清单，命中技能的完整 prompt + references 随本轮 `volatileCtx` 注入（`[已加载与当前请求相关的技能完整指令，请遵循]`）。
+- **skill store**：目录安装透传 tags/whenToUse/references；.md 导入/导出支持 frontmatter `when_to_use`。
+- **SkillManager**：自定义技能表单新增「适用场景」输入；列表展示该字段。
+- 验证：vue-tsc 干净 / vitest **33 passed**（+9 路由单测：清单生成、score 直呼>tag、topN 截断、无关为空、无 tags 回退 description）。
+- 注：本地未安装 eslint/prettier（node_modules/.bin 无，npx 卡下载）→ 门禁按 CI 的 vue-tsc + vite build + vitest。
+
+### ✅ 同日修复/UI（均推送）：
+- **120s 超时误杀修复（97f9383，agent 可靠性）**：根因 `streamRound` 用「从请求发起算的固定总时长 120s」兜底——单轮思考/输出超 120s 即断（长任务单轮思考十几万 token、持续推流仍被掐）。改**空闲超时**：每收 sse-delta（reasoning/content）或 sse-tool-calls 即重置，仅连续 120s 无数据（真卡死）才中断。Rust 主对话流式 `stream_chat` 本无超时（`Client::new()`），断点纯在前端。
+- **生成状态视觉重构（c0a35ef）**：①agent 回复气泡去掉 conic 旋转描边炫光（回归普通气泡，留打字光标）；②炫光迁至发送框——`ChatInput .ci-wrap` busy(=isStreaming) 时 `ci-wrap--busy` 双背景旋转流光（`--ci-spin-angle`/`ciSpin`）优先于聚焦高亮；③streaming 深度思考区自动吸底（ref+watch streamingReasoning，nextTick 后距底 <32px 才 `scrollTop=scrollHeight`，上翻不打扰）。
+- **底部 dock 限高 1/4（b483980）**：chat-stack 弹性布局，消息区 flex:1、dock flex:0 1 auto + `max-height:25%` 内容超出内部滚动（替代固定 36vh/380px）。
 
 ## 2026-09-08
 

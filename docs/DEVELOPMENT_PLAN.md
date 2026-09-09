@@ -307,7 +307,7 @@
     - Rust 测试 +2（fork / append_message）→ cargo 72 全绿。
   - **S6 非交互执行（exec）✅ 已完成（2026-08-31）**：`daoshengyi --exec "<prompt>" [--json]` 子命令——main.rs 分发 → lib.rs `run_exec`（读活跃模型配置 → `chat_once` → stdout；`--json` 输出 JSONL 事件 turn_start / turn_complete / error）；提取 `load_active_api_config` 公共函数（IM 回复与 exec 复用，消除 LlmReplyGen 重复）。实测 JSON / 纯文本双模式正常（模型真实回复）。
   - **S7 交互式 PTY（portable-pty + 终端面板）✅ 已完成（2026-08-31）**：新增 `src-tauri/src/pty.rs`——基于 `portable-pty`（新增依赖），命令 `pty_spawn`（`sh -c` 整条命令 + 可选 cwd）/ `pty_write` / `pty_poll`（按 offset 增量轮询）/ `pty_kill` / `pty_list`；后台线程持续读输出到缓冲。前端 `src/stores/pty.ts` + `src/components/PtyPanel.vue`（设置「终端」Tab：启动表单 / 多会话 tab / 终端输出区自动滚动 / 输入发送自动补 \n / 终止）。Rust 测试 +3（echo 捕获、输入回显、kill 移除）。
-- **第三批（🟡~🔵）**：S3 技能包结构化（技能系统整体升级渐进式披露）、S5 引擎协议外化（app-server 化 MCP 协议）；S8~S11 按需。
+- **第三批（🟡~🔵）**：**S3 技能包结构化 ✅ 已完成（2026-09-09）**——渐进式披露注入（system 只放路由清单 + 命中当前请求才注入正文/references）、类型 Skill 扩展（whenToUse/references/tags）、`src/utils/skill-router.ts` 纯函数（buildSkillRoutingTable/matchSkillsForMessage）+ 9 单测、skill.ts 支持 when_to_use frontmatter 导入导出、SkillManager 表单/列表支持「适用场景」；S5 引擎协议外化（app-server 化 MCP 协议）待做；S8~S11 按需。
 - 每项实现后回填本节的「✅ 已完成」标注并同步 `docs/CODEX_CAPABILITY_ANALYSIS.md`。
 
 ---
