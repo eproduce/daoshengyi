@@ -12,7 +12,10 @@ const ui = useUiStore();
 const activeTab = ref<"mine" | "catalog" | "import">("mine");
 const editing = ref<string | null>(null);
 const form = ref<
-  Pick<Skill, "name" | "description" | "prompt" | "category" | "enabled" | "source">
+  Pick<
+    Skill,
+    "name" | "description" | "prompt" | "category" | "enabled" | "source" | "whenToUse"
+  >
 >({
   name: "",
   description: "",
@@ -20,6 +23,7 @@ const form = ref<
   category: "通用",
   enabled: true,
   source: "user",
+  whenToUse: "",
 });
 const importUrl = ref("");
 const importMdText = ref("");
@@ -59,6 +63,7 @@ function openEdit(id: string) {
       category: s.category,
       enabled: s.enabled,
       source: s.source,
+      whenToUse: s.whenToUse || "",
     };
     activeTab.value = "mine";
   }
@@ -203,6 +208,11 @@ const categoryColors: Record<string, string> = {
                 placeholder="分类（如 开发、安全、运维）"
                 class="sk-input"
               />
+              <input
+                v-model="form.whenToUse"
+                placeholder="适用场景（可选，如：需要审查代码安全/质量时）——渐进披露据此匹配"
+                class="sk-input"
+              />
               <textarea
                 v-model="form.prompt"
                 placeholder="技能提示词…"
@@ -235,6 +245,13 @@ const categoryColors: Record<string, string> = {
                   </span>
                 </div>
                 <div class="sk-item-desc">{{ s.description || "无描述" }}</div>
+                <div
+                  v-if="s.whenToUse"
+                  class="sk-item-desc"
+                  style="opacity: 0.65; font-size: 11px"
+                >
+                  适用：{{ s.whenToUse }}
+                </div>
               </div>
               <div class="sk-item-acts">
                 <button class="sk-btn-mini" title="导出为 .md" @click="doExport(s.id)">

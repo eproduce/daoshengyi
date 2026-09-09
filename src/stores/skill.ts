@@ -28,7 +28,14 @@ function loadSkills(): Skill[] {
 /** 解析 .md 文件 frontmatter */
 function parseMd(
   md: string,
-): { name: string; description: string; prompt: string; category: string; author?: string } | null {
+): {
+  name: string;
+  description: string;
+  prompt: string;
+  category: string;
+  author?: string;
+  whenToUse?: string;
+} | null {
   const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   if (fmMatch) {
     const front = fmMatch[1];
@@ -41,7 +48,8 @@ function parseMd(
     const desc = get("description");
     const cat = get("category") || "导入";
     const author = get("author");
-    return { name, description: desc, prompt: body, category: cat, author };
+    const whenToUse = get("when_to_use") || get("whenToUse");
+    return { name, description: desc, prompt: body, category: cat, author, whenToUse };
   }
   // 无 frontmatter：整个文件就是 prompt
   const lines = md.trim().split("\n");
@@ -88,6 +96,9 @@ export const useSkillStore = defineStore("skill", () => {
       source: "catalog",
       author: item.author,
       version: item.version,
+      tags: item.tags,
+      whenToUse: item.whenToUse,
+      references: item.references,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -147,6 +158,7 @@ export const useSkillStore = defineStore("skill", () => {
       s.category ? `category: ${s.category}` : "",
       s.author ? `author: ${s.author}` : "",
       s.version ? `version: ${s.version}` : "",
+      s.whenToUse ? `when_to_use: ${s.whenToUse}` : "",
       "---",
     ]
       .filter((l) => l !== "")

@@ -48,6 +48,7 @@ import {
   type WorkflowGraph,
 } from "@/utils/workflow-engine";
 import { markExternalToolResult } from "@/utils/untrusted";
+import { buildSkillRoutingTable, matchSkillsForMessage } from "@/utils/skill-router";
 import {
   buildNativeToolRegistry,
   supportsNativeTools,
@@ -963,6 +964,10 @@ function truncateToolResult(result: string): string {
 /// 上下文总长保护阈值（字符）：工具结果持续回填会让 messages 逼近模型上限
 /// （DeepSeek 1M token ≈ 200 万字符），超过阈值停止继续调工具，留足余量避免 [400]。
 const MAX_CONTEXT_CHARS = 1_500_000;
+// S3 技能渐进披露阈值：启用技能数 > 此值 且 指令总字符 > 此值 → 进入「路由清单 + 按需命中注入」
+const SKILL_DIRECT_INJECT_MAX_SKILLS = 2;
+const SKILL_DIRECT_INJECT_CHARS = 2000;
+const SKILL_MATCH_MAX_HITS = 2;
 function totalMsgChars(msgs: { role: string; content: unknown }[]): number {
   return msgs.reduce((sum, m) => {
     const t = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
@@ -3870,10 +3875,21 @@ export const useChatStore = defineStore("chat", () => {
       if (mode?.prompt) sp = `${sp}\n\n【当前模式：${mode.name}】\n${mode.prompt}`;
 
       // ---- 稳定上下文：进 system（跨消息不变，保证前缀可缓存） ----
-      // 注入已启用的技能
+      // 注入技能（S3 渐进披露）：技能少/指令短 → 全量注入保持简单直接；
+      // 技能多 → system 只放「路由清单」（体积小、稳定 → 前缀可缓存），
+      // 完整正文按「当前请求命中」随本轮 volatileCtx 注入（见下 volatileCtx 区）。
       const skillStore = useSkillStore();
-      const skillPrompts = skillStore.enabledPrompts();
-      if (skillPrompts) sp = sp ? `${sp}\n\n---\n\n${skillPrompts}` : skillPrompts;
+      const enabledSkillList = skillStore.enabledSkills();
+      const skillTotalChars = enabledSkillList.reduce((n, s) => n + (s.prompt?.length || 0), 0);
+      const skillProgressive =
+        enabledSkillList.length > SKILL_DIRECT_INJECT_MAX_SKILLS &&
+        skillTotalChars > SKILL_DIRECT_INJECT_CHARS;
+      if (enabledSkillList.length > 0) {
+        const skillBlock = skillProgressive
+          ? `【可用技能路由】（与当前请求相关时其完整指令会自动随本轮注入，无需记忆全文）\n${buildSkillRoutingTable(enabledSkillList)}`
+          : skillStore.enabledPrompts();
+        sp = sp ? `${sp}\n\n---\n\n${skillBlock}` : skillBlock;
+      }
 
       // 注入 MCP 工具（工具描述相对稳定）
       const mcpPrompt = getMcpToolsPrompt();
@@ -3969,6 +3985,28 @@ export const useChatStore = defineStore("chat", () => {
         new Promise<string>((resolve) => setTimeout(() => resolve(""), 15000)),
       ]);
       if (memText) volatileCtx.push(memText);
+      // S3 技能渐进披露：命中当前请求的技能 → 本轮注入其完整指令 + references
+      // （system 里只放了路由清单；正文按需加载，避免技能一多全量注入挤爆上下文）
+      if (skillProgressive && text.trim()) {
+        const hitSkills = matchSkillsForMessage(text, enabledSkillList, SKILL_MATCH_MAX_HITS);
+        if (hitSkills.length > 0) {
+          const blocks = hitSkills.map((sk) => {
+            const refs = (sk.references || [])
+              .map((r) => `- ${r.title}：${r.content.slice(0, 1500)}`)
+              .join("\n");
+            return (
+              `### 技能：${sk.name}` +
+              (sk.whenToUse ? `\n适用场景：${sk.whenToUse}` : "") +
+              `\n` +
+              sk.prompt +
+              (refs ? `\n\n【参考资料】\n${refs}` : "")
+            );
+          });
+          volatileCtx.push(
+            `[已加载与当前请求相关的技能完整指令，请遵循]\n\n${blocks.join("\n\n")}`,
+          );
+        }
+      }
       // 知识库 RAG 自动注入：开启且配置默认知识库时，会话首轮自动检索相关分块注入上下文
       // （同一会话只注入一次，避免每轮重复灌入膨胀上下文；精细引用时模型可再手动 kb_search）——5 秒超时兜底
       if (!ragInjectedConvs.has(convId)) {

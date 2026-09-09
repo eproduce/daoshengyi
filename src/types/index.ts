@@ -138,6 +138,13 @@ export interface HardwareInfo {
   message: string;
 }
 
+/// 技能附加参考资料（S3 技能包：长内容拆成 references，命中注入时随附）
+export interface SkillReference {
+  id: string;
+  title: string;
+  content: string;
+}
+
 /// 技能
 export interface Skill {
   id: string;
@@ -150,6 +157,12 @@ export interface Skill {
   importUrl?: string;
   version?: string;
   author?: string;
+  /** 关键词（与 description 互补，用于渐进披露命中判定；内置目录由 catalog.tags 带入） */
+  tags?: string[];
+  /** 何时使用（渐进披露路由：帮助模型判断本技能适用于当前任务） */
+  whenToUse?: string;
+  /** 附加参考资料：命中注入正文时随附（长内容建议拆到这里） */
+  references?: SkillReference[];
   createdAt: number;
   updatedAt: number;
 }
@@ -164,4 +177,6 @@ export interface SkillCatalogItem {
   author: string;
   version: string;
   tags: string[];
+  whenToUse?: string;
+  references?: SkillReference[];
 }
