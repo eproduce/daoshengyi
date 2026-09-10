@@ -150,7 +150,8 @@ fn ssrf_check(deny_private: bool) -> SecurityCheck {
         name: "SSRF 防护",
         ok: deny_private,
         detail: if deny_private {
-            "已开启：拒绝抓取内网/保留地址（环回/链路本地最危险段必拦）".to_string()
+            "已开启：拒绝抓取内网/保留地址（私有网段/链路本地/云元数据必拦；本机环回默认放行）"
+                .to_string()
         } else {
             "已关闭内网地址拦截（fetch_page/web_search 可访问内网，建议开启）".to_string()
         },

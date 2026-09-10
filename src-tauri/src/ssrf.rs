@@ -17,6 +17,11 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 pub struct SsrfPolicy {
     /// 是否拒绝私有/保留地址（默认 true）
     pub deny_private: bool,
+    /// 是否放行**本机环回**（127.0.0.0/8、::1、localhost）。默认 true。
+    /// 桌面 agent 需抓取本机预览服务/本地 API（提示词本身就引导用本地静态服务验证渲染）；
+    /// 且同能力已可由 run_command 的 curl 直接达到，拦 fetch_page 无实际安全收益。
+    /// 置 false 则恢复「环回也拦」的严格模式。
+    pub allow_loopback: bool,
     /// 完全放行的 hostname 白名单（精确或子域；命中即使解析到私有地址也放行）
     pub allow_hosts: Vec<String>,
     /// 允许解析到私有地址的 hostname（环回/链路本地/未指定等最危险段仍拦）
@@ -27,10 +32,26 @@ impl Default for SsrfPolicy {
     fn default() -> Self {
         Self {
             deny_private: true,
+            allow_loopback: true,
             allow_hosts: Vec::new(),
             allow_private_hosts: Vec::new(),
         }
     }
+}
+
+/// hostname/IP 文本是否指向本机环回（localhost、*.localhost、127.0.0.0/8、::1）
+pub fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(v4) = h.parse::<Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = h.parse::<Ipv6Addr>() {
+        return v6.is_loopback();
+    }
+    false
 }
 
 /// 判定某个 IP 文本是否属于私有/保留/不可路由段（纯函数，离线可测）
@@ -141,6 +162,12 @@ pub fn check_url(url: &str, policy: &SsrfPolicy) -> Result<(), String> {
     }
     // 完全白名单：命中即放行
     if host_match(&host, &policy.allow_hosts) {
+        return Ok(());
+    }
+    // 本机环回默认放行（allow_loopback）：本机预览服务/本地 API 是桌面 agent 的正常工作流
+    //（提示词引导用本地静态服务验证渲染）；且同能力已可由 run_command 的 curl 达到，
+    // 拦 fetch_page 无实际安全收益。需要严格模式可在设置里关掉。
+    if policy.allow_loopback && is_loopback_host(&host) {
         return Ok(());
     }
     let is_ip = host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok();
@@ -255,13 +282,24 @@ mod tests {
     #[test]
     fn ip_literal_blocked_unless_allowed() {
         let p = SsrfPolicy::default();
-        assert!(check_url("http://127.0.0.1:8080/", &p).is_err());
+        // 本机环回默认放行（桌面 agent 需抓取本机预览服务/本地 API）
+        assert!(check_url("http://127.0.0.1:8080/", &p).is_ok());
+        assert!(check_url("http://[::1]:3000/", &p).is_ok());
+        // 私有网段 / 链路本地 / 云元数据仍拦
         assert!(check_url("http://192.168.1.1/admin", &p).is_err());
+        assert!(check_url("http://10.0.0.5/", &p).is_err());
         assert!(check_url("http://169.254.169.254/latest/meta-data", &p).is_err());
         assert!(check_url("https://8.8.8.8/", &p).is_ok());
-        assert!(check_url("http://[::1]:3000/", &p).is_err());
-        // allow_hosts 白名单精确放行私有 IP
+        // 严格模式（allow_loopback=false）恢复「环回也拦」
+        let strict = SsrfPolicy {
+            allow_loopback: false,
+            ..Default::default()
+        };
+        assert!(check_url("http://127.0.0.1:8080/", &strict).is_err());
+        assert!(check_url("http://[::1]:3000/", &strict).is_err());
+        // allow_hosts 白名单精确放行私有 IP（严格模式下亦可用）
         let allow = SsrfPolicy {
+            allow_loopback: false,
             allow_hosts: vec!["127.0.0.1".into()],
             ..Default::default()
         };
@@ -283,8 +321,18 @@ mod tests {
         // localhost 由系统 hosts 稳定解析到环回——离线单测可用
         let p = SsrfPolicy::default();
         assert!(
-            check_url("http://localhost/", &p).is_err(),
-            "localhost 应被拦截"
+            check_url("http://localhost/", &p).is_ok(),
+            "本机环回默认放行（本机预览服务/本地 API 是正常开发流程）"
+        );
+        assert!(check_url("http://preview.localhost:8765/x", &p).is_ok());
+        // 严格模式 → 环回也拦
+        let strict = SsrfPolicy {
+            allow_loopback: false,
+            ..Default::default()
+        };
+        assert!(
+            check_url("http://localhost/", &strict).is_err(),
+            "严格模式下 localhost 应被拦截"
         );
         // 子域白名单
         let b = SsrfPolicy {
@@ -292,8 +340,9 @@ mod tests {
             ..Default::default()
         };
         assert!(check_url("http://api.example.com/x", &b).is_ok());
-        // allow_private_hosts 命中 localhost → 仍拦环回
+        // allow_private_hosts 命中 localhost → 严格模式下仍拦环回（需 allow_hosts 才能放行）
         let a = SsrfPolicy {
+            allow_loopback: false,
             allow_private_hosts: vec!["localhost".into()],
             ..Default::default()
         };

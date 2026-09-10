@@ -4866,6 +4866,7 @@ fn ssrf_policy(db: &Database) -> ssrf::SsrfPolicy {
     if let Ok(Some(json)) = db.get_setting(SETTINGS_KEY) {
         if let Ok(s) = serde_json::from_str::<settings::AppSettings>(&json) {
             p.deny_private = s.ssrf_deny_private;
+            p.allow_loopback = s.ssrf_allow_loopback;
             p.allow_hosts = s.ssrf_allow_hosts;
             p.allow_private_hosts = s.ssrf_allow_private_hosts;
         }

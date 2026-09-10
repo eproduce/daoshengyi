@@ -19,6 +19,16 @@
 - 验证：cargo test **103 passed** · clippy `-D warnings` 干净 · vue-tsc 干净 · vitest **33 passed**
 - 建议：把 Profile 的 `max_tokens` 从 4096 调到 8192/16384，可减少续写轮次。
 
+### ✅ 修复 SSRF 误拦本机预览服务（fetch_page 抓不了 localhost）
+- **现象**：agent 为验证生成的 HTML 起了本地预览服务，`run_command` 里 `curl "http://localhost:8765/_responsive_preview.html"` 拿到 HTTP 200，紧接着 `fetch_page` 同一个 URL 却被拦：`目标地址 localhost 为内网/保留地址，已按 SSRF 策略拦截`。
+- **设计自相矛盾**：提示词本身引导 agent「起本地静态服务验证渲染」，但 `fetch_page` 把 `localhost` 全拦；且**同能力已可由 `run_command` 的 `curl` 直接达到**（只拦 fetch_page 并不构成真实安全边界）；更别扭的是 `allow_private_hosts` 白名单明确排除环回，用户连手动放行都做不到（只有 `allow_hosts` 能放行）。
+- **修复**：
+  - `ssrf.rs`：`SsrfPolicy` 新增 `allow_loopback`（默认 **true**）+ 纯函数 `is_loopback_host`（`localhost` / `*.localhost` / 127.0.0.0-8 / `::1`）；`check_url` 在白名单之后、私有段判定之前放行环回。私有网段、链路本地（含云元数据 169.254.169.254）、未指定等**仍然拦**。
+  - `settings.rs`：新增 `ssrf_allow_loopback`（serde 默认 true，同步 Default 与两处测试字面量）；`lib.rs` 的 `ssrf_policy()` 读取该字段。
+  - `security.rs`：安全审计 SSRF 项文案改为「私有网段/链路本地/云元数据必拦；本机环回默认放行」。
+  - `chat.ts`：fetch_page 工具描述补充「本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取，不必因本地地址而放弃」；`appSettings.ts` 同步字段。
+- 验证：cargo test **103 passed**（SSRF 用例已更新：环回默认放行 / `allow_loopback=false` 恢复拦截 / `allow_private_hosts` 在严格模式下仍拦环回）· clippy `-D warnings` 干净 · vue-tsc 干净 · vitest 33 passed
+
 ---
 
 ## 2026-09-09

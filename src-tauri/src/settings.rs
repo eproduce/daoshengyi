@@ -108,6 +108,10 @@ pub struct AppSettings {
     /// O2 SSRF 防护：是否拒绝抓取内网/保留地址（fetch_page 等出站请求前校验，默认 true）
     #[serde(default = "default_true")]
     pub ssrf_deny_private: bool,
+    /// O2 SSRF 防护：是否放行**本机环回**（127.0.0.1 / localhost / ::1）。默认 true——
+    /// 桌面 agent 需抓取本机预览服务/本地 API；关掉则恢复「环回也拦」的严格模式。
+    #[serde(default = "default_true")]
+    pub ssrf_allow_loopback: bool,
     /// O2 SSRF 白名单：完全放行的 hostname（精确或子域，命中即使解析到私有地址也放行）
     #[serde(default)]
     pub ssrf_allow_hosts: Vec<String>,
@@ -172,6 +176,7 @@ impl Default for AppSettings {
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
+            ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
         }
@@ -427,6 +432,7 @@ mod tests {
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
+            ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
         };
@@ -481,6 +487,7 @@ mod tests {
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
+            ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
         };
