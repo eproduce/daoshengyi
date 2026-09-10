@@ -2,7 +2,22 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-09**
+> **最后更新：2026-09-11**
+
+---
+
+## 2026-09-11
+
+### ✅ 修复「回复被 max_tokens 截断却当成最终答案」+ 消息 token 千分符
+- **现象**：agent 回复断在半句（数据库里可见 `…rwd-375-s4图表区.png` 仅 9`），任务计划剩余步骤永远停在「待办」，用户以为任务没做完就结束了；复制出来的正文也短一截（因为存的就是半截）。
+- **根因（两层叠加）**：① Profile 的 `maxTokens: 4096` 太小，长报告/多步汇报写到一半就被 API 截断；② **流式链路完全不读 `finish_reason`**（全项目只在 `probe_native_tools` 探测代码里出现过）——API 用 `finish_reason: "length"` 告知被截断，客户端无从感知，于是把半截话当最终答案收尾，模型也没机会把剩余步骤 `plan_update` 成 done。
+- **修复**：
+  - `api.rs`：`SSEDelta` 新增 `finish_reason` 并解析；**关键**：最后一个 chunk 常常只有 `finish_reason`（delta 为空），原先「全空则 return None」会把它整包丢弃 → 空值判断补上 `finish_reason`（新增回归测试 `parse_sse_line_extracts_finish_reason`）。
+  - `lib.rs`：`send_message` 累积 `finish_reason`；`sse-done` 由「只带 request_id 字符串」改为 `{request_id, finish_reason}`（取消路径仍发字符串，前端两种载荷都兼容）；完成日志增打印 `finish_reason`。
+  - `chat.ts`：`streamRound` 返回 `finishReason`；工具循环结束后若为 `length` → **自动续写**（把已生成部分回填为 assistant 消息 + 要求「紧接其后续写、不重复、不重新开头」，最多 2 次），并把合并结果回写展示层（避免下一轮流式覆盖前半段）；续写用尽仍截断则附可见告警（提示调大 max_tokens）。
+  - 顺带：消息下方 `· N tokens` 补千分符（`toLocaleString()`，与顶栏累计风格统一）。
+- 验证：cargo test **103 passed** · clippy `-D warnings` 干净 · vue-tsc 干净 · vitest **33 passed**
+- 建议：把 Profile 的 `max_tokens` 从 4096 调到 8192/16384，可减少续写轮次。
 
 ---
 

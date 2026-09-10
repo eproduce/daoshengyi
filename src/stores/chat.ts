@@ -4203,6 +4203,7 @@ export const useChatStore = defineStore("chat", () => {
         toolCall: ToolCall | null;
         content: string;
         nativeCalls?: NativeToolCallMsg[] | null;
+        finishReason?: string | null;
       }> {
         const nativeToolsActive = !!tools && tools.length > 0;
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
@@ -4217,6 +4218,7 @@ export const useChatStore = defineStore("chat", () => {
         const roundUnlisten: UnlistenFn[] = [];
         let toolCall: ToolCall | null = null;
         let nativeCalls: NativeToolCallMsg[] | null = null;
+        let roundFinish: string | null = null; // 本轮结束原因（stop/length/…），length=被 max_tokens 截断
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
         let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
 
@@ -4342,10 +4344,20 @@ export const useChatStore = defineStore("chat", () => {
             if (e.payload.request_id && e.payload.request_id !== requestId) return;
             rejectDone(new Error(e.payload.error || "模型流式错误"));
           }),
-          await listen<string>("sse-done", (e) => {
-            if (e.payload && e.payload !== requestId) return;
-            resolveDone();
-          }),
+          await listen<string | { request_id?: string; finish_reason?: string }>(
+            "sse-done",
+            (e) => {
+              const p = e.payload;
+              // 兼容两种载荷：取消路径直接发 request_id 字符串；正常结束发 {request_id, finish_reason}
+              if (typeof p === "string") {
+                if (p && p !== requestId) return;
+              } else if (p) {
+                if (p.request_id && p.request_id !== requestId) return;
+                if (p.finish_reason) roundFinish = p.finish_reason;
+              }
+              resolveDone();
+            },
+          ),
         );
 
         // 发起流式（不 await）。注意：stream_chat 失败（网络/Key/模型名错误）时 Rust 直接
@@ -4393,7 +4405,7 @@ export const useChatStore = defineStore("chat", () => {
             );
           }
         }
-        return { toolCall, content: toolBuffer, nativeCalls };
+        return { toolCall, content: toolBuffer, nativeCalls, finishReason: roundFinish };
       }
 
       // 原生 function calling：执行一轮返回的结构化工具调用（一个或多个）。
@@ -4509,6 +4521,7 @@ export const useChatStore = defineStore("chat", () => {
         toolCall: ToolCall | null;
         content: string;
         nativeCalls?: NativeToolCallMsg[] | null;
+        finishReason?: string | null;
       } | null = null;
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
@@ -4783,6 +4796,57 @@ export const useChatStore = defineStore("chat", () => {
             role: "user",
             content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。${editRetryHint}`,
           });
+        }
+      }
+
+      // ── 输出被 max_tokens 截断（finish_reason=length）→ 自动续写 ──
+      // 根因：Profile 的 max_tokens（默认 4096）限制单次输出长度，长报告/多步汇报会写到一半
+      // 被 API 截断；此前**完全不读 finish_reason**，半截话被当作最终答案收尾——现象就是
+      // 「复制出的正文断在半句、任务计划剩余步骤永远停在待办」。这里把已生成部分回填为
+      // assistant 消息，要求模型「紧接其后续写、不要重复」，直到不再截断或达到续写上限；
+      // 用尽后附可见告警，绝不让截断静默发生。
+      if (!stopRequested && roundResult?.finishReason === "length") {
+        const MAX_TRUNCATION_CONTINUES = 2;
+        let rawAcc = roundResult.content;
+        let continues = 0;
+        let stillTruncated = true;
+        while (
+          continues < MAX_TRUNCATION_CONTINUES &&
+          !stopRequested &&
+          round + 1 < MAX_TOOL_ROUNDS
+        ) {
+          continues++;
+          round++;
+          const tail = stripToolJson(rawAcc).trim().slice(-160);
+          dbg(
+            `[loop] 输出被 max_tokens 截断（finish_reason=length），第 ${continues}/${MAX_TRUNCATION_CONTINUES} 次自动续写`,
+          );
+          rustMsgs.push({ role: "assistant", content: rawAcc });
+          rustMsgs.push({
+            role: "user",
+            content:
+              "⚠️ 你上一条回复因达到**输出长度上限**而被截断，最后停在：\n…" +
+              tail +
+              "\n\n请**紧接其后续写**剩余内容：不要重复已写过的部分，不要重新开头，不要重新列提纲，直接从断点接着写完整。",
+          });
+          try {
+            const fr = await streamRound(rustMsgs, nativeToolsOn);
+            const add = stripToolJson(fr.content).trim();
+            if (!add) break;
+            rawAcc = `${rawAcc}\n${add}`;
+            // 把合并结果回写展示层，避免下一轮流式把前半段覆盖掉
+            streamingContent.value = stripToolJson(rawAcc).trim();
+            stillTruncated = fr.finishReason === "length";
+            if (!stillTruncated) break;
+          } catch (e) {
+            dbg(`[loop] 续写轮失败: ${e instanceof Error ? e.message : String(e)}`);
+            break;
+          }
+        }
+        if (continues > 0 && stillTruncated && !stopRequested) {
+          streamingContent.value =
+            stripToolJson(rawAcc).trim() +
+            `\n\n> ⚠️ 本次回复达到输出上限（max_tokens=${config.maxTokens ?? "?"}）被截断，已自动续写 ${continues} 次仍未写完。可在「设置 → API 配置」把 max_tokens 调大（如 8192/16384）后继续，或直接回复「继续」。`;
         }
       }
 

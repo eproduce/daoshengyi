@@ -234,7 +234,20 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
             .collect::<Vec<_>>()
     });
 
-    if reasoning.is_none() && content.is_none() && total.is_none() && tool_calls.is_none() {
+    // 结束原因：最后的 chunk 往往只有 finish_reason（delta 为空），不能因此丢弃
+    let finish_reason = parsed
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if reasoning.is_none()
+        && content.is_none()
+        && total.is_none()
+        && tool_calls.is_none()
+        && finish_reason.is_none()
+    {
         return None;
     }
 
@@ -245,6 +258,7 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
         cache_hit,
         cache_miss,
         tool_calls,
+        finish_reason,
     })
 }
 
@@ -308,6 +322,9 @@ pub struct SSEDelta {
     pub cache_miss: Option<u64>,
     /// 原生 function calling：本 chunk 携带的工具调用分片（有则处理，无则 None）
     pub tool_calls: Option<Vec<StreamToolCallDelta>>,
+    /// 结束原因："stop" 正常结束 / "length" 达到 max_tokens 被截断 / "tool_calls" 等。
+    /// 前端据此判断回复是否被截断（"length" 时必须续写，绝不能把半截话当最终答案）。
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,8 +581,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_sse_line_extracts_finish_reason() {
+        // 最后一个 chunk 往往**只有 finish_reason**（delta 为空）——绝不能因此丢弃：
+        // 前端要靠它判断回复是否被 max_tokens 截断（length）并自动续写，
+        // 否则半截回复会被当成最终答案（现象：正文断在半句、任务计划剩余步骤永远待办）。
+        let line = delta_line(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#);
+        let d = parse_sse_line(&line).expect("仅含 finish_reason 的 chunk 不应被丢弃");
+        assert_eq!(d.finish_reason.as_deref(), Some("length"));
+        assert!(d.content.is_none());
+
+        let stop = delta_line(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#);
+        assert_eq!(
+            parse_sse_line(&stop).unwrap().finish_reason.as_deref(),
+            Some("stop")
+        );
+    }
+
+    #[test]
     fn parse_sse_line_returns_none_for_empty_delta() {
-        // 无 reasoning/content/tool_calls/usage → None（跳过）
+        // 无 reasoning/content/tool_calls/usage/finish_reason → None（跳过）
         let line = delta_line(r#"{"choices":[{"delta":{}}]}"#);
         assert!(parse_sse_line(&line).is_none());
     }

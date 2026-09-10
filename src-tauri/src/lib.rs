@@ -844,6 +844,8 @@ async fn send_message(
     let mut delta_count = 0usize;
     // 原生 function calling：累积整轮流式返回的 tool_calls 分片，结束时合并为结构化工具调用
     let mut tool_deltas: Vec<api::StreamToolCallDelta> = Vec::new();
+    // 结束原因（stop/length/…）：length 表示被 max_tokens 截断，前端据此自动续写
+    let mut finish_reason: Option<String> = None;
     while let Some(chunk) = stream.next().await {
         // 用户点「停止」：前端 cancel_stream 把 request_id 加入取消集合 → 下一个 chunk 到达即停
         if CANCELLED_STREAMS
@@ -874,6 +876,9 @@ async fn send_message(
                         let cm = delta.cache_miss.unwrap_or(0);
                         if let Some(tc) = &delta.tool_calls {
                             tool_deltas.extend(tc.iter().cloned());
+                        }
+                        if let Some(fr) = &delta.finish_reason {
+                            finish_reason = Some(fr.clone());
                         }
                         // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
                         if let Some(c) = &delta.content {
@@ -938,6 +943,9 @@ async fn send_message(
         if let Some(tc) = &delta.tool_calls {
             tool_deltas.extend(tc.iter().cloned());
         }
+        if let Some(fr) = &delta.finish_reason {
+            finish_reason = Some(fr.clone());
+        }
         let _ = app.emit(
             "sse-delta",
             &serde_json::json!({
@@ -965,10 +973,19 @@ async fn send_message(
             }),
         );
     }
-    let done_msg = format!("[sse] 完成, 共 {} 个 delta", delta_count);
+    let done_msg = format!(
+        "[sse] 完成, 共 {} 个 delta, finish_reason={}",
+        delta_count,
+        finish_reason.as_deref().unwrap_or("-")
+    );
     eprintln!("{}", done_msg);
     append_log(&app, &done_msg);
-    let _ = app.emit("sse-done", &request_id);
+    // 带上 finish_reason：前端据此判断是否被 max_tokens 截断（"length" → 自动续写，
+    // 而不是把半截回复当最终答案收尾）
+    let _ = app.emit(
+        "sse-done",
+        &serde_json::json!({ "request_id": request_id, "finish_reason": finish_reason }),
+    );
     Ok(())
 }
 
