@@ -458,7 +458,7 @@ watch(
           >· {{ message.duration }}s</span
         >
         <span v-if="message.role === 'assistant' && message.tokens" class="msg-meta"
-          >· {{ message.tokens }} tokens</span
+          >· {{ message.tokens.toLocaleString() }} tokens</span
         >
         <span v-if="message.role === 'assistant' && message.cost" class="msg-meta"
           >· {{ formatCost(message.cost) }}</span
