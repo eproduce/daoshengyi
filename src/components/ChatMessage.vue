@@ -80,6 +80,13 @@ marked.setOptions({ breaks: true, gfm: true });
 import { LOCAL_FILE_RE } from "@/utils/local-file-re";
 
 function linkifyLocalPaths(s: string): string {
+  // 属性值转义：路径可能含引号 / & / <，直接拼进 HTML 会破坏结构
+  const esc = (v: string) =>
+    v
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   // 符号跳转：路径后紧跟 `:行号`（如 code_search 的 `file:12`）时把行号一并捕获，
   // 点击用 VSCode goto 定位到行；无行号则照常打开文件。
   let out = "";
@@ -91,7 +98,15 @@ function linkifyLocalPaths(s: string): string {
     const line = lineM ? lineM[1] : "";
     out += s.slice(last, idx);
     const name = path.split("/").pop() || path;
-    out += `<a href="#" class="local-file-link" data-path="${encodeURIComponent(path)}"${line ? ` data-line="${line}"` : ""}>📄 ${name}${line ? `:${line}` : ""}</a>`;
+    // href 用真实 file:// 地址，title 放完整路径——这样「悬停看状态栏 / 右键复制链接 /
+    // 复制渲染内容」拿到的是可用地址（旧实现 href="#" 会被解析成页面地址
+    // http://127.0.0.1:1420/# ，复制出来是废链）。点击仍由 onContentClick 拦截
+    // （preventDefault）走 file_exists + open_file，webview 不会真的去导航 file://。
+    // `~/` 开头的路径无法构成合法 file URL → 退回 # 占位（真实路径仍在 data-path/title）。
+    const href = path.startsWith("/")
+      ? `file://${encodeURI(path).replace(/#/g, "%23").replace(/\?/g, "%3F")}`
+      : "#";
+    out += `<a href="${href}" title="${esc(path)}" class="local-file-link" data-path="${encodeURIComponent(path)}"${line ? ` data-line="${line}"` : ""}>📄 ${name}${line ? `:${line}` : ""}</a>`;
     last = idx + path.length + (lineM ? lineM[0].length : 0);
   }
   out += s.slice(last);
