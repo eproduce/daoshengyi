@@ -2,7 +2,23 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-11**
+> **最后更新：2026-09-12**
+
+---
+
+## 2026-09-12
+
+### ✅ 工作流 Phase 3 收尾——会话轨迹自动沉淀为可复用工作流
+> 目标：闭环「做过一次 → 下次直接复用」。原先工作流只能手工在「可视化工作流」里搭，或由 `workflow_*` 工具显式建；本次让 agent **在真实成功的一次执行之后自动把工具序列抽象成工作流**并沉淀，兼顾「不打扰主流程」与「不落垃圾工作流」。
+- **纯函数抽取层**（新增 `src/utils/workflow-mining.ts`，无 IO、可单测）：
+  - `shouldMineWorkflow(steps)` **门控**：实际工作工具 ≥3 个（`MIN_WORK_TOOLS`）、**无任何失败状态**（失败流程无复用价值）、工具**种类 ≥2**（同一工具重复调用属批量操作，抽取无意义）；`NON_WORK_TOOLS` 正则把 `plan_task/plan_update/memory_save/memory_recall/memory_forget/workflow_*/session_*/subagent_*` 排除在「实际工作工具」之外（规划与记忆动作不构成可复用流程）。
+  - `minedWorkflowName(goal, maxLen=24)`：稳定确定名 `自动沉淀：<目标>`（压平空白、剥「」【】引号、超长截断加 `…`）——**同名 upsert**（`workflow_save` 同名覆盖），同类任务反复执行不会堆出一串近似工作流。
+  - `buildMiningPrompt(goal, steps)`：把工具序列渲染成 `N. [server] name 参数=… 结果=…`，并要求节点类型（start/tool/llm/condition/end）、上游用 `{{节点id}}` 引用、`{{user}}` 占位替代本次具体值（文件名/关键词/日期不写死）、3~8 节点、剔除规划/记忆类动作、**只输出工作流 JSON**；参数/结果预览据长度截断并做 `<tmp 路径>` 脱敏。
+  - `parseMinedGraph(raw)`：剥 ``` 代码块 → **按括号平衡**（含字符串感知）取第一个 `{...}`（模型常在 JSON 后附一段解释，直接 `JSON.parse` 会整体失败）→ 校验 `nodes`/`edges` 为数组且 `nodes` 非空 → `normalizeGraph` 补齐 id/label/config 与 x/y 坐标（保证图编辑器直接可用）。
+- **chat.ts 接线**（`mineWorkflowFromTurn`）：本轮结束、`markTaskPlanDoneIfPending()` 之后触发；取 `getRoutedAuxConfig("summarize")` 的辅助模型跑抽象（`thinking_enabled=false`、`max_tokens=4000`、`temperature=0.2`）→ `parseMinedGraph` → **`validateWorkflowGraph` 校验通过才写库**（模型产出非法一律丢弃）→ `workflow_save`（同名覆盖）→ 追加 `fact_type: "workflow"`、`importance: 6` 的记忆（**不进用户画像**，供 `workflow_remember` 同语义检索）→ 返回一行说明。
+- **UX 不打断**：`void …then()` 不 await（不拖慢本轮回复），成功后把 `💾 本次流程已沉淀为可复用工作流「X」（N 个节点）——可在「工具 → 可视化工作流」查看/编辑…` 追加到消息尾部并**补一次 `scheduleSave()`**（追加晚于本轮落库，避免刷新后说明消失）；**全程静默失败**（门控不过/模型不返回/校验不过/任何异常都只写 dbg 日志，绝不影响已生成的回复与任务计划）。
+- 验证：vue-tsc 干净 · vitest **8 files / 49 passed**（新增 `tests/test-workflow-mining.test.ts` 15 例：门控 5、命名 3、提示词 3、解析 4）
+- 注：纯前端改动，无 Rust 变更（cargo 103 / clippy 保持既有结论）。
 
 ---
 

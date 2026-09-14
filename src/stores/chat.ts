@@ -47,6 +47,13 @@ import {
   scoreTaskAgainstWorkflow,
   type WorkflowGraph,
 } from "@/utils/workflow-engine";
+import {
+  buildMiningPrompt,
+  minedWorkflowName,
+  parseMinedGraph,
+  shouldMineWorkflow,
+  type MinedToolStep,
+} from "@/utils/workflow-mining";
 import { markExternalToolResult } from "@/utils/untrusted";
 import { buildSkillRoutingTable, matchSkillsForMessage } from "@/utils/skill-router";
 import {
@@ -911,6 +918,81 @@ function isVagueBody(s: string): boolean {
       sc,
     ) || /无关|与问题不相关/.test(sc)
   );
+}
+
+// ── Phase 3 收尾：会话轨迹 → 可复用工作流（自动沉淀）──────────────────────────
+/// 把「本轮成功完成的工具序列」交给辅助模型抽象成工作流并保存。
+/// 返回给用户看的一行说明（成功沉淀时）；未沉淀/失败返回 null。
+/// 门控严格（实际工作工具 ≥3、无失败、工具种类 ≥2），产出必须通过 validateWorkflowGraph
+/// 校验才会写库；全程静默失败（任何异常都不影响主流程与已生成的回复）。
+async function mineWorkflowFromTurn(goal: string, cards: ChatTool[]): Promise<string | null> {
+  const steps: MinedToolStep[] = cards.map((c) => ({
+    name: c.name,
+    server: c.server,
+    argsPreview: c.argsPreview,
+    resultPreview: c.resultPreview,
+    status: c.status,
+  }));
+  const gate = shouldMineWorkflow(steps);
+  if (!gate.ok) {
+    dbg(`[mine] 跳过工作流沉淀：${gate.reason}`);
+    return null;
+  }
+  const store = useChatStore();
+  const config = store.getRoutedAuxConfig("summarize");
+  if (!config.baseUrl || !config.apiKey) return null;
+  try {
+    const data = await invoke<{ content?: string }>("chat_once", {
+      config: {
+        base_url: config.baseUrl,
+        api_key: config.apiKey,
+        model: config.model,
+        max_tokens: 4000,
+        temperature: 0.2,
+        thinking_enabled: false,
+        reasoning_effort: "low",
+        system_prompt:
+          "你是严谨的工作流抽象器，只输出合法 JSON（工作流图），不要任何解释或 markdown 代码块。",
+        enable_web_search: false,
+      },
+      messages: [{ role: "user", content: buildMiningPrompt(goal, steps) }],
+    });
+    const graph = parseMinedGraph(data?.content || "");
+    if (!graph) {
+      dbg("[mine] 模型未返回可解析的工作流 JSON，跳过");
+      return null;
+    }
+    const verr = validateWorkflowGraph(graph);
+    if (verr) {
+      dbg(`[mine] 生成的工作流不合法（未保存）：${verr}`);
+      return null;
+    }
+    const name = minedWorkflowName(goal);
+    await invoke<number>("workflow_save", { name, graph: JSON.stringify(graph) });
+    // 同步沉淀「任务类型 → 工作流」记忆（与 workflow_remember 同语义；重要度 6 不进用户画像）
+    try {
+      const fact = `任务类型「${(goal || "").slice(0, 60)}」可复用已沉淀工作流「${name}」，同类任务直接用 workflow_run 执行`;
+      await invoke("save_fact", {
+        fact: {
+          id: uuidv4(),
+          conversation_id: null,
+          fact,
+          fact_type: "workflow",
+          importance: 6,
+          access_count: 0,
+          last_accessed: null,
+          created_at: Date.now(),
+        },
+      });
+    } catch {
+      /* 记忆沉淀失败不影响工作流保存 */
+    }
+    dbg(`[mine] 已沉淀工作流「${name}」（${graph.nodes.length} 个节点）`);
+    return `💾 本次流程已沉淀为可复用工作流「${name}」（${graph.nodes.length} 个节点）——可在「工具 → 可视化工作流」查看/编辑，同类任务下次会自动想起并复用。`;
+  } catch (e) {
+    dbg(`[mine] 工作流沉淀失败（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
 }
 
 /// 任务收尾兜底：把「确实已开始执行」的进行中步骤标记为 done，
@@ -4907,6 +4989,18 @@ export const useChatStore = defineStore("chat", () => {
       // 标 done —— 避免「啥都没输出却把计划显示成全部完成」的假象。
       if (!isVagueBody(streamingContent.value)) {
         markTaskPlanDoneIfPending();
+      }
+      // Phase 3 收尾：本轮工具序列若成功且有复用价值 → 异步抽象成可复用工作流并沉淀。
+      // 不 await（不拖慢本轮回复）；完成后把说明追加到消息尾部告知用户。
+      if (!stopRequested && toolCards.length > 0) {
+        const cardsSnapshot = toolCards.slice();
+        void mineWorkflowFromTurn(text, cardsSnapshot).then((note) => {
+          if (note) {
+            assistantMsg.content = `${assistantMsg.content}\n\n> ${note}`;
+            // 追加的说明晚于本轮落库，补一次保存，避免刷新后说明消失
+            scheduleSave();
+          }
+        });
       }
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
