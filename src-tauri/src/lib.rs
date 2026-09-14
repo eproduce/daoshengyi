@@ -5495,11 +5495,306 @@ fn apply_global_shortcuts(
     Ok(())
 }
 
+// ── 系统托盘状态（Phase 5 增强）：实时展示任务进度与当前上下文 ──────────────────
+//
+// 设计：前端把「当前任务快照」推给 Rust（`tray_set_status`），Rust 负责渲染到
+// 托盘标题 / 菜单；推送节奏由前端节流（>=400ms 且内容变化才推），Rust 侧再做一次
+// 序列化去重，避免无谓的菜单重建。托盘始终显示最近一次状态，窗口隐藏时也能看进度。
+
+/// 托盘中的单个任务步骤
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayStep {
+    /// 步骤文案
+    pub text: String,
+    /// pending | doing | done | failed | terminated
+    pub status: String,
+}
+
+/// 托盘状态快照（前端推送）
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayStatus {
+    /// 阶段：idle（空闲，清空托盘状态）/ working / paused / done
+    #[serde(default)]
+    pub phase: String,
+    /// 任务标题（如「分析项目结构」）
+    #[serde(default)]
+    pub title: String,
+    /// 进度文案（如 "2/5"）
+    #[serde(default)]
+    pub progress: String,
+    /// 步骤清单（只展示前 8 条，避免菜单过长）
+    #[serde(default)]
+    pub steps: Vec<TrayStep>,
+    /// 当前正在执行的工具（如 "read_file src/utils/tokens.ts"）
+    #[serde(default)]
+    pub tool: String,
+    /// 底部摘要信息（耗时 · token · 队列）
+    #[serde(default)]
+    pub meta: String,
+}
+
+/// 托盘状态存储（由前端推送驱动）
+struct TrayStatusState(std::sync::Mutex<Option<TrayStatus>>);
+
+/// 阶段 → 步骤符号
+fn tray_step_symbol(status: &str) -> &'static str {
+    match status {
+        "done" => "✓",
+        "doing" => "◐",
+        "failed" => "✗",
+        "terminated" => "⊘",
+        _ => "○",
+    }
+}
+
+/// 托盘标题栏文案（macOS 显示在图标右侧；过长会挤占菜单栏，严格限长）
+/// 返回 None 表示清空标题。
+fn tray_title_text(status: &TrayStatus) -> Option<String> {
+    let phase = status.phase.as_str();
+    match phase {
+        "" | "idle" => None,
+        "paused" => Some("已暂停".to_string()),
+        "done" => Some("已完成".to_string()),
+        _ => {
+            if !status.progress.is_empty() {
+                Some(status.progress.clone())
+            } else if !status.title.is_empty() {
+                // 标题最长 8 个字符，超出截断（菜单栏空间宝贵）
+                let t: String = status.title.chars().take(8).collect();
+                Some(if status.title.chars().count() > 8 {
+                    format!("{t}…")
+                } else {
+                    t
+                })
+            } else {
+                Some("运行中".to_string())
+            }
+        }
+    }
+}
+
+/// 默认托盘菜单（无任务状态时）
+fn tray_menu_default(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    Menu::with_items(
+        app,
+        &[
+            &MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?,
+            &MenuItem::with_id(app, "tray-new-chat", "新建对话", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some("退出道生一"))?,
+        ],
+    )
+}
+
+/// 带任务进度的托盘菜单：状态区（不可点击）+ 操作区
+fn tray_menu_with_status(
+    app: &tauri::AppHandle,
+    status: &TrayStatus,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
+
+    // 进度区条目统一 disabled（仅展示，不响应点击）
+    let mut boxes: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
+
+    if let Some(title_text) = tray_title_text(status) {
+        let head = if status.progress.is_empty() {
+            format!("● {title_text}")
+        } else {
+            format!("● {} {}", status.title, status.progress)
+        };
+        boxes.push(Box::new(MenuItem::with_id(
+            app,
+            "tray-head",
+            head,
+            false,
+            None::<&str>,
+        )?));
+    }
+
+    for (i, step) in status.steps.iter().take(8).enumerate() {
+        boxes.push(Box::new(MenuItem::with_id(
+            app,
+            format!("tray-step-{i}"),
+            format!("{} {}", tray_step_symbol(&step.status), step.text),
+            false,
+            None::<&str>,
+        )?));
+    }
+
+    if !status.tool.is_empty() {
+        boxes.push(Box::new(MenuItem::with_id(
+            app,
+            "tray-tool",
+            format!("🔧 {}", status.tool),
+            false,
+            None::<&str>,
+        )?));
+    }
+    if !status.meta.is_empty() {
+        boxes.push(Box::new(MenuItem::with_id(
+            app,
+            "tray-meta",
+            format!("⏱ {}", status.meta),
+            false,
+            None::<&str>,
+        )?));
+    }
+
+    boxes.push(Box::new(PredefinedMenuItem::separator(app)?));
+    boxes.push(Box::new(MenuItem::with_id(
+        app,
+        "tray-show",
+        "显示主窗口",
+        true,
+        None::<&str>,
+    )?));
+    // 仅在工作/暂停时可「停止生成」，避免空闲时误点
+    if matches!(status.phase.as_str(), "working" | "paused") {
+        boxes.push(Box::new(MenuItem::with_id(
+            app,
+            "tray-stop",
+            "停止生成",
+            true,
+            None::<&str>,
+        )?));
+    }
+    boxes.push(Box::new(MenuItem::with_id(
+        app,
+        "tray-new-chat",
+        "新建对话",
+        true,
+        None::<&str>,
+    )?));
+    boxes.push(Box::new(PredefinedMenuItem::separator(app)?));
+    boxes.push(Box::new(PredefinedMenuItem::quit(
+        app,
+        Some("退出道生一"),
+    )?));
+
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = boxes.iter().map(|b| b.as_ref()).collect();
+    Menu::with_items(app, &refs)
+}
+
+/// 前端推送任务状态 → 渲染到托盘标题/菜单（节流由前端保证）
+#[tauri::command]
+fn tray_set_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TrayStatusState>,
+    status: TrayStatus,
+) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    // 内容未变则不重建菜单（序列化去重，避免高频 menu 重建）
+    let changed = match guard.as_ref() {
+        Some(prev) => serde_json::to_string(prev).ok() != serde_json::to_string(&status).ok(),
+        None => true,
+    };
+    if !changed {
+        return Ok(());
+    }
+    let idle = matches!(status.phase.as_str(), "" | "idle");
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_title(tray_title_text(&status).as_deref());
+        // tooltip 在 macOS 状态项上系统通常不渲染（Linux 也不支持），仅 Windows 有效
+        let tip = if idle {
+            "道生一 - AI Agent".to_string()
+        } else {
+            let mut parts = vec!["道生一".to_string()];
+            if !status.title.is_empty() {
+                parts.push(status.title.clone());
+            }
+            if !status.progress.is_empty() {
+                parts.push(status.progress.clone());
+            }
+            if !status.tool.is_empty() {
+                parts.push(status.tool.clone());
+            }
+            parts.join(" · ")
+        };
+        let _ = tray.set_tooltip(Some(tip.as_str()));
+        let menu = if idle {
+            tray_menu_default(&app)
+        } else {
+            tray_menu_with_status(&app, &status)
+        };
+        if let Ok(m) = menu {
+            if let Err(e) = tray.set_menu(Some(m)) {
+                eprintln!("[tray] 更新菜单失败: {e}");
+            }
+        }
+    }
+    *guard = Some(status);
+    Ok(())
+}
+
+/// 当前是否已获得系统通知权限
+fn notification_granted(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    matches!(
+        app.notification().permission_state(),
+        Ok(PermissionState::Granted)
+    )
+}
+
+/// 发送系统通知（任务完成 / 最终产物就绪）
+///
+/// only_when_unfocused=true 时，用户正看着窗口则不打扰（返回 false 表示未发送）。
+#[tauri::command]
+fn notify_user(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    only_when_unfocused: bool,
+) -> Result<bool, String> {
+    use tauri_plugin_notification::NotificationExt;
+    if only_when_unfocused {
+        if let Some(win) = app.get_webview_window("main") {
+            let focused = win.is_focused().unwrap_or(false);
+            let visible = win.is_visible().unwrap_or(false);
+            if focused && visible {
+                return Ok(false);
+            }
+        }
+    }
+    // 未授予权限则静默跳过（不弹错，避免打断主流程）
+    if !notification_granted(&app) {
+        return Ok(false);
+    }
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 查询系统通知权限是否已授予
+#[tauri::command]
+fn notification_permission_granted(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(notification_granted(&app))
+}
+
+/// 主动请求通知权限（首次会弹系统授权框）；返回最终是否已授予
+#[tauri::command]
+fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    let _ = app.notification().request_permission();
+    Ok(matches!(
+        app.notification().permission_state(),
+        Ok(PermissionState::Granted)
+    ))
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .manage(TrayStatusState(std::sync::Mutex::new(None)))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -5632,28 +5927,9 @@ pub fn run() {
 
             // 系统托盘（Phase 5）：常驻菜单栏图标，左键显示/隐藏主窗口，右键菜单可新建对话/退出。
             // 复用「menu://action」事件通道：前端 main.ts 已有 new-chat 分发，无需新增前端监听。
+            // 菜单在无任务时为默认项；有任务时由 tray_set_status 动态替换为「进度 + 操作」菜单。
             {
-                let tray_menu = tauri::menu::Menu::with_items(
-                    app,
-                    &[
-                        &tauri::menu::MenuItem::with_id(
-                            app,
-                            "tray-show",
-                            "显示主窗口",
-                            true,
-                            None::<&str>,
-                        )?,
-                        &tauri::menu::MenuItem::with_id(
-                            app,
-                            "tray-new-chat",
-                            "新建对话",
-                            true,
-                            None::<&str>,
-                        )?,
-                        &tauri::menu::PredefinedMenuItem::separator(app)?,
-                        &tauri::menu::PredefinedMenuItem::quit(app, Some("退出道生一"))?,
-                    ],
-                )?;
+                let tray_menu = tray_menu_default(app.handle())?;
                 let _tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
                     // macOS 菜单栏用模板图（纯黑+透明，icon_as_template 让系统自动
                     // 适配深/浅色菜单栏；不能用彩色 app 图标——会带背景色块）
@@ -5665,6 +5941,10 @@ pub fn run() {
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "tray-new-chat" => {
                             let _ = app.emit("menu://action", "new-chat");
+                        }
+                        "tray-stop" => {
+                            // 托盘直接停止当前生成（复用前端 stopStreaming 通道）
+                            let _ = app.emit("menu://action", "stop-streaming");
                         }
                         "tray-show" => {
                             if let Some(win) = app.get_webview_window("main") {
@@ -5732,6 +6012,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             app_version,
+            tray_set_status,
+            notify_user,
+            notification_permission_granted,
+            request_notification_permission,
             probe_native_tools,
             send_message,
             chat_once,

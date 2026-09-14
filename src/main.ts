@@ -10,6 +10,7 @@ import { useUiStore } from "./stores/ui";
 import { askConfirm } from "./utils/dialog";
 import { installGlobalErrorLog } from "./utils/error-log";
 import { initGlobalTooltips } from "./utils/tooltip";
+import { startTrayStatusSync } from "./composables/useTrayStatus";
 import "./assets/styles/main.css";
 
 // 全局错误本地日志：在应用挂载前安装，捕获 Vue 初始化期与运行期未捕获错误
@@ -34,6 +35,9 @@ listen("ollama-configured", () => {
 });
 app.mount("#app");
 
+// 系统托盘状态同步：把任务进度 / 当前上下文实时推送到菜单栏（Rust 侧渲染标题与菜单）
+startTrayStatusSync();
+
 // 系统菜单栏事件分发：菜单在 src-tauri/src/lib.rs 构建，点击后经 Rust
 // on_menu_event 转发为 "menu://action" 事件，这里按动作 id 路由到对应功能。
 listen<string>("menu://action", (e) => {
@@ -48,6 +52,10 @@ listen<string>("menu://action", (e) => {
       break;
     case "new-chat":
       chat.createConversation();
+      break;
+    case "stop-streaming":
+      // 托盘菜单「停止生成」：与界面上的停止按钮同一路径
+      chat.stopStreaming();
       break;
     case "export-md":
       ui.requestExport();

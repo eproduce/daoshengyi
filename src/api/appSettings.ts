@@ -70,6 +70,8 @@ export interface AppSettingsPayload {
   ssrfAllowHosts: string[];
   /// O2 SSRF 白名单：允许访问私有地址的 hostname（环回仍拦）
   ssrfAllowPrivateHosts: string[];
+  /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
+  notifyOnFinish: boolean;
 }
 
 let cache: AppSettingsPayload = {
@@ -101,6 +103,7 @@ let cache: AppSettingsPayload = {
   ssrfAllowLoopback: true,
   ssrfAllowHosts: [],
   ssrfAllowPrivateHosts: [],
+  notifyOnFinish: true,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

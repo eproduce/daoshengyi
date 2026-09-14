@@ -38,6 +38,7 @@ import {
   MessagesSquare,
   ListChecks,
   History,
+  Bell,
   Terminal as TerminalIcon,
 } from "lucide-vue-next";
 
@@ -326,6 +327,42 @@ function resetShortcuts() {
   shortcutNewChat.value = "CommandOrControl+Shift+K";
   saveShortcuts();
 }
+
+// ── 系统通知：任务完成 / 最终产物就绪时提醒（窗口未聚焦时才发） ──
+const notifyOnFinish = ref(getSettings().notifyOnFinish ?? true);
+const notifGranted = ref<boolean | null>(null);
+async function refreshNotifPermission() {
+  try {
+    notifGranted.value = await invoke<boolean>("notification_permission_granted");
+  } catch {
+    notifGranted.value = null;
+  }
+}
+function saveNotify() {
+  updateSettings({ notifyOnFinish: notifyOnFinish.value });
+}
+async function requestNotif() {
+  try {
+    notifGranted.value = await invoke<boolean>("request_notification_permission");
+    if (notifGranted.value) notify("已获得通知权限");
+    else notify("未获得通知权限：可在「系统设置 → 通知」中手动允许「道生一」");
+  } catch (e) {
+    notify(`请求通知权限失败：${e}`);
+  }
+}
+async function testNotify() {
+  try {
+    const ok = await invoke<boolean>("notify_user", {
+      title: "道生一 · 通知测试",
+      body: "任务完成时就会这样提醒你（窗口在前台时不打扰）",
+      onlyWhenUnfocused: false, // 测试时强制发送
+    });
+    if (!ok) notify("通知未发送：可能尚未获得系统通知权限，请先点「请求权限」");
+  } catch (e) {
+    notify(`测试通知失败：${e}`);
+  }
+}
+refreshNotifPermission();
 
 // 切换编辑目标
 function selectProfile(id: string) {
@@ -994,6 +1031,37 @@ function handleDelete() {
             <button class="settings-reset-btn" @click="resetShortcuts">
               恢复默认（⌘⇧Space / ⌘⇧K）
             </button>
+
+            <h3 style="margin-top: 22px"><Bell :size="17" /> 系统通知</h3>
+            <p class="ollama-desc">
+              任务完成或给出最终产物时发系统通知。仅当主窗口不在前台时才提醒（正在看着屏幕时
+              不打扰），用户主动「停止生成」也不会误报为完成。
+            </p>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="notifyOnFinish" type="checkbox" @change="saveNotify" />
+                <span>任务完成时发送系统通知</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>系统通知权限</label>
+              <span class="form-hint">
+                {{
+                  notifGranted === null
+                    ? "状态未知（可能是开发模式运行，未打包为 .app 时 macOS 不弹授权）"
+                    : notifGranted
+                      ? "✅ 已允许"
+                      : "❌ 未允许 —— 点右侧按钮请求，或到「系统设置 → 通知 → 道生一」开启"
+                }}
+              </span>
+              <div style="display: flex; gap: 8px; margin-top: 8px">
+                <button class="settings-reset-btn" @click="requestNotif">请求权限</button>
+                <button class="settings-reset-btn" @click="testNotify">发送测试通知</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

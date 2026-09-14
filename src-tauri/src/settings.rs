@@ -118,6 +118,9 @@ pub struct AppSettings {
     /// O2 SSRF 白名单：允许访问私有地址的 hostname（环回/链路本地/未指定仍拦）
     #[serde(default)]
     pub ssrf_allow_private_hosts: Vec<String>,
+    /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
+    #[serde(default = "default_true")]
+    pub notify_on_finish: bool,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -179,6 +182,7 @@ impl Default for AppSettings {
             ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
+            notify_on_finish: true,
         }
     }
 }
@@ -435,6 +439,7 @@ mod tests {
             ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
+            notify_on_finish: true,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -490,6 +495,7 @@ mod tests {
             ssrf_allow_loopback: true,
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
+            notify_on_finish: true,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

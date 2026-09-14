@@ -196,6 +196,11 @@ function loadMode(): AgentModeId {
   return "chat";
 }
 const activeModeId = ref<AgentModeId>(loadMode());
+/// 当前正在执行的工具标签（如 "read_file" / "github · create_issue"）。
+/// 模块级：供系统托盘实时展示「当前上下文」；在 callMcpTool 中央漏斗写入，本轮结束清空。
+const currentToolLabel = ref("");
+/// 本轮开始时间戳（毫秒；0=空闲）。供托盘展示已耗时。
+const turnStartedAt = ref(0);
 /// 模式使用频次（供 UI 显示「常用」；不参与响应式，读取时解析 localStorage）
 function readModeHist(): Record<string, number> {
   try {
@@ -707,6 +712,9 @@ export async function callMcpTool(
   tool: string,
   args: Record<string, unknown>,
 ): Promise<string> {
+  // 托盘「当前上下文」：记录正在执行的工具（本轮结束清空）
+  currentToolLabel.value =
+    server === "app" || server === "builtin" ? tool : `${server} · ${tool}`;
   // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
@@ -918,6 +926,52 @@ function isVagueBody(s: string): boolean {
       sc,
     ) || /无关|与问题不相关/.test(sc)
   );
+}
+
+// ── 系统通知：任务完成 / 最终产物就绪 ─────────────────────────────────────
+/// 把 Markdown 正文压成适合通知展示的一小段纯文本（去代码块/标记符号，压平空白）
+function plainTextForNotice(md: string, max = 140): string {
+  const t = md
+    .replace(/```[\s\S]*?```/g, " ") // 代码块整体去掉（通知里读不出意义）
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ") // 图片
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // 链接只留文字
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "") // 标题标记
+    .replace(/^\s{0,3}>\s?/gm, "") // 引用
+    .replace(/^\s*[-*+]\s+/gm, "") // 列表符号
+    .replace(/[*_`~]/g, "") // 强调符号
+    .replace(/\s+/g, " ")
+    .trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/// 本轮正常结束时发系统通知（窗口未聚焦时才打扰；Rust 侧判聚焦）
+function notifyTurnFinished(content: string, toolCount: number): void {
+  try {
+    if (stopRequested) return; // 用户主动停止 ≠ 完成，不误报
+    if (!getSettings().notifyOnFinish) return;
+    const body = plainTextForNotice(content);
+    if (!body) return; // 空正文（如本地命令/空洞回复）不打扰
+    const plan = useChatStore().taskPlan;
+    const planAllDone =
+      !!plan && plan.steps.length > 0 && plan.steps.every((s) => s.status === "done");
+    const title = planAllDone
+      ? "✅ 任务完成"
+      : toolCount > 0
+        ? "✅ 执行完成"
+        : "💬 回复完成";
+    const suffix = plan
+      ? `（${plan.steps.filter((s) => s.status === "done").length}/${plan.steps.length} 步）`
+      : "";
+    invoke("notify_user", {
+      title,
+      body: suffix ? `${body}\n${suffix}` : body,
+      onlyWhenUnfocused: true,
+    }).catch(() => {
+      /* 通知失败不影响主流程（未授权/系统未打包等） */
+    });
+  } catch {
+    /* 通知为增值功能，任何异常都不打断本轮 */
+  }
 }
 
 // ── Phase 3 收尾：会话轨迹 → 可复用工作流（自动沉淀）──────────────────────────
@@ -3862,6 +3916,9 @@ export const useChatStore = defineStore("chat", () => {
     streamingContent.value = "";
     streamingReasoning.value = "";
     const startTime = Date.now();
+    // 托盘进度：标记本轮开始（供展示已耗时），并清空上一轮的工具标签
+    turnStartedAt.value = startTime;
+    currentToolLabel.value = "";
 
     // 图片预处理：主模型非视觉（如 DeepSeek）→ 先用本地 Ollama 识别图片转成文字描述。
     // 描述作为上下文注入 system（模型可见），不写入用户消息，避免"分析内容"污染用户对话。
@@ -5004,6 +5061,9 @@ export const useChatStore = defineStore("chat", () => {
       }
       // 任务结束：断开浏览器服务器，形成使用闭环
       await closeBrowserIfOpen();
+      // 系统通知：任务完成 / 最终产物就绪（窗口未聚焦时才打扰，避免盯着屏幕被弹窗打断）
+      // 注：此处 streamingContent 已是本轮最终正文（finally 才做落库装配）
+      notifyTurnFinished(streamingContent.value, toolCards.length);
     } catch (err: unknown) {
       if (err instanceof Error) {
         let msg = err.message;
@@ -5258,6 +5318,7 @@ export const useChatStore = defineStore("chat", () => {
     streamingContent,
     streamingReasoning,
     pendingCount,
+    currentToolLabel,
     switchProfile,
     updateProfile,
     addProfile,

@@ -2,7 +2,31 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-12**
+> **最后更新：2026-09-15**
+
+---
+
+## 2026-09-15
+
+### ✅ 系统托盘实时展示任务进度 + 任务完成系统通知（Phase 5 增强）
+> 需求：能在系统菜单栏实时看到「任务进度 + 当前上下文」；任务完成/给出最终产物时发系统通知。
+- **Rust 侧（`lib.rs`）**：
+  - 新增 `TrayStatus` / `TrayStep` 快照结构与 `TrayStatusState`（`std::sync::Mutex`，注意本文件顶部导入的是 `tokio::sync::Mutex`，必须显式写全路径），命令 `tray_set_status` 接收前端推送。
+  - 渲染逻辑：`tray.set_title()` 写菜单栏文字（**限长 8 字符**，避免挤占菜单栏；空闲/`idle` 时清空）、`set_tooltip()`（仅 Windows 有效，macOS 状态项系统不渲染）、`set_menu()` 动态重建——无任务用默认菜单，有任务用「进度区（标题 + `◐/✓/○` 步骤清单，最多 8 条 + 🔧 当前工具 + ⏱ 耗时摘要，均 disabled 只展示）+ 操作区（显示主窗口 / 停止生成 / 新建对话 / 退出）」。
+  - 原托盘菜单构建抽成 `tray_menu_default()` 复用；新增 `tray-stop` 菜单项 → 复用 `menu://action` 通道（前端 `main.ts` 新增 `stop-streaming` 分支 → `chat.stopStreaming()`）。
+  - **去重**：对快照做 `serde_json` 序列化比较，内容未变则不重建菜单（菜单重建有平台开销）。
+- **通知（新增依赖 `tauri-plugin-notification`）**：
+  - 命令 `notify_user(title, body, only_when_unfocused)`：窗口「可见且聚焦」时直接跳过（返回 `false`）——正在看屏幕就不打扰；未授权则静默跳过不打断主流程。
+  - `notification_permission_granted` / `request_notification_permission`：供设置页展示权限状态与主动申请。
+  - 注意：Rust API 是 `permission_state()`（配 `PermissionState::Granted`），**没有** `is_permission_granted()`（JS 侧才有该名字）。
+- **前端**：
+  - 新增 `src/composables/useTrayStatus.ts`：组装载荷 + **400ms trailing 节流** + 「签名」去重（签名只含阶段/任务标题/步骤状态/当前工具/队列/子代理数，**不含逐 token 变化的流式正文**，否则会疯狂重建菜单）；工作期间 5s 心跳刷新耗时；`isStreaming` true→false 时生成「已完成」快照并**停留 8s** 再清空，方便离开窗口后回来知道刚做完什么。`main.ts` 挂载后调用一次。
+  - `chat.ts`：模块级 `currentToolLabel`（在 `callMcpTool` 中央漏斗写入，`server · tool` 形式）+ `turnStartedAt`（本轮起点），随 store 导出供托盘读取。
+  - `chat.ts` 新增 `notifyTurnFinished()`：本轮 try 正常收尾后触发；**用户主动停止不误报**（`stopRequested` 守卫）、空/空洞正文不打扰、标题按「计划全完成 / 有工具执行 / 纯回复」分三档，正文用 `plainTextForNotice()` 把 Markdown 压成 ≤140 字纯文本（去代码块、链接只留文字、去标记符号）。
+  - 设置项 `notifyOnFinish`（默认开，`settings.rs` + `appSettings.ts` 双向同步）与「设置 → 快捷键」页新增**系统通知**区块：开关 + 权限状态 + 「请求权限」+「发送测试通知」。
+- **已知平台限制**：`set_title` Windows 不支持（走 tooltip）、Linux 需同时有图标；macOS 上 tooltip 不渲染，故 mac 以「标题文字 + 菜单」为有效展示面。
+- **开发模式限制（重要）**：macOS 未打包进程没有 bundle 标识，通知授权会失败 → `tauri dev` 需带 `__CFBundleIdentifier=com.daoshengyi.app` 启动（已按此重启验证）；正式 `tauri build` 打包后无此问题。
+- 验证：clippy `-D warnings` 干净 · cargo test --lib **103 passed** · vue-tsc 干净 · vitest **8 files / 49 passed**
 
 ---
 
