@@ -9,6 +9,7 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import AboutDialog from "./components/AboutDialog.vue";
 import WorkflowDialog from "./components/WorkflowDialog.vue";
 import DiffConfirmDialog from "./components/DiffConfirmDialog.vue";
+import AskInputDialog from "./components/AskInputDialog.vue";
 import UndoHistoryDialog from "./components/UndoHistoryDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
@@ -442,6 +443,7 @@ onUnmounted(() => {
 
     <!-- P-A4 应用内 diff 确认（文件编辑需确认时弹出） -->
     <DiffConfirmDialog />
+    <AskInputDialog />
   </div>
 </template>
 

@@ -88,6 +88,11 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
   model: string;
+  /// 上下文压缩（融合 Codex 的 new_context_window）：发送给模型的历史中，跳过
+  /// 下标 < compactBefore 的消息（下标口径 = messages 过滤系统/流式后的序号），
+  /// 改注入 compactSummary 摘要。**界面仍展示全部消息**，只影响模型可见上下文。
+  compactBefore?: number;
+  compactSummary?: string;
 }
 
 /// API 请求体（兼容格式）

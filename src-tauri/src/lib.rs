@@ -3763,6 +3763,48 @@ fn redirect_home_root(path: &str, home: &str) -> Option<String> {
 mod artifact_helpers_tests {
     use super::*;
 
+    #[test]
+    fn sanitize_file_stem_filters_unsafe_chars() {
+        assert_eq!(sanitize_file_stem("read_file"), "read_file");
+        assert_eq!(sanitize_file_stem("mcp/evil:../x"), "mcp_evil_.._x");
+        // 路径穿越尝试被拍平：无分隔符、无前导点
+        assert_eq!(sanitize_file_stem("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(sanitize_file_stem("..."), "tool");
+        assert_eq!(sanitize_file_stem(""), "tool");
+        // 中文/空格等非安全字符一律替换并限长
+        let long = "工".repeat(100);
+        assert_eq!(sanitize_file_stem(&long).chars().count(), 48);
+    }
+
+    #[test]
+    fn prune_tool_outputs_keeps_newest() {
+        let dir = std::env::temp_dir().join(format!("dsy-toolout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "a-20260101-000000.000.txt",
+            "a-20260102-000000.000.txt",
+            "a-20260103-000000.000.txt",
+            "a-20260104-000000.000.txt",
+            "a-20260105-000000.000.txt",
+        ] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        prune_tool_outputs(&dir, 2);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 2, "只保留最新 2 份: {:?}", left);
+        assert!(left[0].contains("20260104"), "保留的应是较新的: {:?}", left);
+        assert!(left[1].contains("20260105"), "保留的应是较新的: {:?}", left);
+        // 目录不存在时不应 panic
+        prune_tool_outputs(&dir.join("not-exist"), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn png_uri(w: u32, h: u32) -> String {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
         let mut buf: Vec<u8> = Vec::new();
@@ -6028,6 +6070,65 @@ fn browser_app_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
 
+// ── 超长工具结果落盘（诊断报告②：单轮上下文预算）────────────────────────────
+// 工具输出过长时，过去直接截断丢内容。现在把**完整副本**写到应用数据目录供 agent
+// 用 read_file 分段取回，回填给模型的只留「首 + 尾 + 路径」，控制单轮上下文膨胀。
+
+/// 工具输出最多保留份数（按文件名时间戳淘汰最旧的）
+const TOOL_OUTPUT_KEEP: usize = 100;
+
+/// 文件名片段清洗：只保留字母数字与 `_-.`（无路径分隔符即安全），去掉首尾的点
+/// （避免 `..` / 隐藏文件），限长，空则兜底 "tool"
+fn sanitize_file_stem(tool: &str) -> String {
+    let mapped: String = tool
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = mapped.trim_matches('.');
+    if trimmed.is_empty() {
+        return "tool".to_string();
+    }
+    trimmed.chars().take(48).collect()
+}
+
+/// 保留最新的 `keep` 份（文件名内嵌时间戳，字典序即时间序），其余删除；目录不存在则忽略
+fn prune_tool_outputs(dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort();
+    let remove_count = files.len() - keep;
+    for p in files.iter().take(remove_count) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// 把完整工具输出落盘，返回真实路径（供回填给模型，让它用 read_file 分段取回）
+#[tauri::command]
+fn save_tool_output(app: tauri::AppHandle, tool: String, content: String) -> Result<String, String> {
+    let dir = browser_app_dir(&app)?.join("tool-output");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+    let path = dir.join(format!("{}-{}.txt", sanitize_file_stem(&tool), ts));
+    std::fs::write(&path, content).map_err(|e| format!("写入失败: {}", e))?;
+    prune_tool_outputs(&dir, TOOL_OUTPUT_KEEP);
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 async fn browser_status() -> serde_json::Value {
     browser::status().await
@@ -6365,6 +6466,7 @@ pub fn run() {
             pty_list,
             exec_command_agent,
             write_stdin_agent,
+            save_tool_output,
             check_command_policy,
             test_command_policy,
             list_exec_rules,

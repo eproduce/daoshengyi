@@ -46,6 +46,15 @@
 - **测试**：新增 `tests/test-tool-search.test.ts`（分词 3 项 + BM25 5 项：英文名、中文自然语言、按名检索、无关词空结果、空索引）；`test-tool-schema.test.ts` 加「超预算进目录不丢弃 + 激活后可在 tools/byName 反查 + 重复激活返回 null」。
 - 内置工具 55 → **56**；验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **119 passed / 8 ignored**
 
+### ✅ 融合 Codex：上下文预算三件套 + 主动提问/申请授权 + 工具结果折叠落盘
+- **`get_context_remaining`**（上下文预算可视化）：用**上轮请求的真实 prompt tokens**（API usage）与本地估算取大者，对比按模型推断的窗口大小，返回「已用/剩余/百分比 + 本次将发送多少条历史 + 收尾建议（≥85% 要求立刻收尾并给出产物路径）」。让模型能自己把握「何时该收尾」。
+- **`new_context_window`**（历史压缩）：把较早的历史压缩成要点摘要（保留用户目标、已确认事实与结论、关键路径/命令、未完成待办），后续请求只发「摘要 + 最近 K 条」（K 默认 6）。**只影响发给模型的历史，界面仍完整保留原始消息**；`Conversation` 新增 `compactBefore`/`compactSummary`（落库随会话保存）。
+- **超长工具结果折叠落盘**（诊断②的另一半）：工具输出 > 6000 字符时，不再直接截断丢内容——完整副本经新 Rust 命令 `save_tool_output` 写到 `<app_data>/tool-output/`（文件名清洗防路径穿越 + 只保留最新 100 份），回填给模型的只留「首 4000 + 尾 1200 + 落盘路径」，模型可用 `read_file`（offset/length）分段取回。
+- **`request_user_input`**（中途提问，不结束回合）：新增应用内弹窗 `AskInputDialog.vue`（沿用 editConfirm 的 Promise 挂起模式；支持快捷选项），用户回答直接作为工具结果回给模型；点「跳过」→ 明确要求模型按合理假设继续、**不得反复追问**；点「停止」自动按跳过处理，避免工具循环挂死。
+- **`request_permissions`**（主动申请会话级授权）：`capability ∈ run_command / replace_string / insert_string / delete_file / apply_patch`，用户同意后记入既有会话许可集（不落盘、重启失效）。同时把会话授权接入命令门禁：已授权 `run_command` 时**危险命令不再逐条确认**，但 execpolicy 的 deny / prompt 规则仍优先、不可绕过。
+- 内置工具 56 → **61**；Rust 新增 2 项单测（文件名清洗、保留策略淘汰最旧）。
+- 验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **121 passed / 8 ignored** · clippy `-D warnings` 干净
+
 ---
 
 ## 2026-09-15（晚间·第 4 批）

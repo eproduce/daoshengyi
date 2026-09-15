@@ -21,7 +21,7 @@ import { useSkillStore } from "./skill";
 import { MCP_CATALOG } from "@/data/mcp-catalog";
 import { useMcpStore, isBrowserServer } from "./mcp";
 import { useMemorySystem } from "./memory";
-import { estimateMessageTokens, estimateCost } from "@/utils/tokens";
+import { estimateMessageTokens, estimateCost, modelContextWindowTokens } from "@/utils/tokens";
 import {
   parseToolCall,
   stripToolJson,
@@ -149,6 +149,8 @@ let mcpToolsRefreshing: Promise<void> | null = null;
 let activeToolRegistry: NativeToolRegistry | null = null;
 /// tool_search 的 BM25 索引（随注册表重建而重建）
 let toolSearchState: { registry: NativeToolRegistry; index: BM25Index } | null = null;
+/// 最近一轮请求的真实 prompt tokens（API usage 回报，最准的「上下文占用」信号）
+let lastPromptTokens = 0;
 
 /// 构建/复用 tool_search 索引（检索范围 = 全部工具目录，含未声明的延迟工具）
 function ensureToolSearchIndex(reg: NativeToolRegistry): BM25Index {
@@ -447,6 +449,36 @@ function resolveEditConfirm(ok: boolean) {
   if (editConfirmResolver) editConfirmResolver(ok);
 }
 
+// 融合 Codex 的 request_user_input：Agent 在长任务中途**向用户提问并等待回答**（不结束回合）。
+// 同样用 Promise 挂起模式；用户点「跳过」或「停止」时返回 null，让 Agent 按假设继续。
+export interface AskInputRequest {
+  question: string;
+  context?: string;
+  placeholder?: string;
+  defaultValue?: string;
+  /** 可选快捷选项（点一下即提交） */
+  choices?: string[];
+}
+const askInput = ref<AskInputRequest | null>(null);
+let askInputResolver: ((answer: string | null) => void) | null = null;
+/** 触发一次「问用户」：返回用户回答；用户跳过/停止 → null */
+function requestAskInput(req: AskInputRequest): Promise<string | null> {
+  askInput.value = req;
+  return new Promise<string | null>((resolve) => {
+    const done = (answer: string | null) => {
+      askInput.value = null;
+      askInputResolver = null;
+      resolve(answer);
+    };
+    askInputResolver = done;
+    waitStopSignal().then(() => done(null));
+  });
+}
+/** 供 AskInputDialog 调用：提交回答（字符串）或跳过（null） */
+function resolveAskInput(answer: string | null) {
+  if (askInputResolver) askInputResolver(answer);
+}
+
 function getMcpToolsPrompt(): string {
   // 内置工具：如实描述特性/优势/适用场景，由大模型根据任务自行选择，不硬编码倾向
   // 通用输出要求：DeepSeek 思考模式易把详细分析留在 reasoning，正文只给简要结论 →
@@ -486,6 +518,10 @@ function getMcpToolsPrompt(): string {
     '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
     '\n- **exec_command** (app): **启动命令并持续交互（交互式/长驻进程专用，融合自 Codex）**：基于 PTY 执行，等待至多 `yield_time_ms`（默认 1000，最大 30000）后返回【本次新增输出 + session_id】；**进程不会因超时被杀**，用 `write_stdin` 继续喂输入/取输出。参数 {"command": "完整 shell 命令", "cwd": "可选工作目录", "yield_time_ms": 可选等待毫秒}。**使用时机**：① 交互式 CLI（`python3 -i`、`psql`、需要确认输入的命令）② 长驻服务（dev server、watch、`tail -f`）③ 需要分段观察输出的长任务。**与 run_command 的区别**：一次性短命令用 run_command（超时即终止）；需要交互或可能长时间运行 → 用本工具。同样受「命令执行策略」门禁；不需要时用 write_stdin 发 `\\u0003`（Ctrl-C）中断。\n' +
     '\n- **write_stdin** (app): **向运行中的 exec_command 会话写输入并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。\n' +
+    '\n- **request_user_input** (app): **向用户提问并等待回答（融合自 Codex）**。参数 {"question": "要问的问题", "context": 可选背景, "choices": 可选快捷选项数组, "default": 可选默认值}。**仅在关键信息缺失/歧义且猜错代价高时用**；能合理假设就先推进并标注假设。用户可点「跳过」，此时请按合理假设继续、不要反复追问。\n' +
+    '\n- **request_permissions** (app): **主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "理由"}。得到授权后本会话同类操作不再逐次弹确认（仅本会话有效；命令策略的 deny 规则仍不可绕过）。预计要连续多次写操作/命令时先申请一次，比逐条触发弹窗更高效。\n' +
+    '\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n' +
+    '\n- **new_context_window** (app): **压缩历史上下文（融合自 Codex）**：把较早的对话历史压缩成要点摘要后继续，腾出上下文空间。参数 {"keep_last_messages": 可选，保留最近几条原始消息（默认 6）}。**使用时机**：历史很长/接近上限但不能丢掉前文结论时。只影响发给模型的历史（界面仍完整保留）；压缩掉的细节请从已落盘文件读取，不要凭记忆臆测。\n' +
     '\n- **tool_search** (app): **检索并激活未直接列出的工具（融合自 Codex，BM25 检索）**。参数 {"query": "自然语言描述你要做的事或能力，中英文均可", "limit": 可选返回条数}。**使用时机**：你需要某类能力（如「数据库查询」「发消息」「抓股票数据」）但当前工具列表里**找不到对应工具**时——先搜一下；系统会把命中的工具立即加入可用工具。也可用于**确认某个工具的真实参数名**（不要靠猜）。不要用它做普通信息搜索（那用 web_search）。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
@@ -1170,6 +1206,11 @@ function isRealWorkTool(tool: string): boolean {
 }
 
 const MAX_TOOL_RESULT_CHARS = 6000;
+/// 折叠后保留的首/尾字符数（中间省略，完整内容落盘）
+const TOOL_RESULT_HEAD = 4000;
+const TOOL_RESULT_TAIL = 1200;
+
+/// 同步版截断（子代理循环等不便 await 的场景）
 function truncateToolResult(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
   return (
@@ -1177,6 +1218,27 @@ function truncateToolResult(result: string): string {
     `\n\n…[工具结果过长已截断（原 ${result.length} 字符，仅保留前 ${MAX_TOOL_RESULT_CHARS} 字符）。` +
     `如确需完整内容，请缩小查询范围或用更精准的参数重新调用工具]`
   );
+}
+
+/// 超长工具结果处理（诊断报告②：单轮上下文预算）：**不再直接截断丢内容**——
+/// 把完整副本落盘到应用数据目录（`save_tool_output`），回填给模型的只留「首 + 尾 + 路径」，
+/// 模型可用 read_file（offset/length）分段取回。既控制单轮上下文膨胀，又不丢信息。
+async function foldToolResult(tool: string, result: string): Promise<string> {
+  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  let savedPath = "";
+  try {
+    savedPath = await invoke<string>("save_tool_output", { tool, content: result });
+  } catch {
+    /* 落盘失败 → 退化为纯截断（绝不因落盘问题打断工具循环） */
+  }
+  const head = result.slice(0, TOOL_RESULT_HEAD);
+  const tail = result.slice(-TOOL_RESULT_TAIL);
+  const omitted = result.length - TOOL_RESULT_HEAD - TOOL_RESULT_TAIL;
+  const note = savedPath
+    ? `\n\n…[结果过长已折叠：原 ${result.length} 字符，中间省略 ${omitted} 字符。**完整内容已保存**：${savedPath}\n` +
+      `需要中间细节时用 read_file（path=${savedPath}，可配合 offset/length 分段读取）取回；不要凭首尾片段臆测中间内容]`
+    : `\n\n…[工具结果过长已截断（原 ${result.length} 字符；完整内容落盘失败），如需完整内容请缩小查询范围]`;
+  return `${head}\n\n………\n\n${tail}${note}`;
 }
 
 /// 上下文总长保护阈值（字符）：工具结果持续回填会让 messages 逼近模型上限
@@ -1786,6 +1848,137 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return res.startsWith("merged:")
         ? `✅ 已更新处理模式记忆（并入已有条目）。以后遇到「${taskType}」类任务会自动想起工作流「${workflowName}」。`
         : `✅ 已记住处理模式：${taskType} → 工作流「${workflowName}」。以后同类任务会自动想起，直接 workflow_run 复用。`;
+    }
+    case "request_user_input": {
+      // 融合 Codex 的 request_user_input：长任务中途向用户提问并等回答（不结束回合）
+      const question = String(args.question ?? args.prompt ?? "").trim();
+      if (!question) throw new Error("request_user_input 需要 question 参数（要问用户的问题）");
+      const choices = Array.isArray(args.choices)
+        ? (args.choices as unknown[]).map((c) => String(c)).filter(Boolean).slice(0, 6)
+        : undefined;
+      const answer = await requestAskInput({
+        question,
+        context: args.context ? String(args.context) : undefined,
+        placeholder: args.placeholder ? String(args.placeholder) : undefined,
+        defaultValue: args.default ? String(args.default) : undefined,
+        choices,
+      });
+      if (answer === null) {
+        return "（用户跳过了这个问题）——请基于现有信息做合理假设继续推进，并在最终回复里**明确标注你的假设**；不要反复追问同一个问题。";
+      }
+      return `用户回答：${answer}`;
+    }
+    case "request_permissions": {
+      // 融合 Codex 的 request_permissions：让模型**主动申请**会话级授权，而不是撞上弹窗才问。
+      // 授权仅在本会话内有效（不落盘）；execpolicy 的 deny 规则任何情况下不可绕过。
+      const cap = String(args.capability ?? args.cap ?? "").trim();
+      const known = new Set([
+        "run_command",
+        "replace_string",
+        "insert_string",
+        "delete_file",
+        "apply_patch",
+      ]);
+      if (!cap) {
+        return `需要 capability 参数，可选：${[...known].join(" / ")}`;
+      }
+      if (!known.has(cap)) {
+        return `未知授权项「${cap}」；可选：${[...known].join(" / ")}`;
+      }
+      if (hasSessionPermit(cap)) {
+        return `（本会话已获得「${cap}」授权，无需重复申请）`;
+      }
+      const reason = args.reason ? String(args.reason) : "";
+      const label: Record<string, string> = {
+        run_command: "执行命令行（含危险命令不再逐条确认）",
+        replace_string: "精确修改文件",
+        insert_string: "向文件插入内容",
+        delete_file: "删除文件",
+        apply_patch: "批量应用补丁（多文件修改）",
+      };
+      const ok = await askConfirm(
+        `⚙️ Agent 申请**本会话内**授权：${label[cap]}\n\n理由：${reason || "（未说明）"}\n\n同意后本会话不再逐次弹确认（仅本会话有效，重启即失效；命令执行策略里的 deny 规则仍不可绕过）。同意吗？`,
+      );
+      if (!ok) return "（用户拒绝了本次授权申请）——请改用更安全的方式，或逐次请求确认。";
+      rememberSessionPermit(cap);
+      return `✅ 已获得本会话「${cap}」授权：${label[cap]}（后续同类操作不再弹确认）。`;
+    }
+    case "get_context_remaining": {
+      // 融合 Codex 的 get_context_remaining：报告上下文占用/剩余，让模型自己把握收尾时机
+      const cfg = useChatStore().currentConfig;
+      const window = modelContextWindowTokens(cfg.baseUrl || "", cfg.model);
+      const conv = useChatStore().activeConversation;
+      const maxCtx = cfg.maxContextMessages || 50;
+      const hist = (conv?.messages ?? [])
+        .filter((m) => m.role !== "system" && !m.streaming)
+        .slice(-maxCtx);
+      const est = hist.reduce(
+        (s, m) => s + estimateMessageTokens(m.content || "", m.reasoning_content),
+        0,
+      );
+      const used = Math.max(lastPromptTokens, est);
+      const remain = Math.max(0, window - used);
+      const pct = Math.min(100, Math.round((used / window) * 1000) / 10);
+      const advice =
+        pct >= 85
+          ? "⚠️ 已接近上限：请立刻收尾——先给用户**当前阶段的结论与产物路径**，把未完成部分写进文件或待办，必要时用 new_context_window 压缩历史或建议用户开新对话。"
+          : pct >= 60
+            ? "已过半：不要让工具输出继续堆积，长内容写文件、只回填摘要，尽快推进到收尾。"
+            : "预算充足，可继续正常工作。";
+      return (
+        `上下文占用：约 ${used.toLocaleString()} / ${window.toLocaleString()} tokens（${pct}%），剩余约 ${remain.toLocaleString()} tokens。\n` +
+        `口径：上轮请求真实 prompt tokens（${lastPromptTokens.toLocaleString()}）与本地估算（${est.toLocaleString()}）取大者；窗口按模型推断。\n` +
+        `本次将发送 ${hist.length} 条历史消息（上限 ${maxCtx} 条）。\n建议：${advice}`
+      );
+    }
+    case "new_context_window": {
+      // 融合 Codex 的 new_context_window：把较早历史压缩成摘要后继续（腾出上下文空间）。
+      // 只影响「发给模型的历史」，界面仍完整保留原始消息。
+      const store = useChatStore();
+      const conv = store.activeConversation;
+      if (!conv) return "（当前没有活动会话，无法压缩）";
+      const keep = Math.min(Math.max(Number(args.keep_last_messages ?? 6) || 6, 2), 20);
+      const hist = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
+      const cut = hist.length - keep;
+      const already = conv.compactBefore ?? 0;
+      if (cut <= already + 1) {
+        return `（历史很短（${hist.length} 条，已压缩到第 ${already} 条），无需再压缩；当前上下文占用约 ${lastPromptTokens.toLocaleString()} tokens）`;
+      }
+      const aux = store.getRoutedAuxConfig("summarize");
+      if (!aux.baseUrl || !aux.apiKey) return "（无法压缩：未配置可用的摘要模型 / API Key）";
+      const transcript = hist
+        .slice(already, cut)
+        .map((m) => `${m.role}: ${(m.content || "").slice(0, 600)}`)
+        .join("\n")
+        .slice(0, 60000);
+      try {
+        const data = await invoke<{ content?: string }>("chat_once", {
+          config: {
+            base_url: aux.baseUrl,
+            api_key: aux.apiKey,
+            model: aux.model,
+            max_tokens: 1200,
+            temperature: 0.2,
+            thinking_enabled: false,
+            reasoning_effort: "low",
+            system_prompt:
+              "你是对话压缩器。把给出的对话历史压缩成要点摘要，务必保留：用户目标、已确认的事实与结论、关键文件路径/命令/参数、未完成的待办。不要编造，不要输出解释或前言，直接给摘要。",
+            enable_web_search: false,
+          },
+          messages: [{ role: "user", content: transcript }],
+        });
+        const summary = (data?.content || "").trim();
+        if (!summary) return "（压缩失败：模型未返回摘要，历史保持不变）";
+        conv.compactBefore = cut;
+        conv.compactSummary = summary;
+        conv.updatedAt = Date.now(); // 触发深监听 → 自动落库
+        return (
+          `✅ 已压缩 ${cut - already} 条历史为摘要（${summary.length} 字），后续请求只发送【摘要 + 最近 ${keep} 条消息】。\n` +
+          "界面仍完整保留原始消息；需要中间细节时请从已落盘的工具输出/产物文件读取。"
+        );
+      } catch (e: unknown) {
+        return `（压缩失败：${e instanceof Error ? e.message : String(e)}）`;
+      }
     }
     case "tool_search": {
       // 融合 Codex 的 tool_search：BM25 检索工具目录，命中未声明的工具则**立即激活**
@@ -3990,8 +4183,11 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 危险命令审批：策略命中 allow 直接放行；prompt 或未命中但命中内置危险模式 → 走
     // manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
+    // 例外：用户已通过 request_permissions 在本会话授权「命令执行」→ 不再重复弹确认
+    //（execpolicy 的 deny / prompt 规则仍优先，不会被会话授权绕过）
     const needsConfirm =
-      policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+      policyDecision === "prompt" ||
+      (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
     if (needsConfirm) {
       const st = getSettings();
       const mode: "manual" | "smart" | "yolo" =
@@ -4093,9 +4289,12 @@ export const useChatStore = defineStore("chat", () => {
     if (policyDecision === "deny") {
       return `⛔ 命令被「命令执行策略」拦截（命中：\`${policy?.matched ?? "?"}\`）：$ ${cmdStr}\n此类破坏性命令不允许 Agent 执行；若确需，请让用户手动输入 /run 或调整 设置→权限→命令执行策略。`;
     }
-    // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行
+    // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行。
+    // 例外：用户已通过 request_permissions 在本会话授权「命令执行」→ 不再重复弹确认
+    //（execpolicy 的 deny / prompt 规则仍优先，不会被会话授权绕过）。
     const needsConfirm =
-      policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
+      policyDecision === "prompt" ||
+      (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
     if (!needsConfirm) return null;
     const st = getSettings();
     const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
@@ -4367,6 +4566,8 @@ export const useChatStore = defineStore("chat", () => {
       usageSum.prompt += u.prompt;
       usageSum.completion += u.completion;
       usageSum.total += u.total;
+      // 最近一轮的 prompt 规模 = 当前上下文占用（get_context_remaining 用真实值而非估算）
+      if (u.prompt > 0) lastPromptTokens = u.prompt;
     };
 
     // 图片预处理：主模型非视觉（如 DeepSeek）→ 先用本地 Ollama 识别图片转成文字描述。
@@ -4687,7 +4888,19 @@ export const useChatStore = defineStore("chat", () => {
         rustMsgs.push({ role: "system", content: sp });
         rustOrig.push(null);
       }
+      // 上下文压缩（融合 Codex 的 new_context_window）：被压缩掉的老历史不再逐条发送，
+      // 改为先注入一段摘要（界面仍保留全部消息，只影响模型可见上下文）。
+      const compactBefore = conv.compactBefore ?? 0;
+      const compactSummary = conv.compactSummary ?? "";
+      if (compactBefore > 0 && compactSummary) {
+        rustMsgs.push({
+          role: "user",
+          content: `[已压缩的历史对话摘要（原始消息已从本次请求移除；需要细节可 read_file 已落盘产物）]\n${compactSummary}`,
+        });
+        rustOrig.push(null);
+      }
       hist.forEach((m, i) => {
+        if (compactBefore > 0 && histStart + i < compactBefore) return; // 已被摘要覆盖，跳过
         rustOrig.push(histStart + i);
         // DeepSeek 不支持图片：所有带图片的消息（含历史残留的图片消息）一律只发文本，
         // 避免收到 image_url 报 400；支持图片的模型才发送多模态。
@@ -5106,7 +5319,7 @@ export const useChatStore = defineStore("chat", () => {
             rustMsgs.push({
               role: "tool",
               tool_call_id: call.id,
-              content: truncateToolResult(markExternalToolResult(tool, result)),
+              content: await foldToolResult(tool, markExternalToolResult(tool, result)),
             });
             dbg(`[tool-native] ${tool} 执行成功，结果长度=${result.length}`);
           } catch (e: unknown) {
@@ -5128,7 +5341,7 @@ export const useChatStore = defineStore("chat", () => {
             rustMsgs.push({
               role: "tool",
               tool_call_id: call.id,
-              content: `错误: ${truncateToolResult(err)}`,
+              content: `错误: ${await foldToolResult(tool, err)}`,
             });
           }
         }
@@ -5835,6 +6048,8 @@ export const useChatStore = defineStore("chat", () => {
     getRoutedAuxConfig,
     editConfirm,
     resolveEditConfirm,
+    askInput,
+    resolveAskInput,
     hasSessionPermit,
     rememberSessionPermit,
     clearSessionPermits,

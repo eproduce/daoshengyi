@@ -228,6 +228,51 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
 
   // ---- 命令 / 代码 ----
+  request_user_input: {
+    type: "object",
+    properties: {
+      question: { type: "string", description: "要问用户的问题" },
+      context: { type: "string", description: "可选，补充背景/为什么要问" },
+      choices: {
+        type: "array",
+        items: { type: "string" },
+        description: "可选，快捷选项（≤6 个，点一下即提交）",
+      },
+      default: { type: "string", description: "可选默认值" },
+      placeholder: { type: "string", description: "可选输入框提示" },
+    },
+    required: ["question"],
+    additionalProperties: true,
+  },
+  request_permissions: {
+    type: "object",
+    properties: {
+      capability: {
+        type: "string",
+        description: "run_command | replace_string | insert_string | delete_file | apply_patch",
+      },
+      reason: { type: "string", description: "申请理由（展示给用户）" },
+    },
+    required: ["capability"],
+    additionalProperties: true,
+  },
+  get_context_remaining: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
+  new_context_window: {
+    type: "object",
+    properties: {
+      keep_last_messages: {
+        type: "number",
+        description: "保留最近几条原始消息（默认 6，范围 2–20）",
+      },
+    },
+    required: [],
+    additionalProperties: true,
+  },
   tool_search: {
     type: "object",
     properties: {
