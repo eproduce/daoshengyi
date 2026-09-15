@@ -46,7 +46,10 @@ export interface ChatMessage {
   timestamp: number;
   streaming?: boolean;
   duration?: number;
+  /// 本轮**总消耗** token（多轮工具循环的 prompt + completion 累加＝实际付费量）
   tokens?: number;
+  /// 本轮**回复产出** token（completion 累加）；仅内存态，用于展示与费用细分
+  outputTokens?: number;
   cost?: number;
   /// ReAct 工具调用记录（工具活动卡片）
   tools?: ChatTool[];

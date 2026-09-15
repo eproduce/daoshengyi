@@ -104,6 +104,28 @@ function toolDescription(server: string, desc: string): string {
   return `${desc}${prefix}`;
 }
 
+/// 从 MCP 工具自身的 inputSchema 里提炼「参数名清单」，附加到描述末尾。
+///
+/// 为什么需要（AGENT_DIAGNOSIS 问题 4）：模型经常**凭印象猜参数名**——例如调用
+/// `puppeteer_evaluate` 时传 `expression` / `function`，而真实参数名是 `script`，
+/// 服务端拿到 undefined 直接报错（该工具实测 12/17 失败）。把参数名（以及必填项）
+/// 显式写进 description，能让模型不必"猜"。
+export function describeSchemaParams(inputSchema?: Record<string, unknown>): string {
+  const props = inputSchema?.properties as Record<string, unknown> | undefined;
+  if (!props) return "";
+  const names = Object.keys(props);
+  if (names.length === 0) return "";
+  const required = Array.isArray(inputSchema?.required)
+    ? new Set(inputSchema!.required as string[])
+    : new Set<string>();
+  const shown = names
+    .slice(0, 12)
+    .map((n) => (required.has(n) ? `${n}(必填)` : n))
+    .join("、");
+  const more = names.length > 12 ? ` 等 ${names.length} 个` : "";
+  return `\n▸ 参数（严格使用这些名字）：${shown}${more}`;
+}
+
 export interface BuildNativeRegistryOptions {
   /** 内置工具（BUILTIN_TOOLS 或其子集，按给定顺序优先保留） */
   builtins: { name: string; desc: string }[];
@@ -139,15 +161,20 @@ export function buildNativeToolRegistry(opts: BuildNativeRegistryOptions): Nativ
         : src.inputSchema && src.inputSchema.type === "object"
           ? src.inputSchema
           : GENERIC_PARAMETERS;
+    // MCP 工具：把参数名（含必填标记）写进描述，降低模型「猜参数名」导致的调用失败
+    const baseDesc = toolDescription(src.server, src.description);
+    const descText =
+      src.kind === "mcp" && params !== GENERIC_PARAMETERS
+        ? baseDesc + describeSchemaParams(src.inputSchema)
+        : baseDesc;
     tools.push({
       type: "function",
       function: {
         name,
-        description: toolDescription(src.server, src.description),
+        description: descText,
         parameters: params,
       },
-    });
-    byName.set(name, { server: src.server, tool: src.name, kind: src.kind });
+    });    byName.set(name, { server: src.server, tool: src.name, kind: src.kind });
   };
 
   // 1) 内置工具（可被角色白名单过滤）

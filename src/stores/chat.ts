@@ -33,6 +33,21 @@ import {
 } from "@/utils/tool-call";
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
+
+/// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
+interface RoundUsage {
+  /** 输入 token（该轮 prompt） */
+  prompt: number;
+  /** 输出 token（该轮模型生成） */
+  completion: number;
+  /** 总 token（prompt + completion） */
+  total: number;
+}
+
+/// 已知内置工具名集合：内置工具**永不**被路由到 MCP 服务器。
+/// 背景（AGENT_DIAGNOSIS 问题 4）：`fetch_page` 是内置工具，却被按名字匹配转发给某个
+/// MCP 服务器，结果 `MCP error -32602: Tool fetch_page not found`（3/3 全失败）。
+const BUILTIN_TOOL_NAMES = new Set(BUILTIN_TOOLS.map((t) => t.name));
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
@@ -688,6 +703,9 @@ class BrowserNotNavigatedError extends Error {
 function resolveToolServer(server: string | undefined, tool: string): string {
   const s = server && server !== "default" ? server : "app";
   if (s === "app" || s === "builtin") {
+    // 内置工具名一律留给内置实现：即便某个 MCP 服务器也提供同名工具，按名字转发
+    // 会让内置工具「失踪」（曾观测 fetch_page → MCP error -32602: Tool not found）。
+    if (BUILTIN_TOOL_NAMES.has(tool) && !/^puppeteer_/i.test(tool)) return "app";
     if (/^puppeteer_/i.test(tool) || tool === "__connect__") {
       const fromCache = mcpToolsCache.find(
         (t) => t.name === tool && t.server !== "app" && t.server !== "builtin",
@@ -1436,27 +1454,47 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!config.baseUrl || !config.apiKey)
         throw new Error("未配置 API 地址/Key，无法执行工作流 LLM 节点");
       const startedAt = Date.now();
+      // 2026-09-15 修复（AGENT_DIAGNOSIS 问题 5「工作流假成功」）：
+      // LLM 节点返回空内容时，过去把占位串「（模型未返回内容）」当正常输出返回，
+      // failed 判定又只看日志里有没有 ❌ → 运行记录被标成 success，用户以为成功却没产出。
+      // 现在：正文空→退回思考内容（与 WorkflowDialog 行为一致）；仍空则置空输出标记 → 记为失败。
+      let emptyLlmOutput = false;
       const res = await executeWorkflow(graph, external, {
         llmCall: async (prompt, opts) => {
-          const data = await invoke<{ content?: string }>("chat_once", {
-            config: {
-              base_url: config.baseUrl,
-              api_key: config.apiKey,
-              model: opts?.model || config.model,
-              max_tokens: config.maxTokens,
-              temperature: 0.3,
-              thinking_enabled: config.thinkingEnabled ?? false,
-              reasoning_effort: config.reasoningEffort ?? "low",
-              system_prompt: "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
-              enable_web_search: false,
+          const data = await invoke<{ content?: string; reasoning_content?: string }>(
+            "chat_once",
+            {
+              config: {
+                base_url: config.baseUrl,
+                api_key: config.apiKey,
+                model: opts?.model || config.model,
+                max_tokens: config.maxTokens,
+                temperature: 0.3,
+                thinking_enabled: config.thinkingEnabled ?? false,
+                reasoning_effort: config.reasoningEffort ?? "low",
+                system_prompt:
+                  "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
+                enable_web_search: false,
+              },
+              messages: [{ role: "user", content: prompt }],
             },
-            messages: [{ role: "user", content: prompt }],
-          });
-          return data?.content || "（模型未返回内容）";
+          );
+          const body = (data?.content || "").trim();
+          if (body) return body;
+          // 思考兜底：思考型模型偶尔把结果只写在 reasoning 里
+          const think = (data?.reasoning_content || "").trim();
+          if (think) {
+            dbg("[workflow] LLM 节点正文为空，已退回思考内容作为输出");
+            return think;
+          }
+          emptyLlmOutput = true;
+          dbg("[workflow] LLM 节点返回空内容（该次运行将标记为失败）");
+          return "（模型未返回内容）";
         },
         toolCall: async (tool, toolArgs) => callMcpTool("app", tool, toolArgs),
       });
-      const failed = res.log.some((l) => l.startsWith("❌") || l.includes("执行失败"));
+      const failed =
+        emptyLlmOutput || res.log.some((l) => l.startsWith("❌") || l.includes("执行失败"));
       const traceStr = JSON.stringify(
         (res.trace || []).map((t) => ({ ...t, output: (t.output || "").slice(0, 400) })),
       );
@@ -3919,6 +3957,17 @@ export const useChatStore = defineStore("chat", () => {
     // 托盘进度：标记本轮开始（供展示已耗时），并清空上一轮的工具标签
     turnStartedAt.value = startTime;
     currentToolLabel.value = "";
+    // 计费口径（AGENT_DIAGNOSIS 问题 1）：按轮累加真实输入/输出 token。
+    // 旧实现直接把每轮的 total_tokens（含巨大 prompt）写进消息，且多轮时被最后一轮覆盖，
+    // 导致「379 字回复 = 28240 tokens」这类不可解释的数值与虚高费用。
+    // 注意：必须声明在 try 之外——finally（落库/计费）也要读它。
+    const usageSum: RoundUsage = { prompt: 0, completion: 0, total: 0 };
+    const addUsage = (u?: RoundUsage) => {
+      if (!u) return;
+      usageSum.prompt += u.prompt;
+      usageSum.completion += u.completion;
+      usageSum.total += u.total;
+    };
 
     // 图片预处理：主模型非视觉（如 DeepSeek）→ 先用本地 Ollama 识别图片转成文字描述。
     // 描述作为上下文注入 system（模型可见），不写入用户消息，避免"分析内容"污染用户对话。
@@ -4343,6 +4392,8 @@ export const useChatStore = defineStore("chat", () => {
         content: string;
         nativeCalls?: NativeToolCallMsg[] | null;
         finishReason?: string | null;
+        /** 本轮 token 用量（usage 每轮只到一次；由主循环在轮末累加） */
+        usage?: RoundUsage;
       }> {
         const nativeToolsActive = !!tools && tools.length > 0;
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
@@ -4360,6 +4411,8 @@ export const useChatStore = defineStore("chat", () => {
         let roundFinish: string | null = null; // 本轮结束原因（stop/length/…），length=被 max_tokens 截断
         let toolBuffer = ""; // 累积本轮 content（含 tool_call 原始标记），供解析与回填
         let reasoningBuffer = ""; // 累积本轮 reasoning（DeepSeek 思考模式常把工具调用计划写在 reasoning 而非 content）
+        let roundUsage: RoundUsage | undefined; // 本轮 usage（见下方 sse-delta 处理）
+        let parseFailLogged = false; // 「有闭合标记但解析失败」每轮只记一次，避免每 chunk 刷屏日志
 
         // 空闲超时（替代旧的“固定总时长 120s”）：旧实现从请求发起算 120 秒总时长，
         // 长思考/大输出（单轮十几万 token 思考 + 持续推流）会超 120s 被误杀，
@@ -4405,7 +4458,12 @@ export const useChatStore = defineStore("chat", () => {
             request_id?: string;
             reasoning_content?: string;
             content?: string;
+            /** 该轮总 token（prompt + completion；仅诊断用） */
             tokens?: number;
+            /** 该轮输入 token */
+            prompt_tokens?: number;
+            /** 该轮输出 token（真正的回复产出） */
+            completion_tokens?: number;
             cache_hit?: number;
             cache_miss?: number;
           }>("sse-delta", (e) => {
@@ -4453,16 +4511,28 @@ export const useChatStore = defineStore("chat", () => {
                     `[round ${requestId.slice(0, 8)}] 检测到工具调用 ${parsed.server}/${parsed.tool}，buffer长度=${toolBuffer.length}`,
                   );
                   resolveDone();
-                } else {
+                } else if (!parseFailLogged) {
+                  // 每轮只记一次：该检测在每个 chunk 都会跑，逐次打印曾把日志撑到百万行
+                  parseFailLogged = true;
                   dbg(
-                    `[round ${requestId.slice(0, 8)}] 有闭合标记但解析失败，buffer=${toolBuffer.slice(-200)}`,
+                    `[round ${requestId.slice(0, 8)}] 有闭合标记但解析失败（后续同轮不再记录），buffer=${toolBuffer.slice(-200)}`,
                   );
                 }
               }
             }
-            if (d.tokens) assistantMsg.tokens = d.tokens;
-            if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
-            if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
+            // 计费口径（AGENT_DIAGNOSIS 问题 1 修复）：usage 每轮只到一次，分开记录输入/输出，
+            // 由主循环在轮末累加。绝不能把 total_tokens 当成「回复 token」——它含巨大 prompt。
+            if (d.prompt_tokens != null || d.completion_tokens != null || d.tokens) {
+              const prompt = d.prompt_tokens ?? 0;
+              const completion = d.completion_tokens ?? 0;
+              roundUsage = {
+                prompt,
+                completion,
+                total: d.tokens ?? prompt + completion,
+              };
+              if (d.cache_hit) cacheHitTotal.value += d.cache_hit;
+              if (d.cache_miss) cacheMissTotal.value += d.cache_miss;
+            }
           }),
           // 原生 function calling：Rust 在流式结束时（sse-done 前）把整轮累积的
           // tool_calls 分片合并成结构化调用发来 → 捕获后交给主循环执行。
@@ -4544,7 +4614,7 @@ export const useChatStore = defineStore("chat", () => {
             );
           }
         }
-        return { toolCall, content: toolBuffer, nativeCalls, finishReason: roundFinish };
+        return { toolCall, content: toolBuffer, nativeCalls, finishReason: roundFinish, usage: roundUsage };
       }
 
       // 原生 function calling：执行一轮返回的结构化工具调用（一个或多个）。
@@ -4661,6 +4731,7 @@ export const useChatStore = defineStore("chat", () => {
         content: string;
         nativeCalls?: NativeToolCallMsg[] | null;
         finishReason?: string | null;
+        usage?: RoundUsage;
       } | null = null;
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
@@ -4718,6 +4789,7 @@ export const useChatStore = defineStore("chat", () => {
           continue;
         }
         const tc = roundResult.toolCall;
+        addUsage(roundResult.usage); // 累加本轮真实用量（usage 每轮只到一次）
         dbg(
           `[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`,
         );
@@ -4970,6 +5042,7 @@ export const useChatStore = defineStore("chat", () => {
           });
           try {
             const fr = await streamRound(rustMsgs, nativeToolsOn);
+            addUsage(fr.usage); // 续写轮的用量同样计入本轮总量
             const add = stripToolJson(fr.content).trim();
             if (!add) break;
             rawAcc = `${rawAcc}\n${add}`;
@@ -5015,6 +5088,7 @@ export const useChatStore = defineStore("chat", () => {
         });
         try {
           const fr = await streamRound(rustMsgs);
+          addUsage(fr.usage); // 收尾轮用量计入本轮总量
           const fc = stripToolJson(fr.content).trim();
           // 收尾轮产出也要防空洞：正文为空、只剩工具标记、或仍是一句"完成"短声明，
           // 都不算最终答案 → 退回思考摘要（剥标记后截尾）作为可见兜底，
@@ -5104,19 +5178,26 @@ export const useChatStore = defineStore("chat", () => {
       if (toolCards.length > 0) assistantMsg.tools = toolCards;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));
-      // Token 计数：优先使用 Rust 端返回的 usage，否则本地估算
-      if (!assistantMsg.tokens) {
+      // Token 计数（口径修正，见 AGENT_DIAGNOSIS 问题 1）：
+      // - tokens   = 本轮**总消耗**（多轮 prompt + completion 累加）→ 这才是实际付费量
+      // - outputTokens = 本轮**回复产出**（completion 累加）→ 用于成本输出侧计价与展示细分
+      // 老实现把单轮 total_tokens 当回复 token 且被最后一轮覆盖，数值不可解释（379 字 → 28240）。
+      if (usageSum.total > 0) {
+        assistantMsg.tokens = usageSum.total;
+        assistantMsg.outputTokens = usageSum.completion;
+      } else if (!assistantMsg.tokens) {
+        // 无 usage（本地命令/上游未返回）→ 退回本地估算（只算可见产出）
         assistantMsg.tokens = estimateMessageTokens(
           streamingContent.value,
           streamingReasoning.value,
         );
       }
-      // 费用估算
+      // 费用估算：输入侧用真实 prompt token（缺则退回本地估算），输出侧用真实 completion token
       try {
         assistantMsg.cost = estimateCost(
           currentConfig.value.model,
-          inputTokens,
-          assistantMsg.tokens || 0,
+          usageSum.prompt > 0 ? usageSum.prompt : inputTokens,
+          usageSum.completion > 0 ? usageSum.completion : assistantMsg.tokens || 0,
         );
       } catch {
         /* 费用计算失败不影响主流程 */

@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-15（下午·第 2 批）
+
+### ✅ 按诊断报告修复 4 类问题（token 口径 / 日志膨胀 / 工具路由与参数名 / 工作流假成功）
+> 依据 `docs/AGENT_DIAGNOSIS_2026-09-15.md`（基于真实运行数据取证）。原则：**遇到问题就地解决**，当天修完可修的。
+- **① token 口径修正（🔴）**：`api.rs` 分开解析并上报 `usage.prompt_tokens` / `completion_tokens`（过去只透传 `total_tokens`）；`chat.ts` 新增 `RoundUsage` 并在**主循环 / 续写轮 / 收尾轮**三处累加，消息 `tokens` 改为**本轮总消耗**（实际付费量）、新增 `outputTokens`（回复产出）；费用改用真实输入/输出分别计价（原来把含 prompt 的 total 按输出单价算 → 单条虚高到 ¥1.26）；`ChatMessage.vue` 悬停显示「总消耗 / 输入 / 输出」细分。新增 Rust 回归测试 `parse_sse_line_splits_prompt_and_completion_tokens`（含「只有 prompt/completion、无 total」也不丢包）。
+- **② 日志治理（🔴）**：`lib.rs` 的 `[sse]` 热路径日志条件由 `rl>0 || cl>0 || ch>0 || cm>0` 收紧为**只在收到 usage 时打印**（原条件等于每个正文分片都打一行 → 曾达 114 万行 / 80MB）；`append_log` 增加 **8MB × 3 份轮转**（每 256 次写入才做一次 metadata 检查）+ 单条超长截断（2000 字）；顺手清空历史日志（80MB → 0）。前端「有闭合标记但解析失败」改为**每轮只记一条**（原来每 chunk 一条）。
+- **③ 工具路由与参数名（🟠）**：
+  - `resolveToolServer` 增加**内置工具名保护**——内置名（43 个）永不被按名字转发给 MCP 服务器，修掉 `fetch_page` → `MCP error -32602: Tool fetch_page not found`（3/3 全失败）。
+  - `tool-schema.ts` 新增 `describeSchemaParams()`：把 MCP 工具自身 schema 里的**参数名 + 必填标记**写进 description（如 `script(必填)`），治「模型凭印象猜参数名」——`puppeteer_evaluate` 实测 12/17 失败（把 `script` 写成 `expression`/`function`）。新增 4 个单测。
+- **④ 工作流假成功（🟠）**：agent 调 `workflow_run` 时，LLM 节点正文为空会把占位串「（模型未返回内容）」当正常输出返回，且 `failed` 判定只看日志 → 运行记录标 `success` 却没产出。现在**先退回思考内容**（与 `WorkflowDialog` 行为对齐），仍为空则置 `emptyLlmOutput` → 记 `failed`。
+- **待办（报告里已列）**：单轮软预算 + 超长产物折叠/落盘（第 2 项）、历史摘要压缩链路（`memory_summaries` 为空说明未启用）、工作流产物改落工作区目录（第 6 项）、SSE 断流重试（第 7 项）。
+- 验证：clippy `-D warnings` 干净 · cargo test --lib **104 passed** · vue-tsc 干净 · vitest **9 files / 53 passed**
+
+---
+
 ## 2026-09-15
 
 ### ✅ 系统托盘实时展示任务进度 + 任务完成系统通知（Phase 5 增强）

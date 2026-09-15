@@ -26,6 +26,19 @@ import { notify } from "@/utils/dialog";
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
 
+/// token 数现在是「本轮总消耗（输入 + 输出，多轮工具循环累加）」，悬停给出细分，
+/// 避免用户误以为它是「回复产出的 token 数」（历史口径错误见 AGENT_DIAGNOSIS 问题 1）。
+const tokenTitle = computed(() => {
+  const total = props.message.tokens ?? 0;
+  const out = props.message.outputTokens;
+  if (out == null) return `本轮总消耗 ${total.toLocaleString()} tokens（含系统提示与工具结果）`;
+  return [
+    `本轮总消耗 ${total.toLocaleString()} tokens`,
+    `├ 输入（系统提示 + 历史 + 工具结果）：${(total - out).toLocaleString()}`,
+    `└ 输出（本条回复生成）：${out.toLocaleString()}`,
+  ].join("\n");
+});
+
 const previewImage = ref<ImageAttachment | null>(null);
 const showReasoning = ref(true);
 const copied = ref(false);
@@ -472,7 +485,10 @@ watch(
         <span v-if="message.role === 'assistant' && message.duration" class="msg-meta"
           >· {{ message.duration }}s</span
         >
-        <span v-if="message.role === 'assistant' && message.tokens" class="msg-meta"
+        <span
+          v-if="message.role === 'assistant' && message.tokens"
+          class="msg-meta"
+          :title="tokenTitle"
           >· {{ message.tokens.toLocaleString() }} tokens</span
         >
         <span v-if="message.role === 'assistant' && message.cost" class="msg-meta"

@@ -6,6 +6,22 @@
 
 ---
 
+---
+
+## 〇、修复进展（2026-09-15 当天已修）
+
+| # | 问题 | 状态 | 修复内容 |
+|---|---|---|---|
+| 1 | 消息 token 口径 | ✅ 已修 | `api.rs` 分开解析/上报 `prompt_tokens` / `completion_tokens`；`chat.ts` 新增 `RoundUsage`，**按轮累加**（主循环/续写轮/收尾轮三处），消息 `tokens` = 本轮总消耗、新增 `outputTokens` = 回复产出；费用按输入/输出分别计价；气泡悬停给出「输入/输出」细分；新增 Rust 回归测试 |
+| 3 | 日志热路径刷屏 | ✅ 已修 | `[sse]` 只在收到 usage 时打印（去掉 `rl/cl` 条件）；`append_log` 加 **8MB×3 轮转** + 单条超长截断（2000 字）；顺手清掉历史 80MB / 114 万行日志；前端「有闭合标记但解析失败」改为每轮只记一条 |
+| 4 | 工具失败 | 🟡 部分修 | ① `resolveToolServer` 增加**内置工具名保护**（内置名永不转发给 MCP，修 `fetch_page` → `Tool not found`）；② `tool-schema.ts` 新增 `describeSchemaParams()`，把 MCP 工具的**参数名（含必填标记）写进描述**，治「猜参数名」（`puppeteer_evaluate` 12/17 失败）+ 4 个单测。`command` 60s 超时与 `write_file` 漏参留待后续 |
+| 5 | 工作流假成功 | ✅ 已修 | LLM 节点正文为空时先**退回思考内容**（与 `WorkflowDialog` 一致）；仍为空则置 `emptyLlmOutput` → 运行记录标 `failed`，不再假成功 |
+| 2 | 单轮无预算 / 超长产物 | ⬜ 待修 | 建议下一步：正文超长折叠+落盘、单轮软预算、启用历史摘要压缩（`memory_summaries` 为空说明该链路未启用） |
+| 6 | 工作流产物落 `~` 根 | ⬜ 待修 | 属用户已建工作流（id=4）的路径配置，需在工作流里改为工作区子目录（如 `reports/`） |
+| 7 | 网络层无重试 | ⬜ 待修 | 建议 SSE 建连/中途断流按指数退避重试 1~2 次并保留已生成内容 |
+
+验证：clippy `-D warnings` 干净 · cargo test --lib **104 passed** · vue-tsc 干净 · vitest **9 files / 53 passed**。
+
 ## 一、结论速览
 
 | # | 问题 | 严重度 | 证据 | 影响 |

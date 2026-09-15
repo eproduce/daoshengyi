@@ -56,16 +56,58 @@ pub fn run_mcp_server() -> i32 {
 }
 
 /// 追加诊断日志到应用数据目录（用户看不到终端时，可从这里排查）
+///
+/// 2026-09-15 治理：①单条超长截断（避免把整段模型输出写进日志）；②每 256 次写入检查
+/// 一次大小并轮转（8MB × 3 份），避免长期运行把日志撑到几十 MB（曾观测到 80MB/114 万行）。
+const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const LOG_KEEP_FILES: u32 = 3;
+static LOG_WRITE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn rotate_log_if_needed(dir: &std::path::Path, file_name: &str) {
+    use std::sync::atomic::Ordering;
+    // 每 256 次写入才做一次 metadata 检查，避免每行日志都多一次系统调用
+    if !LOG_WRITE_COUNT.fetch_add(1, Ordering::Relaxed).is_multiple_of(256) {
+        return;
+    }
+    let path = dir.join(file_name);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
+    if meta.len() < LOG_MAX_BYTES {
+        return;
+    }
+    // daoshengyi.log → .log.1 → .log.2 → .log.3（最旧的丢弃）
+    for i in (1..LOG_KEEP_FILES).rev() {
+        let older = dir.join(format!("{file_name}.{}", i + 1));
+        let newer = dir.join(format!("{file_name}.{i}"));
+        if newer.exists() {
+            let _ = std::fs::rename(&newer, &older);
+        }
+    }
+    let _ = std::fs::rename(&path, dir.join(format!("{file_name}.1")));
+}
+
 fn append_log(app: &tauri::AppHandle, msg: &str) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
     use std::io::Write;
+    const FILE_NAME: &str = "daoshengyi.log";
+    rotate_log_if_needed(&dir, FILE_NAME);
+    // 截断超长消息：日志是诊断用，不需要完整正文（曾因打印模型输出导致日志爆炸）
+    let shown: String = if msg.chars().count() > 2000 {
+        let head: String = msg.chars().take(2000).collect();
+        format!("{head}…（已截断，原文 {} 字）", msg.chars().count())
+    } else {
+        msg.to_string()
+    };
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("daoshengyi.log"))
-        .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg));
+        .open(dir.join(FILE_NAME))
+        .and_then(|mut f| {
+            writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), shown)
+        });
 }
 
 /// 供前端写诊断日志（排查前端工具循环等看不到终端的问题）
@@ -866,12 +908,6 @@ async fn send_message(
                     let line: String = buf.drain(..=pos).collect();
                     if let Some(delta) = api::parse_sse_line(line.trim()) {
                         delta_count += 1;
-                        let rl = delta
-                            .reasoning_content
-                            .as_ref()
-                            .map(|s| s.len())
-                            .unwrap_or(0);
-                        let cl = delta.content.as_ref().map(|s| s.len()).unwrap_or(0);
                         let ch = delta.cache_hit.unwrap_or(0);
                         let cm = delta.cache_miss.unwrap_or(0);
                         if let Some(tc) = &delta.tool_calls {
@@ -901,11 +937,13 @@ async fn send_message(
                                 append_log(&app, &warn);
                             }
                         }
-                        // usage 块（choices 为空、仅有缓存/总 token）也打印，便于排查缓存命中率
-                        if rl > 0 || cl > 0 || ch > 0 || cm > 0 {
+                        // usage 块才打印（choices 为空、仅带 token 统计）：
+                        // 2026-09-15 修复——原条件含 reasoning_len/content_len，等于**每个正文分片**
+                        // 都打一行，日志被撑到 114 万行/80MB（本文件 append_log 那条）。
+                        if delta.tokens.is_some() || ch > 0 || cm > 0 {
                             let sm = format!(
-                                "[sse] reasoning_len={} content_len={} cache_hit={} cache_miss={}",
-                                rl, cl, ch, cm
+                                "[sse] usage total={:?} prompt={:?} completion={:?} cache_hit={} cache_miss={}",
+                                delta.tokens, delta.prompt_tokens, delta.completion_tokens, ch, cm
                             );
                             eprintln!("{}", sm);
                             append_log(&app, &sm);
@@ -917,6 +955,8 @@ async fn send_message(
                                 "reasoning_content": delta.reasoning_content,
                                 "content": delta.content,
                                 "tokens": delta.tokens,
+                                "prompt_tokens": delta.prompt_tokens,
+                                "completion_tokens": delta.completion_tokens,
                                 "cache_hit": delta.cache_hit,
                                 "cache_miss": delta.cache_miss,
                                 "tool_calls": delta.tool_calls,

@@ -188,6 +188,11 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
     // usage 丢失 → 前端缓存命中率恒为 0%（看似费 token）。
     let usage = parsed.get("usage");
     let total = usage.and_then(|u| u.get("total_tokens").and_then(|v| v.as_u64()));
+    // 计费口径：必须把「输入(prompt) / 输出(completion)」分开上报。
+    // 过去只下发 total_tokens，前端把它当「回复 token」显示并**按输出单价**估算费用，
+    // 导致 379 字的回复显示成 28240 tokens、单条费用虚高（详见 AGENT_DIAGNOSIS）。
+    let prompt_tokens = usage.and_then(|u| u.get("prompt_tokens").and_then(|v| v.as_u64()));
+    let completion_tokens = usage.and_then(|u| u.get("completion_tokens").and_then(|v| v.as_u64()));
     // 缓存命中/未命中 token：DeepSeek 用 prompt_cache_hit/miss_tokens；兼容其他厂商字段
     let cache_hit = usage.and_then(|u| {
         u.get("prompt_cache_hit_tokens")
@@ -245,6 +250,8 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
     if reasoning.is_none()
         && content.is_none()
         && total.is_none()
+        && prompt_tokens.is_none()
+        && completion_tokens.is_none()
         && tool_calls.is_none()
         && finish_reason.is_none()
     {
@@ -255,6 +262,8 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
         reasoning_content: reasoning.map(|s| s.to_string()),
         content: content.map(|s| s.to_string()),
         tokens: total,
+        prompt_tokens,
+        completion_tokens,
         cache_hit,
         cache_miss,
         tool_calls,
@@ -317,7 +326,12 @@ pub fn resolve_tool_calls(deltas: &[StreamToolCallDelta]) -> Vec<serde_json::Val
 pub struct SSEDelta {
     pub reasoning_content: Option<String>,
     pub content: Option<String>,
+    /// 该轮请求的总 token（prompt + completion；仅作诊断用，**不要**当回复产出）
     pub tokens: Option<u64>,
+    /// 输入 token（该轮请求的 prompt 部分）
+    pub prompt_tokens: Option<u64>,
+    /// 输出 token（该轮模型真正生成的回复部分）
+    pub completion_tokens: Option<u64>,
     pub cache_hit: Option<u64>,
     pub cache_miss: Option<u64>,
     /// 原生 function calling：本 chunk 携带的工具调用分片（有则处理，无则 None）
@@ -602,6 +616,26 @@ mod tests {
         // 无 reasoning/content/tool_calls/usage/finish_reason → None（跳过）
         let line = delta_line(r#"{"choices":[{"delta":{}}]}"#);
         assert!(parse_sse_line(&line).is_none());
+    }
+
+    #[test]
+    fn parse_sse_line_splits_prompt_and_completion_tokens() {
+        // 计费口径回归：usage 必须把输入(prompt) / 输出(completion) 分开上报。
+        // 曾经只透传 total_tokens，前端把它当「回复 token」显示并按输出单价计费，
+        // 导致 379 字的回复显示成 28240 tokens、单条费用虚高（AGENT_DIAGNOSIS 问题 1）。
+        let line = delta_line(
+            r#"{"choices":[],"usage":{"prompt_tokens":26000,"completion_tokens":210,"total_tokens":26210}}"#,
+        );
+        let d = parse_sse_line(&line).expect("仅含 usage 的 chunk 不应被丢弃");
+        assert_eq!(d.prompt_tokens, Some(26000));
+        assert_eq!(d.completion_tokens, Some(210));
+        assert_eq!(d.tokens, Some(26210));
+        // 只有 prompt/completion（没有 total）时也不能被丢弃
+        let no_total = delta_line(r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#);
+        let d2 = parse_sse_line(&no_total).expect("缺 total_tokens 的 usage 仍应上报");
+        assert_eq!(d2.prompt_tokens, Some(10));
+        assert_eq!(d2.completion_tokens, Some(3));
+        assert!(d2.tokens.is_none());
     }
 
     #[test]
