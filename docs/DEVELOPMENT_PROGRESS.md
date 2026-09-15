@@ -1209,8 +1209,15 @@
 
 ```bash
 cargo check                     # Rust 编译
-npx vite build                  # 前端构建
-npm test                        # 前端测试（30 项：19 tokens + 11 模板/工具）
-cargo test settings             # Rust 加密测试（4 项）
+npx vue-tsc --noEmit            # 前端类型
+npx vite build                  # 前端构建（**唯一能抓 SFC 模板配对/编译错误**的关卡）
+npm test                        # 前端测试（11 files / 78 项）
+cargo test --manifest-path src-tauri/Cargo.toml --lib   # Rust 单测（121 passed / 8 ignored）
+cd src-tauri && cargo clippy --all-targets -- -D warnings   # Rust lint
 git push origin main            # 推送
 ```
+
+> ⚠️ **教训（2026-09-16）**：把插件市场改成 `<details>/<summary>` 折叠区时只改了开头标签，
+> `</summary>` 写成了 `</div>` → Vue SFC 报 `Element is missing end tag`，Vite dev server 直接
+> Internal server error、页面打不开，但 **`vue-tsc` 不报此类 HTML 配对错误**。
+> ⇒ 只要改了 `.vue`，**必须跑 `npx vite build`**（或 curl dev server 看该组件能否编译）。
