@@ -195,6 +195,14 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     desc: '**等待后台子会话完成并把完整结果取回当前对话继续分析**。参数 {"session_id": "session_spawn 返回的 id"}。轮询等待（最长约 4 分钟，用户可随时停止）；子会话仍在执行时阻塞至完成，完成后返回其最终回复全文，据此继续作答。',
   },
   {
+    name: "list_agents",
+    desc: '**列出 Agent 开的后台子会话及状态（融合自 Codex 的 list_agents）**。无参数。返回每个子会话的 id/标题/状态（执行中/已完成/已中断）/运行时长/结果预览。**使用时机**：开了多个后台子会话（session_spawn）后，不确定还有哪些在跑、哪个已完成时；取完整结果用 session_resume，不要了用 interrupt_agent。',
+  },
+  {
+    name: "interrupt_agent",
+    desc: '**中断一个后台子会话（融合自 Codex 的 interrupt_agent）**。参数 {"session_id": session_spawn 返回的 id, "reason": 可选原因}。**使用时机**：发现后台任务方向错了/不再需要/重复了。**注意**：后台是单次非流式请求，已发出的调用会跑完但**结果被丢弃**（不写进会话），因此不能省下这次 token。',
+  },
+  {
     name: "workflow_list",
     desc: "列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。",
   },
@@ -217,6 +225,14 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
     name: "workflow_remember",
     desc: '**沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {"task_type": "任务类型描述如 月度研究/日报生成", "workflow_name": "工作流名"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。',
+  },
+  {
+    name: "list_mcp_resources",
+    desc: '**列出某个已连接 MCP 服务器暴露的资源与资源模板（融合自 Codex 的 list_mcp_resources / list_mcp_resource_templates）**。参数 {"server": "MCP 服务器名（如“文件系统”“GitHub”）"}。**使用时机**：插件不仅提供工具，还可能提供可读取的**资源**（文件、数据库 schema、日志、文档等）。需要了解“这个插件内到底有什么可读的内容”时先用本工具，再用 read_mcp_resource 读取具体 uri。若服务器未实现资源能力会明确告知（不是错误）。',
+  },
+  {
+    name: "read_mcp_resource",
+    desc: '**读取 MCP 资源的完整内容（融合自 Codex 的 read_mcp_resource）**。参数 {"server": "MCP 服务器名", "uri": "资源 uri（先 list_mcp_resources 拿到）"}。返回资源正文（文本直接给全，二进制/图片只给元信息）。**注意**：内容可能很长（会截断），需要全部内容时请让服务器端先分页/过滤，或改用对应工具查询。',
   },
   {
     name: "request_user_input",

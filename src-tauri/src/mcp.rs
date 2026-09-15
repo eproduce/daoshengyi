@@ -434,6 +434,26 @@ impl McpClient {
         serde_json::from_value(resp.ok_or("无响应")?)
             .map_err(|e| format!("解析工具调用结果: {}", e))
     }
+
+    /// 列出服务器暴露的资源（MCP `resources/list`）。未实现资源能力的服务器会返回 Err。
+    pub async fn list_resources(&mut self) -> Result<Value, String> {
+        let resp = self.send_request("resources/list", None).await?;
+        Ok(extract_result(resp.ok_or("无响应")?)?.unwrap_or(Value::Null))
+    }
+
+    /// 列出资源模板（MCP `resources/templates/list`）
+    pub async fn list_resource_templates(&mut self) -> Result<Value, String> {
+        let resp = self.send_request("resources/templates/list", None).await?;
+        Ok(extract_result(resp.ok_or("无响应")?)?.unwrap_or(Value::Null))
+    }
+
+    /// 读取资源内容（MCP `resources/read`）
+    pub async fn read_resource(&mut self, uri: &str) -> Result<Value, String> {
+        let resp = self
+            .send_request("resources/read", Some(serde_json::json!({ "uri": uri })))
+            .await?;
+        Ok(extract_result(resp.ok_or("无响应")?)?.unwrap_or(Value::Null))
+    }
 }
 
 /// 从 JSON-RPC 响应值中提取 result；若含 error 则返回错误。

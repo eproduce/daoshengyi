@@ -518,6 +518,8 @@ function getMcpToolsPrompt(): string {
     '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
     '\n- **exec_command** (app): **启动命令并持续交互（交互式/长驻进程专用，融合自 Codex）**：基于 PTY 执行，等待至多 `yield_time_ms`（默认 1000，最大 30000）后返回【本次新增输出 + session_id】；**进程不会因超时被杀**，用 `write_stdin` 继续喂输入/取输出。参数 {"command": "完整 shell 命令", "cwd": "可选工作目录", "yield_time_ms": 可选等待毫秒}。**使用时机**：① 交互式 CLI（`python3 -i`、`psql`、需要确认输入的命令）② 长驻服务（dev server、watch、`tail -f`）③ 需要分段观察输出的长任务。**与 run_command 的区别**：一次性短命令用 run_command（超时即终止）；需要交互或可能长时间运行 → 用本工具。同样受「命令执行策略」门禁；不需要时用 write_stdin 发 `\\u0003`（Ctrl-C）中断。\n' +
     '\n- **write_stdin** (app): **向运行中的 exec_command 会话写输入并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。\n' +
+    '\n- **list_mcp_resources** (app): **列出某个已连接 MCP 服务器暴露的资源与资源模板（融合自 Codex）**。参数 {"server": "MCP 服务器名"}。需要了解“这个插件内到底有什么可读的内容”时先用它，再用 read_mcp_resource 读具体 uri；服务器未实现资源能力会明确告知（不是错误）。\n' +
+    '\n- **read_mcp_resource** (app): **读取 MCP 资源完整内容（融合自 Codex）**。参数 {"server": "MCP 服务器名", "uri": "资源 uri（先 list_mcp_resources 拿到）"}。内容过长会截断，需要全部时先让服务器分页/过滤或改用对应工具查。\n' +
     '\n- **request_user_input** (app): **向用户提问并等待回答（融合自 Codex）**。参数 {"question": "要问的问题", "context": 可选背景, "choices": 可选快捷选项数组, "default": 可选默认值}。**仅在关键信息缺失/歧义且猜错代价高时用**；能合理假设就先推进并标注假设。用户可点「跳过」，此时请按合理假设继续、不要反复追问。\n' +
     '\n- **request_permissions** (app): **主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "理由"}。得到授权后本会话同类操作不再逐次弹确认（仅本会话有效；命令策略的 deny 规则仍不可绕过）。预计要连续多次写操作/命令时先申请一次，比逐条触发弹窗更高效。\n' +
     '\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n' +
@@ -547,6 +549,8 @@ function getMcpToolsPrompt(): string {
     '\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {"query": "关键词", "limit": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n' +
     '\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {"query": "要遗忘的记忆关键词"}。\n' +
     '\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {"platform": "feishu" 或 "wecom" 或 "dingtalk", "text": "要推送的内容"}。用于用户要求把信息/提醒推送到聊天工具时。' +
+    '\n- **list_agents** (app): **列出 Agent 开的后台子会话及状态（融合自 Codex）**。无参数。返回 id/标题/状态/运行时长/结果预览；开多个 session_spawn 后一眼看清谁在跑、谁已完成。取完整结果用 session_resume。\n' +
+    '\n- **interrupt_agent** (app): **中断后台子会话（融合自 Codex）**。参数 {"session_id": "session_spawn 返回的 id", "reason": 可选}。后台是单次非流式请求，已发出的调用会跑完但**结果被丢弃**（不写进会话），省不下这次 token——只在方向错/不再需要时用。\n' +
     "\n- **workflow_list** (app): 列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。" +
     '\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {"name": "工作流名称或 id", "input": "可选外部输入（节点里以 {{user}} 引用）"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。' +
     '\n- **workflow_create** (app): **把多步骤/可复用任务抽象成工作流并保存**。参数 {"name": "工作流名称", "graph": {"nodes": [{"id":"n1","type":"text|llm|tool|condition|code|end","label":"节点名","config":{...}}], "edges": [{"id":"e1","source":"n1","target":"n2"}]}}。节点 config：text→{text} 字面量；llm→{prompt} 提示词（可用 {{上游nodeId}} 引用上游输出）；tool→{tool:工具名, toolArgs:参数模板}；condition→{expression} 布尔表达式，出边带 label true/false 分支；code→{code} JS 函数体（入参 input/outputs）；end 收尾。**使用时机**：用户要做的事多步骤且以后可能重复时，先抽象成工作流保存，同类任务后续直接 workflow_run 复用。' +
@@ -1205,6 +1209,55 @@ function isRealWorkTool(tool: string): boolean {
   return tool !== "plan_task" && tool !== "plan_update";
 }
 
+/// 确保 MCP 服务器已连接（资源类工具用）：未连接则先按需连接；失败不抛错，
+/// 交给 Rust 命令返回「未连接」的明确提示，避免前端中断工具循环。
+async function ensureMcpServerConnected(server: string): Promise<void> {
+  try {
+    const { useMcpStore } = await import("./mcp");
+    const mcp = useMcpStore();
+    const s = mcp.servers.find((x) => x.name === server);
+    if (s && s.enabled && !s.connected) {
+      await mcp.connectByName(server);
+      await refreshMcpTools();
+    }
+  } catch {
+    /* 忽略：后续 invoke 会给出明确错误 */
+  }
+}
+
+/// 渲染 MCP 资源列表（resources + templates）；为空时给出可操作建议而不是空话
+function formatMcpResources(
+  server: string,
+  data: { resources?: unknown; templates?: unknown },
+): string {
+  const asList = (v: unknown, key: string): Record<string, unknown>[] => {
+    const inner = (v as Record<string, unknown> | null)?.[key];
+    return Array.isArray(inner) ? (inner as Record<string, unknown>[]) : [];
+  };
+  const resources = asList(data.resources, "resources");
+  const templates = asList(data.templates, "resourceTemplates");
+  if (resources.length === 0 && templates.length === 0) {
+    return `服务器「${server}」未暴露任何资源（它可能只提供工具——直接用它的工具即可）。`;
+  }
+  const lines: string[] = [
+    `服务器「${server}」共 ${resources.length} 个资源、${templates.length} 个模板：`,
+  ];
+  for (const r of resources.slice(0, 40)) {
+    const meta = [
+      r.name ? `（${r.name}）` : "",
+      r.mimeType ? ` [${r.mimeType}]` : "",
+      r.description ? ` — ${String(r.description).slice(0, 120)}` : "",
+    ].join("");
+    lines.push(`- ${r.uri}${meta}`);
+  }
+  if (resources.length > 40) lines.push(`…（还有 ${resources.length - 40} 个未列出）`);
+  for (const t of templates.slice(0, 20)) {
+    lines.push(`- 模板 ${t.uriTemplate}${t.name ? `（${t.name}）` : ""} — 按模板填参后作为 uri 读取`);
+  }
+  lines.push("\n用 read_mcp_resource(server, uri) 读取具体资源。");
+  return lines.join("\n");
+}
+
 const MAX_TOOL_RESULT_CHARS = 6000;
 /// 折叠后保留的首/尾字符数（中间省略，完整内容落盘）
 const TOOL_RESULT_HEAD = 4000;
@@ -1290,6 +1343,9 @@ function notifyUndoChanged() {
 
 // --- O3 会话级工具集：后台子会话（复用 S4 queue_turn 后台执行 + ensure_conversation_cmd） ---
 
+/// Agent 自主开的后台子会话登记（id → 元信息）；重启即清空（会话本身仍在历史里）
+const agentSessions = new Map<string, { title: string; startedAt: number; interrupted: boolean }>();
+
 /** session_spawn：建后台子会话并投递任务（不切换当前会话） */
 async function toolSessionSpawn(args: Record<string, unknown>): Promise<string> {
   const prompt = String(args.prompt ?? "").trim();
@@ -1314,6 +1370,7 @@ async function toolSessionSpawn(args: Record<string, unknown>): Promise<string> 
     /* 已存在/失败忽略 */
   }
   sessionBusy.add(id);
+  agentSessions.set(id, { title: conv.title, startedAt: now, interrupted: false });
   try {
     await invoke("queue_turn", { conversationId: id, text: prompt });
   } catch (e) {
@@ -1381,6 +1438,54 @@ async function toolSessionResume(id: string): Promise<string> {
     }
     await pause(1500);
   }
+}
+
+/** list_agents：列出 Agent 开的后台子会话及其状态（融合自 Codex 的 list_agents） */
+async function toolListAgents(): Promise<string> {
+  if (agentSessions.size === 0) {
+    return "（本应用运行期间 Agent 还没有创建后台子会话；需要后台并行工作用 session_spawn 或 subagent_parallel）";
+  }
+  const chat = useChatStore();
+  const lines: string[] = [];
+  for (const [id, meta] of agentSessions) {
+    try {
+      await chat.refreshConversation(id);
+    } catch {
+      /* 已删除 */
+    }
+    const conv = chat.conversations.find((c) => c.id === id);
+    const last = conv?.messages[conv.messages.length - 1];
+    const done = !!last && last.role === "assistant" && String(last.content || "").trim().length > 0;
+    const state = meta.interrupted
+      ? "⛔ 已中断"
+      : done
+        ? "✅ 已完成"
+        : sessionBusy.has(id)
+          ? "⏳ 执行中"
+          : "⏸ 未产出回复";
+    const mins = Math.round((Date.now() - meta.startedAt) / 60000);
+    lines.push(
+      `- ${id}｜${meta.title}｜${state}｜已运行约 ${mins} 分钟｜消息 ${conv?.messages.length ?? 0} 条` +
+        (done ? `\n  结果预览：${String(last!.content).slice(0, 160)}` : ""),
+    );
+  }
+  return `Agent 后台子会话（共 ${agentSessions.size} 个）：\n${lines.join("\n")}\n\n取完整结果用 session_resume；不要了用 interrupt_agent。`;
+}
+
+/** interrupt_agent：中断后台子会话（融合自 Codex；结果丢弃不写入会话） */
+async function toolInterruptAgent(id: string, reason: string): Promise<string> {
+  const meta = agentSessions.get(id);
+  try {
+    await invoke<boolean>("cancel_queued_turn", { conversationId: id });
+  } catch (e: unknown) {
+    return `取消失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+  sessionBusy.delete(id);
+  if (meta) meta.interrupted = true;
+  return (
+    `已请求中断子会话 ${id}${meta ? `「${meta.title}」` : ""}${reason ? `（原因：${reason}）` : ""}。\n` +
+    "注意：后台是单次非流式请求，**已发出的这次调用会跑完但结果被丢弃**（不会写进该会话）。"
+  );
 }
 
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
@@ -1848,6 +1953,36 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return res.startsWith("merged:")
         ? `✅ 已更新处理模式记忆（并入已有条目）。以后遇到「${taskType}」类任务会自动想起工作流「${workflowName}」。`
         : `✅ 已记住处理模式：${taskType} → 工作流「${workflowName}」。以后同类任务会自动想起，直接 workflow_run 复用。`;
+    }
+    case "list_mcp_resources": {
+      // 融合 Codex 的 list_mcp_resources / list_mcp_resource_templates：
+      // MCP 资源是插件的一等公民（文件、schema、日志…），以前只能调工具、读不到资源。
+      const server = String(args.server ?? "").trim();
+      if (!server) throw new Error("list_mcp_resources 需要 server 参数（MCP 服务器名）");
+      await ensureMcpServerConnected(server);
+      try {
+        const data = await invoke<{ resources?: unknown; templates?: unknown }>(
+          "mcp_list_resources",
+          { server },
+        );
+        return formatMcpResources(server, data);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return `（服务器「${server}」未提供资源列表：${msg}）——这不影响用 callMcpTool 调用它的**工具**；若该插件确实应提供资源，请提醒用户确认插件已连接。`;
+      }
+    }
+    case "read_mcp_resource": {
+      const server = String(args.server ?? "").trim();
+      const uri = String(args.uri ?? "").trim();
+      if (!server || !uri) throw new Error("read_mcp_resource 需要 server 与 uri 参数");
+      await ensureMcpServerConnected(server);
+      try {
+        const data = await invoke<unknown>("mcp_read_resource", { server, uri });
+        const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+        return text.length > 20000 ? `${text.slice(0, 20000)}\n\n…（内容过长已截断，共 ${text.length} 字符）` : text;
+      } catch (e: unknown) {
+        return `读取资源失败：${e instanceof Error ? e.message : String(e)}`;
+      }
     }
     case "request_user_input": {
       // 融合 Codex 的 request_user_input：长任务中途向用户提问并等回答（不结束回合）
@@ -2646,6 +2781,14 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const id = String(args.session_id ?? "");
       if (!id) throw new Error("session_resume 需要 session_id 参数（session_spawn 返回的 id）");
       return await toolSessionResume(id);
+    }
+    case "list_agents": {
+      return await toolListAgents();
+    }
+    case "interrupt_agent": {
+      const id = String(args.session_id ?? args.id ?? "");
+      if (!id) throw new Error("interrupt_agent 需要 session_id 参数");
+      return await toolInterruptAgent(id, args.reason ? String(args.reason) : "");
     }
     case "list_dir":
     case "list_directory": {

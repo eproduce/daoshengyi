@@ -890,112 +890,150 @@ async fn send_message(
     );
     eprintln!("{}", log_msg);
     append_log(&app, &log_msg);
-    let mut stream = match api::stream_chat(config, messages, tools).await {
-        Ok(s) => s,
-        Err(e) => {
-            let em = format!("[send_message] stream_chat 失败: {}", e);
-            eprintln!("{}", em);
-            append_log(&app, &em);
-            return Err(e);
-        }
-    };
-
+    // 断流重试（诊断⑦）：网络抖动会让 SSE 中途断开（表现为回复被截断/直接报错）。
+    // 规则（安全优先）：**只有在一个 delta 都没产出、也没有工具调用分片时**才重建请求重试
+    // （最多 2 次尝试），避免重复内容/重复工具调用；已产出内容则保持原行为上报错误，
+    // 让前端提示用户「已收到的部分保留，可点重试续写」。
+    const MAX_STREAM_ATTEMPTS: u32 = 2;
+    let mut attempt: u32 = 0;
     // 行缓冲器：SSE 数据块可能在任意字节边界断开，
     // 必须把不完整的行累积到缓冲区，直到遇到换行符才解析，否则会丢字。
     let mut buf = String::new();
-    let mut delta_count = 0usize;
+    // 计数/结束原因在每次尝试开头显式复位（故此处不预置初值，避免「赋值后从未读取」告警）
+    let mut delta_count: usize;
     // 原生 function calling：累积整轮流式返回的 tool_calls 分片，结束时合并为结构化工具调用
     let mut tool_deltas: Vec<api::StreamToolCallDelta> = Vec::new();
     // 结束原因（stop/length/…）：length 表示被 max_tokens 截断，前端据此自动续写
-    let mut finish_reason: Option<String> = None;
-    while let Some(chunk) = stream.next().await {
-        // 用户点「停止」：前端 cancel_stream 把 request_id 加入取消集合 → 下一个 chunk 到达即停
-        if CANCELLED_STREAMS
-            .get()
-            .map(|m| m.lock().unwrap().contains(&request_id))
-            .unwrap_or(false)
+    let mut finish_reason: Option<String>;
+    'attempts: loop {
+        attempt += 1;
+        let mut stream = match api::stream_chat(config.clone(), messages.clone(), tools.clone()).await
         {
-            let cm = format!("[sse] request_id={} 已被用户取消，停止生成", request_id);
-            eprintln!("{}", cm);
-            append_log(&app, &cm);
-            let _ = app.emit("sse-done", &request_id);
-            return Ok(());
-        }
-        match chunk {
-            Ok(text) => {
-                buf.push_str(&text);
-                while let Some(pos) = buf.find('\n') {
-                    let line: String = buf.drain(..=pos).collect();
-                    if let Some(delta) = api::parse_sse_line(line.trim()) {
-                        delta_count += 1;
-                        let ch = delta.cache_hit.unwrap_or(0);
-                        let cm = delta.cache_miss.unwrap_or(0);
-                        if let Some(tc) = &delta.tool_calls {
-                            tool_deltas.extend(tc.iter().cloned());
-                        }
-                        if let Some(fr) = &delta.finish_reason {
-                            finish_reason = Some(fr.clone());
-                        }
-                        // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
-                        if let Some(c) = &delta.content {
-                            if c.contains('\u{FFFD}') {
-                                let warn = format!(
-                                    "[sse] ⚠️ content 含乱码 U+FFFD，片段: {}",
-                                    c.chars().take(160).collect::<String>()
-                                );
-                                eprintln!("{}", warn);
-                                append_log(&app, &warn);
-                            }
-                        }
-                        if let Some(r) = &delta.reasoning_content {
-                            if r.contains('\u{FFFD}') {
-                                let warn = format!(
-                                    "[sse] ⚠️ reasoning 含乱码 U+FFFD，片段: {}",
-                                    r.chars().take(160).collect::<String>()
-                                );
-                                eprintln!("{}", warn);
-                                append_log(&app, &warn);
-                            }
-                        }
-                        // usage 块才打印（choices 为空、仅带 token 统计）：
-                        // 2026-09-15 修复——原条件含 reasoning_len/content_len，等于**每个正文分片**
-                        // 都打一行，日志被撑到 114 万行/80MB（本文件 append_log 那条）。
-                        if delta.tokens.is_some() || ch > 0 || cm > 0 {
-                            let sm = format!(
-                                "[sse] usage total={:?} prompt={:?} completion={:?} cache_hit={} cache_miss={}",
-                                delta.tokens, delta.prompt_tokens, delta.completion_tokens, ch, cm
-                            );
-                            eprintln!("{}", sm);
-                            append_log(&app, &sm);
-                        }
-                        let _ = app.emit(
-                            "sse-delta",
-                            &serde_json::json!({
-                                "request_id": request_id,
-                                "reasoning_content": delta.reasoning_content,
-                                "content": delta.content,
-                                "tokens": delta.tokens,
-                                "prompt_tokens": delta.prompt_tokens,
-                                "completion_tokens": delta.completion_tokens,
-                                "cache_hit": delta.cache_hit,
-                                "cache_miss": delta.cache_miss,
-                                "tool_calls": delta.tool_calls,
-                            }),
-                        );
-                    }
-                }
-            }
+            Ok(s) => s,
             Err(e) => {
-                let em = format!("[sse] 流错误: {}", e);
+                if attempt < MAX_STREAM_ATTEMPTS {
+                    let rm = format!(
+                        "[send_message] stream_chat 失败（第 {} 次），1 秒后重试: {}",
+                        attempt, e
+                    );
+                    eprintln!("{}", rm);
+                    append_log(&app, &rm);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+                let em = format!("[send_message] stream_chat 失败: {}", e);
                 eprintln!("{}", em);
                 append_log(&app, &em);
-                let _ = app.emit(
-                    "sse-error",
-                    &serde_json::json!({"request_id": request_id, "error": e}),
-                );
                 return Err(e);
             }
+        };
+
+        // 每次尝试从干净状态开始（能走到重试就说明上一轮什么都没产出）
+        buf.clear();
+        delta_count = 0;
+        tool_deltas.clear();
+        finish_reason = None;
+        while let Some(chunk) = stream.next().await {
+            // 用户点「停止」：前端 cancel_stream 把 request_id 加入取消集合 → 下一个 chunk 到达即停
+            if CANCELLED_STREAMS
+                .get()
+                .map(|m| m.lock().unwrap().contains(&request_id))
+                .unwrap_or(false)
+            {
+                let cm = format!("[sse] request_id={} 已被用户取消，停止生成", request_id);
+                eprintln!("{}", cm);
+                append_log(&app, &cm);
+                let _ = app.emit("sse-done", &request_id);
+                return Ok(());
+            }
+            match chunk {
+                Ok(text) => {
+                    buf.push_str(&text);
+                    while let Some(pos) = buf.find('\n') {
+                        let line: String = buf.drain(..=pos).collect();
+                        if let Some(delta) = api::parse_sse_line(line.trim()) {
+                            delta_count += 1;
+                            let ch = delta.cache_hit.unwrap_or(0);
+                            let cm = delta.cache_miss.unwrap_or(0);
+                            if let Some(tc) = &delta.tool_calls {
+                                tool_deltas.extend(tc.iter().cloned());
+                            }
+                            if let Some(fr) = &delta.finish_reason {
+                                finish_reason = Some(fr.clone());
+                            }
+                            // 临时诊断：检测流中是否出现 U+FFFD 乱码，定位乱码来源（Rust 解码 or 上游）
+                            if let Some(c) = &delta.content {
+                                if c.contains('\u{FFFD}') {
+                                    let warn = format!(
+                                        "[sse] ⚠️ content 含乱码 U+FFFD，片段: {}",
+                                        c.chars().take(160).collect::<String>()
+                                    );
+                                    eprintln!("{}", warn);
+                                    append_log(&app, &warn);
+                                }
+                            }
+                            if let Some(r) = &delta.reasoning_content {
+                                if r.contains('\u{FFFD}') {
+                                    let warn = format!(
+                                        "[sse] ⚠️ reasoning 含乱码 U+FFFD，片段: {}",
+                                        r.chars().take(160).collect::<String>()
+                                    );
+                                    eprintln!("{}", warn);
+                                    append_log(&app, &warn);
+                                }
+                            }
+                            // usage 块才打印（choices 为空、仅带 token 统计）：
+                            // 2026-09-15 修复——原条件含 reasoning_len/content_len，等于**每个正文分片**
+                            // 都打一行，日志被撑到 114 万行/80MB（本文件 append_log 那条）。
+                            if delta.tokens.is_some() || ch > 0 || cm > 0 {
+                                let sm = format!(
+                                    "[sse] usage total={:?} prompt={:?} completion={:?} cache_hit={} cache_miss={}",
+                                    delta.tokens, delta.prompt_tokens, delta.completion_tokens, ch, cm
+                                );
+                                eprintln!("{}", sm);
+                                append_log(&app, &sm);
+                            }
+                            let _ = app.emit(
+                                "sse-delta",
+                                &serde_json::json!({
+                                    "request_id": request_id,
+                                    "reasoning_content": delta.reasoning_content,
+                                    "content": delta.content,
+                                    "tokens": delta.tokens,
+                                    "prompt_tokens": delta.prompt_tokens,
+                                    "completion_tokens": delta.completion_tokens,
+                                    "cache_hit": delta.cache_hit,
+                                    "cache_miss": delta.cache_miss,
+                                    "tool_calls": delta.tool_calls,
+                                }),
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    // 断流重试：一个 delta 都没产出 → 重建请求（本次循环作废）；否则上报错误
+                    if delta_count == 0 && tool_deltas.is_empty() && attempt < MAX_STREAM_ATTEMPTS {
+                        let rm = format!(
+                            "[sse] 流错误（第 {} 次尝试，尚无内容）：{}；1 秒后重建请求重试",
+                            attempt, e
+                        );
+                        eprintln!("{}", rm);
+                        append_log(&app, &rm);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        continue 'attempts;
+                    }
+                    let em = format!("[sse] 流错误: {}", e);
+                    eprintln!("{}", em);
+                    append_log(&app, &em);
+                    let _ = app.emit(
+                        "sse-error",
+                        &serde_json::json!({"request_id": request_id, "error": e}),
+                    );
+                    return Err(e);
+                }
+            }
         }
+        break 'attempts; // 流正常结束 → 退出重试循环，继续走原有收尾逻辑
     }
     // 处理最后可能残留的不完整行
     if let Some(delta) = api::parse_sse_line(buf.trim()) {
@@ -4717,6 +4755,28 @@ fn ensure_conversation_cmd(
 
 /// S4 queue：向历史会话异步投递一条任务消息，后台用当前模型生成回复并追加到该会话。
 /// 完成/失败通过事件 `queue-turn-done` / `queue-turn-error` 通知前端刷新。
+/// 融合 Codex 的 interrupt_agent：投递后可用 `cancel_queued_turn` 取消——
+/// 注意后台是**单次非流式请求**，无法中途中断网络请求，取消后**丢弃结果不写入会话**。
+static CANCELLED_QUEUE_TURNS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+fn cancelled_queue_turns() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    CANCELLED_QUEUE_TURNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 取消一个后台投递任务（下一次写入前生效）；返回是否登记成功
+#[tauri::command]
+fn cancel_queued_turn(conversation_id: String) -> bool {
+    if conversation_id.trim().is_empty() {
+        return false;
+    }
+    cancelled_queue_turns()
+        .lock()
+        .map(|mut s| s.insert(conversation_id))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 async fn queue_turn(
     app: tauri::AppHandle,
@@ -4773,6 +4833,18 @@ async fn queue_turn(
         };
         match api::chat_once(config, api_msgs, None).await {
             Ok(r) => {
+                // 被 interrupt_agent / cancel_queued_turn 取消 → 丢弃本次结果（不写入会话）
+                let cancelled = cancelled_queue_turns()
+                    .lock()
+                    .map(|mut s| s.remove(&cid))
+                    .unwrap_or(false);
+                if cancelled {
+                    let _ = app.emit(
+                        "queue-turn-error",
+                        serde_json::json!({ "conversationId": cid, "error": "任务已被取消（Agent 主动中断）" }),
+                    );
+                    return;
+                }
                 let _ = task_db.append_message(&user_msg);
                 let _ = task_db.append_message(&db::MsgRow {
                     id: format!("q{}-a", now + 1),
@@ -5280,6 +5352,74 @@ async fn mcp_call_tool(
         Err(_) => {
             let msg = "工具调用超时（30 秒）".to_string();
             let _ = db.log_tool_call(&audit_name, &args_str, &msg, true, duration);
+            Err(msg)
+        }
+    }
+}
+
+/// MCP 资源：列出服务器暴露的资源 + 资源模板（融合 Codex 的 list_mcp_resources 与
+/// list_mcp_resource_templates，合并为一次调用以减少工具数）。
+#[tauri::command]
+async fn mcp_list_resources(
+    manager: State<'_, McpManager>,
+    server: String,
+) -> Result<serde_json::Value, String> {
+    let mut clients = manager.clients.lock().await;
+    let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
+    let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
+    let resources = tokio::time::timeout(std::time::Duration::from_secs(15), client.list_resources())
+        .await
+        .map_err(|_| "获取资源列表超时（15 秒）".to_string())?
+        .unwrap_or(serde_json::Value::Null);
+    // 模板属于可选能力：不支持时忽略（不因此让整个调用失败）
+    let templates = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        client.list_resource_templates(),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({ "resources": resources, "templates": templates }))
+}
+
+/// MCP 资源：读取指定 uri 的资源内容（融合 Codex 的 read_mcp_resource）
+#[tauri::command]
+async fn mcp_read_resource(
+    app: tauri::AppHandle,
+    manager: State<'_, McpManager>,
+    server: String,
+    uri: String,
+) -> Result<serde_json::Value, String> {
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut clients = manager.clients.lock().await;
+        let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
+        let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
+        client.read_resource(&uri).await
+    })
+    .await;
+    let duration = start.elapsed().as_millis() as i64;
+    let audit_name = format!("{}:resources/read", server);
+    match result {
+        Ok(Ok(v)) => {
+            let text = v.to_string();
+            let _ = app
+                .state::<Database>()
+                .log_tool_call(&audit_name, &uri, &text, false, duration);
+            Ok(v)
+        }
+        Ok(Err(e)) => {
+            let _ = app
+                .state::<Database>()
+                .log_tool_call(&audit_name, &uri, &e, true, duration);
+            Err(e)
+        }
+        Err(_) => {
+            let msg = "读取资源超时（30 秒）".to_string();
+            let _ = app
+                .state::<Database>()
+                .log_tool_call(&audit_name, &uri, &msg, true, duration);
             Err(msg)
         }
     }
@@ -6417,6 +6557,7 @@ pub fn run() {
             fork_conversation_cmd,
             ensure_conversation_cmd,
             queue_turn,
+            cancel_queued_turn,
             search_conversations_cmd,
             export_conversation_cmd,
             accumulate_usage,
@@ -6520,6 +6661,8 @@ pub fn run() {
             mcp_connect,
             mcp_disconnect,
             mcp_call_tool,
+            mcp_list_resources,
+            mcp_read_resource,
             mcp_list_tools,
             detect_browsers,
             list_tool_audit,

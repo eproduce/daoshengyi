@@ -55,6 +55,14 @@
 - 内置工具 56 → **61**；Rust 新增 2 项单测（文件名清洗、保留策略淘汰最旧）。
 - 验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **121 passed / 8 ignored** · clippy `-D warnings` 干净
 
+### ✅ 融合 Codex：MCP 资源 + 多 agent 闭环（list/interrupt）+ 断流重试 + 插件市场降级
+- **MCP 资源（`list_mcp_resources` / `read_mcp_resource`）**：以前只能调插件的**工具**、读不到它的**资源**（文件、数据库 schema、日志…）。Rust `mcp.rs` 新增 `list_resources` / `list_resource_templates` / `read_resource`（走标准 `resources/*` 方法），新命令 `mcp_list_resources`（资源 + 模板一次取回，15s 超时）与 `mcp_read_resource`（30s 超时 + 工具审计落库）；前端按需自动连接服务器（未连接则先连），**服务器未实现资源能力时给出「不是错误」的友好说明**，并渲染「资源 + 模板」清单（含 uri/mime/描述，超 40 条折叠）。
+- **多 agent 闭环**：Codex v2 有 `list_agents`/`interrupt_agent`，我们原来只有 spawn/status/resume。新增 ① `list_agents`：列出 Agent 自建的后台子会话（标题/状态/运行时长/结果预览），不再靠猜；② `interrupt_agent` + Rust `cancel_queued_turn`：取消后台投递任务（结果**丢弃不写入会话**）。**诚实标注**：后台是单次非流式请求，已发出的调用会跑完，省不下这次 token。
+- **SSE 断流重试（诊断⑦）**：`send_message` 改为**最多 2 次尝试**——连接建立失败或流在**尚未产出任何 delta、也没有工具调用分片**时断开会自动重建请求（间隔 1s）；一旦已有内容则保持原行为上报错误（避免重复内容/重复工具调用），前端仍提示「已收到的部分保留，可重试续写」。
+- **插件市场降级（P3）+ ROADMAP 改写**：`McpSettings.vue` 的社区远程市场（Smithery）收进「**高级：社区远程插件**」折叠区，并明确标注「第三方 · 数据出本机」+ 提示优先用内置工具/技能；`docs/ROADMAP.md` §5.1 按「三层能力模型（内置工具 / 技能 / MCP 长尾）」重写，§3.2 对照表里「自建插件 SDK」标记为**不做**。
+- **云端视觉档怎么配（让 DeepSeek 下也能秒级看图）**：设置 → 模型 → 新增一个 Profile（如 智谱 `https://open.bigmodel.cn/api/paas/v4` + `glm-4v-flash`，或 阿里 `https://dashscope.aliyuncs.com/compatible-mode/v1` + `qwen-vl-max`）并填 Key。**无需其它配置**：`view_image` 与「图片预处理」会自动挑选「非 DeepSeek 且有 Key」的档做视觉回退（60s 超时），比本地 llava 快且准得多。未配置时 DeepSeek 下的 `view_image` 会**立即**返回替代方案（ocr_image / browser_evaluate），不会干等。
+- 内置工具 61 → **65**；验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **121 passed / 8 ignored** · clippy `-D warnings` 干净
+
 ---
 
 ## 2026-09-15（晚间·第 4 批）

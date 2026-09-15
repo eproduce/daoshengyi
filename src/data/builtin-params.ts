@@ -228,6 +228,21 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
 
   // ---- 命令 / 代码 ----
+  list_mcp_resources: {
+    type: "object",
+    properties: { server: { type: "string", description: "MCP 服务器名" } },
+    required: ["server"],
+    additionalProperties: true,
+  },
+  read_mcp_resource: {
+    type: "object",
+    properties: {
+      server: { type: "string", description: "MCP 服务器名" },
+      uri: { type: "string", description: "资源 uri（由 list_mcp_resources 获取）" },
+    },
+    required: ["server", "uri"],
+    additionalProperties: true,
+  },
   request_user_input: {
     type: "object",
     properties: {
@@ -506,6 +521,21 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
 
   // ---- 工作流 ----
+  list_agents: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
+  interrupt_agent: {
+    type: "object",
+    properties: {
+      session_id: { type: "string", description: "session_spawn 返回的 id" },
+      reason: { type: "string", description: "可选，中断原因" },
+    },
+    required: ["session_id"],
+    additionalProperties: true,
+  },
   workflow_list: {
     type: "object",
     properties: {},

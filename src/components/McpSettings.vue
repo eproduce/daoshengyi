@@ -391,12 +391,14 @@ function cancel() {
         </div>
       </div>
 
-      <!-- 社区插件（Smithery 远程市场） -->
-      <div class="mcp-community">
-        <div class="mcp-community-head">
+      <!-- 社区插件（Smithery 远程市场）——降级为「高级」折叠区：
+           能力主干已内置（55+ 内置工具）+ 技能拓展，社区远程端点属于长尾/账号型补充，
+           且为第三方远程服务（数据要出本机），默认收起、明确提示，避免被当成首选路径 -->
+      <details class="mcp-community">
+        <summary class="mcp-community-head">
           <span class="mcp-community-title"
-            ><Globe :size="14" /> 社区插件
-            <span class="mcp-community-badge">远程 · 免安装</span></span
+            ><Globe :size="14" /> 高级：社区远程插件（Smithery）
+            <span class="mcp-community-badge">第三方 · 数据出本机</span></span
           >
           <div class="mcp-community-acts">
             <input
@@ -446,10 +448,15 @@ function cancel() {
           </div>
         </div>
         <div v-else-if="!communityLoading" class="mcp-community-hint">
-          点击「🔍 加载」从 Smithery 社区市场拉取可用插件（如 gmail、github
-          等），安装即连接远程端点，无需本地进程。
+          <p class="mcp-community-warn">
+            ⚠️ 这些是<strong>第三方远程服务</strong>（数据会离开本机）。能力主干优先用
+            <strong>内置工具 + 技能</strong
+            >（已覆盖文件/命令/Git/浏览器/工作流/记忆等）；社区端点只在需要长尾/账号型集成
+            （如 gmail、notion）时使用。
+          </p>
+          点击「🔍 加载」从 Smithery 社区市场拉取可用插件，安装即连接远程端点，无需本地进程。
         </div>
-      </div>
+      </details>
 
       <div v-for="item in filteredCatalog" :key="item.id" class="mcp-card">
         <div class="mcp-card-icon">
@@ -773,6 +780,14 @@ function cancel() {
   gap: 10px;
   margin-bottom: 8px;
   flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
+}
+.mcp-community-warn {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  opacity: 0.75;
 }
 .mcp-community-title {
   font-size: 13px;
