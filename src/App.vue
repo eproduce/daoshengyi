@@ -211,7 +211,9 @@ function onUndoChangedEvent() {
   void refreshHasUndo();
 }
 onMounted(() => {
-  if (chatStore.conversations.length === 0) chatStore.createConversation();
+  // 恢复上次会话（而不是无脑新建）：等 SQLite 加载完成后按「恢复上次 → 退回最近 → 才新建」决策。
+  // 旧实现在此同步 createConversation，与会话异步加载形成竞态，导致每次重启都开新会话。
+  void chatStore.ensureActiveConversation();
   scrollToBottom();
   document.addEventListener("keydown", onKeydown);
   checkOllamaOnStart();

@@ -7,6 +7,7 @@ import {
   sanitizeNamePart,
   parseNativeArguments,
   GENERIC_PARAMETERS,
+  MAX_NATIVE_TOOLS,
 } from "../src/utils/tool-schema.ts";
 
 const builtins = BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc }));
@@ -126,13 +127,20 @@ it("数量上限：优先保留内置，MCP 截尾", () => {
   }[] = [];
   for (let i = 0; i < 50; i++)
     mcp.push({ server: "s", name: `mcp_tool_${i}`, description: "x", kind: "mcp" });
-  const reg = buildNativeToolRegistry({ builtins, mcp, maxTools: 50 });
-  expect(reg.tools.length).toBe(50);
-  // 全部内置保留（43 < 50）
+  // 用「内置数 + 7」作为人造上限，避免把内置数量写死（内置会随功能增长）
+  const cap = builtins.length + 7;
+  const reg = buildNativeToolRegistry({ builtins, mcp, maxTools: cap });
+  expect(reg.tools.length).toBe(cap);
+  // 全部内置保留（内置在前）
   for (const b of builtins) expect(reg.byName.has(b.name)).toBe(true);
-  // 只剩 7 个 MCP 位
+  // 剩余名额才给 MCP（MCP 被截尾）
   const mcpCount = [...reg.byName.values()].filter((r) => r.kind === "mcp").length;
   expect(mcpCount).toBe(7);
+});
+
+it("内置工具总数必须小于 MAX_NATIVE_TOOLS（否则 MCP 一个都放不下）", () => {
+  // 护栏：内置工具持续增长（浏览器 6 个 + Codex 融合 4 个…），超限会静默截尾 MCP 工具
+  expect(builtins.length).toBeLessThan(MAX_NATIVE_TOOLS);
 });
 
 it("角色白名单：allowedBuiltin 只保留放行工具", () => {

@@ -11,6 +11,7 @@
 //! `execpolicy`(命令执行策略, S1) / `pty`(交互式终端, S7)。
 
 mod api;
+mod browser;
 mod db;
 mod execpolicy;
 mod im;
@@ -1104,6 +1105,45 @@ fn fmt_size(b: u64) -> String {
 #[tauri::command]
 fn file_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
+}
+
+/// 读取本地图片为 data URL（供内置 `view_image` 工具把图片放进模型上下文）。
+/// 安全与体积约束：仅图片扩展名、单文件上限 8MB（避免把巨大 base64 塞进上下文）。
+#[tauri::command]
+fn read_image_data_url(path: String) -> Result<String, String> {
+    let expanded = sanitize_home_path(&path)?;
+    let p = std::path::Path::new(&expanded);
+    if !p.is_file() {
+        return Err(format!("文件不存在: {expanded}"));
+    }
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => {
+            return Err(format!(
+                "不支持的图片格式 .{ext}（支持 png/jpg/jpeg/gif/webp/bmp）"
+            ))
+        }
+    };
+    let meta = std::fs::metadata(&expanded).map_err(|e| format!("读取文件信息失败: {e}"))?;
+    const MAX: u64 = 8 * 1024 * 1024;
+    if meta.len() > MAX {
+        return Err(format!(
+            "图片过大（{} MB，上限 8 MB）——请先压缩，或改用 ocr_image / describe_image 取文字信息",
+            meta.len() / 1024 / 1024
+        ));
+    }
+    use base64::Engine as _;
+    let bytes = std::fs::read(&expanded).map_err(|e| format!("读取图片失败: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
 }
 
 /// 用系统默认应用打开文件（macOS open / Windows start / Linux xdg-open）。
@@ -5828,6 +5868,56 @@ fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, String
     ))
 }
 
+// ── 内置浏览器自动化（CDP 直连，替代 puppeteer MCP 插件）────────────────────
+// 实测 MCP puppeteer 工具失败率高（evaluate 12/17、navigate 8/24）且依赖 npx+Node，
+// 故改为内置：只依赖本机已存在的浏览器内核（探测见 browser::probe_browser）。
+
+fn browser_app_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn browser_status() -> serde_json::Value {
+    browser::status().await
+}
+
+#[tauri::command]
+async fn browser_navigate(app: tauri::AppHandle, url: String) -> Result<String, String> {
+    browser::navigate(browser_app_dir(&app)?, &url).await
+}
+
+#[tauri::command]
+async fn browser_evaluate(app: tauri::AppHandle, script: String) -> Result<String, String> {
+    browser::evaluate(browser_app_dir(&app)?, &script).await
+}
+
+#[tauri::command]
+async fn browser_screenshot(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<String, String> {
+    browser::screenshot(browser_app_dir(&app)?, path).await
+}
+
+#[tauri::command]
+async fn browser_click(app: tauri::AppHandle, selector: String) -> Result<String, String> {
+    browser::click(browser_app_dir(&app)?, &selector).await
+}
+
+#[tauri::command]
+async fn browser_fill(
+    app: tauri::AppHandle,
+    selector: String,
+    value: String,
+) -> Result<String, String> {
+    browser::fill(browser_app_dir(&app)?, &selector, &value).await
+}
+
+#[tauri::command]
+async fn browser_close() -> Result<String, String> {
+    Ok(browser::close().await)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -6056,6 +6146,14 @@ pub fn run() {
             notify_user,
             notification_permission_granted,
             request_notification_permission,
+            browser_status,
+            browser_navigate,
+            browser_evaluate,
+            browser_screenshot,
+            browser_click,
+            browser_fill,
+            browser_close,
+            read_image_data_url,
             probe_native_tools,
             send_message,
             chat_once,

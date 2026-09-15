@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-09-15（下午·第 3 批）
+
+### ✅ 插件市场收敛（P0）+ 浏览器自动化内置化（P1）
+> 决策：**不取消插件，而是分层收敛**——内置工具 = 能力主干；技能 = 能力拓展主路径；MCP = 长尾/账号型第三方集成。依据 `docs/AGENT_DIAGNOSIS_2026-09-15.md` 的实测数据（MCP 浏览器工具 `puppeteer_evaluate` 失败 12/17、`navigate` 8/24；内置文件类工具失败率≈0）。
+- **P0 下架与内置重叠的 MCP 插件**（`mcp-catalog.ts`）：移除 **文件系统 / Git / SQLite / 记忆 / 时间 / 浏览器自动化** 6 项，只保留**内置确实没有**的长尾服务（GitHub / PostgreSQL / Redis / Everything 示例）。理由：两套同名工具（MCP `read_file` vs 内置 `read_file`、MCP `git` vs 内置 `git`）会让模型二选一，既挤占工具 schema 预算（`MAX_NATIVE_TOOLS=80` 且 MCP 在末尾被静默截尾），又是参数名错/路由错的高发区（`fetch_page` 曾被按名字转发给 MCP → `Tool not found`）。已在文件头写明收录原则；**用户此前已装的插件不受影响**（不展示但配置保留）。
+- **P1 浏览器自动化内置化（新增 `src-tauri/src/browser.rs`，~430 行）**：自己说 CDP，摆脱 puppeteer MCP 插件与 Node/npx 依赖。
+  - 内核探测：`chrome-headless-shell`（最新版本目录优先）→ puppeteer 缓存的 Chrome for Testing → 系统 Chrome/Edge/Chromium/Brave；支持 `DAOSHENGYI_BROWSER` 环境变量覆盖。
+  - 启动：`--remote-debugging-port=<空闲端口>` + profile 落在应用数据目录，轮询 `/json/version` 等就绪，从 `/json/list` 取 page 目标的 `webSocketDebuggerUrl`（无 page 时 `PUT /json/new` 兜底）。
+  - 会话常驻单例（`tokio::sync::Mutex<Option<Session>>`），按自增 id 发命令、跳过事件取同 id 响应（30s 超时）；进程退出自动重建；`Drop` 确保不残留子进程。
+  - 6 个内置工具：`browser_navigate`（返回标题+最终地址+正文前 4000 字）、`browser_evaluate`（async IIFE + `awaitPromise`，同步/异步脚本都支持）、`browser_screenshot`（PNG 存盘并返回路径）、`browser_click`、`browser_fill`（走原型 `value` setter + 派发 input/change，兼容 React 受控组件）、`browser_close`。
+  - 纯函数抽出来单测（CDP 报文构造、响应匹配跳过事件、JS 字面量转义、`Runtime.evaluate` 结果抽取、端口分配、headless 参数规则）；**另加真机端到端测试（`--ignored`）**：启动内核 → 打开本地 HTML → 断言抓到标题/正文 → evaluate → 截图落盘 → 关闭，本机实测 **1.07 秒通过**。
+  - 前端：`builtin-tools.ts` / `builtin-params.ts` 补 6 个工具（含中文参数说明）；`callBuiltinTool` 接 Rust 命令；`closeBrowserIfOpen()` 收尾时同时关闭内置浏览器；Prompt 里「浏览器自动化使用要点」整段从 puppeteer 改写到内置 `browser_*`（并明确“即便装过插件也优先内置”），`fetch_page` / `run_command` / 「打开浏览器」三处指引同步更新；「必须先导航再 fill/click」守卫同时覆盖 `browser_*`。
+- 内置工具数 43 → **49**（仍在 `MAX_NATIVE_TOOLS=80` 内，MCP 名额从 37 降到 31，但同时候选插件从 10 降到 4 → 实际更宽松）。
+- **后续（未做）**：P2 技能声明 `requires`（工具/服务器）并按需激活注入；P3 社区远程插件市场（Smithery）从「市场」退成「高级 → 手动添加远程端点」；`docs/ROADMAP.md` §5.1 插件系统与 §O7 插件化 SDK 需按新方向改写。
+
+### ✅ 融合 Codex（openai/codex）内置工具 4 项
+> 依据：`openai/codex` 的工具集已通过海量用户检验，且后端同为 Rust。原则：**只搬「我们缺、且被验证过」的**，不整套照抄（Codex 的 `exec_command`/`write_stdin` 等与现有 `run_command` + PTY 面板重叠，暂不搬）。
+- **`apply_patch`（新增 `src/utils/codex-patch.ts`）**：Codex 的**自由格式**（非 JSON）补丁工具，自带 Lark 语法。我们实现了它的解析器：
+  - 支持 `*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** Move to:` / `*** End Patch`，`@@` 锚点定位、多 hunk、多文件；容错省略 Begin/End。
+  - 严格校验：hunk 只有 `+` 行而无上下文 → 报错（避免“盲插”错位）；`Update` 无 hunk、`Add` 无内容、非法行前缀 → 报错并指向 `*** End Patch`；`Move to:` 记 warning（当前不搬移文件）。
+  - **复用既有安全链路**：解析后先校验所有路径存在性 → `add`/`delete` 直连 `write_file_agent`/`delete_file_agent`；`update` 转成 `apply_edits` 的 `{op:"replace", old, new}`，**完全走原有的 diff 预览 / 二次确认 / 撤销栈**（`hasSessionPermit("apply_patch")` 支持会话内免重复确认）。
+  - 单测 **14 项**（`tests/test-codex-patch.test.ts`）覆盖增删改、上下文行双向保留、多文件多 hunk、容错、各类错误分支。
+- **`current_time`**（本地/指定时区当前时间 + 时间戳）· **`sleep`**（0–60s，用于轮询/限速场景，避免模型自己写 `sleep` 命令）· **`view_image`**（把本地图片作为**多模态 user 消息**注入下一轮请求；DeepSeek 等非多模态模型自动回退到本地 Ollama 视觉模型 `ollama_describe_image`）。
+  - `view_image` 与 `browser_screenshot` 天然配对：截图 → 看图 → 决定下一步（真机实测中 Agent 已自行这样用）。
+- `builtin-tools.ts` / `builtin-params.ts` 补齐 4 个工具的描述与 JSON Schema（`apply_patch` 的说明里写清补丁格式与使用场景）。
+- 内置工具数 49 → **53**（Codex 4 项 + 浏览器 6 项 = 32 → 53 个内置工具；仍在上限内，并新增护栏单测：`内置工具总数必须小于 MAX_NATIVE_TOOLS`，防止以后静默截尾 MCP 工具）。
+- **验证**：vue-tsc 干净 · vitest **10 files / 68 passed**（含 14 项补丁解析 + 参数名注入 + 数量护栏）· cargo test --lib **111 passed / 8 ignored** · clippy `-D warnings` 干净。
+
+### ✅ 修复：每次重启都会新开会话（无法恢复最近一次会话）
+- **根因（异步竞态）**：`App.vue` 的 `onMounted` **同步**判断 `conversations.length === 0` 就 `createConversation()`，而 `initFromDb()`（读 SQLite + 从设置恢复 `activeConversationId`）还在 await 中 —— 新建出的会话 id 立刻被 `watch(activeConversationId)` 写进了设置，等 DB 加载完再比对时该 id 在库里并不存在 → 恢复失败；用户看到的就是每次重启都是空白新会话（且设置里留下一个指向**不存在的会话**的孤儿 id，真机取证确认：设置里 `activeConversationId=8f2ca196…`，而 `conversations` 表里只有 `eaf77f6e…`）。
+- **修复**（`src/stores/chat.ts` + `src/App.vue`）：
+  - 启动时捕获加载 Promise（`const dbLoaded = initFromDb()`）；持久化 `watch` 加护栏：**只有会话真实存在于列表中才写入设置**，孤儿 id 不再产生（空会话被 DB 加载顶掉后已不是活跃会话，防抖保存也会直接 `return`，本就不该进设置/库）；新增 `ensureActiveConversation()`：等 DB 加载完 → ① 已恢复则保持 → ② 否则选中**最近更新**的会话（`visibleConversations[0]`，已按 `updatedAt` 倒序）→ ③ 真的没有会话才新建。`App.vue` 改为 `void chatStore.ensureActiveConversation()`。
+- **验证**：vue-tsc 干净；真机数据库取证确认孤儿 id 现象（设置里的 `activeConversationId` 在 `conversations` 表中不存在，且空会话不入库 → 每次重启都从零开始）。
+- 本批整体验证：clippy `-D warnings` 干净 · cargo test --lib **111 passed / 8 ignored** · 真机 CDP 端到端通过 · vue-tsc 干净 · vitest **10 files / 68 passed**
+
+---
+
 ## 2026-09-15（下午·第 2 批）
 
 ### ✅ 按诊断报告修复 4 类问题（token 口径 / 日志膨胀 / 工具路由与参数名 / 工作流假成功）

@@ -33,6 +33,8 @@ import {
 } from "@/utils/tool-call";
 import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
+// 融合 Codex（openai/codex）的 apply_patch：解析其补丁格式并翻译成既有 apply_edits 操作
+import { parseCodexPatch, hunksToEdits, summarizePatch } from "@/utils/codex-patch";
 
 /// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
 interface RoundUsage {
@@ -44,10 +46,26 @@ interface RoundUsage {
   total: number;
 }
 
-/// 已知内置工具名集合：内置工具**永不**被路由到 MCP 服务器。
-/// 背景（AGENT_DIAGNOSIS 问题 4）：`fetch_page` 是内置工具，却被按名字匹配转发给某个
+/// 已知内置工具名集合：内置工具**永不**被路由到 MCP 服务器。/// 背景（AGENT_DIAGNOSIS 问题 4）：`fetch_page` 是内置工具，却被按名字匹配转发给某个
 /// MCP 服务器，结果 `MCP error -32602: Tool fetch_page not found`（3/3 全失败）。
 const BUILTIN_TOOL_NAMES = new Set(BUILTIN_TOOLS.map((t) => t.name));
+
+/// view_image 读取的图片（data URL）暂存区：在下一轮请求前作为多模态 user 消息注入上下文，
+/// 让视觉模型**原生看图**（融合 Codex 的 view_image；DeepSeek 等不支持图片的模型走本地描述兜底）。
+const pendingViewImages: string[] = [];
+
+/// 把暂存的 view_image 图片注入消息数组（在发起下一轮请求前调用）
+function flushPendingViewImages(msgs: AgentMsg[]): void {
+  if (pendingViewImages.length === 0) return;
+  const imgs = pendingViewImages.splice(0, pendingViewImages.length);
+  msgs.push({
+    role: "user",
+    content: [
+      { type: "text", text: "（以下是 view_image 工具读取的图片，请直接查看）" },
+      ...imgs.map((url) => ({ type: "image_url", image_url: { url, detail: "high" } })),
+    ],
+  });
+}
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
@@ -429,7 +447,7 @@ function getMcpToolsPrompt(): string {
     outputRule +
     toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
-    '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
+    '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器工具（`browser_navigate` 打开 → `browser_evaluate` 提取 / `browser_screenshot` 截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
     '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
     '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。\n' +
@@ -443,7 +461,7 @@ function getMcpToolsPrompt(): string {
     '\n- **create_file** (app): **新建文件（仅当目标不存在，避免误覆盖）**。参数 {"path": "绝对路径或以 ~/ 开头", "content": "文件内容"}。文件已存在时不会覆盖，返回提示。' +
     '\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。' +
     '\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {"path": "目录绝对路径"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。' +
-    '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用浏览器自动化工具 `puppeteer_navigate`（server「浏览器自动化」）真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
+    '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
@@ -497,7 +515,7 @@ function getMcpToolsPrompt(): string {
     "\n\n## 命令执行与打开本机应用（run_command）\n" +
     "- **你具备本机命令行能力**：调用 run_command 可执行 shell 命令（受命令执行策略门禁；危险/破坏性命令会被拦截或需用户确认，勿尝试绕过）。\n" +
     '- 用户要「打开/启动某应用、文件夹或文件」时**不要声称做不到**——macOS 用 run_command 执行 `open -a "应用名"`（例：照片→`open -a Photos`、访达→`open .`）或 `open "文件/文件夹/照片库路径"`（例：`open "/Users/wanghuan/Pictures/Photos Library.photoslibrary"` 会打开「照片」）。\n' +
-    '\n- **「打开浏览器访问某网址」≠「启动应用」**：用户说「打开 XX 浏览器」「打开浏览器跳转某页 / 去某网站」时，目标是浏览器**真实打开并加载该网址**——请用浏览器自动化工具（server「浏览器自动化」的 `puppeteer_navigate`，会在本地弹出浏览器并真实加载）；**不要**用 `open -a "<浏览器>" "<网址>"`：浏览器已在运行时该命令**不会可靠跳转**（退出码 0 只代表命令执行成功，不代表已加载目标页），且无法回读页面确认——**禁止仅凭退出码 0 就回报「已打开并跳转」**。`open -a` 只用于**纯启动应用 / 打开文件/文件夹**（不带网址）。\n' +
+    '\n- **「打开浏览器访问某网址」≠「启动应用」**：用户说「打开 XX 浏览器」「打开浏览器跳转某页 / 去某网站」时，目标是浏览器**真实打开并加载该网址**——请用内置浏览器工具 `browser_navigate`（会启动本地内核并真实加载，返回标题与正文供你确认）；**不要**用 `open -a "<浏览器>" "<网址>"`：浏览器已在运行时该命令**不会可靠跳转**（退出码 0 只代表命令执行成功，不代表已加载目标页），且无法回读页面确认——**禁止仅凭退出码 0 就回报「已打开并跳转」**。`open -a` 只用于**纯启动应用 / 打开文件/文件夹**（不带网址）。\n' +
     "- 能用专用工具（git / run_tests / list_dir / read_file / replace_string / workflow_*）完成的优先用专用工具；run_command 用于其余命令（GUI 启动、构建脚本、brew、系统查询等）。只读优先，慎用写/删/安装类。";
   // 强制约束：实时/时效信息必须真实获取，严禁编造。防止模型凭训练数据"发挥"（如编造天气）。
   const realtime =
@@ -597,17 +615,15 @@ function getMcpToolsPrompt(): string {
     "- directory_tree 会递归展开全部子目录（含 .git、node_modules、target、build 等海量文件），结果巨大且会被截断，无法完整看到；禁止对含这些大目录的项目用它。\n" +
     "- 正确做法：先 list_dir 看顶层 → 针对需要的子目录再用 list_dir 逐层深入 → 读关键文件用 read_file。\n" +
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
-    "\n## 浏览器自动化使用要点\n" +
-    "- **你具备本地浏览器能力**（浏览器自动化插件，server 名「浏览器自动化」；工具：puppeteer_navigate 打开网页、puppeteer_fill 输入、puppeteer_click 点击、puppeteer_evaluate 执行 JS/提取文本、puppeteer_screenshot 截图）。用户要求打开网页、跳转某网址、搜索、点击或操作页面时（含「打开 XX 浏览器去某网站/首页」这类带浏览器名的说法）——**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作——你确实能在本地打开浏览器（会弹出窗口，任务结束自动关闭）。\n" +
-    '- **验证本地生成的 HTML/网页渲染**：先 `run_command` 起本地静态服务（如 `python3 -m http.server 8000`，在文件所在目录）或直接用本地文件，再用 `puppeteer_navigate` 打开页面 → `puppeteer_screenshot` 截图核对渲染。**严禁把 `file://` 路径或本地磁盘路径当作网页 URL 交给 `fetch_page`**——fetch_page 只抓取 HTTP(S) 网页并做 SSRF 防护，对本地文件会直接报错（无法解析主机名/被拦截）；本地文件内容用 `read_file` 读取，本地页面渲染验证**必须走浏览器自动化**，不要用 fetch_page 反复重试本地路径。\n' +
-    '- 若浏览器工具不在上方工具列表（按需激活），直接用 `{"server":"浏览器自动化","tool":"puppeteer_navigate",...}` 调用即可，系统会自动连接浏览器。\n' +
-    "- 打开 JS 动态渲染的页面后，**必须先等它渲染完成再提取/截图**：puppeteer_navigate 会自动等待网络空闲（waitUntil networkidle2）。\n" +
-    "- **操作顺序**：先用 puppeteer_navigate 打开目标页面 → 等渲染完成 → 再 puppeteer_fill 输入 / puppeteer_click 点击 / puppeteer_evaluate 提取 / puppeteer_screenshot 截图。**不要跳过导航直接尝试输入或点击**（没打开页面无从操作）。\n" +
-    "- **优先图形化操作（通用，适配任意站点/搜索引擎）**：搜索、输入用 `puppeteer_fill` 填输入框（正确触发输入事件）+ `puppeteer_click` 点提交按钮。若用 `puppeteer_evaluate` 设值，必须**同时触发 input/change 事件再提交**，否则框架收不到输入：如 `el.value='关键词'; el.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('form').requestSubmit();`。仅当页面确实无法图形化交互时，才兜底用带查询参数的 URL 直达（如 `https://www.baidu.com/s?wd=关键词`）。\n" +
-    "- 获取渲染后的页面文本，优先用 **puppeteer_evaluate** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
-    "- puppeteer_screenshot 截图仅用于视觉确认；截图**不要传 width/height 参数**（系统会自动用与窗口一致的视口；传小尺寸会把页面视口缩小，导致页面显示变小）。若截图空白，说明页面尚未渲染或需登录，改用 puppeteer_evaluate 提取文本判断。\n" +
-    "- puppeteer_screenshot 截图保存后，回复中**必须原样引用系统给出的保存路径**（默认 ~/Pictures/道生一截图/daoshengyi-shot-*.png，用户点击可直接打开查看）；**禁止改写、美化或声称移动到其它路径**——文件不在别处，改写后用户点不开。\n" +
-    "- **不要用 screencapture 全屏截图来核验网页**（会截到无关画面，还依赖窗口置顶）；渲染核验用 puppeteer_screenshot 截当前页面。本地视觉模型（describe_image/ocr_image）对复杂页面截图偶尔会输出与图片无关的乱码/幻觉描述——**不要仅凭一段离谱的描述就判定渲染失败**；应以 puppeteer_screenshot 的保存路径给用户查看为准，必要时用 puppeteer_evaluate 读 document.body.innerText 交叉验证。\n" +
+    "\n## 浏览器自动化使用要点（内置 browser_* 工具，无需安装插件）\n" +
+    "- **你具备内置浏览器能力**：`browser_navigate`（打开网址，返回标题+最终地址+正文前 4000 字）、`browser_evaluate`（执行 JS 取值）、`browser_screenshot`（截图存证）、`browser_click`（点击元素）、`browser_fill`（填输入框）。用户要求打开网页、跳转某网址、搜索、点击或操作页面时（含「打开 XX 浏览器去某网站/首页」这类带浏览器名的说法）——**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作。\n" +
+    '- **验证本地生成的 HTML/网页渲染**：先 `run_command` 起本地静态服务（如 `python3 -m http.server 8000`，在文件所在目录）或直接用 `file://` 路径，再用 `browser_navigate` 打开 → `browser_evaluate` 读 `document.body.innerText` / `browser_screenshot` 截图核对渲染。**严禁把 `file://` 路径或本地磁盘路径当作网页 URL 交给 `fetch_page`**——fetch_page 只抓取 HTTP(S) 网页并做 SSRF 防护，对本地文件会直接报错；本地文件内容用 `read_file` 读取。\n' +
+    "- **不要再用 `puppeteer_*` 插件工具**（即便装过「浏览器自动化」插件也应优先内置 `browser_*`）：内置浏览器直连 CDP，无 Node/npx 依赖，实测失败率显著更低。\n" +
+    "- **操作顺序**：先用 `browser_navigate` 打开目标页面 → 再 `browser_fill` 输入 / `browser_click` 点击 / `browser_evaluate` 提取 / `browser_screenshot` 截图。**不要跳过导航直接尝试输入或点击**（会返回未打开页面的错误）。\n" +
+    "- **优先图形化操作（通用，适配任意站点/搜索引擎）**：搜索、输入用 `browser_fill` 填输入框（内部已触发 input/change 事件，兼容 React 受控组件）+ `browser_click` 点提交按钮。仅当页面确实无法图形化交互时，才兜底用带查询参数的 URL 直达（如 `https://www.baidu.com/s?wd=关键词`）。\n" +
+    "- 获取渲染后的页面文本，优先用 **`browser_evaluate`** 执行 `document.body.innerText`（最可靠），不要只依赖截图。\n" +
+    "- `browser_screenshot` 截图仅用于视觉确认；保存路径以系统返回为准，回复中**必须原样引用**（禁止改写/声称移动到其它路径）。若截图空白，说明页面尚未渲染或需登录，改用 `browser_evaluate` 提取文本判断。\n" +
+    "- **不要用 screencapture 全屏截图来核验网页**（会截到无关画面）；渲染核验用 `browser_screenshot`。本地视觉模型（describe_image/ocr_image）对复杂页面截图偶尔会输出与图片无关的乱码/幻觉描述——**不要仅凭一段离谱的描述就判定渲染失败**；应以截图路径给用户查看为准，必要时用 `browser_evaluate` 读 `document.body.innerText` 交叉验证。\n" +
     "- 需要登录、或有验证码/反爬的页面（如爱企查、官方公示系统）可能无法自动获取，如实告知用户，不要编造数据。\n" +
     '\n需要工具时只回复以下格式：\n<tool_call>\n{"server":"服务器名","tool":"工具名","arguments":{...}}\n</tool_call>' +
     "\n\n完成任务后无需手动关闭浏览器：任务结束系统会自动断开浏览器（释放资源）。"
@@ -618,6 +634,12 @@ function getMcpToolsPrompt(): string {
 /// server-puppeteer 无 puppeteer_close 工具，只能通过断开 MCP 连接
 /// （kill 服务器进程，kill_on_drop）使浏览器窗口随之关闭。
 async function closeBrowserIfOpen(): Promise<void> {
+  // 内置浏览器（CDP 直连）：进程常驻，收尾时显式关闭，避免残留内核进程
+  try {
+    await invoke<string>("browser_close");
+  } catch {
+    /* 未运行或不可用：忽略 */
+  }
   const browserServers = new Set(
     mcpToolsCache.filter((t) => /^puppeteer_/i.test(t.name)).map((t) => t.server),
   );
@@ -643,8 +665,8 @@ async function closeBrowserIfOpen(): Promise<void> {
     }
   }
 }
-/// 本次消息会话内是否已用 puppeteer_navigate 打开过网页（拦截未导航就 fill/click）。
-/// 每次新消息重置（上一任务的浏览器已断开）。
+/// 本次消息会话内是否已用浏览器打开过网页（拦截未导航就 fill/click）。
+/// 内置 `browser_navigate` 与插件 `puppeteer_navigate` 都算。每次新消息重置。
 let browserNavigated = false;
 /// P-A5 防假完成：当前任务计划是否已执行过**实际工作**工具（plan_task/plan_update 不算）。
 /// plan_task 建计划时重置为 false；调用实际工具（callMcpTool 非 plan_*）时置 true。
@@ -835,15 +857,16 @@ export async function callMcpTool(
       ) {
         (args as Record<string, unknown>).waitUntil = "networkidle2";
       }
-      // 拦截 puppeteer 页面操作：必须先 navigate 打开过网页，否则无从输入/点击/截图。
+      // 拦截浏览器页面操作：必须先 navigate 打开过网页，否则无从输入/点击/截图。
       // 防止 agent 跳过导航就直接 fill/click（页面都没打开谈何操作）。
       if (
-        /^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) &&
+        (/^puppeteer_(fill|click|select|hover|screenshot|evaluate)$/.test(tool) ||
+          /^browser_(fill|click|screenshot|evaluate)$/.test(tool)) &&
         !browserNavigated
       ) {
         throw new BrowserNotNavigatedError();
       }
-      if (tool === "puppeteer_navigate") {
+      if (tool === "puppeteer_navigate" || tool === "browser_navigate") {
         browserNavigated = true;
       }
       // puppeteer_screenshot 拦截：①用户/模型可通过 path / savePath 指定保存位置
@@ -1287,6 +1310,34 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     }
   }
   switch (tool) {
+    // ---- 内置浏览器（CDP 直连）----
+    case "browser_navigate": {
+      const url = String(args.url || args.URL || "");
+      if (!url) throw new Error("browser_navigate 需要 url 参数");
+      return await invoke<string>("browser_navigate", { url });
+    }
+    case "browser_evaluate": {
+      const script = String(args.script || args.expression || "");
+      if (!script) throw new Error("browser_evaluate 需要 script 参数");
+      return await invoke<string>("browser_evaluate", { script });
+    }
+    case "browser_screenshot": {
+      const path = args.path ? String(args.path) : null;
+      return await invoke<string>("browser_screenshot", { path });
+    }
+    case "browser_click": {
+      const selector = String(args.selector || "");
+      if (!selector) throw new Error("browser_click 需要 selector 参数");
+      return await invoke<string>("browser_click", { selector });
+    }
+    case "browser_fill": {
+      const selector = String(args.selector || "");
+      const value = String(args.value ?? "");
+      if (!selector) throw new Error("browser_fill 需要 selector 参数");
+      return await invoke<string>("browser_fill", { selector, value });
+    }
+    case "browser_close":
+      return await invoke<string>("browser_close");
     case "fetch_page": {
       const url = String(args.url || "");
       if (!url) throw new Error("fetch_page 需要 url 参数");
@@ -1729,6 +1780,119 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("ocr_image 需要 path 参数（本地图片文件路径）");
       const ocr = await invoke<string>("ocr_image_file", { path });
       return ocr || "（未识别到文字）";
+    }
+    // ---- 融合 Codex 的工具（openai/codex，其工具形态经大量用户检验）----
+    case "apply_patch": {
+      // Codex 的 apply_patch：一次调用完成多文件/多片段编辑（GPT-5 专门训练过该格式）。
+      // 这里解析成既有的 apply_edits 操作，从而复用 diff 预览、用户确认（P-A4）、撤销快照。
+      const patch = String(args.patch ?? args.input ?? "");
+      if (!patch.trim()) {
+        throw new Error(
+          "apply_patch 需要 patch 参数（Codex 格式补丁文本：*** Begin Patch / *** Update File: <path> / @@ / -旧行 +新行 / *** End Patch）",
+        );
+      }
+      let parsed: ReturnType<typeof parseCodexPatch>;
+      try {
+        parsed = parseCodexPatch(patch);
+      } catch (e) {
+        return `⚠️ 补丁解析失败（未改动任何文件）：${e instanceof Error ? e.message : String(e)}`;
+      }
+      // 预校验：先确认所有路径状态正确，避免「改到一半才发现路径不对」
+      for (const f of parsed.files) {
+        const exists = await invoke<boolean>("file_exists", { path: f.path });
+        if (f.op === "add" && exists) {
+          return `⚠️ *** Add File 的目标已存在：${f.path}（为避免误覆盖，本次未执行任何改动；要改内容请用 *** Update File）`;
+        }
+        if (f.op !== "add" && !exists) {
+          return `⚠️ *** ${f.op === "delete" ? "Delete" : "Update"} File 的文件不存在：${f.path}（本次未执行任何改动）`;
+        }
+      }
+      const out: string[] = [];
+      for (const f of parsed.files) {
+        if (f.op === "add") {
+          const real = await invoke<string>("write_file_agent", {
+            path: f.path,
+            content: f.content ?? "",
+          });
+          notifyUndoChanged();
+          out.push(`✅ 新增文件 ${real}`);
+          continue;
+        }
+        if (f.op === "delete") {
+          const del = await invoke<string>("delete_file_agent", { path: f.path });
+          notifyUndoChanged();
+          out.push(`✅ ${del}`);
+          continue;
+        }
+        const edits = hunksToEdits(f.hunks);
+        // 与 replace_string 相同的人工确认路径（开启「文件编辑需确认」时逐文件预览 diff）
+        if (getSettings().fileEditConfirm && !hasSessionPermit("apply_patch")) {
+          const preview = await invoke<{ diff: string; summary: string }>("apply_edits", {
+            path: f.path,
+            edits,
+            preview: true,
+          });
+          const ok = await requestEditConfirm({
+            kind: "edit",
+            path: f.path,
+            diff: preview.diff,
+            summary: preview.summary,
+            edits,
+            tool: "apply_patch",
+            args: { path: f.path, edits },
+            rememberLabel: "本会话内不再询问 apply_patch",
+          });
+          if (!ok) {
+            out.push(`⚠️ 用户拒绝了 ${f.path} 的修改（该文件未改动）`);
+            break; // 用户已拒绝：不再继续后续文件，避免连环打扰
+          }
+        }
+        const res = await invoke<{ path: string; summary: string }>("apply_edits", {
+          path: f.path,
+          edits,
+          preview: false,
+        });
+        notifyUndoChanged();
+        out.push(`✅ ${res.path}（${f.hunks.length} 处片段）`);
+      }
+      const warn = parsed.warnings.length > 0 ? `\n\n注意：\n- ${parsed.warnings.join("\n- ")}` : "";
+      return `已应用补丁：${summarizePatch(parsed)}\n${out.join("\n")}${warn}`;
+    }
+    case "current_time": {
+      // 融合自 Codex 的 current_time：模型自行取时间，避免凭训练数据猜日期/星期
+      const now = new Date();
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "未知时区";
+      const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][now.getDay()];
+      const offsetMin = -now.getTimezoneOffset();
+      const sign = offsetMin >= 0 ? "+" : "-";
+      const abs = Math.abs(offsetMin);
+      const off = `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+      return [
+        `现在时间：${now.toLocaleString("zh-CN", { hour12: false })}（${week}）`,
+        `ISO 8601：${now.toISOString()}`,
+        `时区：${tz}（${off}）`,
+      ].join("\n");
+    }
+    case "sleep": {
+      // 融合自 Codex 的 sleep：等待外部进程/服务就绪（有上限，避免把 agent 循环卡死）
+      const seconds = Math.min(Math.max(Number(args.seconds ?? 1) || 0, 0), 60);
+      await new Promise((r) => setTimeout(r, seconds * 1000));
+      return `已等待 ${seconds} 秒`;
+    }
+    case "view_image": {
+      // 融合自 Codex 的 view_image：把图片**直接放进模型上下文**（视觉模型原生看图），
+      // 而不是只依赖本地视觉模型的文字描述（描述可能失真/幻觉，见浏览器指引里的教训）。
+      const path = String(args.path || "");
+      if (!path) throw new Error("view_image 需要 path 参数（本地图片文件路径）");
+      const cfg = useChatStore().currentConfig;
+      const isDeepSeek = ((cfg?.baseUrl || "") + (cfg?.model || "")).toLowerCase().includes("deepseek");
+      if (isDeepSeek) {
+        const desc = await invoke<string>("ollama_describe_image", { images: [`file://${path}`] });
+        return `（当前模型不支持图片输入，以下为本地视觉模型的文字描述，可能与原图有出入）\n${desc || "（无法识别）"}`;
+      }
+      const dataUrl = await invoke<string>("read_image_data_url", { path });
+      pendingViewImages.push(dataUrl);
+      return `✅ 已把图片加入上下文（${path}）：你将在**下一轮**直接看到该图，无需再调用 describe_image/ocr_image 猜内容。`;
     }
     case "subagent_delegate": {
       const goal = String(args.goal || "");
@@ -2924,12 +3088,14 @@ export const useChatStore = defineStore("chat", () => {
     }, 500);
   }
 
-  initFromDb();
+  // 会话加载完成的信号：启动兜底逻辑（ensureActiveConversation）**必须**等它结束，
+  // 否则会在「还没读完 SQLite」时误判为没有会话，直接新建空会话并把上次会话的 activeId 覆盖掉
+  // ——这正是「每次重启都开新会话」的根因（App.vue onMounted 与异步加载竞态）。
+  const dbLoaded = initFromDb();
 
   // --- 状态 ---
   const conversations = ref<Conversation[]>([]);
   const activeConversationId = ref<string | null>(null);
-
   // 已归档会话 ID 集合（localStorage 持久化；归档仅从主列表隐藏，数据仍在 SQLite）
   const ARCHIVE_KEY = "daoshengyi_archived_convs";
   function loadArchivedIds(): string[] {
@@ -3010,7 +3176,6 @@ export const useChatStore = defineStore("chat", () => {
 
   // 异步加载 Rust 端配置（优先于 localStorage 旧数据）
   initSettingsFromRust();
-
   // --- 计算属性 ---
   const activeConversation = computed(
     () => conversations.value.find((c) => c.id === activeConversationId.value) ?? null,
@@ -3054,8 +3219,33 @@ export const useChatStore = defineStore("chat", () => {
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
   watch(activeConversationId, (id) => {
-    if (id) updateSettings({ activeConversationId: id });
+    // 只持久化**真实存在**的会话：新建但还没落库的空会话不得覆盖「上次会话」的记录，
+    // 否则重启时读到的是一个 DB 里不存在的 id → 恢复失败 → 表现为每次都开新会话。
+    if (id && conversations.value.some((c) => c.id === id)) {
+      updateSettings({ activeConversationId: id });
+    }
   });
+
+  /// 启动兜底（App 挂载后调用一次）：等会话加载完成，再决定当前会话——
+  /// ① 已从设置恢复（initFromDb 里按 activeConversationId 命中）→ 保持不动；
+  /// ② 没恢复但有历史会话 → 选中**最近更新**的那个（而不是新建）；
+  /// ③ 真的一个会话都没有 → 才新建空会话。
+  /// 返回是否恢复/选中的会话 id（未恢复且新建时返回新会话 id）。
+  async function ensureActiveConversation(): Promise<string> {
+    try {
+      await dbLoaded;
+    } catch {
+      /* 加载失败也继续走兜底 */
+    }
+    const cur = activeConversation.value;
+    if (cur) return cur.id; // ① 已恢复上次会话
+    const recent = visibleConversations.value[0]; // 已按 updatedAt 倒序
+    if (recent) {
+      activeConversationId.value = recent.id; // ② 退回最近一次会话
+      return recent.id;
+    }
+    return createConversation(); // ③ 首次使用才新建
+  }
 
   const activeProfile = computed(
     () => profiles.value.find((p) => p.id === activeProfileId.value) ?? profiles.value[0],
@@ -4740,6 +4930,7 @@ export const useChatStore = defineStore("chat", () => {
           `[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}，原生=${!!nativeToolsOn}`,
         );
         try {
+          flushPendingViewImages(rustMsgs); // view_image 图片在下一轮注入
           roundResult = await streamRound(rustMsgs, nativeToolsOn);
         } catch (e) {
           // 端点不支持原生 tools（或首轮异常与 tools 相关）→ 降级文本模式重试本
@@ -5087,6 +5278,7 @@ export const useChatStore = defineStore("chat", () => {
             "请给出**实实在在的交付内容**（结论、要点、数据、路径等）。",
         });
         try {
+          flushPendingViewImages(rustMsgs); // view_image 图片在收尾轮也要注入
           const fr = await streamRound(rustMsgs);
           addUsage(fr.usage); // 收尾轮用量计入本轮总量
           const fc = stripToolJson(fr.content).trim();
@@ -5437,6 +5629,7 @@ export const useChatStore = defineStore("chat", () => {
     retryLast,
     taskPlan,
     setTaskPlan,
+    ensureActiveConversation,
     agentRunCommand,
     copyToClipboard,
     downloadExport,

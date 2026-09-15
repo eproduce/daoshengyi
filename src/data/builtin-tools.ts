@@ -11,8 +11,48 @@ export interface BuiltinToolDef {
 
 export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
+    name: "apply_patch",
+    desc: '**一次调用完成多文件/多片段编辑**（格式来自 openai/codex 的 apply_patch，模型与用户都已充分验证）。**优先用它而不是多次 replace_string**：改 3 个文件、或同一文件 5 处改动时，一次 apply_patch 即可，显著减少往返。\n格式（严格）：\n*** Begin Patch\n*** Add File: 相对或绝对路径\n+第一行\n+第二行\n*** Update File: 路径\n@@ 可选定位提示（用于报错提示，不参与匹配）\n 上下文行（前缀一个空格，用于定位）\n-被删除的原文行\n+替换后的新行\n*** Delete File: 路径\n*** End Patch\n要点：①片段内每行必须以「空格/ -/+」开头；②Update 的片段**必须包含至少一行上下文**（否则无法定位，会报错）；③上下文行会原样保留，改动后其余内容不动；④Add 的目标已存在会拒绝执行（要改内容请用 Update）；⑤不支持改名/移动（Move to）——请先用本工具改内容，再用 run_command 执行 mv/git mv；⑥代码块式的解释文字不要写进补丁，以 *** End Patch 收尾。\n参数 {"patch": "完整补丁文本"}',
+  },
+  {
+    name: "current_time",
+    desc: '获取**当前真实时间**（本地时间 + 星期 + ISO 8601 + 时区）。**何时用**：需要「今天/现在/本周」这类判断（写日报、算日期差、判断交易日、生成带日期文件名）时**先调它**，不要凭训练数据猜日期或用「今天」含糊表述。无参数。',
+  },
+  {
+    name: "view_image",
+    desc: '把本地图片**直接放进模型上下文**（视觉模型原生看图），用于核验截图/页面渲染/图表效果。参数 {"path": "本地图片文件路径"}。**与 describe_image 的区别**：describe_image/ocr_image 走本地小模型，可能失真/幻觉；view_image 让你真的看到原图，判断「渲染是否正常/图表是否画出来」时应优先用它（DeepSeek 等不支持图片输入的模型会自动退回本地描述）。可配合 browser_screenshot 使用。',
+  },
+  {
+    name: "sleep",
+    desc: '等待若干秒（上限 60 秒）。用于给外部进程/服务启动留时间（如刚 `run_command` 起本地服务、重启服务后）。参数 {"seconds": 秒数}。**不要用它做长时间轮询**——轮询请用 run_command 内的 shell 循环。',
+  },
+  {
+    name: "browser_navigate",
+    desc: '用**内置浏览器**打开网址并返回【标题 + 最终地址 + 正文前 4000 字】。这是验证网页产物（本地 HTML 预览、图表是否渲染）与抓取 JS 动态页面的首选：比 fetch_page 能拿到脚本渲染后的内容。参数 {"url": "完整网址"}。**注意**：内置浏览器已自带，不要再依赖 puppeteer 插件；打开后可用 browser_evaluate 进一步取数、browser_screenshot 截图存证。',
+  },
+  {
+    name: "browser_evaluate",
+    desc: '在**当前已打开的页面**里执行 JavaScript 并返回结果（表达式或 IIFE，返回值会被转成字符串）。用于取 DOM 数据、判断元素是否存在、读取 canvas/ECharts 实例状态、检查渲染是否成功等。参数 {"script": "JS 代码"}。注意：必须先 browser_navigate 打开页面。',
+  },
+  {
+    name: "browser_screenshot",
+    desc: '对**当前页面**截图并保存为 PNG（缺省存到应用数据目录 screenshots/）。用于给"产物是否真的渲染出来"留下可视证据（可再用 ocr_image / describe_image 复核）。参数 {"path": "可选，保存路径"}。',
+  },
+  {
+    name: "browser_click",
+    desc: '在当前页面点击 CSS 选择器命中的元素（自动滚动到可视区）。参数 {"selector": "CSS 选择器"}。找不到元素会明确返回 NOT_FOUND，便于改写选择器。',
+  },
+  {
+    name: "browser_fill",
+    desc: '在当前页面的输入框填写内容（触发 input/change 事件，兼容 React 受控组件）。参数 {"selector": "CSS 选择器", "value": "要填的值"}。',
+  },
+  {
+    name: "browser_close",
+    desc: '关闭内置浏览器，释放进程与端口。任务结束时调用（应用也会在每轮对话收尾自动关闭）。无参数。',
+  },
+  {
     name: "fetch_page",
-    desc: '抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器自动化工具（puppeteer_navigate 打开 → 等待/提取/截图）。参数 {"url": "完整网址"}',
+    desc: '抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用内置浏览器（browser_navigate 打开 → browser_evaluate 提取 / browser_screenshot 截图）。参数 {"url": "完整网址"}',
   },
   {
     name: "web_search",

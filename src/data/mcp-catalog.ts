@@ -13,46 +13,17 @@ export interface McpCatalogItem {
 }
 
 /// 内置 MCP 插件市场（常用官方服务器）
+///
+/// 收录原则（2026-09-15 收敛，依据 docs/AGENT_DIAGNOSIS_2026-09-15.md 实测数据）：
+/// **只收录「内置工具确实没有」的长尾/账号型第三方服务**。与内置能力重叠的服务器
+/// 一律下架——两套同名工具（MCP 的 read_file vs 内置 read_file、MCP 的 git vs 内置 git）
+/// 会让模型二选一，既浪费工具 schema 预算（MAX_NATIVE_TOOLS=80，且 MCP 在末尾被静默
+/// 截尾），又是参数名错/路由错的高发区（fetch_page 曾被按名字转发给 MCP → Tool not found）。
+/// 已下架：文件系统（内置 read_file/write_file/list_dir/… 全套）、Git（内置 git）、
+/// SQLite（内置 rusqlite 已在用）、记忆（内置 memory_*）、时间（内置即可）、
+/// 浏览器自动化（已内置化，见 browser_* 工具）。
+/// 注：用户此前已安装的插件不受影响——不在市场展示，但配置仍保留可继续使用。
 export const MCP_CATALOG: McpCatalogItem[] = [
-  {
-    id: "filesystem",
-    name: "文件系统",
-    icon: "Folder",
-    description: "读写本地文件、浏览目录、搜索文件",
-    category: "系统",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-filesystem /tmp",
-    tags: ["文件", "本地"],
-  },
-  {
-    id: "puppeteer",
-    name: "浏览器自动化",
-    icon: "Globe",
-    description: "网页交互、点击、截图（Puppeteer，自动选择本机已安装的 Chromium 系内核）",
-    category: "网络",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-puppeteer",
-    env: {
-      // server-puppeteer 需要 Chrome/Chromium；puppeteer 缓存的旧版 Chrome for
-      // Testing 在较新 macOS（如 26）上会被系统 SIGKILL（spawn error -88）。
-      // 浏览器可执行路径**由应用动态选择**（探测已装浏览器 + 系统默认 + 设置，
-      // 见 mcp.ts applyPuppeteerEnv / utils/browser-select.ts），此处不硬编码，
-      // 避免本机无 Edge 时启动失败。仅保留视口设置。
-      PUPPETEER_LAUNCH_OPTIONS:
-        '{"defaultViewport":{"width":1440,"height":900},"args":["--window-size=1440,900"]}',
-    },
-    tags: ["浏览器", "自动化"],
-  },
-  {
-    id: "git",
-    name: "Git",
-    icon: "GitBranch",
-    description: "Git 仓库操作、提交、diff、日志",
-    category: "开发",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-git",
-    tags: ["git", "版本控制"],
-  },
   {
     id: "github",
     name: "GitHub",
@@ -62,16 +33,6 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     command: "npx",
     args: "-y @modelcontextprotocol/server-github",
     tags: ["github", "仓库"],
-  },
-  {
-    id: "sqlite",
-    name: "SQLite",
-    icon: "Database",
-    description: "SQLite 数据库查询与分析",
-    category: "数据",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-sqlite /tmp/daoshengyi.db",
-    tags: ["数据库", "SQL"],
   },
   {
     id: "postgres",
@@ -92,26 +53,6 @@ export const MCP_CATALOG: McpCatalogItem[] = [
     command: "npx",
     args: "-y @modelcontextprotocol/server-redis",
     tags: ["redis", "缓存"],
-  },
-  {
-    id: "memory",
-    name: "记忆",
-    icon: "Brain",
-    description: "知识图谱持久化记忆（独立于内置记忆）",
-    category: "工具",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-memory",
-    tags: ["记忆", "知识"],
-  },
-  {
-    id: "time",
-    name: "时间",
-    icon: "Clock",
-    description: "获取当前时间、时区转换",
-    category: "工具",
-    command: "npx",
-    args: "-y @modelcontextprotocol/server-time",
-    tags: ["时间", "时区"],
   },
   {
     id: "everything",

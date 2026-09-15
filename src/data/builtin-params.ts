@@ -7,6 +7,79 @@
 // - additionalProperties:true，允许模型给出示例未覆盖的扩展字段（绝不被 schema 校验拒绝）。
 
 export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
+  // ---- 融合 Codex 的内置工具 ----
+  apply_patch: {
+    type: "object",
+    properties: {
+      patch: {
+        type: "string",
+        description:
+          "Codex 格式补丁文本：*** Begin Patch / *** Add File|Update File|Delete File: 路径 / @@ / 空格(-/+ 前缀)行 / *** End Patch",
+      },
+    },
+    required: ["patch"],
+    additionalProperties: true,
+  },
+  current_time: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
+  view_image: {
+    type: "object",
+    properties: { path: { type: "string", description: "本地图片文件路径" } },
+    required: ["path"],
+    additionalProperties: true,
+  },
+  sleep: {
+    type: "object",
+    properties: { seconds: { type: "number", description: "等待秒数（0~60）" } },
+    required: ["seconds"],
+    additionalProperties: true,
+  },
+
+  // ---- 内置浏览器（CDP 直连，替代 puppeteer MCP 插件）----
+  browser_navigate: {
+    type: "object",
+    properties: { url: { type: "string", description: "完整网址（含 http:// 或 file://）" } },
+    required: ["url"],
+    additionalProperties: true,
+  },
+  browser_evaluate: {
+    type: "object",
+    properties: { script: { type: "string", description: "要执行的 JS 表达式或 IIFE" } },
+    required: ["script"],
+    additionalProperties: true,
+  },
+  browser_screenshot: {
+    type: "object",
+    properties: { path: { type: "string", description: "可选，PNG 保存路径（缺省存到应用数据目录）" } },
+    required: [],
+    additionalProperties: true,
+  },
+  browser_click: {
+    type: "object",
+    properties: { selector: { type: "string", description: "CSS 选择器" } },
+    required: ["selector"],
+    additionalProperties: true,
+  },
+  browser_fill: {
+    type: "object",
+    properties: {
+      selector: { type: "string", description: "CSS 选择器" },
+      value: { type: "string", description: "要填写的值" },
+    },
+    required: ["selector", "value"],
+    additionalProperties: true,
+  },
+  browser_close: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
+
   // ---- 网页 / 搜索 ----
   fetch_page: {
     type: "object",
