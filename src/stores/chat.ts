@@ -88,7 +88,7 @@ import {
   type MinedToolStep,
 } from "@/utils/workflow-mining";
 import { markExternalToolResult } from "@/utils/untrusted";
-import { buildSkillRoutingTable, matchSkillsForMessage } from "@/utils/skill-router";
+import { buildSkillRoutingTable, matchSkillsForMessage, collectSkillRequires } from "@/utils/skill-router";
 import {
   buildNativeToolRegistry,
   activateCatalogTool,
@@ -4951,6 +4951,34 @@ export const useChatStore = defineStore("chat", () => {
       if (skillProgressive && text.trim()) {
         const hitSkills = matchSkillsForMessage(text, enabledSkillList, SKILL_MATCH_MAX_HITS);
         if (hitSkills.length > 0) {
+          // 技能 requires：命中即**自动激活所需工具 / 连接所需 MCP 服务器**
+          // （与 tool_search 的延迟加载配套）；不可用的能力明确告知模型，不静默降级。
+          const reqs = collectSkillRequires(hitSkills);
+          const unavailable: string[] = [];
+          for (const t of reqs.tools) {
+            const entry = activeToolRegistry?.catalog.find((c) => c.tool === t || c.name === t);
+            if (!entry) {
+              unavailable.push(`工具 ${t}`);
+              continue;
+            }
+            if (entry.deferred) activateCatalogTool(activeToolRegistry!, entry.name);
+          }
+          for (const s of reqs.servers) {
+            try {
+              await ensureMcpServerConnected(s);
+            } catch {
+              unavailable.push(`插件 ${s}`);
+            }
+          }
+          const reqNote =
+            reqs.tools.length > 0 || reqs.servers.length > 0
+              ? `\n\n【本技能所需能力】` +
+                (reqs.tools.length ? `工具：${reqs.tools.join("、")} ` : "") +
+                (reqs.servers.length ? `插件：${reqs.servers.join("、")}` : "") +
+                (unavailable.length
+                  ? `\n⚠️ 当前不可用：${unavailable.join("、")}——请先用 tool_search 检索，或明确告知用户需要开启对应插件，不要静默用其它方式凑。`
+                  : "（已就绪）")
+              : "";
           const blocks = hitSkills.map((sk) => {
             const refs = (sk.references || [])
               .map((r) => `- ${r.title}：${r.content.slice(0, 1500)}`)
@@ -4964,7 +4992,7 @@ export const useChatStore = defineStore("chat", () => {
             );
           });
           volatileCtx.push(
-            `[已加载与当前请求相关的技能完整指令，请遵循]\n\n${blocks.join("\n\n")}`,
+            `[已加载与当前请求相关的技能完整指令，请遵循]\n\n${blocks.join("\n\n")}${reqNote}`,
           );
         }
       }

@@ -63,6 +63,17 @@
 - **云端视觉档怎么配（让 DeepSeek 下也能秒级看图）**：设置 → 模型 → 新增一个 Profile（如 智谱 `https://open.bigmodel.cn/api/paas/v4` + `glm-4v-flash`，或 阿里 `https://dashscope.aliyuncs.com/compatible-mode/v1` + `qwen-vl-max`）并填 Key。**无需其它配置**：`view_image` 与「图片预处理」会自动挑选「非 DeepSeek 且有 Key」的档做视觉回退（60s 超时），比本地 llava 快且准得多。未配置时 DeepSeek 下的 `view_image` 会**立即**返回替代方案（ocr_image / browser_evaluate），不会干等。
 - 内置工具 61 → **65**；验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **121 passed / 8 ignored** · clippy `-D warnings` 干净
 
+### ✅ P2：技能声明能力需求（`requires`）并按需激活
+- **问题**：技能正文常要求「用 browser_screenshot 核验」「用 web_search 查证」，但工具没开/插件没连时模型会**静默降级**（改用别的方式凑，质量打折）。
+- **改动**：
+  - 类型：`Skill` / `SkillCatalogItem` 新增 `requires?: { tools?: string[]; servers?: string[] }`。
+  - `.md` 导入支持声明：`requires_tools: browser_navigate, ocr_image` / `requires_servers: GitHub, PostgreSQL`（中英文逗号均可）。
+  - 纯函数 `collectSkillRequires(skills)`：汇总命中技能的需求（去重保序，可单测）。
+  - `chat.ts` 命中技能时**自动执行**：① 所需工具若在注册表目录里则**立即激活**（与 `tool_search` 的延迟加载共用同一机制）；② 所需 MCP 服务器未连接则**自动连接**；③ 把「本技能所需能力 + 当前不可用项」写进本轮注入文本——不可用时**明确要求模型先用 `tool_search` 检索或告知用户开插件，不许静默凑**。
+  - 目录技能示例：学术调研（web_search/fetch_page/kb_add）、资讯简报（web_search/fetch_page/current_time）、UI/UX 审查（browser_navigate/screenshot/evaluate）。
+- 测试：`test-skill-router.test.ts` 新增 `collectSkillRequires` 用例（去重/保序/空白项/无需求技能）。
+- 验证：vue-tsc 干净 · vitest **11 files / 78 passed** · cargo test --lib **121 passed / 8 ignored**
+
 ---
 
 ## 2026-09-15（晚间·第 4 批）

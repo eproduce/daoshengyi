@@ -11,6 +11,30 @@ export interface SkillRouteLike {
   category?: string;
   whenToUse?: string;
   tags?: string[];
+  requires?: { tools?: string[]; servers?: string[] };
+}
+
+/**
+ * 汇总多个命中技能的能力需求（去重 + 保序）：供调用方自动激活工具 / 连接服务器。
+ * 纯函数，便于单测。
+ */
+export function collectSkillRequires(skills: SkillRouteLike[]): {
+  tools: string[];
+  servers: string[];
+} {
+  const tools: string[] = [];
+  const servers: string[] = [];
+  for (const sk of skills) {
+    for (const t of sk.requires?.tools ?? []) {
+      const n = String(t).trim();
+      if (n && !tools.includes(n)) tools.push(n);
+    }
+    for (const s of sk.requires?.servers ?? []) {
+      const n = String(s).trim();
+      if (n && !servers.includes(n)) servers.push(n);
+    }
+  }
+  return { tools, servers };
 }
 
 /** 中文低区分度停用词（出现频率高、无主题指向，不适合做命中词） */

@@ -35,6 +35,7 @@ function parseMd(
   category: string;
   author?: string;
   whenToUse?: string;
+  requires?: { tools?: string[]; servers?: string[] };
 } | null {
   const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   if (fmMatch) {
@@ -49,7 +50,23 @@ function parseMd(
     const cat = get("category") || "导入";
     const author = get("author");
     const whenToUse = get("when_to_use") || get("whenToUse");
-    return { name, description: desc, prompt: body, category: cat, author, whenToUse };
+    // 能力需求（与 tool_search 延迟加载配套）：`requires_tools: browser_navigate, ocr_image`
+    // `requires_servers: GitHub, PostgreSQL`（逗号分隔；中英文逗号均可）
+    const csv = (v: string) =>
+      v
+        .split(/[,，]/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+    const reqTools = csv(get("requires_tools") || get("requiresTools"));
+    const reqServers = csv(get("requires_servers") || get("requiresServers"));
+    const requires =
+      reqTools.length || reqServers.length
+        ? {
+            tools: reqTools.length ? reqTools : undefined,
+            servers: reqServers.length ? reqServers : undefined,
+          }
+        : undefined;
+    return { name, description: desc, prompt: body, category: cat, author, whenToUse, requires };
   }
   // 无 frontmatter：整个文件就是 prompt
   const lines = md.trim().split("\n");
@@ -99,6 +116,7 @@ export const useSkillStore = defineStore("skill", () => {
       tags: item.tags,
       whenToUse: item.whenToUse,
       references: item.references,
+      requires: item.requires,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };

@@ -158,6 +158,7 @@ export const SKILL_CATALOG: SkillCatalogItem[] = [
     author: "社区",
     version: "1.0",
     tags: ["UI", "UX", "可访问性"],
+    requires: { tools: ["browser_navigate", "browser_screenshot", "browser_evaluate"] },
     prompt: `你是一位 UI/UX 审查专家。审查时关注：
 
 1. **可访问性 (a11y)**：语义化 HTML、ARIA 标签、键盘导航、色彩对比度
@@ -209,6 +210,7 @@ export const SKILL_CATALOG: SkillCatalogItem[] = [
     author: "社区",
     version: "1.0",
     tags: ["学术", "文献", "综述"],
+    requires: { tools: ["web_search", "fetch_page", "kb_add"] },
     prompt: `你是一位学术调研专家。帮助用户检索文献并撰写综述：
 
 1. **检索**：优先用免费公开源（OpenAlex API、arXiv、Crossref、Google Scholar 公开页），用 web_search/fetch_page 获取
@@ -226,6 +228,7 @@ export const SKILL_CATALOG: SkillCatalogItem[] = [
     author: "社区",
     version: "1.0",
     tags: ["RSS", "简报", "资讯"],
+    requires: { tools: ["web_search", "fetch_page", "current_time"] },
     prompt: `你是一位资讯简报专家。把一组来源（RSS/网页/用户提供的链接）整理成分类简报：
 
 1. **抓取**：用 fetch_page/web_search 获取来源内容，识别标题、时间、正文

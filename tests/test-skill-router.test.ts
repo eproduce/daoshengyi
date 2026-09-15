@@ -5,6 +5,7 @@ import {
   scoreSkillMatch,
   matchSkillsForMessage,
   skillKeywordsOf,
+  collectSkillRequires,
 } from "../src/utils/skill-router.ts";
 import type { Skill } from "../src/types/index.ts";
 
@@ -32,8 +33,7 @@ const codeReview = makeSkill({
   description: "资深代码审查专家，检查安全漏洞、性能问题和最佳实践",
   tags: ["代码", "审查", "安全"],
   whenToUse: "需要审查代码安全/质量时",
-});
-const shellExpert = makeSkill({
+});const shellExpert = makeSkill({
   id: "shell-expert",
   name: "Shell 专家",
   description: "精通 bash/zsh 脚本",
@@ -106,4 +106,23 @@ it("无 tags 的自定义技能回退 description 短语命中", () => {
   });
   expect(scoreSkillMatch("帮我生成周报", custom)).toBeGreaterThan(0);
   expect(scoreSkillMatch("推荐一部电影", custom)).toBe(0);
+});
+
+it("collectSkillRequires：汇总命中技能的 requires（去重 + 保序 + 去空白）", () => {
+  const a = makeSkill({
+    id: "a",
+    name: "网页核验",
+    requires: { tools: ["browser_screenshot", "ocr_image"], servers: ["浏览器自动化"] },
+  });
+  const b = makeSkill({
+    id: "b",
+    name: "数据核验",
+    requires: { tools: ["ocr_image", "  ", "pg_query"], servers: ["postgres", ""] },
+  });
+  const reqs = collectSkillRequires([a, b]);
+  expect(reqs.tools).toEqual(["browser_screenshot", "ocr_image", "pg_query"]);
+  expect(reqs.servers).toEqual(["浏览器自动化", "postgres"]);
+  // 未声明 requires 的技能不影响结果
+  expect(collectSkillRequires([codeReview, shellExpert])).toEqual({ tools: [], servers: [] });
+  expect(collectSkillRequires([])).toEqual({ tools: [], servers: [] });
 });

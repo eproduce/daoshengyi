@@ -153,6 +153,15 @@ export interface SkillReference {
   content: string;
 }
 
+/// 技能的能力需求声明（与 tool_search 的延迟加载配套）：命中该技能时自动激活/连接
+/// 所需工具与 MCP 服务器，避免“技能要求某能力但工具没开”而静默降级。
+export interface SkillRequires {
+  /** 需要的工具名（内置名或 MCP 工具名） */
+  tools?: string[];
+  /** 需要的 MCP 服务器名（未连接则自动连接） */
+  servers?: string[];
+}
+
 /// 技能
 export interface Skill {
   id: string;
@@ -171,6 +180,8 @@ export interface Skill {
   whenToUse?: string;
   /** 附加参考资料：命中注入正文时随附（长内容建议拆到这里） */
   references?: SkillReference[];
+  /** 能力需求：命中时自动激活工具 / 连接 MCP 服务器（可选） */
+  requires?: SkillRequires;
   createdAt: number;
   updatedAt: number;
 }
@@ -187,4 +198,6 @@ export interface SkillCatalogItem {
   tags: string[];
   whenToUse?: string;
   references?: SkillReference[];
+  /** 能力需求：命中时自动激活工具 / 连接 MCP 服务器（可选） */
+  requires?: SkillRequires;
 }
