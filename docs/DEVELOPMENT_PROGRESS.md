@@ -36,6 +36,16 @@
 - 内置工具 53 → **55**。
 - 验证：clippy `-D warnings` 干净 · cargo test --lib **119 passed / 8 ignored** · vue-tsc 干净 · vitest **10 files / 68 passed**
 
+### ✅ 融合 Codex `tool_search`（工具发现：不再静默截尾）
+- **问题**：`MAX_NATIVE_TOOLS=80` 且内置优先 → 超出的 MCP 工具被**静默丢弃**：模型根本不知道它们存在，就永远用不上（诊断报告⑦提到「工具数逼近上限 + 静默截断」）。
+- **改法（Codex 的 deferred + tool_search 思路）**：
+  - `tool-schema.ts`：注册表新增 **`catalog`（全部工具目录）**；超预算的工具不再丢弃，而是标 `deferred: true` 留在目录里（连同完整 schema）。新增 `activateCatalogTool()` 把命中的延迟工具**推入 `tools` + `byName`** —— `tools` 是同一数组引用，流式循环**下一轮请求即生效**。
+  - **新增 `src/utils/tool-search.ts`（纯函数）**：中英文混合分词的 **BM25**（ASCII 按词、CJK 按单字 + bigram，中文无需词典即可检索；工具名在正文出现两次以提高「按名字查」权重）。
+  - `tool_search(query, limit)` 工具：检索目录 → 命中未声明的工具就当场激活 → 返回「已激活列表 + 名称/来源/描述摘要」。文本工具模式（未启用原生）也尽量可用（临时用内置 + MCP 缓存建目录，只返回真实名字）。
+  - 系统提示词动态加一条**工具发现提示**（仅当存在延迟工具时）：告知「另有 N 个工具未直接列出，找不到能力时用 `tool_search` 检索，命中即可用」，避免模型因「列表里没有」而放弃或编造。
+- **测试**：新增 `tests/test-tool-search.test.ts`（分词 3 项 + BM25 5 项：英文名、中文自然语言、按名检索、无关词空结果、空索引）；`test-tool-schema.test.ts` 加「超预算进目录不丢弃 + 激活后可在 tools/byName 反查 + 重复激活返回 null」。
+- 内置工具 55 → **56**；验证：vue-tsc 干净 · vitest **11 files / 77 passed** · cargo test --lib **119 passed / 8 ignored**
+
 ---
 
 ## 2026-09-15（晚间·第 4 批）

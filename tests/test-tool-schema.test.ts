@@ -2,6 +2,7 @@ import { it, expect } from "vitest";
 import { BUILTIN_TOOLS } from "../src/data/builtin-tools.ts";
 import {
   buildNativeToolRegistry,
+  activateCatalogTool,
   supportsNativeTools,
   isValidNativeName,
   sanitizeNamePart,
@@ -141,6 +142,36 @@ it("数量上限：优先保留内置，MCP 截尾", () => {
 it("内置工具总数必须小于 MAX_NATIVE_TOOLS（否则 MCP 一个都放不下）", () => {
   // 护栏：内置工具持续增长（浏览器 6 个 + Codex 融合 4 个…），超限会静默截尾 MCP 工具
   expect(builtins.length).toBeLessThan(MAX_NATIVE_TOOLS);
+});
+
+it("超预算的工具进入可检索目录（不再静默丢弃），可被 tool_search 激活", () => {
+  const cap = builtins.length + 3;
+  const mcp = Array.from({ length: 10 }, (_, i) => ({
+    server: "svc",
+    name: `mcp_tool_${i}`,
+    description: `服务工具 ${i}（数据库 / 报表 / 同步类能力）`,
+    kind: "mcp" as const,
+  }));
+  const reg = buildNativeToolRegistry({ builtins, mcp, maxTools: cap });
+  // 声明数受上限约束
+  expect(reg.tools.length).toBe(cap);
+  // 目录不丢工具（内置 + 全部 MCP）
+  expect(reg.catalog.length).toBe(builtins.length + mcp.length);
+  const deferred = reg.catalog.filter((c) => c.deferred);
+  expect(deferred.length).toBe(mcp.length - 3);
+  // 溢出工具确实不在声明列表里（但可检索）
+  expect(reg.tools.some((t) => t.function.name === deferred[0].name)).toBe(false);
+
+  // 激活：推入 tools + byName 可反查（下一轮即可调用）
+  const name = deferred[0].name;
+  expect(activateCatalogTool(reg, name)).toBe(name);
+  expect(reg.tools.some((t) => t.function.name === name)).toBe(true);
+  expect(reg.byName.get(name)).toEqual({ server: "svc", tool: deferred[0].tool, kind: "mcp" });
+  // 重复激活/不存在均返回 null
+  expect(activateCatalogTool(reg, name)).toBeNull();
+  expect(activateCatalogTool(reg, "不存在的工具")).toBeNull();
+  // 目录里已激活的那条要翻转标记
+  expect(reg.catalog.find((c) => c.name === name)?.deferred).toBe(false);
 });
 
 it("角色白名单：allowedBuiltin 只保留放行工具", () => {

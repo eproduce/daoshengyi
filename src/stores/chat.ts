@@ -91,11 +91,13 @@ import { markExternalToolResult } from "@/utils/untrusted";
 import { buildSkillRoutingTable, matchSkillsForMessage } from "@/utils/skill-router";
 import {
   buildNativeToolRegistry,
+  activateCatalogTool,
   supportsNativeTools,
   parseNativeArguments,
   type OpenAIFunctionTool,
   type NativeToolRegistry,
 } from "@/utils/tool-schema";
+import { BM25Index, buildToolSearchText } from "@/utils/tool-search";
 
 /** 原生 function calling：Rust resolve 后经 sse-tool-calls 回传的结构化调用 */
 export interface NativeToolCallMsg {
@@ -141,6 +143,26 @@ let mcpToolsCache: {
   inputSchema?: Record<string, unknown>;
 }[] = [];
 let mcpToolsRefreshing: Promise<void> | null = null;
+
+/// 当前会话的原生工具注册表（供 `tool_search` 检索并**激活**未直接声明的工具）。
+/// 每次 sendMessage 重建注册表时刷新；其中 `tools` 是同一数组引用，激活后下一轮即生效。
+let activeToolRegistry: NativeToolRegistry | null = null;
+/// tool_search 的 BM25 索引（随注册表重建而重建）
+let toolSearchState: { registry: NativeToolRegistry; index: BM25Index } | null = null;
+
+/// 构建/复用 tool_search 索引（检索范围 = 全部工具目录，含未声明的延迟工具）
+function ensureToolSearchIndex(reg: NativeToolRegistry): BM25Index {
+  if (!toolSearchState || toolSearchState.registry !== reg) {
+    const index = new BM25Index(
+      reg.catalog.map((c) => ({
+        id: c.name,
+        text: buildToolSearchText(c.name, c.description, c.server),
+      })),
+    );
+    toolSearchState = { registry: reg, index };
+  }
+  return toolSearchState.index;
+}
 
 /// 浏览器自动化（server-puppeteer）常用工具占位定义。
 /// 原生 function calling 会话里，若浏览器服务器「已启用但未连接」，其工具不在 mcpToolsCache
@@ -464,6 +486,7 @@ function getMcpToolsPrompt(): string {
     '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
     '\n- **exec_command** (app): **启动命令并持续交互（交互式/长驻进程专用，融合自 Codex）**：基于 PTY 执行，等待至多 `yield_time_ms`（默认 1000，最大 30000）后返回【本次新增输出 + session_id】；**进程不会因超时被杀**，用 `write_stdin` 继续喂输入/取输出。参数 {"command": "完整 shell 命令", "cwd": "可选工作目录", "yield_time_ms": 可选等待毫秒}。**使用时机**：① 交互式 CLI（`python3 -i`、`psql`、需要确认输入的命令）② 长驻服务（dev server、watch、`tail -f`）③ 需要分段观察输出的长任务。**与 run_command 的区别**：一次性短命令用 run_command（超时即终止）；需要交互或可能长时间运行 → 用本工具。同样受「命令执行策略」门禁；不需要时用 write_stdin 发 `\\u0003`（Ctrl-C）中断。\n' +
     '\n- **write_stdin** (app): **向运行中的 exec_command 会话写输入并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。\n' +
+    '\n- **tool_search** (app): **检索并激活未直接列出的工具（融合自 Codex，BM25 检索）**。参数 {"query": "自然语言描述你要做的事或能力，中英文均可", "limit": 可选返回条数}。**使用时机**：你需要某类能力（如「数据库查询」「发消息」「抓股票数据」）但当前工具列表里**找不到对应工具**时——先搜一下；系统会把命中的工具立即加入可用工具。也可用于**确认某个工具的真实参数名**（不要靠猜）。不要用它做普通信息搜索（那用 web_search）。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
@@ -1763,6 +1786,49 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return res.startsWith("merged:")
         ? `✅ 已更新处理模式记忆（并入已有条目）。以后遇到「${taskType}」类任务会自动想起工作流「${workflowName}」。`
         : `✅ 已记住处理模式：${taskType} → 工作流「${workflowName}」。以后同类任务会自动想起，直接 workflow_run 复用。`;
+    }
+    case "tool_search": {
+      // 融合 Codex 的 tool_search：BM25 检索工具目录，命中未声明的工具则**立即激活**
+      // （推入注册表 tools/byName → 同一数组引用，下一轮请求模型就能直接调用）。
+      const query = String(args.query ?? args.q ?? "").trim();
+      if (!query) throw new Error("tool_search 需要 query 参数（要查找的能力/工具描述）");
+      const limit = Math.min(Math.max(Number(args.limit ?? 8) || 8, 1), 20);
+      // 文本工具模式（未启用原生）时也尽量可用：临时用「内置 + 当前 MCP 缓存」建一份目录，
+      // 只告诉模型真实名字与服务器（无法动态激活）。
+      const reg =
+        activeToolRegistry ??
+        buildNativeToolRegistry({
+          builtins: BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc })),
+          mcp: mcpToolsCache.map((t) => ({
+            server: t.server,
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            kind: "mcp" as const,
+          })),
+        });
+      const index = ensureToolSearchIndex(reg);
+      const hits = index.search(query, limit);
+      if (hits.length === 0) {
+        return `未找到与「${query}」匹配的工具。可换更通用的说法再试（如「数据库」「网页」「发消息」「日历」）；若确信该能力应由插件提供，请提醒用户到「插件」面板确认插件已连接。`;
+      }
+      const entryByName = new Map(reg.catalog.map((c) => [c.name, c]));
+      const activated: string[] = [];
+      const lines: string[] = [];
+      for (const hit of hits) {
+        const e = entryByName.get(hit.id);
+        if (!e) continue;
+        if (e.deferred && activateCatalogTool(reg, e.name)) activated.push(e.name);
+        const desc = e.description.length > 200 ? `${e.description.slice(0, 200)}…` : e.description;
+        lines.push(
+          `- **${e.name}**（${e.kind === "mcp" ? `MCP「${e.server}」` : "内置"}）：${desc}`,
+        );
+      }
+      const head =
+        activated.length > 0
+          ? `✅ 已激活 ${activated.length} 个工具（**下一轮即可直接调用**）：${activated.join("、")}`
+          : "（命中的工具均已在你的可用列表中）";
+      return `${head}\n\n检索「${query}」命中 ${lines.length} 个：\n${lines.join("\n")}`;
     }
     case "run_command": {
       // 模型可调命令：与 /run 同款 execpolicy / 危险审批门禁；结果以字符串返回给模型
@@ -4397,9 +4463,13 @@ export const useChatStore = defineStore("chat", () => {
           ],
         });
       }
-      // 传入 streamRound 的 tools 数组（null=关闭原生，走文本 <tool_call>）
+      // 传入 streamRound 的 tools 数组（null=关闭原生，走文本 <tool_call>）——注意是**同一数组引用**，
+      // tool_search 激活新工具时直接 push，后续轮次自然可见。
       let nativeToolsOn: OpenAIFunctionTool[] | null =
         nativeRegistry && nativeRegistry.tools.length > 0 ? nativeRegistry.tools : null;
+      // 交给 tool_search：命中未直接声明的工具时立即激活
+      activeToolRegistry = nativeRegistry;
+      toolSearchState = null; // 注册表已更新 → 检索索引下次使用时重建
 
       // 注入当前日期（防止日期幻觉），作为系统提示基础。
       // 用"天"粒度：每天只变一次，system 前缀稳定 → 历史消息可整段命中缓存。
@@ -4411,6 +4481,15 @@ export const useChatStore = defineStore("chat", () => {
       // §3.11 Agent 多模式：行为约束注入（人格管"我是谁"，模式管"怎么做"）
       const mode = getModeById(activeModeId.value);
       if (mode?.prompt) sp = `${sp}\n\n【当前模式：${mode.name}】\n${mode.prompt}`;
+      // 工具发现提示：有未直接声明的工具时，告诉模型可用 tool_search 找（融合 Codex 做法）
+      const deferredToolCount = nativeRegistry?.catalog.filter((c) => c.deferred).length ?? 0;
+      if (deferredToolCount > 0) {
+        sp +=
+          `\n\n【工具发现】当前另有 ${deferredToolCount} 个工具**未直接列出**（长尾/MCP 工具）。` +
+          "当你需要某类能力、但可用工具里找不到对应工具时，先调用 `tool_search` 用自然语言检索" +
+          "（如 tool_search(\"数据库查询\")）——命中的工具会立即加入你的可用工具，下一轮即可直接调用。" +
+          "不要因为「列表里没有」就放弃、改用别的方式凑，或编造结果。";
+      }
 
       // ---- 稳定上下文：进 system（跨消息不变，保证前缀可缓存） ----
       // 注入技能（S3 渐进披露）：技能少/指令短 → 全量注入保持简单直接；

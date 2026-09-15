@@ -33,10 +33,26 @@ export interface NativeToolRef {
 }
 
 export interface NativeToolRegistry {
-  /** 发给模型的 OpenAI tools 数组 */
+  /** 发给模型的 OpenAI tools 数组（同一次会话内**会被 tool_search 追加**，故不要拷贝后长期持有） */
   tools: OpenAIFunctionTool[];
   /** 函数名 → {server, tool} 反向映射 */
   byName: Map<string, NativeToolRef>;
+  /** 全部工具目录（含未直接声明的）；供 `tool_search` 检索与激活 */
+  catalog: NativeToolCatalogEntry[];
+}
+
+/** 工具目录条目：既用于检索，也保存激活所需的完整 schema */
+export interface NativeToolCatalogEntry {
+  /** 已分配的唯一函数名（目录内稳定） */
+  name: string;
+  server: string;
+  tool: string;
+  kind: "builtin" | "mcp";
+  description: string;
+  /** true = 未在 tools 中声明，需 `tool_search` 命中后激活 */
+  deferred: boolean;
+  /** 激活时直接推入 tools 的完整定义 */
+  spec: OpenAIFunctionTool;
 }
 
 /** 单次请求最多声明的工具数：优先保证内置，MCP 截尾 */
@@ -149,10 +165,10 @@ export function buildNativeToolRegistry(opts: BuildNativeRegistryOptions): Nativ
   const maxTools = opts.maxTools ?? MAX_NATIVE_TOOLS;
   const tools: OpenAIFunctionTool[] = [];
   const byName = new Map<string, NativeToolRef>();
+  const catalog: NativeToolCatalogEntry[] = [];
   const used = new Set<string>();
 
   const push = (src: NativeToolSource, base: string) => {
-    if (tools.length >= maxTools) return; // 截尾（内置在前，MCP 在后被截）
     const name = ensureUnique(base, used);
     used.add(name);
     const params =
@@ -167,14 +183,25 @@ export function buildNativeToolRegistry(opts: BuildNativeRegistryOptions): Nativ
       src.kind === "mcp" && params !== GENERIC_PARAMETERS
         ? baseDesc + describeSchemaParams(src.inputSchema)
         : baseDesc;
-    tools.push({
+    const spec: OpenAIFunctionTool = {
       type: "function",
-      function: {
-        name,
-        description: descText,
-        parameters: params,
-      },
-    });    byName.set(name, { server: src.server, tool: src.name, kind: src.kind });
+      function: { name, description: descText, parameters: params },
+    };
+    // 超出预算的不再**静默丢弃**，而是进目录等 `tool_search` 检索后激活（Codex 的 deferred 思路）
+    const deferred = tools.length >= maxTools;
+    if (!deferred) {
+      tools.push(spec);
+      byName.set(name, { server: src.server, tool: src.name, kind: src.kind });
+    }
+    catalog.push({
+      name,
+      server: src.server,
+      tool: src.name,
+      kind: src.kind,
+      description: descText,
+      deferred,
+      spec,
+    });
   };
 
   // 1) 内置工具（可被角色白名单过滤）
@@ -191,7 +218,26 @@ export function buildNativeToolRegistry(opts: BuildNativeRegistryOptions): Nativ
     const base = used.has(m.name) ? `${serverSlug}_${m.name}` : m.name;
     push(m, base);
   }
-  return { tools, byName };
+  return { tools, byName, catalog };
+}
+
+/**
+ * 激活一个被延迟的工具（`tool_search` 命中后调用）：把它推入 `tools` 与 `byName`，
+ * 使**下一轮**请求就能直接调用（`tools` 是同一数组引用，流式循环每轮复用）。
+ * 返回激活后的函数名；名字不存在/已激活/超硬上限时返回 null。
+ */
+export function activateCatalogTool(
+  reg: NativeToolRegistry,
+  name: string,
+  hardCap = MAX_NATIVE_TOOLS + 20,
+): string | null {
+  const entry = reg.catalog.find((c) => c.name === name);
+  if (!entry || !entry.deferred) return null;
+  if (reg.tools.length >= hardCap) return null;
+  entry.deferred = false;
+  reg.tools.push(entry.spec);
+  reg.byName.set(entry.name, { server: entry.server, tool: entry.tool, kind: entry.kind });
+  return entry.name;
 }
 
 /** 已知明确支持原生 function calling 的端点域名关键字；未知端点保守起见不开原生 */

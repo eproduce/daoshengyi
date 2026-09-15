@@ -228,6 +228,18 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
 
   // ---- 命令 / 代码 ----
+  tool_search: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "自然语言描述你要做的事/需要的能力（中英文均可）",
+      },
+      limit: { type: "number", description: "可选，返回条数（默认 8）" },
+    },
+    required: ["query"],
+    additionalProperties: true,
+  },
   run_command: {
     type: "object",
     properties: { command: { type: "string", description: "完整 shell 命令" } },
