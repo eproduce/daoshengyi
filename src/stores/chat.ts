@@ -462,6 +462,8 @@ function getMcpToolsPrompt(): string {
     '\n- **delete_file** (app): **删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。' +
     '\n- **list_dir** (app): 列出本地目录内容（含子目录与文件）。参数 {"path": "目录绝对路径"}。用于查看磁盘上存在哪些文件、确认文件是否真实存在。' +
     '\n- **run_command** (app): **执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` 或 `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）就优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时不要用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。\n' +
+    '\n- **exec_command** (app): **启动命令并持续交互（交互式/长驻进程专用，融合自 Codex）**：基于 PTY 执行，等待至多 `yield_time_ms`（默认 1000，最大 30000）后返回【本次新增输出 + session_id】；**进程不会因超时被杀**，用 `write_stdin` 继续喂输入/取输出。参数 {"command": "完整 shell 命令", "cwd": "可选工作目录", "yield_time_ms": 可选等待毫秒}。**使用时机**：① 交互式 CLI（`python3 -i`、`psql`、需要确认输入的命令）② 长驻服务（dev server、watch、`tail -f`）③ 需要分段观察输出的长任务。**与 run_command 的区别**：一次性短命令用 run_command（超时即终止）；需要交互或可能长时间运行 → 用本工具。同样受「命令执行策略」门禁；不需要时用 write_stdin 发 `\\u0003`（Ctrl-C）中断。\n' +
+    '\n- **write_stdin** (app): **向运行中的 exec_command 会话写输入并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
@@ -1768,6 +1770,26 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!command) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
       const { useChatStore } = await import("./chat");
       return useChatStore().agentRunCommand(command);
+    }
+    case "exec_command": {
+      // 融合 Codex 的 exec_command：PTY 启动 + 可续写（交互式 / 长驻进程）
+      const command = String(args.command ?? args.cmd ?? "").trim();
+      if (!command) throw new Error("exec_command 需要 command 参数（要执行的 shell 命令）");
+      const cwd = args.cwd ? String(args.cwd) : "";
+      const yieldMs = Number(args.yield_time_ms ?? args.yieldTimeMs ?? 1000);
+      const { useChatStore } = await import("./chat");
+      return useChatStore().agentExecCommand(command, cwd, yieldMs);
+    }
+    case "write_stdin": {
+      // 融合 Codex 的 write_stdin：向运行中的会话写输入 / 取回新增输出
+      const id = Number(args.session_id ?? args.sessionId ?? args.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        throw new Error("write_stdin 需要 session_id 参数（exec_command 返回的会话号）");
+      }
+      const input = String(args.input ?? args.chars ?? "");
+      const yieldMs = Number(args.yield_time_ms ?? args.yieldTimeMs ?? 1000);
+      const { useChatStore } = await import("./chat");
+      return useChatStore().agentWriteStdin(id, input, yieldMs);
     }
     case "describe_image": {
       const path = String(args.path || "");
@@ -3988,14 +4010,10 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /// 模型可调的 run_command 实现：与 /run 同一安全管线（execpolicy deny / 危险审批），
-  /// 但只把执行结果作为字符串返回给模型（不写对话消息），供 Agent 完成专用工具覆盖不了的
-  /// 命令任务（打开本机 App、运行构建/工具脚本、系统查询等）。
-  async function agentRunCommand(raw: string): Promise<string> {
-    const cmdStr = String(raw || "")
-      .replace(/～/g, "~")
-      .trim();
-    if (!cmdStr) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
+  /// Agent 命令安全门禁（`run_command` / `exec_command` 共用同一管线）：
+  /// execpolicy deny 直接拦截；prompt 或内置危险模式按审批模式（manual/smart/yolo）处理。
+  /// 返回 `null` = 放行；返回字符串 = 拒绝原因（直接作为工具结果返回给模型）。
+  async function gateAgentCommand(cmdStr: string): Promise<string | null> {
     // execpolicy：deny 直接拦截返回（不让模型重试绕行）；allow / prompt / 未命中继续
     let policy: { decision: string; matched: string | null } | null = null;
     try {
@@ -4012,27 +4030,37 @@ export const useChatStore = defineStore("chat", () => {
     // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行
     const needsConfirm =
       policyDecision === "prompt" || (isDangerous(cmdStr) && policyDecision !== "allow");
-    if (needsConfirm) {
-      const st = getSettings();
-      const mode: "manual" | "smart" | "yolo" =
-        st.approvalMode || (st.yoloMode ? "yolo" : "manual");
-      if (mode === "manual") {
+    if (!needsConfirm) return null;
+    const st = getSettings();
+    const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+    if (mode === "manual") {
+      const ok = await askConfirm(
+        `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`,
+      );
+      if (!ok)
+        return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
+    } else if (mode === "smart") {
+      const safe = await judgeCommandSafety(cmdStr);
+      if (!safe) {
         const ok = await askConfirm(
-          `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`,
+          `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`,
         );
-        if (!ok)
-          return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
-      } else if (mode === "smart") {
-        const safe = await judgeCommandSafety(cmdStr);
-        if (!safe) {
-          const ok = await askConfirm(
-            `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`,
-          );
-          if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
-        }
+        if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
       }
-      // yolo → 自动放行
     }
+    // yolo → 自动放行
+    return null;
+  }
+
+  /// 模型可调的 run_command 实现：与 /run 同一安全管线（execpolicy deny / 危险审批），
+  /// 但只把执行结果作为字符串返回给模型（不写对话消息），供 Agent 完成专用工具覆盖不了的
+  /// 命令任务（打开本机 App、运行构建/工具脚本、系统查询等）。
+  async function agentRunCommand(raw: string): Promise<string> {
+    const cmdStr = String(raw || "")
+      .replace(/～/g, "~")
+      .trim();
+    if (!cmdStr) throw new Error("run_command 需要 command 参数（要执行的 shell 命令）");
+    // execpolicy：deny 直接拦截返回（不让模型重试绕行）；allow / prompt / 未命中继续
     await setPreventSleep(true);
     try {
       const result = await invoke<{
@@ -4059,6 +4087,70 @@ export const useChatStore = defineStore("chat", () => {
       return content;
     } catch (e: unknown) {
       return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      await setPreventSleep(false);
+    }
+  }
+
+  /// Rust 侧 exec 结果（形状对齐 Codex 的 exec_command / write_stdin）
+  interface AgentExecResult {
+    session_id: number;
+    output: string;
+    running: boolean;
+    exit_code: number | null;
+    truncated: boolean;
+  }
+
+  /// 统一渲染 exec/write_stdin 结果：新增输出 + 运行/退出状态 + 下一步指引
+  function formatExecResult(r: AgentExecResult, header?: string): string {
+    let out = header ? `${header}\n` : "";
+    out += (r.output || "").trimEnd() || "（本次没有新输出）";
+    if (r.truncated) {
+      out +=
+        "\n\n…（输出过长已截断；需要完整日志请把命令重定向到文件，再用 read_file 分段读）";
+    }
+    out += r.running
+      ? `\n\n⏳ 进程仍在运行（session_id=${r.session_id}）。继续交互用 write_stdin（session_id=${r.session_id}；只取新输出可省略 input；输入需以 \\n 结尾；中断用 input="\\u0003" 即 Ctrl-C）。`
+      : `\n\n✅ 进程已结束（session_id=${r.session_id}，退出码 ${r.exit_code ?? "未知"}）`;
+    return out;
+  }
+
+  /// 融合 Codex 的 exec_command：PTY 启动命令 + 等待 yieldMs 后返回【新增输出 + 会话号】。
+  /// 与 run_command 共用安全门禁；关键区别：**超时不杀进程**，可由 write_stdin 继续交互。
+  async function agentExecCommand(raw: string, cwd: string, yieldMs: number): Promise<string> {
+    const cmdStr = String(raw || "").replace(/～/g, "~").trim();
+    if (!cmdStr) throw new Error("exec_command 需要 command 参数（要执行的 shell 命令）");
+    const denied = await gateAgentCommand(cmdStr);
+    if (denied) return denied;
+    const wait = Math.min(Math.max(Number(yieldMs) || 1000, 200), 30000);
+    await setPreventSleep(true);
+    try {
+      const r = await invoke<AgentExecResult>("exec_command_agent", {
+        command: cmdStr,
+        cwd: cwd || getSettings().workspace || null,
+        yieldMs: wait,
+      });
+      return formatExecResult(r, `$ ${cmdStr}`);
+    } catch (e: unknown) {
+      return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      await setPreventSleep(false);
+    }
+  }
+
+  /// 融合 Codex 的 write_stdin：向运行中的会话写输入（可省略=只等待）并取回新增输出。
+  async function agentWriteStdin(id: number, input: string, yieldMs: number): Promise<string> {
+    const wait = Math.min(Math.max(Number(yieldMs) || 1000, 200), 30000);
+    await setPreventSleep(true);
+    try {
+      const r = await invoke<AgentExecResult>("write_stdin_agent", {
+        id,
+        input: input || null,
+        yieldMs: wait,
+      });
+      return formatExecResult(r);
+    } catch (e: unknown) {
+      return `❌ 会话操作失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       await setPreventSleep(false);
     }
@@ -5683,6 +5775,8 @@ export const useChatStore = defineStore("chat", () => {
     setTaskPlan,
     ensureActiveConversation,
     agentRunCommand,
+    agentExecCommand,
+    agentWriteStdin,
     copyToClipboard,
     downloadExport,
     searchConversations,

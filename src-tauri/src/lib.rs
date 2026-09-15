@@ -28,7 +28,7 @@ use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
     test_command_policy,
 };
-use pty::{pty_kill, pty_list, pty_poll, pty_spawn, pty_write};
+use pty::{exec_command_agent, pty_kill, pty_list, pty_poll, pty_spawn, pty_write, write_stdin_agent};
 
 use db::Database;
 use futures::StreamExt;
@@ -6363,6 +6363,8 @@ pub fn run() {
             pty_poll,
             pty_kill,
             pty_list,
+            exec_command_agent,
+            write_stdin_agent,
             check_command_policy,
             test_command_policy,
             list_exec_rules,

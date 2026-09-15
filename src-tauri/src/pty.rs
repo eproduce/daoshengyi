@@ -28,6 +28,9 @@ struct PtySession {
     buffer: Arc<Mutex<String>>,
     running: Arc<Mutex<bool>>,
     started_at: i64,
+    /// Agent 侧读取游标：`exec_command`/`write_stdin` 每次只返回**新增**输出
+    /// （与前端 `pty_poll` 的 offset 机制互不影响）。
+    cursor: usize,
 }
 
 static PTYS: OnceLock<Mutex<HashMap<u32, PtySession>>> = OnceLock::new();
@@ -106,6 +109,7 @@ pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
             buffer,
             running,
             started_at,
+            cursor: 0,
         },
     );
     Ok(id)
@@ -177,6 +181,117 @@ pub fn pty_list() -> Vec<PtyInfo> {
         .collect()
 }
 
+// ── Agent 侧 exec（融合 Codex 的 exec_command + write_stdin） ─────────────────
+// 与前端 PTY 面板共用同一批会话；区别：这里一次调用 = 「启动/写入 + 等待至多 yield_ms」。
+// 价值：让 Agent 能驱动**交互式/长驻**进程（REPL、dev server、数据库 CLI、需要输入密码/
+// 确认的命令），而不只是一次性命令（run_command 超时即杀）。
+
+/// Agent 侧 exec 结果（形状对齐 Codex：新增输出 + 是否仍在运行 + 退出码）
+#[derive(Debug, serde::Serialize)]
+pub struct ExecResult {
+    pub session_id: u32,
+    /// 自上次读取以来的**新增**输出
+    pub output: String,
+    /// 进程是否仍在运行（false 时可从 exit_code 判断结果）
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    /// 输出是否被截断（超长守卫，避免把海量日志灌进上下文）
+    pub truncated: bool,
+}
+
+/// 单次 exec/write_stdin 最长等待（默认 1s，允许模型放大到 30s）
+const EXEC_MAX_YIELD_MS: u64 = 30_000;
+/// 单次返回给模型的输出上限（字符）
+const EXEC_MAX_OUTPUT_CHARS: usize = 20_000;
+
+/// 取走某会话自上次读取以来的新增输出，并把游标推到末尾。
+fn take_new_output(id: u32) -> Result<(String, bool, Option<i32>), String> {
+    let mut ptys = ptys().lock().unwrap();
+    let s = ptys.get_mut(&id).ok_or("会话不存在或已关闭")?;
+    let exit_code = match s.child.as_mut() {
+        Some(c) => match c.try_wait() {
+            Ok(Some(st)) => Some(st.exit_code() as i32),
+            _ => None,
+        },
+        None => None,
+    };
+    let running = exit_code.is_none() && *s.running.lock().unwrap();
+    let buf = s.buffer.lock().unwrap();
+    let text = if s.cursor < buf.len() {
+        buf[s.cursor..].to_string()
+    } else {
+        String::new()
+    };
+    s.cursor = buf.len();
+    Ok((text, running, exit_code))
+}
+
+/// 等待至多 `yield_ms`：期间持续收集新增输出；进程提前结束则立即返回。
+async fn collect_output(id: u32, yield_ms: u64) -> Result<ExecResult, String> {
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(yield_ms.min(EXEC_MAX_YIELD_MS));
+    let mut output = String::new();
+    let (running, exit_code) = loop {
+        let (text, run, code) = take_new_output(id)?;
+        output.push_str(&text);
+        if !run || std::time::Instant::now() >= deadline {
+            break (run, code);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    // 进程刚结束：补一次尾巴（读取线程最后一批输出可能落在上一轮采样之后）
+    if !running {
+        if let Ok((text, _, _)) = take_new_output(id) {
+            output.push_str(&text);
+        }
+    }
+    let truncated = output.chars().count() > EXEC_MAX_OUTPUT_CHARS;
+    if truncated {
+        output = output.chars().take(EXEC_MAX_OUTPUT_CHARS).collect();
+    }
+    Ok(ExecResult {
+        session_id: id,
+        output,
+        running,
+        exit_code,
+        truncated,
+    })
+}
+
+/// Codex `exec_command`：启动命令并在 `yield_ms` 内收集输出。
+/// 超时**不会杀掉进程**（与 run_command 的关键区别）——用返回的 `session_id`
+/// 继续 `write_stdin` 交互/取输出。
+#[tauri::command]
+pub async fn exec_command_agent(
+    command: String,
+    cwd: Option<String>,
+    yield_ms: Option<u64>,
+) -> Result<ExecResult, String> {
+    let id = pty_spawn(command, cwd)?;
+    collect_output(id, yield_ms.unwrap_or(1000)).await
+}
+
+/// Codex `write_stdin`：向运行中的会话写入输入（省略 = 纯等待取输出），再收集至多 `yield_ms`。
+/// 中断交互式程序：`input = "\u0003"`（Ctrl-C）。
+#[tauri::command]
+pub async fn write_stdin_agent(
+    id: u32,
+    input: Option<String>,
+    yield_ms: Option<u64>,
+) -> Result<ExecResult, String> {
+    if let Some(input) = input.as_deref().filter(|s| !s.is_empty()) {
+        // 进程可能已结束：写失败不致命，继续把剩余输出取回
+        let mut ptys = ptys().lock().unwrap();
+        if let Some(s) = ptys.get_mut(&id) {
+            let _ = s
+                .writer
+                .write_all(input.as_bytes())
+                .and_then(|_| s.writer.flush());
+        }
+    }
+    collect_output(id, yield_ms.unwrap_or(1000)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +355,56 @@ mod tests {
         pty_kill(id).unwrap();
         assert!(!pty_list().iter().any(|p| p.id == id));
         assert!(pty_poll(id, 0).is_err(), "被 kill 后轮询应报错");
+    }
+
+    /// exec_command：一次性命令 —— 拿到输出、进程已结束、退出码 0
+    #[tokio::test]
+    async fn exec_command_captures_output_and_exit_code() {
+        let r = exec_command_agent("echo hi-exec".into(), None, Some(3000))
+            .await
+            .unwrap();
+        assert!(r.output.contains("hi-exec"), "输出: {:?}", r.output);
+        assert!(!r.running, "echo 应立即结束");
+        assert_eq!(r.exit_code, Some(0));
+        assert!(!r.truncated);
+        pty_kill(r.session_id).unwrap();
+    }
+
+    /// write_stdin：驱动**交互式**进程（read 阻塞等输入 → 写入后回显）
+    #[tokio::test]
+    async fn write_stdin_feeds_interactive_process() {
+        let r = exec_command_agent("read x; echo got:$x".into(), None, Some(300))
+            .await
+            .unwrap();
+        assert!(r.running, "read 应仍在等待输入，实际: {:?}", r.output);
+        let r2 = write_stdin_agent(r.session_id, Some("hi-stdin\n".into()), Some(3000))
+            .await
+            .unwrap();
+        assert!(r2.output.contains("got:hi-stdin"), "输出: {:?}", r2.output);
+        assert!(!r2.running);
+        assert_eq!(r2.exit_code, Some(0));
+        pty_kill(r.session_id).unwrap();
+    }
+
+    /// yield_ms 到期但进程仍在运行：返回 running=true（**不杀进程**），可继续取输出
+    #[tokio::test]
+    async fn exec_command_keeps_long_running_process_alive() {
+        let r = exec_command_agent("echo first; sleep 2; echo second".into(), None, Some(300))
+            .await
+            .unwrap();
+        assert!(r.running, "sleep 期间应报告仍在运行");
+        assert!(r.output.contains("first"));
+        // 再等一次：应拿到后续输出（增量语义）
+        let r2 = write_stdin_agent(r.session_id, None, Some(3000)).await.unwrap();
+        assert!(r2.output.contains("second"), "增量输出: {:?}", r2.output);
+        assert!(!r2.running);
+        pty_kill(r.session_id).unwrap();
+    }
+
+    /// 会话不存在时给出明确错误（而不是 panic）
+    #[tokio::test]
+    async fn write_stdin_reports_missing_session() {
+        let err = write_stdin_agent(999_999, None, Some(100)).await.unwrap_err();
+        assert!(err.contains("会话不存在"), "错误信息: {err}");
     }
 }

@@ -234,6 +234,32 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["command"],
     additionalProperties: true,
   },
+  exec_command: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: "完整 shell 命令" },
+      cwd: { type: "string", description: "可选工作目录" },
+      yield_time_ms: {
+        type: "number",
+        description: "等待输出的毫秒数（默认 1000，最大 30000）",
+      },
+    },
+    required: ["command"],
+    additionalProperties: true,
+  },
+  write_stdin: {
+    type: "object",
+    properties: {
+      session_id: { type: "number", description: "exec_command 返回的 session_id" },
+      input: {
+        type: "string",
+        description: "要写入的字符（回车写 \\n；Ctrl-C 写 \\u0003）；省略=只等待取输出",
+      },
+      yield_time_ms: { type: "number", description: "等待毫秒数（默认 1000）" },
+    },
+    required: ["session_id"],
+    additionalProperties: true,
+  },
   git: {
     type: "object",
     properties: {

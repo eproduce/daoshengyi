@@ -220,7 +220,15 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "run_command",
-    desc: '**执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` / `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先用专用工具，只读优先、慎用写/删/安装类。**辨析**：用户要「打开浏览器跳转到某网址/网页」时**不要**用 `open -a "<浏览器>" "<网址>"`——浏览器已在运行时该命令**不会可靠跳转**（退出码 0 不代表已加载目标页）；请改用浏览器自动化工具（server「浏览器自动化」的 `puppeteer_navigate`）在本地弹出浏览器并真实加载；`open -a` 只用于**纯启动应用/打开文件/文件夹**。',
+    desc: '**执行一条 shell 命令并把结果返回给你**（受「命令执行策略」门禁：deny 规则直接拦截、危险/破坏性命令需用户确认或智能审批——勿尝试绕过）。参数 {"command": "完整 shell 命令"}。**使用时机**：打开本机 App/文件/照片库（macOS `open -a 应用名` / `open 路径`）、运行构建/工具脚本、查询系统状态等专用工具覆盖不了时。能用专用工具（git/run_tests/list_dir/read_file/replace_string/workflow_*）优先用专用工具，只读优先、慎用写/删/安装类。**一次性短命令用本工具；需要交互或可能长时间运行 → 用 `exec_command`（不会被超时杀掉）**。**辨析**：用户要「打开浏览器跳转到某网址/网页」时**不要**用 `open -a "<浏览器>" "<网址>"`（浏览器已在运行时**不会可靠跳转**，退出码 0 ≠ 已加载）；请改用内置浏览器工具 `browser_navigate` 真实打开加载；`open -a` 只用于纯启动应用/打开文件/文件夹。',
+  },
+  {
+    name: "exec_command",
+    desc: '**启动命令并持续交互（交互式 / 长驻进程专用，融合自 Codex）**：基于 PTY 执行，等待至多 `yield_time_ms`（默认 1000，最大 30000）后返回【本次新增输出 + session_id】，**进程不会因超时被杀**，用 `write_stdin` 继续喂输入/取输出。参数 {"command": "完整 shell 命令", "cwd": "可选工作目录", "yield_time_ms": 可选等待毫秒}。**使用时机**：① 交互式 CLI（`python3 -i`、`psql`、`npm init`、需要确认密码/输入的命令）② 长驻服务（dev server、watch、tail -f）③ 需要分段观察输出的长任务。**与 run_command 的区别**：run_command 超时即终止（适合一次性命令）；本工具返回会话号，可反复交互。同样受「命令执行策略」门禁。**收尾**：不需要时用 `write_stdin` 发 `\\u0003`（Ctrl-C）中断，或告知用户会话号。',
+  },
+  {
+    name: "write_stdin",
+    desc: '**向运行中的 exec_command 会话写输入，并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断交互程序用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。',
   },
 ];
 

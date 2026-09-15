@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-09-15（晚间·第 5 批）
+
+### 📋 Codex 内置工具清单核对（源码实证，回答「是否都融合了」）
+> 依据 `codex-rs/core/src/tools/spec_plan.rs` 的 `add_core_tool_sources` → `add_shell_tools` / `add_mcp_resource_tools` / `add_core_utility_tools` / `add_collaboration_tools` 四组 + hosted + 扩展工具。**结论：不是全融合**——已融合 4 项 + 1 项语义等价，其余 10+ 项未融合。
+
+| Codex 工具（源码实证） | 我们 | 状态 |
+|---|---|---|
+| `apply_patch` / `view_image` / `current_time` / `sleep` | 同名 | ✅ 已融合 |
+| `update_plan`（pending/in_progress/completed） | `plan_task` / `plan_update` | ✅ 语义等价 |
+| `exec_command` | `run_command`（仅一次性） | ✅ 本轮补齐 |
+| **`write_stdin`** | ❌ → 本轮补齐 | ✅ 本轮融合 |
+| `tool_search`（BM25 延迟加载 + `defer_loading`） | ❌ | ⛔ 未融合（我们靠 `MAX_NATIVE_TOOLS=80` 硬截尾） |
+| `get_context_remaining` / `new_context_window` | ❌ | ⛔ 未融合（无上下文余量感知，与诊断②同源） |
+| `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource` | ❌ | ⛔ 未融合（能调 MCP 工具，读不到 MCP 资源） |
+| `request_permissions` | 审批弹窗（manual/smart/yolo） | ⚠️ 部分（模型不能主动申请） |
+| `request_user_input(_async)` / `send_message_to_user_async` | ❌ | ⛔ 未融合 |
+| 多 agent v1（`spawn_agent`/`send_input`/`wait_agent`/`resume_agent`/`close_agent`）<br>v2（`send_message`/`followup_task`/`interrupt_agent`/`list_agents`） | `session_spawn`/`session_status`/`session_resume`/`subagent_*` | ⚠️ 部分（缺 list/wait/interrupt/后续任务闭环） |
+| goal 三件套（`get_goal`/`create_goal`/`update_goal`）· `imagegen` · code-mode `exec`+`wait` · `wait_for_environment` | ❌ | ⛔ 未融合 |
+| `list_available_plugins_to_install` / `request_plugin_install` | Smithery 市场（前端） | ⚠️ 部分 |
+| 扩展：`web.run` / skills (`list`/`read`) / notes / history | `web_search` / 技能注入 / `kb_*`+`memory_*` / `session_*` | ✅ 有等价物 |
+
+### ✅ 融合 Codex `exec_command` + `write_stdin`（交互式 / 长驻进程）
+- **为什么**：这是 Codex 使用率最高的一环，而我们的 `run_command` 是「一次性 + 超时即杀」，Agent 无法驱动 REPL、`psql`、dev server、`tail -f`、需要交互输入的命令。
+- **实现（复用既有 `pty.rs`，不重复造基建）**：会话结构加 **Agent 读取游标**（`cursor`，与前端 `pty_poll` 的 offset 互不干扰）；新增 `ExecResult{session_id,output,running,exit_code,truncated}` + `take_new_output`（取增量 + `try_wait` 探退出码）+ `collect_output`（`await` 轮询至多 `yield_ms`，**不杀进程**，进程结束补取尾巴防竞态丢尾，超长截断 20000 字）；两个命令 `exec_command_agent(command,cwd,yield_ms)` / `write_stdin_agent(id,input,yield_ms)`。
+- **安全**：与 `run_command` **共用同一门禁** —— 把 `agentRunCommand` 里的 execpolicy deny / 危险审批逻辑抽成 `gateAgentCommand()`，两个工具都走它（不新增绕行面）；危险命令仍按 manual/smart/yolo 三档审批。
+- **前端**：`builtin-tools.ts` / `builtin-params.ts` 补两工具（含「一次性用 run_command，交互/长驻用 exec_command」的辨析与 Ctrl-C 用法）；`callBuiltinTool` 两个分支 + `agentExecCommand`/`agentWriteStdin`/`formatExecResult`（统一渲染「新增输出 + 是否仍在运行 + 下一步指引」）；提示词加两条指引。同时修掉 `run_command` 描述里残留的 `puppeteer_navigate` 指引（改指内置 `browser_navigate`）。
+- **测试 4 项（真机 PTY）**：一次性命令拿到输出+退出码 0；**驱动交互式进程**（`read x; echo got:$x` 写入后回显）；`yield_ms` 到期但进程仍在跑 → 返回 `running=true` 且**未被杀**、后续 `write_stdin` 能拿到增量；会话不存在时返回明确错误。
+- 内置工具 53 → **55**。
+- 验证：clippy `-D warnings` 干净 · cargo test --lib **119 passed / 8 ignored** · vue-tsc 干净 · vitest **10 files / 68 passed**
+
+---
+
 ## 2026-09-15（晚间·第 4 批）
 
 ### ✅ 修复：view_image 在非多模态模型下静默阻塞 70+ 秒
