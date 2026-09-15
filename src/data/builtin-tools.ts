@@ -20,7 +20,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "view_image",
-    desc: '把本地图片**直接放进模型上下文**（视觉模型原生看图），用于核验截图/页面渲染/图表效果。参数 {"path": "本地图片文件路径"}。**与 describe_image 的区别**：describe_image/ocr_image 走本地小模型，可能失真/幻觉；view_image 让你真的看到原图，判断「渲染是否正常/图表是否画出来」时应优先用它（DeepSeek 等不支持图片输入的模型会自动退回本地描述）。可配合 browser_screenshot 使用。',
+    desc: '把本地图片**直接放进模型上下文**（视觉模型原生看图），用于核验截图/页面渲染/图表效果。参数 {"path": "本地图片文件路径"}。**与 describe_image 的区别**：describe_image/ocr_image 走本地小模型，可能失真/幻觉；view_image 让你真的看到原图，判断「渲染是否正常/图表是否画出来」时应优先用它。若当前模型不支持图片输入（如 DeepSeek）：本工具会**立刻**返回替代方案提示或云端视觉档的识图结果（不会让你干等）。可配合 browser_screenshot 使用。',
   },
   {
     name: "sleep",
@@ -60,7 +60,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "describe_image",
-    desc: '用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。',
+    desc: '用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。**慢**：本机实测 1440×900 截图需 30–120 秒（Intel 无 GPU），且输出可能失真/幻觉。**只想读截图里的文字请优先用 ocr_image（秒级）**；确需画面描述时才用本工具，不要为了「核验渲染」反复调用。',
   },
   {
     name: "ocr_image",

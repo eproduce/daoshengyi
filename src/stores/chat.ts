@@ -1884,15 +1884,67 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 而不是只依赖本地视觉模型的文字描述（描述可能失真/幻觉，见浏览器指引里的教训）。
       const path = String(args.path || "");
       if (!path) throw new Error("view_image 需要 path 参数（本地图片文件路径）");
-      const cfg = useChatStore().currentConfig;
+      const store = useChatStore();
+      const cfg = store.currentConfig;
       const isDeepSeek = ((cfg?.baseUrl || "") + (cfg?.model || "")).toLowerCase().includes("deepseek");
-      if (isDeepSeek) {
-        const desc = await invoke<string>("ollama_describe_image", { images: [`file://${path}`] });
-        return `（当前模型不支持图片输入，以下为本地视觉模型的文字描述，可能与原图有出入）\n${desc || "（无法识别）"}`;
+      if (!isDeepSeek) {
+        const dataUrl = await invoke<string>("read_image_data_url", { path });
+        pendingViewImages.push(dataUrl);
+        return `✅ 已把图片加入上下文（${path}）：你将在**下一轮**直接看到该图，无需再调用 describe_image/ocr_image 猜内容。`;
       }
-      const dataUrl = await invoke<string>("read_image_data_url", { path });
-      pendingViewImages.push(dataUrl);
-      return `✅ 已把图片加入上下文（${path}）：你将在**下一轮**直接看到该图，无需再调用 describe_image/ocr_image 猜内容。`;
+      // 非多模态模型（DeepSeek 等）看不到图：优先用**已配置的云端视觉档**（非 DeepSeek 且有 Key）——快且准
+      const vision = store.profiles.find((p) => p.apiKey && !p.baseUrl.includes("deepseek"));
+      if (vision) {
+        try {
+          const dataUrl = await invoke<string>("read_image_data_url", { path });
+          const desc = await Promise.race([
+            (async () => {
+              const resp = await fetch(`${vision.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${vision.apiKey}`,
+                },
+                body: JSON.stringify({
+                  model: vision.model,
+                  messages: [
+                    {
+                      role: "user",
+                      content: [
+                        {
+                          type: "text",
+                          text: "请描述这张图片的内容。如果图片中有文字，请逐字转录。用中文，简洁准确。",
+                        },
+                        { type: "image_url", image_url: { url: dataUrl, detail: "auto" } },
+                      ],
+                    },
+                  ],
+                  max_tokens: 500,
+                }),
+              });
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const data = await resp.json();
+              return String(data?.choices?.[0]?.message?.content || "");
+            })(),
+            new Promise<string>((_, rej) =>
+              setTimeout(() => rej(new Error("云端视觉模型 60 秒超时")), 60000),
+            ),
+          ]);
+          if (desc) return `（当前模型不支持图片输入，以下为 ${vision.model} 的识图结果）\n${desc}`;
+        } catch (e) {
+          console.warn("[道生一] view_image 云端识图失败，改用替代方案提示:", e);
+        }
+      }
+      // 兜底：**快速失败**并给出可执行的替代方案。
+      // 实测（本机 Intel 无 GPU）：本地 llava-phi3 处理 1440×900 截图需 >70 秒，且输出常与图无关（幻觉）。
+      // 绝不能静默阻塞整个回合——把选择权交回模型（要文字就 OCR，要画面才付时间成本）。
+      return (
+        `⚠️ 当前模型（${cfg?.model || "未知"}）不支持图片输入，无法直接看图。可用替代方案（按推荐顺序）：\n` +
+        `1. ocr_image（path=${path}）：macOS 原生 OCR，秒级返回，读截图里的文字最可靠；\n` +
+        `2. browser_evaluate：读 document.body.innerText，核验页面文本内容；\n` +
+        `3. describe_image（path=${path}）：本地视觉模型，**实测 30–120 秒**且可能描述失真/幻觉，确需画面描述时才用。\n` +
+        `图片已保存：${path}（用户可自行查看）。不要凭猜测断言渲染是否正常。`
+      );
     }
     case "subagent_delegate": {
       const goal = String(args.goal || "");
