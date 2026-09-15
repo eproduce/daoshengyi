@@ -400,7 +400,7 @@ function cancel() {
             ><Globe :size="14" /> 高级：社区远程插件（Smithery）
             <span class="mcp-community-badge">第三方 · 数据出本机</span></span
           >
-          <div class="mcp-community-acts">
+          <span class="mcp-community-acts">
             <input
               v-model="communitySearch"
               placeholder="搜索社区插件..."
@@ -416,8 +416,8 @@ function cancel() {
                 communityLoading ? "加载中…" : "加载"
               }}
             </button>
-          </div>
-        </div>
+          </span>
+        </summary>
         <div v-if="communityPlugins.length" class="mcp-community-list">
           <div v-for="p in communityPlugins" :key="p.id" class="mcp-card">
             <div class="mcp-card-info">
