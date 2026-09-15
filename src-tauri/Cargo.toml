@@ -44,3 +44,5 @@ encoding_rs = "0.8"
 calamine = "0.26"
 zip = "2"
 snap = "1"
+# 图片解码/缩放：本地视觉模型输入前压缩（像素数直接决定本地推理耗时）
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }

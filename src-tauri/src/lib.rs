@@ -329,6 +329,25 @@ fn sandbox_file_path(db: &Database, path: &str) -> Result<String, String> {
 fn write_file_agent(db: State<Database>, path: String, content: String) -> Result<String, String> {
     // P-A8 沙箱：主目录边界 + 路径白名单（配置时收紧）
     let expanded = sandbox_file_path(db.inner(), &path)?;
+    // 产物卫生：直接写主目录根（$HOME/<文件>）会污染用户主目录 → 自动改写到产物目录，
+    // 并把新路径明确告知模型（它后续的编辑/引用都用新路径）。白名单校验对新路径同样生效。
+    let home = std::env::var("HOME").unwrap_or_default();
+    let (expanded, moved_note) = match redirect_home_root(&expanded, &home) {
+        Some(candidate) => match sandbox_file_path(db.inner(), &candidate) {
+            Ok(new_path) => {
+                if let Some(parent) = std::path::Path::new(&new_path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let note = format!(
+                    "\n（说明：原路径位于主目录根，为避免污染主目录已自动改写为产物文件：{}；后续编辑/引用请使用该新路径）",
+                    new_path
+                );
+                (new_path, note)
+            }
+            Err(_) => (expanded, String::new()),
+        },
+        None => (expanded, String::new()),
+    };
     // 撤销快照：操作前状态（是否已存在 + 原内容）
     let existed = std::path::Path::new(&expanded).exists();
     let backup = if existed {
@@ -354,8 +373,8 @@ fn write_file_agent(db: State<Database>, path: String, content: String) -> Resul
     }
     let size = std::fs::metadata(&expanded).map(|m| m.len()).unwrap_or(0);
     Ok(format!(
-        "已成功写入文件：{}\n（共 {} 字节，真实路径如上，回复用户时请原样引用该路径，禁止改写文件名或目录）",
-        expanded, size
+        "已成功写入文件：{}\n（共 {} 字节，真实路径如上，回复用户时请原样引用该路径，禁止改写文件名或目录）{}",
+        expanded, size, moved_note
     ))
 }
 
@@ -3548,6 +3567,8 @@ async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
     for img in images {
         // 支持 data URI 或本地文件路径（file:// 前缀）输入
         let img = resolve_image_data_uri(&img)?;
+        // 本地小模型对像素数极敏感：先缩到最长边 ≤ VISION_MAX_SIDE（实测快 3~4 倍）
+        let img = downscale_data_uri(&img, VISION_MAX_SIDE);
         let content = serde_json::json!([
             { "type": "text", "text": "请简要描述这张图片的内容，如果图中有文字请转录。用中文，一两句话即可。" },
             { "type": "image_url", "image_url": { "url": img, "detail": "auto" } }
@@ -3665,6 +3686,137 @@ fn resolve_image_data_uri(input: &str) -> Result<String, String> {
         mime,
         base64::engine::general_purpose::STANDARD.encode(&bytes)
     ))
+}
+
+/// 本地视觉模型输入的最长边上限（像素）。实测（Intel 无 GPU + llava-phi3）：
+/// 1440×900 截图需 >70 秒，缩到 768px 约 27 秒（快 3~4 倍），而「描述/转录」所需信息量不受影响。
+const VISION_MAX_SIDE: u32 = 768;
+
+/// 按最长边等比缩放的目标尺寸（限制在 `max_side` 以内；已够小或尺寸非法时原样返回）。
+fn fit_dimensions(w: u32, h: u32, max_side: u32) -> (u32, u32) {
+    let longest = w.max(h);
+    if longest == 0 || longest <= max_side {
+        return (w, h);
+    }
+    let scale = max_side as f64 / longest as f64;
+    (
+        ((w as f64 * scale).round() as u32).max(1),
+        ((h as f64 * scale).round() as u32).max(1),
+    )
+}
+
+/// 把 data URI 图片缩到最长边 ≤ `max_side` 并重新编码为 PNG 的 data URI。
+/// 只用于**送本地视觉模型**，不改动用户原始文件；解码失败/无需缩放时原样返回（绝不因此报错）。
+fn downscale_data_uri(data_uri: &str, max_side: u32) -> String {
+    let Some(bytes) = decode_data_uri(data_uri) else {
+        return data_uri.to_string();
+    };
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return data_uri.to_string();
+    };
+    let (w, h) = (img.width(), img.height());
+    let (nw, nh) = fit_dimensions(w, h, max_side);
+    if (nw, nh) == (w, h) {
+        return data_uri.to_string();
+    }
+    let rgba = image::imageops::resize(
+        &img.to_rgba8(),
+        nw,
+        nh,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut buf: Vec<u8> = Vec::new();
+    use image::ImageEncoder as _;
+    if image::codecs::png::PngEncoder::new(&mut buf)
+        .write_image(rgba.as_raw(), nw, nh, image::ExtendedColorType::Rgba8)
+        .is_err()
+    {
+        return data_uri.to_string();
+    }
+    use base64::Engine as _;
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&buf)
+    )
+}
+
+/// 产物目录（用户可见、固定）：`~/Documents/道生一产物/`（与 `~/Pictures/道生一截图/` 约定一致）。
+fn artifact_root(home: &str) -> std::path::PathBuf {
+    std::path::Path::new(home).join("Documents").join("道生一产物")
+}
+
+/// 若目标文件**直接位于主目录根**（`$HOME/<文件名>`）→ 返回改写后的产物路径；否则 None。
+/// 背景：agent 习惯把演示文件/报告直接写到 `~` 根目录，实测多次污染用户主目录（诊断报告⑥）。
+fn redirect_home_root(path: &str, home: &str) -> Option<String> {
+    if home.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(path);
+    let name = p.file_name()?;
+    if p.parent()? != std::path::Path::new(home) {
+        return None;
+    }
+    Some(artifact_root(home).join(name).to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod artifact_helpers_tests {
+    use super::*;
+
+    fn png_uri(w: u32, h: u32) -> String {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+        let mut buf: Vec<u8> = Vec::new();
+        use image::ImageEncoder as _;
+        image::codecs::png::PngEncoder::new(&mut buf)
+            .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&buf)
+        )
+    }
+
+    #[test]
+    fn fit_dimensions_scales_longest_side() {
+        assert_eq!(fit_dimensions(1440, 900, 768), (768, 480));
+        assert_eq!(fit_dimensions(900, 1440, 768), (480, 768));
+        assert_eq!(fit_dimensions(640, 480, 768), (640, 480));
+        assert_eq!(fit_dimensions(0, 0, 768), (0, 0));
+        // 极端窄条也要保持 ≥1px，避免出现 0 宽高
+        assert_eq!(fit_dimensions(4000, 3, 768), (768, 1));
+    }
+
+    #[test]
+    fn downscale_data_uri_shrinks_png() {
+        let out = downscale_data_uri(&png_uri(1600, 1000), VISION_MAX_SIDE);
+        let bytes = decode_data_uri(&out).expect("结果仍应是可解码的 data URI");
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (768, 480));
+    }
+
+    #[test]
+    fn downscale_data_uri_keeps_small_and_broken_input() {
+        // 非法 data URI：原样返回，不 panic
+        let broken = "data:image/png;base64,!!!";
+        assert_eq!(downscale_data_uri(broken, VISION_MAX_SIDE), broken);
+        // 已经小于上限：不做无谓重编码
+        let small = png_uri(32, 32);
+        assert_eq!(downscale_data_uri(&small, VISION_MAX_SIDE), small);
+    }
+
+    #[test]
+    fn redirect_home_root_moves_only_home_root_files() {
+        let home = "/Users/tester";
+        assert_eq!(
+            redirect_home_root("/Users/tester/demo.svg", home),
+            Some("/Users/tester/Documents/道生一产物/demo.svg".to_string())
+        );
+        assert_eq!(redirect_home_root("/Users/tester/Desktop/demo.svg", home), None);
+        assert_eq!(redirect_home_root("/Users/tester", home), None);
+        assert_eq!(redirect_home_root("/tmp/demo.svg", home), None);
+        assert_eq!(redirect_home_root("/Users/tester/demo.svg", ""), None);
+    }
 }
 
 /// 把 base64 图片（data URI）保存到临时文件，返回路径。供浏览器截图落盘后给视觉/OCR 分析。
