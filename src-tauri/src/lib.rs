@@ -3815,6 +3815,17 @@ mod artifact_helpers_tests {
     }
 
     #[test]
+    fn path_is_bundled_app_detects_real_bundle() {
+        assert!(path_is_bundled_app(
+            "/Users/x/道生一.app/Contents/MacOS/daoshengyi"
+        ));
+        assert!(!path_is_bundled_app(
+            "/Users/x/op/daoshengyi/src-tauri/target/debug/daoshengyi"
+        ));
+        assert!(!path_is_bundled_app(""));
+    }
+
+    #[test]
     fn prune_tool_outputs_keeps_newest() {
         let dir = std::env::temp_dir().join(format!("dsy-toolout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -6143,6 +6154,27 @@ fn tray_set_status(
     Ok(())
 }
 
+/// 路径是否位于 macOS 的 `.app/Contents/MacOS/` 内（真 bundle）——决定系统会不会登记通知。
+/// 纯函数，便于单测。
+fn path_is_bundled_app(p: &str) -> bool {
+    p.contains(".app/Contents/MacOS/")
+}
+
+/// 当前进程是否为已打包的 `.app`。macOS 通知需要真实 bundle（Info.plist + bundle id）：
+/// `tauri dev` 跑的裸二进制不会被通知中心登记，**通知无法投递**（不会报错，只是静默不发）。
+fn is_bundled_app() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::current_exe()
+            .map(|p| path_is_bundled_app(&p.to_string_lossy()))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 /// 当前是否已获得系统通知权限
 fn notification_granted(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_notification::{NotificationExt, PermissionState};
@@ -6150,6 +6182,32 @@ fn notification_granted(app: &tauri::AppHandle) -> bool {
         app.notification().permission_state(),
         Ok(PermissionState::Granted)
     )
+}
+
+/// 通知可用性诊断：把「为什么发不出去」说清楚（设置页展示，避免“可能未授权”这种玄学提示）
+#[tauri::command]
+fn notification_diagnose(app: tauri::AppHandle) -> serde_json::Value {
+    use tauri_plugin_notification::NotificationExt;
+    let state = app
+        .notification()
+        .permission_state()
+        .map(|s| format!("{:?}", s))
+        .unwrap_or_else(|e| format!("查询失败: {}", e));
+    let bundled = is_bundled_app();
+    let granted = notification_granted(&app);
+    let hint = if !bundled {
+        "当前是开发模式（裸二进制、非 .app）：macOS 不会把它登记到通知中心，因此通知必定发不出去。请用打包版验证——`npm run tauri build` 后打开 target/release/bundle/macos 下的 .app，在「系统设置 → 通知」里允许它。"
+    } else if !granted {
+        "已打包但未授权：点「请求权限」，或到「系统设置 → 通知 → 道生一」手动允许（首次请求后可能需重启 App 生效）。"
+    } else {
+        "已打包且已授权，可正常推送；若收不到请检查是否开了「专注模式/勿扰」。"
+    };
+    serde_json::json!({
+        "granted": granted,
+        "state": state,
+        "bundled": bundled,
+        "hint": hint,
+    })
 }
 
 /// 发送系统通知（任务完成 / 最终产物就绪）
@@ -6172,17 +6230,28 @@ fn notify_user(
             }
         }
     }
-    // 未授予权限则静默跳过（不弹错，避免打断主流程）
-    if !notification_granted(&app) {
+    // 未打包（tauri dev 裸二进制）：macOS 不会登记/投递通知，直接告知原因，不静默失败
+    if !is_bundled_app() {
+        let m = "[notify] 跳过：开发模式非 .app bundle，macOS 不会投递通知";
+        append_log(&app, m);
         return Ok(false);
     }
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| e.to_string())?;
-    Ok(true)
+    // 未授予权限则静默跳过（不弹错，避免打断主流程）
+    if !notification_granted(&app) {
+        append_log(&app, "[notify] 跳过：未获得系统通知权限");
+        return Ok(false);
+    }
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(()) => {
+            append_log(&app, "[notify] 已投递系统通知");
+            Ok(true)
+        }
+        Err(e) => {
+            let m = format!("[notify] 投递失败: {}", e);
+            append_log(&app, &m);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// 查询系统通知权限是否已授予
@@ -6537,6 +6606,7 @@ pub fn run() {
             app_version,
             tray_set_status,
             notify_user,
+            notification_diagnose,
             notification_permission_granted,
             request_notification_permission,
             browser_status,

@@ -331,11 +331,25 @@ function resetShortcuts() {
 // ── 系统通知：任务完成 / 最终产物就绪时提醒（窗口未聚焦时才发） ──
 const notifyOnFinish = ref(getSettings().notifyOnFinish ?? true);
 const notifGranted = ref<boolean | null>(null);
+/// 通知可用性诊断：把「为什么发不出去」说清楚（非 .app / 未授权 / 已就绪）
+const notifDiagnose = ref<{ granted: boolean; state: string; bundled: boolean; hint: string } | null>(
+  null,
+);
 async function refreshNotifPermission() {
   try {
     notifGranted.value = await invoke<boolean>("notification_permission_granted");
   } catch {
     notifGranted.value = null;
+  }
+  try {
+    notifDiagnose.value = await invoke<{
+      granted: boolean;
+      state: string;
+      bundled: boolean;
+      hint: string;
+    }>("notification_diagnose");
+  } catch {
+    notifDiagnose.value = null;
   }
 }
 function saveNotify() {
@@ -344,8 +358,16 @@ function saveNotify() {
 async function requestNotif() {
   try {
     notifGranted.value = await invoke<boolean>("request_notification_permission");
-    if (notifGranted.value) notify("已获得通知权限");
-    else notify("未获得通知权限：可在「系统设置 → 通知」中手动允许「道生一」");
+    await refreshNotifPermission();
+    if (!notifDiagnose.value?.bundled) {
+      notify(
+        "已完成权限请求，但当前是开发模式（非 .app）：macOS 不会投递通知。\n\n请用打包版验证：npm run tauri build 后打开 target/release/bundle/macos 下的「道生一.app」。",
+      );
+    } else if (notifGranted.value) {
+      notify("已获得通知权限");
+    } else {
+      notify("未获得通知权限：可在「系统设置 → 通知 → 道生一」中手动允许");
+    }
   } catch (e) {
     notify(`请求通知权限失败：${e}`);
   }
@@ -357,7 +379,10 @@ async function testNotify() {
       body: "任务完成时就会这样提醒你（窗口在前台时不打扰）",
       onlyWhenUnfocused: false, // 测试时强制发送
     });
-    if (!ok) notify("通知未发送：可能尚未获得系统通知权限，请先点「请求权限」");
+    await refreshNotifPermission();
+    if (!ok) {
+      notify(`通知未发送\n\n${notifDiagnose.value?.hint ?? "原因未知（可在应用日志中查看）"}`);
+    }
   } catch (e) {
     notify(`测试通知失败：${e}`);
   }
@@ -1051,12 +1076,22 @@ function handleDelete() {
               <span class="form-hint">
                 {{
                   notifGranted === null
-                    ? "状态未知（可能是开发模式运行，未打包为 .app 时 macOS 不弹授权）"
+                    ? "状态未知（无法查询通知权限）"
                     : notifGranted
                       ? "✅ 已允许"
-                      : "❌ 未允许 —— 点右侧按钮请求，或到「系统设置 → 通知 → 道生一」开启"
-                }}
+                      : "❌ 未允许"
+                }}<template v-if="notifDiagnose">
+                  ｜权限状态：{{ notifDiagnose.state }}
+                  ｜运行方式：{{ notifDiagnose.bundled ? "已打包 .app" : "开发模式（裸二进制）" }}</template
+                >
               </span>
+              <p
+                v-if="notifDiagnose"
+                class="form-hint"
+                :class="{ 'notif-warn': !notifDiagnose.bundled || !notifDiagnose.granted }"
+              >
+                {{ notifDiagnose.hint }}
+              </p>
               <div style="display: flex; gap: 8px; margin-top: 8px">
                 <button class="settings-reset-btn" @click="requestNotif">请求权限</button>
                 <button class="settings-reset-btn" @click="testNotify">发送测试通知</button>
