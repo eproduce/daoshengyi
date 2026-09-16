@@ -2,7 +2,38 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-16**
+> **最后更新：2026-09-17**
+
+---
+
+## 2026-09-17（进度快照）
+
+### 当前状态（origin/main = `6248f73`，工作区干净）
+- **内置工具 77 个**（含 DSH 吸收新增的 10 个确定性工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `17 files / 156 passed`；cargo `129 passed / 8 ignored`
+- **门禁全绿**：`npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
+- **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
+
+### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
+
+| 项 | 状态 | 提交 |
+| --- | --- | --- |
+| P0-1 确定性工具集 10 个（calc / convert_unit / time_convert / csv_query / json_query / regex_test / hash_encode / stats_describe / diff_text / schema_validate） | ✅ | `d7abde2` |
+| P0-2 工具结果「先脱敏 → 内容感知压缩 → 超预算落盘」 | ✅ | `d7abde2` |
+| P0-4 危险命令分级语义门禁（forbidden / danger / caution） | ✅ | `fb96ed6` |
+| P1-1 工具调用参数自愈（别名 / 类型 / 包裹层） | ✅ | `6248f73` |
+| P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ⬜ 待做 | — |
+| P0-3 上下文成本审计（Context Doctor） | ⬜ 待做 | — |
+| P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ⬜ 待做 | — |
+| P0-4b 删除进回收站（`delete_file` 可恢复） | ⬜ 待做 | — |
+
+**P1 待做**：哈希锚定编辑（3 字符行哈希定位、拒绝过期锚点）· 生命周期钩子（事件→工具/shell/HTTP→注入/拒绝/通知）·
+声明式权限规则（allow/deny/ask + dry-run + 热重载）· 压缩阶梯（30/50/70/90 + 关键词索引）·
+自动续跑规则表（按失败类型路由）· 决策日志 `DECISIONS.md` · 输出风格 · 技能外部导入（Claude Code/Codex/Cursor 目录）+ 失败台账。
+
+**P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
+
+**明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
 
 ---
 
