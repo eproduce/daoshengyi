@@ -4224,14 +4224,6 @@ fn extract_redirected_files(cmd: &str, cwd: Option<&str>) -> Vec<String> {
 
 /// 通过 /bin/sh -c 执行整条 shell 命令，返回结构化输出。
 /// 独立成函数便于单元测试（不依赖 Tauri State）；进程组保证超时能杀干净子进程。
-async fn run_shell_command(
-    full_cmd: &str,
-    cwd: Option<&str>,
-    timeout_secs: Option<u64>,
-) -> Result<CommandOutput, String> {
-    run_shell_command_with(full_cmd, cwd, timeout_secs, None, None).await
-}
-
 /// 同 `run_shell_command`，但可按 sandbox 模式包裹命令（吸收自 Codex 的 SandboxMode）：
 /// `read-only` / `workspace-write` 时用 Seatbelt 限制文件写入；不可用时自动降级为不加沙箱。
 async fn run_shell_command_with(
@@ -6798,7 +6790,7 @@ mod tests {
     use super::{
         chunk_text, compute_edits, delete_file_impl, detect_test_framework, diff_lines,
         embed_model_installed, extract_redirected_files, format_unified_diff, nth_occurrence,
-        parse_allowed_paths, parse_embed_response, path_within_any, run_shell_command,
+        parse_allowed_paths, parse_embed_response, path_within_any, run_shell_command_with,
         validate_git_operation, EditOp,
     };
 
@@ -7191,7 +7183,9 @@ mod tests {
     #[tokio::test]
     async fn run_shell_supports_tilde_expansion_and_pipe() {
         // ~ 展开为 HOME
-        let out = run_shell_command("echo ~", None, Some(10)).await.unwrap();
+        let out = run_shell_command_with("echo ~", None, Some(10), None, None)
+            .await
+            .unwrap();
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         let home = std::env::var("HOME").unwrap_or_default();
         if !home.is_empty() {
@@ -7203,13 +7197,13 @@ mod tests {
             );
         }
         // 管道
-        let out2 = run_shell_command("echo abc | tr a-z A-Z", None, Some(10))
+        let out2 = run_shell_command_with("echo abc | tr a-z A-Z", None, Some(10), None, None)
             .await
             .unwrap();
         assert_eq!(out2.exit_code, 0, "stderr: {}", out2.stderr);
         assert_eq!(out2.stdout.trim(), "ABC", "管道应生效: {}", out2.stdout);
         // shell 内建 + &&
-        let out3 = run_shell_command("cd /tmp && pwd", None, Some(10))
+        let out3 = run_shell_command_with("cd /tmp && pwd", None, Some(10), None, None)
             .await
             .unwrap();
         assert_eq!(out3.exit_code, 0, "stderr: {}", out3.stderr);
@@ -7223,7 +7217,9 @@ mod tests {
     #[tokio::test]
     async fn run_shell_timeout_kills_process_group() {
         let start = std::time::Instant::now();
-        let out = run_shell_command("sleep 30", None, Some(2)).await.unwrap();
+        let out = run_shell_command_with("sleep 30", None, Some(2), None, None)
+            .await
+            .unwrap();
         assert!(out.timed_out, "应标记超时");
         assert!(out.stderr.contains("超时"), "stderr: {}", out.stderr);
         assert!(
@@ -7275,7 +7271,9 @@ mod tests {
     #[tokio::test]
     async fn run_shell_unknown_command_reports_exit_127() {
         // 非可执行命令（如 list）：走 shell 后是「command not found」（exit 127）而非启动失败
-        let out = run_shell_command("list", None, Some(5)).await.unwrap();
+        let out = run_shell_command_with("list", None, Some(5), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             out.exit_code, 127,
             "list 应报 command not found: {}",
