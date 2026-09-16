@@ -29,6 +29,25 @@
 - **验证方式（唯一可靠）**：`npm run tauri build` → 打开 `src-tauri/target/release/bundle/macos/道生一.app` → 首次点「请求权限」（系统会弹授权框）→ 「发送测试通知」。
 - 验证：vue-tsc 干净 · vite build ✓ · vitest 78 passed · cargo test --lib **122 passed / 8 ignored** · clippy `-D warnings` 干净。
 
+### ✅ Codex 架构层吸收（P0 三项，2026-09-16）
+> 背景：核对 Codex 源码后确认——**工具层已基本对齐（11 项）**，但架构层还有缺口。本批先做性价比最高的三项。
+
+1. **上下文自动压缩 + handoff 交接摘要**（对齐 Codex 的 compaction 三件套）
+   - 抽取 `compressConversation()`（工具与自动压缩共用）+ `maybeAutoCompact()`：**占用 ≥ 窗口 82%** 自动触发，保留最近 6 条原始消息，60s 冷却防连环压缩。
+   - 摘要提示词对齐 Codex `prompts/templates/compact/prompt.md` 的 handoff 结构：① 进度与关键决策（含已排除方案）② 上下文与约束/偏好 ③ 未完成事项与下一步 ④ **关键路径/命令/参数原样保留**——接续者看不到原始消息，摘要必须自足。
+   - 压缩只影响「发给模型的历史」（界面仍保留全部消息）；`new_context_window` 工具改为复用同一实现（描述改为「系统已自动压缩，通常无需主动调用」）。
+2. **`on-failure` 审批模式**（对齐 Codex `ApprovalMode::OnFailure`）
+   - 审批档新增「失败后再问」：危险命令**直接执行**，仅当失败（非零退出/超时）时弹窗询问是否换更强方式重试；同意则记入会话许可，后续不再逐条确认。把打断从「执行前」挪到「真出错时」。
+   - 覆盖 `/run`、`run_command`、`exec_command` 三条路径。
+3. **大 schema 压缩**（吸收 Codex `tools/json_schema/compaction.rs`）
+   - 新增 `src/utils/tool-schema-compact.ts`：超预算（默认 4000 字符）时多轮有损——① 清洗注释性字段（`$schema`/`title`/`examples`/`default`…）+ 限深（≥2 层折叠为 `{type}`）+ 深层描述截断；② 仍超预算则退化为「只保顶层参数面 + `additionalProperties: true`」，**顶层参数名/枚举/required 绝不丢**。
+   - 接入 `buildNativeToolRegistry`：MCP 工具参数一律先过瘦身（我们不超预算就原样使用，零回归）。
+- 测试：新增 `tests/test-tool-schema-compact.test.ts` 7 项（不超预算原样返回 / 清字段 / 限深折叠 / 退化保顶层 / 枚举与 required 保留 / 纯函数不改原对象 / 异常输入）。
+- 验证：vue-tsc 干净 · **vite build ✓** · vitest **11 files / 85 passed** · cargo test --lib 122 passed/8 ignored · clippy 干净。
+
+### ✅ 通知验证通过（打包版）
+用户实测：打开 `道生一.app` → 请求权限 → 「发送测试通知」**成功收到系统通知** → 确认根因（dev 非 .app 无法投递）与修复方向均正确。
+
 ### 📌 当前状态与待办
 - **已推送**：`9031cfd`（模板修复）· `2ac143c`（门禁清单+教训）· `16b0f1e`（通知诊断）｜`origin/main` = `16b0f1e`
 - **唯一待办**：配云端视觉档（设置→模型新增一个「非 DeepSeek 且有 Key」的档，如智谱 `glm-4v-flash` / 阿里 `qwen-vl-max`；代码已自动识别，无需其它配置）——需用户填 Key。

@@ -176,7 +176,8 @@ function saveWorkspace() {
   updateSettings({ workspace: v || null });
 }
 
-// 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/ yolo（全部自动批准）
+// 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/
+// on-failure（先执行，失败后才升级请求授权，对齐 Codex 的 ApprovalMode::OnFailure）/ yolo（全部自动批准）
 const APPROVAL_MODES = [
   { value: "manual" as const, label: "手动确认", desc: "危险命令先弹窗询问，确认后执行" },
   {
@@ -185,15 +186,20 @@ const APPROVAL_MODES = [
     desc: "辅助模型判断安全则自动放行，判定有风险再询问",
   },
   {
+    value: "on-failure" as const,
+    label: "失败后再问",
+    desc: "危险命令直接执行；失败（非零退出/超时）后再询问是否换方式重试",
+  },
+  {
     value: "yolo" as const,
     label: "YOLO 全部放行",
     desc: "危险命令自动批准执行，不询问（高风险）",
   },
 ];
-const approvalMode = ref<"manual" | "smart" | "yolo">(
+const approvalMode = ref<"manual" | "smart" | "yolo" | "on-failure">(
   getSettings().approvalMode || (getSettings().yoloMode ? "yolo" : "manual"),
 );
-function onApprovalModeChange(mode: "manual" | "smart" | "yolo") {
+function onApprovalModeChange(mode: "manual" | "smart" | "yolo" | "on-failure") {
   approvalMode.value = mode;
   updateSettings({ approvalMode: mode, yoloMode: mode === "yolo" });
 }

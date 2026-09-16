@@ -523,7 +523,7 @@ function getMcpToolsPrompt(): string {
     '\n- **request_user_input** (app): **向用户提问并等待回答（融合自 Codex）**。参数 {"question": "要问的问题", "context": 可选背景, "choices": 可选快捷选项数组, "default": 可选默认值}。**仅在关键信息缺失/歧义且猜错代价高时用**；能合理假设就先推进并标注假设。用户可点「跳过」，此时请按合理假设继续、不要反复追问。\n' +
     '\n- **request_permissions** (app): **主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "理由"}。得到授权后本会话同类操作不再逐次弹确认（仅本会话有效；命令策略的 deny 规则仍不可绕过）。预计要连续多次写操作/命令时先申请一次，比逐条触发弹窗更高效。\n' +
     '\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n' +
-    '\n- **new_context_window** (app): **压缩历史上下文（融合自 Codex）**：把较早的对话历史压缩成要点摘要后继续，腾出上下文空间。参数 {"keep_last_messages": 可选，保留最近几条原始消息（默认 6）}。**使用时机**：历史很长/接近上限但不能丢掉前文结论时。只影响发给模型的历史（界面仍完整保留）；压缩掉的细节请从已落盘文件读取，不要凭记忆臆测。\n' +
+    '\n- **new_context_window** (app): **压缩历史上下文（融合自 Codex）**：把较早历史压成交接摘要后继续。参数 {"keep_last_messages": 可选，保留最近几条（默认 6）}。**系统已自动压缩**（占用达 ~82% 自动做一次），通常无需主动调用；只影响发给模型的历史（界面仍保留全部），压缩掉的细节请从已落盘文件读取、不要臆测。\n' +
     '\n- **tool_search** (app): **检索并激活未直接列出的工具（融合自 Codex，BM25 检索）**。参数 {"query": "自然语言描述你要做的事或能力，中英文均可", "limit": 可选返回条数}。**使用时机**：你需要某类能力（如「数据库查询」「发消息」「抓股票数据」）但当前工具列表里**找不到对应工具**时——先搜一下；系统会把命中的工具立即加入可用工具。也可用于**确认某个工具的真实参数名**（不要靠猜）。不要用它做普通信息搜索（那用 web_search）。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
@@ -1488,6 +1488,113 @@ async function toolInterruptAgent(id: string, reason: string): Promise<string> {
   );
 }
 
+// ── 上下文压缩（吸收自 Codex 的 compaction）────────────────────────────────
+// Codex 侧有三件套：① 自动触发（阈值/触发标记）② `prompts/templates/compact/prompt.md`
+// 的 handoff 摘要模板 ③ 压缩后作为新上下文继续（checkpoint）。我们对应：
+// ① maybeAutoCompact（占用 ≥ 阈值自动压）② 下方 HANDOFF_SUMMARY_PROMPT ③ compactBefore/Summary。
+// 另：完成**任何自足交接**——接续者看不到原始消息，摘要必须包含路径/命令/待办。
+const HANDOFF_SUMMARY_PROMPT =
+  "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n" +
+  "请按以下四段结构输出（中文，纯摘要，不要前言/解释/代码块围栏）：\n" +
+  "1) 当前进度与已完成的关键决策（含已排除的方案及原因）\n" +
+  "2) 重要上下文与约束（用户偏好/要求/禁止事项、环境限制）\n" +
+  "3) 尚未完成的事项与明确的下一步\n" +
+  "4) 继续所需的关键数据：文件路径、命令、参数、结论数字（**原样保留，不要改写**）\n" +
+  "不要编造；接续者看不到原始对话，摘要必须自足。";
+
+/// 自动压缩阈值：上下文占用达窗口的 82% 即自动压缩（Codex 亦有自动触发）
+const AUTO_COMPACT_RATIO = 0.82;
+/// 自动压缩保留的最近原始消息条数
+const AUTO_COMPACT_KEEP = 6;
+/// 压缩冷却（同一会话 60s 内不重复触发，避免连环压缩）
+const AUTO_COMPACT_COOLDOWN_MS = 60_000;
+let lastAutoCompactAt = 0;
+
+/// 可压缩会话的最小结构（与 store 的 Conversation 结构兼容）
+interface CompactableConv {
+  messages: ChatMessage[];
+  compactBefore?: number;
+  compactSummary?: string;
+  updatedAt: number;
+}
+
+/// 把会话中较早的历史压缩成 handoff 摘要，写回 compactBefore/compactSummary。
+/// 供 `new_context_window` 工具与自动压缩共用。失败返回 reason（不抛异常）。
+async function compressConversation(
+  store: ReturnType<typeof useChatStore>,
+  conv: CompactableConv,
+  keep: number,
+): Promise<{ ok: boolean; compressed: number; chars: number; reason?: string }> {
+  const hist = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
+  const cut = hist.length - keep;
+  const already = conv.compactBefore ?? 0;
+  if (cut <= already + 1) return { ok: false, compressed: 0, chars: 0, reason: "历史很短，无需压缩" };
+  const aux = store.getRoutedAuxConfig("summarize");
+  if (!aux.baseUrl || !aux.apiKey) {
+    return { ok: false, compressed: 0, chars: 0, reason: "未配置可用的摘要模型/API Key" };
+  }
+  const transcript = hist
+    .slice(already, cut)
+    .map((m) => `${m.role}: ${(m.content || "").slice(0, 600)}`)
+    .join("\n")
+    .slice(0, 60000);
+  const data = await invoke<{ content?: string }>("chat_once", {
+    config: {
+      base_url: aux.baseUrl,
+      api_key: aux.apiKey,
+      model: aux.model,
+      max_tokens: 1200,
+      temperature: 0.2,
+      thinking_enabled: false,
+      reasoning_effort: "low",
+      system_prompt: HANDOFF_SUMMARY_PROMPT,
+      enable_web_search: false,
+    },
+    messages: [{ role: "user", content: transcript }],
+  });
+  const summary = (data?.content || "").trim();
+  if (!summary) return { ok: false, compressed: 0, chars: 0, reason: "模型未返回摘要" };
+  conv.compactBefore = cut;
+  conv.compactSummary = summary;
+  conv.updatedAt = Date.now(); // 触发深监听 → 自动落库
+  return { ok: true, compressed: cut - already, chars: summary.length };
+}
+
+/// 自动压缩（每次发送前调用）：占用 ≥ AUTO_COMPACT_RATIO 且不在冷却期 → 压缩。
+/// 返回本次压缩掉的消息数（0 = 未压缩），失败不抛错（不阻塞主流程）。
+async function maybeAutoCompact(
+  conv: CompactableConv,
+  config: { baseUrl?: string; model?: string; maxContextMessages?: number },
+): Promise<number> {
+  const window = modelContextWindowTokens(config.baseUrl || "", config.model);
+  const maxCtx = config.maxContextMessages || 50;
+  const hist = conv.messages
+    .filter((m) => m.role !== "system" && !m.streaming)
+    .slice(-maxCtx);
+  const est = hist.reduce(
+    (s, m) => s + estimateMessageTokens(m.content || "", m.reasoning_content),
+    0,
+  );
+  const used = Math.max(lastPromptTokens, est);
+  if (used / window < AUTO_COMPACT_RATIO) return 0;
+  if (Date.now() - lastAutoCompactAt < AUTO_COMPACT_COOLDOWN_MS) return 0;
+  try {
+    const r = await compressConversation(useChatStore(), conv, AUTO_COMPACT_KEEP);
+    lastAutoCompactAt = Date.now();
+    if (!r.ok) {
+      await dbg(`[compact] 自动压缩未执行：${r.reason}`);
+      return 0;
+    }
+    await dbg(
+      `[compact] 自动压缩完成：${r.compressed} 条历史 → ${r.chars} 字交接摘要（占用 ${Math.round((used / window) * 100)}%）`,
+    );
+    return r.compressed;
+  } catch (e: unknown) {
+    await dbg(`[compact] 自动压缩异常：${e instanceof Error ? e.message : String(e)}`);
+    return 0;
+  }
+}
+
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
   // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
@@ -2067,48 +2174,19 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       );
     }
     case "new_context_window": {
-      // 融合 Codex 的 new_context_window：把较早历史压缩成摘要后继续（腾出上下文空间）。
+      // 融合 Codex 的 new_context_window：把较早历史压缩成 handoff 摘要后继续。
       // 只影响「发给模型的历史」，界面仍完整保留原始消息。
       const store = useChatStore();
       const conv = store.activeConversation;
       if (!conv) return "（当前没有活动会话，无法压缩）";
       const keep = Math.min(Math.max(Number(args.keep_last_messages ?? 6) || 6, 2), 20);
-      const hist = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
-      const cut = hist.length - keep;
-      const already = conv.compactBefore ?? 0;
-      if (cut <= already + 1) {
-        return `（历史很短（${hist.length} 条，已压缩到第 ${already} 条），无需再压缩；当前上下文占用约 ${lastPromptTokens.toLocaleString()} tokens）`;
-      }
-      const aux = store.getRoutedAuxConfig("summarize");
-      if (!aux.baseUrl || !aux.apiKey) return "（无法压缩：未配置可用的摘要模型 / API Key）";
-      const transcript = hist
-        .slice(already, cut)
-        .map((m) => `${m.role}: ${(m.content || "").slice(0, 600)}`)
-        .join("\n")
-        .slice(0, 60000);
       try {
-        const data = await invoke<{ content?: string }>("chat_once", {
-          config: {
-            base_url: aux.baseUrl,
-            api_key: aux.apiKey,
-            model: aux.model,
-            max_tokens: 1200,
-            temperature: 0.2,
-            thinking_enabled: false,
-            reasoning_effort: "low",
-            system_prompt:
-              "你是对话压缩器。把给出的对话历史压缩成要点摘要，务必保留：用户目标、已确认的事实与结论、关键文件路径/命令/参数、未完成的待办。不要编造，不要输出解释或前言，直接给摘要。",
-            enable_web_search: false,
-          },
-          messages: [{ role: "user", content: transcript }],
-        });
-        const summary = (data?.content || "").trim();
-        if (!summary) return "（压缩失败：模型未返回摘要，历史保持不变）";
-        conv.compactBefore = cut;
-        conv.compactSummary = summary;
-        conv.updatedAt = Date.now(); // 触发深监听 → 自动落库
+        const r = await compressConversation(store, conv, keep);
+        if (!r.ok) {
+          return `（未压缩：${r.reason}）当前上下文占用约 ${lastPromptTokens.toLocaleString()} tokens；历史 ${conv.messages.length} 条。`;
+        }
         return (
-          `✅ 已压缩 ${cut - already} 条历史为摘要（${summary.length} 字），后续请求只发送【摘要 + 最近 ${keep} 条消息】。\n` +
+          `✅ 已压缩 ${r.compressed} 条历史为交接摘要（${r.chars} 字），后续请求只发送【摘要 + 最近 ${keep} 条消息】。\n` +
           "界面仍完整保留原始消息；需要中间细节时请从已落盘的工具输出/产物文件读取。"
         );
       } catch (e: unknown) {
@@ -4333,8 +4411,10 @@ export const useChatStore = defineStore("chat", () => {
       (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
     if (needsConfirm) {
       const st = getSettings();
-      const mode: "manual" | "smart" | "yolo" =
+      const mode: "manual" | "smart" | "yolo" | "on-failure" =
         st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      // on-failure（吸收自 Codex 的 ApprovalMode::OnFailure）：先执行，失败后才升级询问
+      // ——此处直接放行，失败分支在 agentRunCommand / agentExecCommand 里处理。
       if (mode === "manual") {
         const ok = await askConfirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
         if (!ok) return;
@@ -4440,7 +4520,8 @@ export const useChatStore = defineStore("chat", () => {
       (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
     if (!needsConfirm) return null;
     const st = getSettings();
-    const mode: "manual" | "smart" | "yolo" = st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+    const mode: "manual" | "smart" | "yolo" | "on-failure" =
+      st.approvalMode || (st.yoloMode ? "yolo" : "manual");
     if (mode === "manual") {
       const ok = await askConfirm(
         `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`,
@@ -4458,6 +4539,21 @@ export const useChatStore = defineStore("chat", () => {
     }
     // yolo → 自动放行
     return null;
+  }
+
+  /// on-failure 模式专用（吸收自 Codex 的 ApprovalMode::OnFailure）：命令先跑，
+  /// **失败后**再请求用户授权重试——把打断从「执行前」挪到「真出错时」，少一半弹窗。
+  /// 用户同意 → 记入会话许可（后续危险命令不再逐条确认）。
+  async function escalateOnFailure(cmdStr: string, detail: string): Promise<string> {
+    const ok = await askConfirm(
+      `⚠️ 命令执行失败（审批模式：失败后再问）：\n\n$ ${cmdStr}\n\n${detail}\n\n` +
+        "是否允许 Agent 换用更高权限/更强的方式重试？（同意后本会话内危险命令不再逐条确认）",
+    );
+    if (!ok) {
+      return `（用户选择不再重试：$ ${cmdStr} 执行失败（${detail}）。请改用更安全的方式，或直接向用户说明结论，不要重复重试。）`;
+    }
+    rememberSessionPermit("run_command");
+    return `（用户已授权本会话内的命令执行权限，可以换参数/方式重试：${detail}。若仍失败请给出结论，避免无限重试。）`;
   }
 
   /// 模型可调的 run_command 实现：与 /run 同一安全管线（execpolicy deny / 危险审批），
@@ -4492,6 +4588,16 @@ export const useChatStore = defineStore("chat", () => {
       const created = result.created_files || [];
       if (created.length > 0)
         content += `\n\n📄 生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
+      // on-failure：失败后才升级请求授权（Codex ApprovalMode::OnFailure 语义）
+      if (
+        getSettings().approvalMode === "on-failure" &&
+        (result.timed_out || result.exit_code !== 0)
+      ) {
+        content += `\n\n${await escalateOnFailure(
+          cmdStr,
+          result.timed_out ? "命令超时被终止" : `退出码 ${result.exit_code}`,
+        )}`;
+      }
       return content;
     } catch (e: unknown) {
       return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
@@ -4538,7 +4644,17 @@ export const useChatStore = defineStore("chat", () => {
         cwd: cwd || getSettings().workspace || null,
         yieldMs: wait,
       });
-      return formatExecResult(r, `$ ${cmdStr}`);
+      const rendered = formatExecResult(r, `$ ${cmdStr}`);
+      // on-failure：进程已结束且非 0 退出 → 升级请求授权重试
+      if (
+        getSettings().approvalMode === "on-failure" &&
+        !r.running &&
+        r.exit_code !== null &&
+        r.exit_code !== 0
+      ) {
+        return `${rendered}\n\n${await escalateOnFailure(cmdStr, `退出码 ${r.exit_code}`)}`;
+      }
+      return rendered;
     } catch (e: unknown) {
       return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
@@ -4693,7 +4809,6 @@ export const useChatStore = defineStore("chat", () => {
     conv.updatedAt = Date.now();
     resetStop(); // 新消息重置停止信号
     isStreaming.value = true;
-    lastTurnStopped.value = false; // 新一轮开始：复位「上一轮是否被用户停止」
     streamingContent.value = "";
     streamingReasoning.value = "";
     const startTime = Date.now();
@@ -5049,6 +5164,9 @@ export const useChatStore = defineStore("chat", () => {
       for (const s of summaries) volatileCtx.push(`对话摘要: ${s}`);
 
       // 构建 Rust 格式消息
+      // 自动压缩（吸收自 Codex 的自动 compaction）：占用达阈值时先把较早历史压成交接摘要，
+      // 再装配历史 —— 不依赖模型自己想起来调 new_context_window。
+      await maybeAutoCompact(conv, config);
       const maxCtx = config.maxContextMessages || 50;
       const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
       const histStart = Math.max(0, histAll.length - maxCtx);
@@ -5939,17 +6057,7 @@ export const useChatStore = defineStore("chat", () => {
       // 注：此处 streamingContent 已是本轮最终正文（finally 才做落库装配）
       notifyTurnFinished(streamingContent.value, toolCards.length);
     } catch (err: unknown) {
-      // 用户主动停止（点「停止」）不是错误：不应显示「请求失败/未收到回复」这类误导提示，
-      // 也不应把 AgentStoppedError 当成网络/配置问题报给用户。
-      if (err instanceof AgentStoppedError || stopRequested) {
-        dbg("[sendMessage] 用户已停止生成（非错误）");
-        if (toolChain.length > 0) {
-          toolChain.push("> ⏹ 已停止生成（你点了「停止」；上方工具执行记录已保留）");
-          streamingContent.value = "";
-        } else if (!streamingContent.value.trim()) {
-          streamingContent.value = "⏹ 已停止生成（你点了「停止」）。";
-        }
-      } else if (err instanceof Error) {
+      if (err instanceof Error) {
         let msg = err.message;
         // 图片发送失败时给出明确引导（多为模型不支持图片输入）
         if (
@@ -6029,18 +6137,14 @@ export const useChatStore = defineStore("chat", () => {
       }
       // 空回复诊断：内容为空时必现可操作提示，避免静默空泡泡。
       // 只有思考过程而无内容（如模型把工具调用 JSON 当唯一输出被剥离）也算空回复。
-      // 但**用户手动停止**不算异常：给中性的「已停止」提示，不要误导成 API/网络问题。
       if (!assistantMsg.content) {
-        assistantMsg.content = stopRequested
-          ? "⏹ 已停止生成（你点了「停止」）。"
-          : assistantMsg.reasoning_content
-            ? "⚠️ 模型仅返回了思考过程，未生成回复内容。可点击「🔄 重试」或换个说法再问。"
-            : "⚠️ 未收到模型回复。可能原因：\n- 当前模型/API 不支持该请求（模型名无效、图片输入等）\n- API 地址或 Key 配置有误\n- 网络或服务端异常\n\n请检查「设置 → API 配置」或重试。";
+        assistantMsg.content = assistantMsg.reasoning_content
+          ? "⚠️ 模型仅返回了思考过程，未生成回复内容。可点击「🔄 重试」或换个说法再问。"
+          : "⚠️ 未收到模型回复。可能原因：\n- 当前模型/API 不支持该请求（模型名无效、图片输入等）\n- API 地址或 Key 配置有误\n- 网络或服务端异常\n\n请检查「设置 → API 配置」或重试。";
       }
       streamingContent.value = "";
       streamingReasoning.value = "";
       isStreaming.value = false;
-      lastTurnStopped.value = stopRequested; // 供托盘/界面区分「完成」与「已停止」
       conv.updatedAt = Date.now();
       scheduleSave();
       // 本轮彻底结束：若队列有待发消息则自动续跑（放在 isStreaming=false 之后）
@@ -6057,9 +6161,6 @@ export const useChatStore = defineStore("chat", () => {
       }
     }
   }
-
-  /// 本轮是否被用户手动停止（供托盘/界面区分「完成」与「已停止」；新消息开始即复位）
-  const lastTurnStopped = ref(false);
 
   function stopStreaming() {
     isStreaming.value = false;
@@ -6239,7 +6340,6 @@ export const useChatStore = defineStore("chat", () => {
     resolveEditConfirm,
     askInput,
     resolveAskInput,
-    lastTurnStopped,
     hasSessionPermit,
     rememberSessionPermit,
     clearSessionPermits,

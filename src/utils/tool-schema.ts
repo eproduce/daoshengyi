@@ -5,6 +5,7 @@
 // 纯函数、无副作用，便于单元测试。
 
 import { BUILTIN_PARAMETERS } from "../data/builtin-params.ts";
+import { compactToolSchema } from "./tool-schema-compact.ts";
 
 export interface OpenAIFunctionTool {
   type: "function";
@@ -175,7 +176,9 @@ export function buildNativeToolRegistry(opts: BuildNativeRegistryOptions): Nativ
       src.kind === "builtin"
         ? builtinParameters(src.name)
         : src.inputSchema && src.inputSchema.type === "object"
-          ? src.inputSchema
+          ? // MCP 服务器可能返回巨型 inputSchema（数千字符/深层嵌套）→ 按预算瘦身
+            // （吸收自 Codex 的 json_schema/compaction：多轮有损、优先保住顶层参数面）
+            compactToolSchema(src.inputSchema)
           : GENERIC_PARAMETERS;
     // MCP 工具：把参数名（含必填标记）写进描述，降低模型「猜参数名」导致的调用失败
     const baseDesc = toolDescription(src.server, src.description);

@@ -27,7 +27,7 @@ export interface AppSettingsPayload {
   /// YOLO 模式：开启后危险命令自动批准执行（不再弹确认）
   yoloMode: boolean;
   /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
-  approvalMode: "manual" | "smart" | "yolo";
+  approvalMode: "manual" | "smart" | "yolo" | "on-failure";
   /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
   auxiliaryProfileId: string;
   /// 飞书群机器人 Webhook（主动推送用）
