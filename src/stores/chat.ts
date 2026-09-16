@@ -4693,6 +4693,7 @@ export const useChatStore = defineStore("chat", () => {
     conv.updatedAt = Date.now();
     resetStop(); // 新消息重置停止信号
     isStreaming.value = true;
+    lastTurnStopped.value = false; // 新一轮开始：复位「上一轮是否被用户停止」
     streamingContent.value = "";
     streamingReasoning.value = "";
     const startTime = Date.now();
@@ -5938,7 +5939,17 @@ export const useChatStore = defineStore("chat", () => {
       // 注：此处 streamingContent 已是本轮最终正文（finally 才做落库装配）
       notifyTurnFinished(streamingContent.value, toolCards.length);
     } catch (err: unknown) {
-      if (err instanceof Error) {
+      // 用户主动停止（点「停止」）不是错误：不应显示「请求失败/未收到回复」这类误导提示，
+      // 也不应把 AgentStoppedError 当成网络/配置问题报给用户。
+      if (err instanceof AgentStoppedError || stopRequested) {
+        dbg("[sendMessage] 用户已停止生成（非错误）");
+        if (toolChain.length > 0) {
+          toolChain.push("> ⏹ 已停止生成（你点了「停止」；上方工具执行记录已保留）");
+          streamingContent.value = "";
+        } else if (!streamingContent.value.trim()) {
+          streamingContent.value = "⏹ 已停止生成（你点了「停止」）。";
+        }
+      } else if (err instanceof Error) {
         let msg = err.message;
         // 图片发送失败时给出明确引导（多为模型不支持图片输入）
         if (
@@ -6018,14 +6029,18 @@ export const useChatStore = defineStore("chat", () => {
       }
       // 空回复诊断：内容为空时必现可操作提示，避免静默空泡泡。
       // 只有思考过程而无内容（如模型把工具调用 JSON 当唯一输出被剥离）也算空回复。
+      // 但**用户手动停止**不算异常：给中性的「已停止」提示，不要误导成 API/网络问题。
       if (!assistantMsg.content) {
-        assistantMsg.content = assistantMsg.reasoning_content
-          ? "⚠️ 模型仅返回了思考过程，未生成回复内容。可点击「🔄 重试」或换个说法再问。"
-          : "⚠️ 未收到模型回复。可能原因：\n- 当前模型/API 不支持该请求（模型名无效、图片输入等）\n- API 地址或 Key 配置有误\n- 网络或服务端异常\n\n请检查「设置 → API 配置」或重试。";
+        assistantMsg.content = stopRequested
+          ? "⏹ 已停止生成（你点了「停止」）。"
+          : assistantMsg.reasoning_content
+            ? "⚠️ 模型仅返回了思考过程，未生成回复内容。可点击「🔄 重试」或换个说法再问。"
+            : "⚠️ 未收到模型回复。可能原因：\n- 当前模型/API 不支持该请求（模型名无效、图片输入等）\n- API 地址或 Key 配置有误\n- 网络或服务端异常\n\n请检查「设置 → API 配置」或重试。";
       }
       streamingContent.value = "";
       streamingReasoning.value = "";
       isStreaming.value = false;
+      lastTurnStopped.value = stopRequested; // 供托盘/界面区分「完成」与「已停止」
       conv.updatedAt = Date.now();
       scheduleSave();
       // 本轮彻底结束：若队列有待发消息则自动续跑（放在 isStreaming=false 之后）
@@ -6042,6 +6057,9 @@ export const useChatStore = defineStore("chat", () => {
       }
     }
   }
+
+  /// 本轮是否被用户手动停止（供托盘/界面区分「完成」与「已停止」；新消息开始即复位）
+  const lastTurnStopped = ref(false);
 
   function stopStreaming() {
     isStreaming.value = false;
@@ -6221,6 +6239,7 @@ export const useChatStore = defineStore("chat", () => {
     resolveEditConfirm,
     askInput,
     resolveAskInput,
+    lastTurnStopped,
     hasSessionPermit,
     rememberSessionPermit,
     clearSessionPermits,

@@ -145,6 +145,22 @@ export function startTrayStatusSync(): void {
         }
         doneSnapshot = null;
       } else if (wasStreaming) {
+        // 用户手动停止 ≠ 完成：托盘显示「已停止」而不是「已完成」
+        if (chat.lastTurnStopped) {
+          doneSnapshot = {
+            title: "已停止（用户中断）",
+            progress: "",
+            steps: (chat.taskPlan?.steps ?? [])
+              .slice(0, 8)
+              .map((s) => ({ text: s.text, status: s.status as string })),
+          };
+          linger = setTimeout(() => {
+            doneSnapshot = null;
+            linger = null;
+            flush();
+          }, DONE_LINGER_MS);
+          return;
+        }
         const plan = chat.taskPlan;
         if (plan && plan.steps.length > 0) {
           const doneCount = plan.steps.filter((s) => s.status === "done").length;
