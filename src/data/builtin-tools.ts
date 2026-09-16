@@ -278,6 +278,49 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "write_stdin",
     desc: '**向运行中的 exec_command 会话写输入，并取回新输出（融合自 Codex）**。参数 {"session_id": exec_command 返回的会话号, "input": "可选，要写入的字符（回车需自己写 \\n；中断交互程序用 \\u0003 = Ctrl-C）", "yield_time_ms": 可选等待毫秒（默认 1000）}。**input 省略 = 只等待并取回后续输出**（轮询长任务进度）；进程已结束时返回剩余输出与退出码。',
   },
+
+  // ---- 确定性工具集（融合自 DeepSeek Harness 生态的 dsh-toolkit：零依赖、不联网、结果可复现）----
+  // 共同原则：凡「有唯一正确答案」的计算，一律下沉到代码，不靠模型口算或凭记忆，避免算错与编造。
+  {
+    name: "calc",
+    desc: '**精确算术求值**（不使用 eval，支持 + - * / % ^ ** 与括号、函数、常量）。参数 {"expression": "如 (1+2)*3/4、sqrt(2)、2^10、min(3,5)、round(3.14159,2)、sum(1,2,3)", "precision": 可选小数位}。函数：sqrt/cbrt/abs/round/floor/ceil/trunc/sign/exp/ln/log/log10/log2/sin/cos/tan/asin/acos/atan/atan2/pow/hypot/min/max/sum/avg/product/gcd/lcm/factorial；常量 pi/e/tau。**何时用**：任何需要准确数值的场合（复利、百分比、几何、进制外的大数组合运算）——不要心算，心算易错且无法核对。',
+  },
+  {
+    name: "convert_unit",
+    desc: '**单位换算（表驱动，含中文单位）**。参数 {"value": 数值, "from": "原单位", "to": "目标单位"}，或 {"list": true} 列出全部可用单位。覆盖：长度/质量/温度/时间/数据量/面积/体积/速度/角度/压强/能量/功率/频率（含 斤·两·里·尺·寸·亩·摄氏度·华氏度·度电·马力 等）。**何时用**：任何单位换算（km/h↔m/s、℃↔℉、亩↔m²、GB↔GiB、千瓦时↔焦耳）。结果附带换算过程，可直接引用核对。',
+  },
+  {
+    name: "time_convert",
+    desc: '**时间与时区计算（IANA 时区，含夏令时/跨时区/日期差）**。参数 {"action": "now 当前时刻 | convert 时区换算 | add 加时长 | sub 减时长 | diff 求间隔", "time": "如 2026-03-01T09:30（无时区后缀时按 from_tz 解释）", "from_tz": 可选源时区, "to_tz": 可选目标时区, "amount": 可选数量, "unit": 可选 ms/s/min/h/d/wk, "from"/"to": diff 用的两个时间}。**何时用**：跨时区会议时间、时区换算、算日期间隔与截止倒计时、判断某时刻在工作日/周末——**不要凭训练数据猜「现在几点」或心算时差**。求解「今天/现在」一律以本工具返回的 UTC 与当地时间为准。',
+  },
+  {
+    name: "csv_query",
+    desc: '**对 CSV/TSV 做确定性查询与统计**。参数 {"text": "CSV 文本", "path": "或 CSV 文件路径", "select": ["列A","列B"] 可选选列, "where": {"列": 值} 或 {"列": {"op": "gt|gte|lt|lte|ne|contains|startswith|endswith|in|regex", "value": ...}}, "sort_by": 列名, "sort_desc": true, "limit": 默认30, "group_by": 列名, "agg": ["count","sum:金额","avg:金额","min:列","max:列","count_distinct:列"], "profile": true 只看列画像}。**何时用**：用户给了 CSV 或问「按 X 分组的合计/平均/最大」「筛出满足条件的行」时——不要靠人眼扫表格，用本工具得出准确数字与表格。',
+  },
+  {
+    name: "json_query",
+    desc: '**JSON 取值与结构探查**（比正则可靠）。参数 {"json": "JSON 文本", "path": "或 JSON 文件路径", "json_path": "取值路径（支持 a.b[0].c、[*]、* 映射）", "keys": true 只看结构, "table": true 数组转 Markdown 表格}。**何时用**：从接口返回/配置文件里取字段、数数组项数、看有哪些字段时。取不到会明确告知「未命中」，此时先用 keys:true 看结构再改路径——不要猜字段名。',
+  },
+  {
+    name: "regex_test",
+    desc: '**正则验证与替换预览（不执行代码）**。参数 {"pattern": "正则", "flags": 可选（默认 g，如 gi/gs/im）, "text": "待匹配文本", "path": 可选文本文件, "replace": 可选替换串, "max": 可选最多显示条数}。返回每处匹配的位置/长度/分组，replace 提供时给出替换预览；正则会先编译校验并按需预警「嵌套量词可能灾难性回溯」。**何时用**：写正则后必须先用它验证（不要凭想象断言「这条正则会匹配」）；批量替换前先用它确认命中范围与替换结果。',
+  },
+  {
+    name: "hash_encode",
+    desc: '**哈希与编解码（确定性）**。参数 {"op": "sha256|sha1|sha384|sha512|hmac_sha256|base64|base64url|base64_decode|hex|hex_decode|url|url_decode|uuid|random_hex", "input": "输入文本", "key": hmac 用的密钥, "length": random_hex 字节数}。**何时用**：需要校验和/摘要、编码解码（base64/hex/URL）、生成 UUID、生成随机 token；**严禁凭记忆编造哈希值或编码结果**——一律用本工具算。',
+  },
+  {
+    name: "stats_describe",
+    desc: '**数值统计与相关性/回归（精确计算）**。参数 {"values": [数字数组] 或 "text": "每行一个数字", "path": 可选取自文件, "column": "从 CSV 列取数", "delimiter": 可选, "values2"/"column2": 可选第二组数据}。返回 样本数/总和/均值/中位数/标准差/极差/P25·P50·P75·P90·P95·P99/IQR 与 |z|>3 离群点；给第二组时返回皮尔逊相关与线性回归（含 R²）。**何时用**：算平均/波动/离群/趋势斜率时——**不要心算统计量**，也不要用「大约」含糊带过。',
+  },
+  {
+    name: "diff_text",
+    desc: '**文本差异（unified diff，带 @@ 区段与 +/− 统计）**。参数 {"a": "改前文本", "b": "改后文本", "path_a"/"path_b": 可选文件路径, "a_label"/"b_label": 可选标题, "context": 可选上下文行数（默认 3）}。**何时用**：核对两段文本/两个版本的差异、确认自己的改动确实生效、给用户展示精确改动；大文本会降级为「公共前后缀 + 中段替换」并如实标注。',
+  },
+  {
+    name: "schema_validate",
+    desc: '**JSON Schema 校验（给出精确错误路径）**。参数 {"schema": "JSON Schema 文本或对象", "data": 待校验数据（对象/字符串）, "text"/"path": 或从文本/文件读数据}。覆盖 type/enum/const/required/properties/additionalProperties/items/长度与数值范围/pattern/anyOf/allOf/oneOf/not。**何时用**：产出结构化 JSON（配置、接口响应、工具参数）后自检，或校验用户给的数据是否符合其 schema——**不要靠肉眼逐字段比对**，漏 required 与类型错误极难靠看的。',
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-09-16（晚间 · DSH 生态吸收第 1 批）
+
+**背景**：对 DeepSeek Harness（DSH，cordis 内核 + 「一切皆插件」，社区 1500+ 插件）做了完整生态盘点，
+结论是**架构层已吸收完毕**（渐进工具披露/schema 瘦身/自动压缩/审批模式/沙箱/goal/子代理），
+真正缺口集中在三类：**确定性能力下沉**、**可靠性门禁**、**上下文经济学**。
+产出总计划：`docs/DSH_ABSORPTION_PLAN.md`（P0 六项 / P1 十项 / P2 七项 + 明确「不吸收」清单）。
+
+### ✅ P0-1 确定性工具集（10 个内置工具，融合自 dsh-toolkit / dsh-unitverse / dsh-tool-* 系列）
+- **动机**：凡「有唯一正确答案」的计算（算术、单位换算、时区、正则、哈希、表格统计、schema 校验），
+  模型口算极易出错且无法自证 —— 一律下沉为**零依赖、不联网、结果可复现**的代码。
+- 新增 `src/utils/deterministic-tools.ts`（统一入口 `runDeterministicTool`，chat.ts 单 case 组分发）：
+  `calc`（自写递归下降求值，**不用 eval**；含 30+ 函数、常量、括号/幂/取模）
+  `convert_unit`（13 类别表驱动 + 中文单位，bit/byte 区分大小写，温度走特殊路径，含换算过程）
+  `time_convert`（IANA 时区 now/convert/add/sub/diff，两轮偏移修正覆盖夏令时边界）
+  `csv_query`（RFC4180 引号转义、where 10 种操作符、sort/limit、group_by + count/sum/avg/min/max/count_distinct、列画像）
+  `json_query`（路径 `a.b[0].c` / `[*]` / `*` 映射，keys 结构探查，对象数组转 Markdown 表）
+  `regex_test`（匹配位置/长度/分组 + 替换预览 + 嵌套量词回溯预警）
+  `hash_encode`（sha1/256/384/512、hmac_sha256、base64/url/hex 编解码、uuid、random_hex；手写 base64 免环境依赖）
+  `stats_describe`（均值/中位数/样本标准差/P25·50·75·90·95·99/IQR 与 |z|>3 离群 + 皮尔逊相关 + 线性回归 R²）
+  `diff_text`（unified diff 带 @@ 区段与 +N/−M；大输入降级为「公共前后缀 + 中段替换」并如实标注）
+  `schema_validate`（type/enum/const/required/properties/additionalProperties/items/范围/pattern/anyOf/allOf/oneOf/not，返回精确路径）
+- 配套：`src/utils/unit-convert.ts`、`src/utils/text-diff.ts`、`src/utils/json-schema-lite.ts`
+- 接线三处同步：`data/builtin-tools.ts`（描述）+ `data/builtin-params.ts`（参数 schema）+ `chat.ts`（执行分支）
+
+### ✅ P0-2 工具结果「先脱敏 → 再内容感知压缩 → 最后才落盘」
+- **动机**：原 `foldToolResult` 只做「首 4000 + 尾 1200 + 落盘」，中段的**错误/失败行反而被埋掉**；
+  且工具输出（网页、命令、MCP 返回）可能夹带密钥，一旦回填就同时进了上下文、日志与落盘文件。
+- 新增 `src/utils/secret-redact.ts`（10 类规则：私钥块、URL basic-auth、Bearer 头、sk-/ghp_/AKIA/xox/AIza、JWT、
+  键值形态；仅命中「高熵凭据」形态，**不误伤** token 计数、UUID、git sha、路径）。
+- 新增 `src/utils/tool-result-reduce.ts`（折叠连续重复行、调用栈中段、命令/测试输出的「通过」条目；
+  超大 JSON 结构采样、大表格首尾采样、超长单行钳制、按预算裁剪时**错误行优先保留**；每步产出可读说明）。
+- `chat.ts` 的 `foldToolResult` 改为三段式（**脱敏对每个工具结果都生效**，不只长结果），
+  落盘内容为「脱敏后完整原文」；同步版 `truncateToolResult`（子代理路径）也先脱敏。
+
+### 验证
+- 新增 `tests/test-deterministic-tools.test.ts`（34 项）+ `tests/test-secret-and-reduce.test.ts`（13 项）；
+  修掉 4 个被单测抓出的真实缺陷：①千分位把 `min(3,5,1)` 读成 351 ②WebCrypto 摘要算法名需 `SHA-256`
+  ③统计工具在 `values` 数组模式下误报「缺少内容」 ④压缩门控过早导致中等长度输出不做折叠、表格列阈值过严。
+- 门禁：`npm test` 15 files / 137 passed · `npx vue-tsc --noEmit` 干净 · `npx vite build` 成功。
+
+### 下一批（P0 剩余）
+危险命令语义门禁 + 删除进回收站 · 验证凭据（测试/lint/build 断言必须有新鲜凭据）·
+上下文成本审计（Context Doctor） · 预算护栏（会话/日/月 + 预警/阻断）。
+
+---
+
 ## 2026-09-16（上午）
 
 ### 🐛 修复：插件市场折叠区模板未闭合，页面打不开（`9031cfd`）
@@ -47,6 +93,23 @@
 
 ### ✅ 通知验证通过（打包版）
 用户实测：打开 `道生一.app` → 请求权限 → 「发送测试通知」**成功收到系统通知** → 确认根因（dev 非 .app 无法投递）与修复方向均正确。
+
+### ✅ Codex 架构层吸收（第二批：goal / turn_timing / 沙箱）
+> 第一批（自动压缩 + handoff / on-failure 审批 / 大 schema 压缩）见上一条提交 `e6e17fa`。
+
+4. **目标三件套 + token 预算**（对齐 Codex `ext/goal`）
+   - 新增 `src/utils/goals.ts`（按会话持久化，纯函数 + 单测）：`get_goal` / `create_goal(objective, token_budget?)` / `update_goal(status, note)`。
+   - 规则对齐 Codex：**仅在用户/系统显式要求时创建**、已有未完成目标时**拒绝重复创建**（改用 update_goal）、状态 `active/blocked/complete/abandoned`。
+   - 每轮把「当前目标 + 预算使用率」注入上下文；**超预算时明确要求立即收尾**；本轮 tokens 自动累加到目标预算。
+5. **turn 分段耗时**（对齐 Codex `turn_timing`：Sampling / Compaction / ToolBlocking）
+   - 压缩显式计时；工具耗时直接汇总 `toolCards[].durationMs`；采样（模型推理）= 总时长 − 工具 − 压缩。
+   - 轮末输出一条结构化日志：`[timing] 本轮 总 Xs｜采样(模型) Ys｜工具 Zs(N 次)｜压缩 Ws`，用于定位「慢在推理还是工具」。
+6. **命令沙箱**（对齐 Codex `SandboxMode = read-only | workspace-write | danger-full-access`）
+   - 新增 `src-tauri/src/sandbox.rs`（纯函数 + 7 项单测）：macOS **Seatbelt**（`/usr/bin/sandbox-exec`）profile 生成——`read-only` 禁一切写入（/tmp、/dev 除外）；`workspace-write` 只允许写**工作区目录**（+ /tmp、/dev、用户缓存）。
+   - `run_shell_command_with` / `execute_command(sandboxMode, workspace)` / `pty_spawn_with`（`exec_command_agent`）三处接入；**用户自己开的 PTY 面板不加沙箱**（等同用户手动敲命令）；`sandbox-exec` 缺失时**自动降级**（绝不因沙箱不可用让命令失败）；拒绝含引号/换行的路径以免生成畸形 profile。
+   - 设置 → 权限 新增「命令沙箱」选择器（默认 **关闭**，零行为变更）；开启时把沙箱约束注入提示词，避免模型把越界写入误判为工具故障。
+   - **真机实测**：read-only 写 /tmp 成功、写主目录被拒（Operation not permitted）、读文件不受影响；workspace-write 写工作区成功、写主目录根被拒。
+- 测试与验证：Rust **129 passed / 8 ignored**（+7 沙箱）· vitest **13 files / 90 passed**（+5 目标）· vue-tsc 干净 · vite build ✓ · clippy `-D warnings` 干净
 
 ### 📌 当前状态与待办
 - **已推送**：`9031cfd`（模板修复）· `2ac143c`（门禁清单+教训）· `16b0f1e`（通知诊断）｜`origin/main` = `16b0f1e`

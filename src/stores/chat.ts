@@ -98,6 +98,12 @@ import {
   type NativeToolRegistry,
 } from "@/utils/tool-schema";
 import { BM25Index, buildToolSearchText } from "@/utils/tool-search";
+// 确定性工具集（融合自 DeepSeek Harness 生态的 dsh-toolkit）：算错了没人能发现，故下沉到代码
+import { runDeterministicTool } from "@/utils/deterministic-tools";
+// 工具结果进上下文前先脱敏（密钥绝不进上下文/日志/落盘）
+import { redactSecrets } from "@/utils/secret-redact";
+// 工具结果内容感知压缩（错误行优先保留，只丢冗余）
+import { reduceToolResult } from "@/utils/tool-result-reduce";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -1277,35 +1283,46 @@ const MAX_TOOL_RESULT_CHARS = 6000;
 const TOOL_RESULT_HEAD = 4000;
 const TOOL_RESULT_TAIL = 1200;
 
-/// 同步版截断（子代理循环等不便 await 的场景）
+/// 同步版截断（子代理循环等不便 await 的场景）：同样先脱敏，避免密钥进入子代理上下文
 function truncateToolResult(result: string): string {
-  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  const safe = redactSecrets(result).text;
+  if (safe.length <= MAX_TOOL_RESULT_CHARS) return safe;
   return (
-    `${result.slice(0, MAX_TOOL_RESULT_CHARS)}` +
-    `\n\n…[工具结果过长已截断（原 ${result.length} 字符，仅保留前 ${MAX_TOOL_RESULT_CHARS} 字符）。` +
+    `${safe.slice(0, MAX_TOOL_RESULT_CHARS)}` +
+    `\n\n…[工具结果过长已截断（原 ${safe.length} 字符，仅保留前 ${MAX_TOOL_RESULT_CHARS} 字符）。` +
     `如确需完整内容，请缩小查询范围或用更精准的参数重新调用工具]`
   );
 }
 
-/// 超长工具结果处理（诊断报告②：单轮上下文预算）：**不再直接截断丢内容**——
-/// 把完整副本落盘到应用数据目录（`save_tool_output`），回填给模型的只留「首 + 尾 + 路径」，
-/// 模型可用 read_file（offset/length）分段取回。既控制单轮上下文膨胀，又不丢信息。
+/// 超长工具结果处理（诊断报告②：单轮上下文预算）：**先脱敏 → 再内容感知压缩 → 最后才考虑落盘**：
+/// ① 脱敏：网页/命令输出常夹带密钥（吸收自 DSH 生态的 secret-guard / dsh-mask），绝不进上下文、日志与落盘；
+/// ② 压缩：折叠重复行/栈帧/通过用例、采样超大 JSON 与表格（吸收自 dsh-funnel / toolshrink 思路），
+///    错误与失败行优先保留，并把「丢了什么」写进说明；
+/// ③ 仍超预算：把**脱敏后的完整原文**落盘（`save_tool_output`），回填只留「首 + 尾 + 路径」，
+///    模型可用 read_file（offset/length）分段取回。既不膨胀上下文，也不丢信息。
 async function foldToolResult(tool: string, result: string): Promise<string> {
-  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  const safe = redactSecrets(result).text;
+  const reduced = reduceToolResult(tool, safe);
+  const reduceNote = reduced.notes.length
+    ? `\n\n…[工具结果已压缩：${reduced.notes.join("；")}。上面看到的是压缩视图，需要中间细节请用更精确的参数重查]`
+    : "";
+  if (reduced.text.length <= MAX_TOOL_RESULT_CHARS) {
+    return reduced.text + reduceNote;
+  }
   let savedPath = "";
   try {
-    savedPath = await invoke<string>("save_tool_output", { tool, content: result });
+    savedPath = await invoke<string>("save_tool_output", { tool, content: safe });
   } catch {
-    /* 落盘失败 → 退化为纯截断（绝不因落盘问题打断工具循环） */
+    /* 落盘失败 → 退化为压缩 + 截断（绝不因落盘问题打断工具循环） */
   }
-  const head = result.slice(0, TOOL_RESULT_HEAD);
-  const tail = result.slice(-TOOL_RESULT_TAIL);
-  const omitted = result.length - TOOL_RESULT_HEAD - TOOL_RESULT_TAIL;
+  const head = reduced.text.slice(0, TOOL_RESULT_HEAD);
+  const tail = reduced.text.slice(-TOOL_RESULT_TAIL);
+  const omitted = reduced.text.length - TOOL_RESULT_HEAD - TOOL_RESULT_TAIL;
   const note = savedPath
-    ? `\n\n…[结果过长已折叠：原 ${result.length} 字符，中间省略 ${omitted} 字符。**完整内容已保存**：${savedPath}\n` +
+    ? `\n\n…[结果过长已折叠：压缩后 ${reduced.text.length} 字符，中间省略 ${omitted} 字符。**完整内容已保存**：${savedPath}\n` +
       `需要中间细节时用 read_file（path=${savedPath}，可配合 offset/length 分段读取）取回；不要凭首尾片段臆测中间内容]`
-    : `\n\n…[工具结果过长已截断（原 ${result.length} 字符；完整内容落盘失败），如需完整内容请缩小查询范围]`;
-  return `${head}\n\n………\n\n${tail}${note}`;
+    : `\n\n…[工具结果过长已裁剪（压缩后 ${reduced.text.length} 字符；完整内容落盘失败），如需完整内容请缩小查询范围]`;
+  return `${head}\n\n………\n\n${tail}${note}${reduceNote}`;
 }
 
 /// 上下文总长保护阈值（字符）：工具结果持续回填会让 messages 逼近模型上限
@@ -1623,6 +1640,22 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     }
   }
   switch (tool) {
+    // ---- 确定性工具集（融合自 DSH 生态：零依赖、不联网、结果可复现）----
+    // 统一由一个 case 组分发：这些工具互相独立、无需各自展开分支。
+    case "calc":
+    case "convert_unit":
+    case "time_convert":
+    case "csv_query":
+    case "json_query":
+    case "regex_test":
+    case "hash_encode":
+    case "stats_describe":
+    case "diff_text":
+    case "schema_validate": {
+      return await runDeterministicTool(tool, args, {
+        readTextFile: (p) => invoke<string>("read_file", { path: p }),
+      });
+    }
     // ---- 内置浏览器（CDP 直连）----
     case "browser_navigate": {
       const url = String(args.url || args.URL || "");
