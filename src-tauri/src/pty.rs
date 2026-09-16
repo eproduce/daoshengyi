@@ -47,6 +47,28 @@ fn now_ms() -> i64 {
 /// 启动一个交互式 PTY 进程（`sh -c` 支持整条命令 / 管道 / 重定向）
 #[tauri::command]
 pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
+    pty_spawn_with(command, cwd, None, None)
+}
+
+/// 同 `pty_spawn`，但可按沙箱模式包裹（吸收自 Codex 的 SandboxMode）：
+/// `read-only` / `workspace-write` → 用 `/usr/bin/sandbox-exec -p <profile> sh -c <cmd>` 启动；
+/// 沙箱不可用时自动降级。用户自己开的 PTY 面板（`pty_spawn`）不加沙箱（等同用户手动敲命令）。
+pub fn pty_spawn_with(
+    command: String,
+    cwd: Option<String>,
+    sandbox_mode: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<u32, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let (prog, args, applied) =
+        crate::sandbox::build_exec(sandbox_mode.unwrap_or("off"), workspace, &home, &command);
+    if applied {
+        eprintln!(
+            "[sandbox] PTY 已加沙箱启动（mode={}，工作区={}）",
+            sandbox_mode.unwrap_or(""),
+            workspace.unwrap_or("-")
+        );
+    }
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -56,9 +78,10 @@ pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
             pixel_height: 0,
         })
         .map_err(|e| format!("创建 PTY 失败: {}", e))?;
-    let mut cmd = CommandBuilder::new("sh");
-    cmd.arg("-c");
-    cmd.arg(&command);
+    let mut cmd = CommandBuilder::new(prog);
+    for a in &args {
+        cmd.arg(a);
+    }
     if let Some(cwd) = cwd {
         if !cwd.trim().is_empty() {
             cmd.cwd(cwd);
@@ -266,8 +289,15 @@ pub async fn exec_command_agent(
     command: String,
     cwd: Option<String>,
     yield_ms: Option<u64>,
+    sandbox_mode: Option<String>,
+    workspace: Option<String>,
 ) -> Result<ExecResult, String> {
-    let id = pty_spawn(command, cwd)?;
+    let id = pty_spawn_with(
+        command,
+        cwd,
+        sandbox_mode.as_deref(),
+        workspace.as_deref(),
+    )?;
     collect_output(id, yield_ms.unwrap_or(1000)).await
 }
 
@@ -360,7 +390,7 @@ mod tests {
     /// exec_command：一次性命令 —— 拿到输出、进程已结束、退出码 0
     #[tokio::test]
     async fn exec_command_captures_output_and_exit_code() {
-        let r = exec_command_agent("echo hi-exec".into(), None, Some(3000))
+        let r = exec_command_agent("echo hi-exec".into(), None, Some(3000), None, None)
             .await
             .unwrap();
         assert!(r.output.contains("hi-exec"), "输出: {:?}", r.output);
@@ -373,7 +403,7 @@ mod tests {
     /// write_stdin：驱动**交互式**进程（read 阻塞等输入 → 写入后回显）
     #[tokio::test]
     async fn write_stdin_feeds_interactive_process() {
-        let r = exec_command_agent("read x; echo got:$x".into(), None, Some(300))
+        let r = exec_command_agent("read x; echo got:$x".into(), None, Some(300), None, None)
             .await
             .unwrap();
         assert!(r.running, "read 应仍在等待输入，实际: {:?}", r.output);
@@ -389,9 +419,15 @@ mod tests {
     /// yield_ms 到期但进程仍在运行：返回 running=true（**不杀进程**），可继续取输出
     #[tokio::test]
     async fn exec_command_keeps_long_running_process_alive() {
-        let r = exec_command_agent("echo first; sleep 2; echo second".into(), None, Some(300))
-            .await
-            .unwrap();
+        let r = exec_command_agent(
+            "echo first; sleep 2; echo second".into(),
+            None,
+            Some(300),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(r.running, "sleep 期间应报告仍在运行");
         assert!(r.output.contains("first"));
         // 再等一次：应拿到后续输出（增量语义）

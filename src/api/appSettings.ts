@@ -28,6 +28,9 @@ export interface AppSettingsPayload {
   yoloMode: boolean;
   /// 危险命令审批模式：manual（手动确认，默认）/ smart（辅助模型智能判断）/ yolo（全部自动批准）
   approvalMode: "manual" | "smart" | "yolo" | "on-failure";
+  /// 命令沙箱（吸收自 Codex 的 SandboxMode）：off=不加沙箱（默认）｜read-only=禁写入｜
+  /// workspace-write=只允许写入工作区目录（需先设置工作区）。macOS 用 Seatbelt 实现。
+  sandboxMode: "off" | "read-only" | "workspace-write";
   /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
   auxiliaryProfileId: string;
   /// 飞书群机器人 Webhook（主动推送用）
@@ -82,6 +85,7 @@ let cache: AppSettingsPayload = {
   workspace: null,
   yoloMode: false,
   approvalMode: "manual",
+  sandboxMode: "off",
   auxiliaryProfileId: "",
   feishuWebhook: "",
   wecomWebhook: "",

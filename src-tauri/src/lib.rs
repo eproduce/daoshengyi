@@ -19,6 +19,7 @@ mod mcp;
 mod mcp_server;
 mod middleware;
 mod pty;
+mod sandbox;
 mod search;
 mod security;
 mod settings;
@@ -4086,6 +4087,8 @@ async fn execute_command(
     args: Vec<String>,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    sandbox_mode: Option<String>,
+    workspace: Option<String>,
 ) -> Result<CommandOutput, String> {
     let start = std::time::Instant::now();
     // command 视为整条命令行（前端 /run 传整条、args 为空）；兼容旧调用（args 非空则追加）
@@ -4095,7 +4098,9 @@ async fn execute_command(
         format!("{} {}", command, args.join(" "))
     };
     let audit_args = full_cmd.clone();
-    let mut out = run_shell_command(&full_cmd, cwd.as_deref(), timeout_secs).await;
+    let mut out =
+        run_shell_command_with(&full_cmd, cwd.as_deref(), timeout_secs, sandbox_mode.as_deref(), workspace.as_deref())
+            .await;
     let duration = start.elapsed().as_millis() as i64;
     match &out {
         Ok(CommandOutput {
@@ -4224,10 +4229,40 @@ async fn run_shell_command(
     cwd: Option<&str>,
     timeout_secs: Option<u64>,
 ) -> Result<CommandOutput, String> {
+    run_shell_command_with(full_cmd, cwd, timeout_secs, None, None).await
+}
+
+/// 同 `run_shell_command`，但可按 sandbox 模式包裹命令（吸收自 Codex 的 SandboxMode）：
+/// `read-only` / `workspace-write` 时用 Seatbelt 限制文件写入；不可用时自动降级为不加沙箱。
+async fn run_shell_command_with(
+    full_cmd: &str,
+    cwd: Option<&str>,
+    timeout_secs: Option<u64>,
+    sandbox_mode: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<CommandOutput, String> {
     use tokio::io::AsyncReadExt;
 
-    let mut cmd = tokio::process::Command::new("/bin/sh");
-    cmd.arg("-c").arg(full_cmd);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let (prog, args, applied) = sandbox::build_exec(
+        sandbox_mode.unwrap_or("off"),
+        workspace,
+        &home,
+        full_cmd,
+    );
+    if applied {
+        let m = format!(
+            "[sandbox] 已加沙箱执行（mode={}，工作区={}）",
+            sandbox_mode.unwrap_or(""),
+            workspace.unwrap_or("-")
+        );
+        eprintln!("{}", m);
+    }
+
+    let mut cmd = tokio::process::Command::new(&prog);
+    for a in &args {
+        cmd.arg(a);
+    }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);

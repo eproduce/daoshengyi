@@ -204,6 +204,25 @@ function onApprovalModeChange(mode: "manual" | "smart" | "yolo" | "on-failure") 
   updateSettings({ approvalMode: mode, yoloMode: mode === "yolo" });
 }
 
+// 命令沙箱（吸收自 Codex 的 SandboxMode）：macOS 用系统自带 Seatbelt 限制命令的文件写入面。
+// off=不加沙箱（默认，行为不变）｜read-only=禁一切写入｜workspace-write=只允许写工作区。
+const SANDBOX_MODES = [
+  { value: "off" as const, label: "关闭", desc: "不加沙箱，命令照旧执行（默认）" },
+  { value: "read-only" as const, label: "只读", desc: "禁止命令写入文件（/tmp 除外）——调研/分析类任务" },
+  {
+    value: "workspace-write" as const,
+    label: "工作区可写",
+    desc: "只允许写入工作区目录（需先设置工作区），越界写入会被系统拒绝",
+  },
+];
+const sandboxMode = ref<"off" | "read-only" | "workspace-write">(
+  getSettings().sandboxMode || "off",
+);
+function onSandboxModeChange(mode: "off" | "read-only" | "workspace-write") {
+  sandboxMode.value = mode;
+  updateSettings({ sandboxMode: mode });
+}
+
 // 辅助任务模型（用于 Smart 审批 / 子代理等）：空 = 跟随主模型
 const auxiliaryProfileId = ref(getSettings().auxiliaryProfileId || "");
 function onAuxProfileChange(e: Event) {
@@ -730,6 +749,27 @@ function handleDelete() {
               <span class="form-hint"
                 >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span
               >
+            </div>
+
+            <!-- 命令沙箱 -->
+            <div class="form-group">
+              <label class="form-label"><ShieldAlert :size="14" /> 命令沙箱（macOS Seatbelt）</label>
+              <div class="approval-modes">
+                <button
+                  v-for="m in SANDBOX_MODES"
+                  :key="m.value"
+                  :class="['approval-mode', { active: sandboxMode === m.value }]"
+                  @click="onSandboxModeChange(m.value)"
+                >
+                  <span class="approval-mode-name">{{ m.label }}</span>
+                  <span class="approval-mode-desc">{{ m.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint">
+                Agent 执行的命令（run_command / exec_command）与快捷键 /run 均受此限制；用户自己开的
+                PTY 面板不受影响。“工作区可写”需先在「快捷键」页设置工作区目录；系统缺少
+                sandbox-exec 时自动降级为不加沙箱（命令不会因此失败）。
+              </span>
             </div>
 
             <!-- 辅助任务模型 -->

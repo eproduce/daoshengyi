@@ -4533,6 +4533,8 @@ export const useChatStore = defineStore("chat", () => {
         args: [] as string[],
         cwd: getSettings().workspace || null,
         timeoutSecs: 30,
+        sandboxMode: getSettings().sandboxMode || "off",
+        workspace: getSettings().workspace || null,
       });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
@@ -4646,6 +4648,8 @@ export const useChatStore = defineStore("chat", () => {
         args: [] as string[],
         cwd: getSettings().workspace || null,
         timeoutSecs: 60,
+        sandboxMode: getSettings().sandboxMode || "off",
+        workspace: getSettings().workspace || null,
       });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
@@ -4711,6 +4715,8 @@ export const useChatStore = defineStore("chat", () => {
         command: cmdStr,
         cwd: cwd || getSettings().workspace || null,
         yieldMs: wait,
+        sandboxMode: getSettings().sandboxMode || "off",
+        workspace: getSettings().workspace || null,
       });
       const rendered = formatExecResult(r, `$ ${cmdStr}`);
       // on-failure：进程已结束且非 0 退出 → 升级请求授权重试
@@ -5013,6 +5019,18 @@ export const useChatStore = defineStore("chat", () => {
       // §3.11 Agent 多模式：行为约束注入（人格管"我是谁"，模式管"怎么做"）
       const mode = getModeById(activeModeId.value);
       if (mode?.prompt) sp = `${sp}\n\n【当前模式：${mode.name}】\n${mode.prompt}`;
+      // 命令沙箱提示（吸收自 Codex 的 SandboxMode）：开启时告知模型「写哪里会失败」，
+      // 避免它反复试错或误判为工具坏了。
+      {
+        const sb = getSettings().sandboxMode;
+        if (sb && sb !== "off") {
+          const ws = getSettings().workspace || "（未设置工作区）";
+          sp +=
+            sb === "read-only"
+              ? "\n\n【命令沙箱：只读】当前环境下命令**无法写入文件**（仅 /tmp 可写）。需要产出文件时请改用内置文件工具（write_file/apply_patch 等，不受沙箱限制），或先向用户申请关闭沙箱。"
+              : `\n\n【命令沙箱：工作区可写】命令只能写入工作区目录：${ws}（/tmp 除外）。写到其它路径会被系统拒绝（不是权限/工具故障）——需要写到别处请改用内置文件工具，或向用户说明。`;
+        }
+      }
       // 工具发现提示：有未直接声明的工具时，告诉模型可用 tool_search 找（融合 Codex 做法）
       const deferredToolCount = nativeRegistry?.catalog.filter((c) => c.deferred).length ?? 0;
       if (deferredToolCount > 0) {
