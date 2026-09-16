@@ -104,6 +104,8 @@ import { runDeterministicTool } from "@/utils/deterministic-tools";
 import { redactSecrets } from "@/utils/secret-redact";
 // 工具结果内容感知压缩（错误行优先保留，只丢冗余）
 import { reduceToolResult } from "@/utils/tool-result-reduce";
+// 危险命令分级判定（吸收自 DSH 生态 safety-net / risk-gate：分级 + 原因 + 误报抑制）
+import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/danger-rules";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -4423,23 +4425,18 @@ export const useChatStore = defineStore("chat", () => {
     return { command: clean[0] || "", args: clean.slice(1) };
   }
 
-  // 危险命令模式（借鉴 DeepSeek Harness 的 approval 审批理念）
-  const DANGEROUS_PATTERNS: RegExp[] = [
-    /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, // rm -rf / rm -fr
-    /\brm\s+.*\s\/\s*$|\brm\s+-[a-z]*r[a-z]*f\s+\//i,
-    /\bsudo\b/i,
-    /\bmkfs\b/i,
-    /\bdd\s+if=/i,
-    /\bshutdown\b/i,
-    /\breboot\b/i,
-    /\b:\(\)\s*\{/i, // fork bomb
-    /\bgit\s+reset\s+--hard\b/i,
-    /\bgit\s+push\b[^\n]*--force\b/i,
-    /\bchmod\s+-R\s+777\b/i,
-  ];
+  // 危险命令判定（吸收自 DSH 生态的 safety-net / risk-gate / perm-guard 分级思路）：
+  //   forbidden = 绝不执行（删根/格盘/fork bomb/关机）
+  //   danger    = 必须人工确认（强推、git reset --hard、提权、curl|sh、递归删非构建目录…）
+  //   caution   = 放行但提示（--force-with-lease、全局装包、chmod 777…）
+  // 规则、原因与「误报抑制」（如 rm -rf node_modules 不升级为危险）见 utils/danger-rules.ts
+  function riskOf(cmdStr: string): RiskVerdict {
+    return assessCommandRisk(cmdStr);
+  }
 
   function isDangerous(cmdStr: string): boolean {
-    return DANGEROUS_PATTERNS.some((p) => p.test(cmdStr));
+    const level = riskOf(cmdStr).level;
+    return level === "danger" || level === "forbidden";
   }
 
   /// Smart 智能审批：用当前模型判断危险命令是否可安全自动执行。
@@ -4615,6 +4612,11 @@ export const useChatStore = defineStore("chat", () => {
     if (policyDecision === "deny") {
       return `⛔ 命令被「命令执行策略」拦截（命中：\`${policy?.matched ?? "?"}\`）：$ ${cmdStr}\n此类破坏性命令不允许 Agent 执行；若确需，请让用户手动输入 /run 或调整 设置→权限→命令执行策略。`;
     }
+    // 语义门禁（二次防护）：forbidden 级命令直接拒绝，并说明原因与替代方案（让模型学会改法）
+    const risk = riskOf(cmdStr);
+    if (risk.level === "forbidden") {
+      return `${describeRisk(risk, cmdStr)}\n\n（该命令不会被执行。请改用安全替代方案，或由用户手动执行。）`;
+    }
     // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行。
     // 例外：用户已通过 request_permissions 在本会话授权「命令执行」→ 不再重复弹确认
     //（execpolicy 的 deny / prompt 规则仍优先，不会被会话授权绕过）。
@@ -4622,20 +4624,24 @@ export const useChatStore = defineStore("chat", () => {
       policyDecision === "prompt" ||
       (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
     if (!needsConfirm) return null;
+    const riskLine =
+      risk.level === "danger"
+        ? `\n\n风险项：${risk.title}\n原因：${risk.reason}${risk.suggestion ? `\n建议：${risk.suggestion}` : ""}`
+        : "";
     const st = getSettings();
     const mode: "manual" | "smart" | "yolo" | "on-failure" =
       st.approvalMode || (st.yoloMode ? "yolo" : "manual");
     if (mode === "manual") {
       const ok = await askConfirm(
-        `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}\n\n（拒绝后 Agent 会改用更安全的方式）`,
+        `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}${riskLine}\n\n（拒绝后 Agent 会改用更安全的方式）`,
       );
       if (!ok)
-        return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝，请改用更安全的命令，或请用户手动执行）`;
+        return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝${risk.level === "danger" ? `（风险项：${risk.title}）` : ""}，请改用更安全的命令，或请用户手动执行）`;
     } else if (mode === "smart") {
       const safe = await judgeCommandSafety(cmdStr);
       if (!safe) {
         const ok = await askConfirm(
-          `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}\n\n是否仍允许？`,
+          `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}${riskLine}\n\n是否仍允许？`,
         );
         if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
       }

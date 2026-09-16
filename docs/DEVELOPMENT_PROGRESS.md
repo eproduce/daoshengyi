@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-09-16（晚间 · DSH 生态吸收第 2 批）
+
+### ✅ P0-4 危险命令「分级语义门禁」（吸收自 dsh-safety-net / dsh-risk-gate / dsh-perm-guard）
+- **改前**：`DANGEROUS_PATTERNS` 只有 11 条正则，一律「需确认」；既没有「绝不执行」这一级，
+  也无法解释「为什么危险」，还容易误报（`rm -rf node_modules` 也被当成危险 → 用户被训练成无脑点同意）。
+- **改后**：新增 `src/utils/danger-rules.ts`（纯函数、可测试），四级判定：
+  - `forbidden`（直接拒绝，不进确认流程）：删根/家目录、`--no-preserve-root`、fork bomb、mkfs、
+    `dd of=/dev/…`、重定向覆写块设备、`chmod -R 777 /`、关机/重启、擦盘；
+  - `danger`（必须人工确认）：强推、`git reset --hard`/`clean -fdx`/`branch -D`、提权、
+    `curl|sh` 远程脚本、批量杀进程、SQL 破坏语句、`npm publish`、删 `.ssh`；
+  - `caution`（放行但提示）：`--force-with-lease`、全局装包、`chmod 777`、`pip install`、通用 `dd`；
+  - `safe`：其余（含日常清理与只读命令）。
+- **每条命中都带「原因 + 替代建议」**：既让确认弹窗可读，也让被拒的模型看懂改法（而不是反复换写法试探）。
+- **误报抑制**：`rm` 做二次判定 —— 递归删除目标是 `node_modules/dist/build/target/coverage/__pycache__/.venv/tmp` 等
+  可再生成目录时降为 `caution`，不弹确认。
+- 接入 `chat.ts`：`isDangerous` 改由分级判定驱动；`gateAgentCommand` 增加 forbidden 短路（并说明原因），
+  manual / smart 两种审批弹窗都展示风险项与建议，拒绝消息带上风险项名。
+
+### 验证
+- 新增 `tests/test-danger-rules.test.ts`（7 组，覆盖 forbidden/danger/caution/误报抑制/优先级/说明文本）。
+- 修掉 1 个真实缺陷：`shutdown -h now` 被「排除 --help」的负向断言误放过（`-h` 是停机参数，不是帮助）。
+- 门禁：`npm test` 16 files / 144 passed · `npx vue-tsc --noEmit` 干净 · `npx vite build` 成功。
+
+### 下一批（P0 剩余）
+验证凭据（测试/lint/build 断言必须有新鲜凭据）· 上下文成本审计（Context Doctor）·
+预算护栏（会话/日/月 + 预警/阻断）· 删除进回收站（`delete_file` 改为可恢复）。
+
+---
+
 ## 2026-09-16（晚间 · DSH 生态吸收第 1 批）
 
 **背景**：对 DeepSeek Harness（DSH，cordis 内核 + 「一切皆插件」，社区 1500+ 插件）做了完整生态盘点，
