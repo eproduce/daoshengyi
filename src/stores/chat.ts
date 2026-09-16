@@ -106,6 +106,9 @@ import { redactSecrets } from "@/utils/secret-redact";
 import { reduceToolResult } from "@/utils/tool-result-reduce";
 // 危险命令分级判定（吸收自 DSH 生态 safety-net / risk-gate：分级 + 原因 + 误报抑制）
 import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/danger-rules";
+// 工具调用参数自愈（吸收自 DSH 生态 dsh-tool-normalizer：别名/类型/包裹层）
+import { normalizeToolArgs } from "@/utils/tool-arg-normalize";
+import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -1629,6 +1632,14 @@ async function maybeAutoCompact(
 }
 
 async function callBuiltinTool(tool: string, args: Record<string, unknown>): Promise<string> {
+  // P1-1 工具调用自愈（吸收自 DSH 生态的 dsh-tool-normalizer）：
+  // 模型常把 file_path/filepath 当 path、把 "5" 当 number、把参数包进 arguments 里 ——
+  // 在分发前就地修正，**只在规范参数缺失或类型明显不符时**生效（绝不覆盖模型给对的值）。
+  const normalized = normalizeToolArgs(args, BUILTIN_PARAMETERS[tool]);
+  args = normalized.args;
+  if (normalized.notes.length) {
+    await dbg(`[tool-normalize] ${tool}：${normalized.notes.join("；")}`);
+  }
   // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;

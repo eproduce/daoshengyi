@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-09-16（晚间 · DSH 生态吸收第 3 批）
+
+### ✅ P1-1 工具调用参数「自愈」（吸收自 dsh-tool-normalizer，生态实测可见错误率 7.95% → 2.20%）
+- **问题**：模型常把 `path` 写成 `file_path`/`filepath`/`filename`、把 `command` 写成 `cmd`、
+  把 `"5"` 当数字、把 `"true"` 当布尔、把整个参数包进 `arguments`/`params` —— 这些都不该让调用直接失败。
+- 新增 `src/utils/tool-arg-normalize.ts`（纯函数 + `tests/test-tool-arg-normalize.test.ts` 12 项）：
+  ①别名映射（仅在规范参数缺失时生效，**绝不覆盖模型给对的值**）
+  ②类型纠正（按 `BUILTIN_PARAMETERS` 的 schema：string→number/integer、→boolean、逗号串→数组、数组→多行字符串）
+  ③展开一层包裹参数（仅当外层只含包裹键时）
+  ④`additionalProperties:false` 时清掉取值为空的未知键
+  无法确定的一律保持原样（宁可明确失败，也不静默猜错语义）。
+- 接入 `chat.ts::callBuiltinTool` 入口，修正内容写入 `[tool-normalize]` 调试日志（不注入上下文，避免噪声）。
+
+### 验证
+- 门禁：`npm test` 17 files / 156 passed · `npx vue-tsc --noEmit` 干净 · `npx vite build` 成功。
+- 已推送：`d7abde2`（确定性工具集 + 结果管线）· `fb96ed6`（危险命令分级门禁）。
+
+### 下一批（P0 剩余）
+验证凭据（测试/lint/build 断言必须有新鲜凭据）· 上下文成本审计（Context Doctor）·
+预算护栏（会话/日/月 + 预警/阻断）· 删除进回收站。
+
+---
+
 ## 2026-09-16（晚间 · DSH 生态吸收第 2 批）
 
 ### ✅ P0-4 危险命令「分级语义门禁」（吸收自 dsh-safety-net / dsh-risk-gate / dsh-perm-guard）
