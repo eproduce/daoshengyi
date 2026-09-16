@@ -2,9 +2,37 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-15**
+> **最后更新：2026-09-16**
 
 ---
+
+## 2026-09-16（上午）
+
+### 🐛 修复：插件市场折叠区模板未闭合，页面打不开（`9031cfd`）
+- **现象**：`[plugin:vite:vue] Element is missing end tag.`（`McpSettings.vue:398`）→ Vite dev server `Internal server error`，整个页面无法加载。
+- **根因**：昨天把「社区插件」改成 `<details>/<summary>` 折叠区时**只改了开头标签**，`<summary>` 的结束标签仍是 `</div>`。
+- **修法**：该处 `</div>` → `</summary>`；并把 `summary` 内的操作区 `div` 换成 `span`（`<summary>` 的内容模型是 phrasing content）。
+- **门禁补强（教训）**：`vue-tsc` **不检查 .vue 模板的 HTML 配对**，所以这个错漏过了类型检查。验证清单更新为六项并为 `.vue` 改动标注「必须跑 `npx vite build`」：
+  ```bash
+  cargo check · npx vue-tsc --noEmit · npx vite build · npm test · cargo test --lib · cargo clippy --all-targets -- -D warnings
+  ```
+- 验证：`vite build ✓ 5.99s` · dev server 直接请求组件返回 HTTP 200 且无错误 · vue-tsc 干净 · vitest 78 passed。
+
+### 🐛 查清：系统通知「测试没发成功」的根因（`16b0f1e`）
+- **结论：不是代码 bug，也不是未授权** —— `tauri dev` 运行的是**裸二进制（非 `.app` bundle）**，macOS **通知中心根本不会登记它**，通知必然发不出去。
+- **实证**：`plutil -p ~/Library/Preferences/com.apple.ncprefs.plist | grep -i daoshengyi` → 无任何记录（即使进程带了 `__CFBundleIdentifier=com.daoshengyi.app` 也不行）。
+- **改进（让失败可解释，不再含糊）**：
+  - Rust 新增纯函数 `path_is_bundled_app` + `is_bundled_app`（判断是否位于 `.app/Contents/MacOS/`）+ 单测。
+  - 新命令 `notification_diagnose` → `{ granted, state, bundled, hint }`，按「未打包 / 未授权 / 已就绪」三种情况给明确指引。
+  - `notify_user` 在各跳过分支（未打包、未授权、投递失败）都写应用日志，便于排障。
+  - 设置 → 快捷键 → 系统通知区块显示**权限状态 + 运行方式（已打包/开发模式）+ 具体指引**；点「请求权限」「发送测试通知」后自动刷新诊断。
+- **验证方式（唯一可靠）**：`npm run tauri build` → 打开 `src-tauri/target/release/bundle/macos/道生一.app` → 首次点「请求权限」（系统会弹授权框）→ 「发送测试通知」。
+- 验证：vue-tsc 干净 · vite build ✓ · vitest 78 passed · cargo test --lib **122 passed / 8 ignored** · clippy `-D warnings` 干净。
+
+### 📌 当前状态与待办
+- **已推送**：`9031cfd`（模板修复）· `2ac143c`（门禁清单+教训）· `16b0f1e`（通知诊断）｜`origin/main` = `16b0f1e`
+- **唯一待办**：配云端视觉档（设置→模型新增一个「非 DeepSeek 且有 Key」的档，如智谱 `glm-4v-flash` / 阿里 `qwen-vl-max`；代码已自动识别，无需其它配置）——需用户填 Key。
+- **待用户验证**：打包版下的系统通知（步骤见上）。
 
 ## 2026-09-15（晚间·第 5 批）
 
