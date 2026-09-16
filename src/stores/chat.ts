@@ -98,6 +98,17 @@ import {
   type NativeToolRegistry,
 } from "@/utils/tool-schema";
 import { BM25Index, buildToolSearchText } from "@/utils/tool-search";
+import {
+  addGoalUsage,
+  budgetExceeded,
+  budgetLine,
+  getGoal,
+  goalPrompt,
+  isUnfinished,
+  saveGoal,
+  type Goal,
+  type GoalStatus,
+} from "@/utils/goals";
 
 /** 原生 function calling：Rust resolve 后经 sse-tool-calls 回传的结构化调用 */
 export interface NativeToolCallMsg {
@@ -522,6 +533,9 @@ function getMcpToolsPrompt(): string {
     '\n- **read_mcp_resource** (app): **读取 MCP 资源完整内容（融合自 Codex）**。参数 {"server": "MCP 服务器名", "uri": "资源 uri（先 list_mcp_resources 拿到）"}。内容过长会截断，需要全部时先让服务器分页/过滤或改用对应工具查。\n' +
     '\n- **request_user_input** (app): **向用户提问并等待回答（融合自 Codex）**。参数 {"question": "要问的问题", "context": 可选背景, "choices": 可选快捷选项数组, "default": 可选默认值}。**仅在关键信息缺失/歧义且猜错代价高时用**；能合理假设就先推进并标注假设。用户可点「跳过」，此时请按合理假设继续、不要反复追问。\n' +
     '\n- **request_permissions** (app): **主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "理由"}。得到授权后本会话同类操作不再逐次弹确认（仅本会话有效；命令策略的 deny 规则仍不可绕过）。预计要连续多次写操作/命令时先申请一次，比逐条触发弹窗更高效。\n' +
+    '\n- **get_goal** (app): **查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。系统每轮会自动注入当前目标，无需频繁调用；长任务中不确定「要做到哪一步」时看一眼；预算接近用尽就尽快收尾。\n' +
+    '\n- **create_goal** (app): **登记跨回合目标（融合自 Codex）**。参数 {"objective": "可验收的目标描述", "token_budget": 可选 token 上限}。**仅在用户/系统显式要求时创建**，不要从普通任务臆测；**已有未完成目标会拒绝**（改用 update_goal）。\n' +
+    '\n- **update_goal** (app): **更新目标状态（融合自 Codex）**。参数 {"status": "active | complete | blocked | abandoned", "note": 可选备注}。达成→complete；卡在外部依赖→blocked；放弃→abandoned。不要用它改目标描述。\n' +
     '\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n' +
     '\n- **new_context_window** (app): **压缩历史上下文（融合自 Codex）**：把较早历史压成交接摘要后继续。参数 {"keep_last_messages": 可选，保留最近几条（默认 6）}。**系统已自动压缩**（占用达 ~82% 自动做一次），通常无需主动调用；只影响发给模型的历史（界面仍保留全部），压缩掉的细节请从已落盘文件读取、不要臆测。\n' +
     '\n- **tool_search** (app): **检索并激活未直接列出的工具（融合自 Codex，BM25 检索）**。参数 {"query": "自然语言描述你要做的事或能力，中英文均可", "limit": 可选返回条数}。**使用时机**：你需要某类能力（如「数据库查询」「发消息」「抓股票数据」）但当前工具列表里**找不到对应工具**时——先搜一下；系统会把命中的工具立即加入可用工具。也可用于**确认某个工具的真实参数名**（不要靠猜）。不要用它做普通信息搜索（那用 web_search）。\n' +
@@ -2172,6 +2186,60 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `口径：上轮请求真实 prompt tokens（${lastPromptTokens.toLocaleString()}）与本地估算（${est.toLocaleString()}）取大者；窗口按模型推断。\n` +
         `本次将发送 ${hist.length} 条历史消息（上限 ${maxCtx} 条）。\n建议：${advice}`
       );
+    }
+    case "get_goal": {
+      // 吸收自 Codex ext/goal：让模型看到**跨回合**的当前目标与预算（防跑题/防忘）
+      const goal = getGoal(useChatStore().activeConversationId || "");
+      if (!goal) {
+        return "（当前会话没有目标。如用户明确要求「完成某件可验收的事」且需要跨多轮推进，可用 create_goal 登记；普通任务不要建目标。）";
+      }
+      return `【当前目标｜${goal.status}】${goal.objective}\n${budgetLine(goal)}${goal.note ? `\n备注：${goal.note}` : ""}${budgetExceeded(goal) ? "\n⚠️ 预算已用尽：立即收尾（给结论与产物路径，剩余工作写文件/待办）。" : ""}`;
+    }
+    case "create_goal": {
+      // 对齐 Codex：仅当用户/系统**显式要求**时创建；已有未完成目标时拒绝（改用 update_goal）
+      const objective = String(args.objective ?? "").trim();
+      if (!objective) throw new Error("create_goal 需要 objective 参数（可验收的目标描述）");
+      const convId = useChatStore().activeConversationId || "";
+      if (!convId) return "（当前没有活动会话，无法登记目标）";
+      const cur = getGoal(convId);
+      if (isUnfinished(cur)) {
+        return `已有未完成目标（${cur!.status}）：「${cur!.objective}」。**不能重复创建**——要改状态请用 update_goal（complete/blocked/abandoned）；确实要换目标先把它置为 abandoned。`;
+      }
+      const budgetRaw = Number(args.token_budget ?? args.tokenBudget ?? 0);
+      const tokenBudget = Number.isFinite(budgetRaw) && budgetRaw > 0 ? Math.round(budgetRaw) : null;
+      const now = Date.now();
+      const goal: Goal = {
+        objective,
+        status: "active",
+        tokenBudget,
+        tokensUsed: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      saveGoal(convId, goal);
+      return (
+        `✅ 已登记目标：「${objective}」\n${budgetLine(goal)}\n` +
+        "此后每轮都会把该目标注入上下文；你应持续推进直到达成，达成后调用 update_goal(status=\"complete\")。" +
+        (tokenBudget === null ? "（未设预算：如需限定消耗，可在创建时给 token_budget）" : "")
+      );
+    }
+    case "update_goal": {
+      const convId = useChatStore().activeConversationId || "";
+      const goal = getGoal(convId);
+      if (!goal) return "（当前会话没有目标可更新）";
+      const raw = String(args.status ?? "").trim() as GoalStatus;
+      const statuses: GoalStatus[] = ["active", "complete", "blocked", "abandoned"];
+      if (raw && !statuses.includes(raw)) {
+        return `未知状态「${raw}」；可用：${statuses.join(" / ")}`;
+      }
+      const next: Goal = {
+        ...goal,
+        status: raw || goal.status,
+        note: args.note ? String(args.note).slice(0, 300) : goal.note,
+        updatedAt: Date.now(),
+      };
+      saveGoal(convId, next);
+      return `已更新目标状态：${goal.status} → ${next.status}\n${budgetLine(next)}${next.note ? `\n备注：${next.note}` : ""}`;
     }
     case "new_context_window": {
       // 融合 Codex 的 new_context_window：把较早历史压缩成 handoff 摘要后继续。
@@ -4812,6 +4880,10 @@ export const useChatStore = defineStore("chat", () => {
     streamingContent.value = "";
     streamingReasoning.value = "";
     const startTime = Date.now();
+    // turn_timing（吸收自 Codex 的 turn_timing：Sampling / Compaction / ToolBlocking 分段计时）：
+    // 工具与压缩显式计时，采样（模型推理）用「总时长 - 工具 - 压缩」推导——不必逐个包住
+    // 主循环/续写轮/收尾轮的调用点，测量口径仍清晰。轮末写一条结构化日志便于定位瓶颈。
+    const turnTiming = { compaction: 0 };
     // 托盘进度：标记本轮开始（供展示已耗时），并清空上一轮的工具标签
     turnStartedAt.value = startTime;
     currentToolLabel.value = "";
@@ -5164,9 +5236,23 @@ export const useChatStore = defineStore("chat", () => {
       for (const s of summaries) volatileCtx.push(`对话摘要: ${s}`);
 
       // 构建 Rust 格式消息
+      // 目标注入（吸收自 Codex ext/goal）：跨回合目标 + token 预算，防跑题/防忘；
+      // 目标完成（complete/abandoned）后不再注入。
+      try {
+        const g = getGoal(convId);
+        if (g && g.status !== "complete" && g.status !== "abandoned") {
+          volatileCtx.push(goalPrompt(g));
+        }
+      } catch {
+        /* 忽略 */
+      }
       // 自动压缩（吸收自 Codex 的自动 compaction）：占用达阈值时先把较早历史压成交接摘要，
       // 再装配历史 —— 不依赖模型自己想起来调 new_context_window。
-      await maybeAutoCompact(conv, config);
+      {
+        const tCompact = Date.now();
+        await maybeAutoCompact(conv, config);
+        turnTiming.compaction += Date.now() - tCompact;
+      }
       const maxCtx = config.maxContextMessages || 50;
       const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
       const histStart = Math.max(0, histAll.length - maxCtx);
@@ -6121,6 +6207,25 @@ export const useChatStore = defineStore("chat", () => {
         /* 费用计算失败不影响主流程 */
       }
       assistantMsg.streaming = false;
+      // turn_timing：轮末输出分段耗时（压缩显式计时；工具直接汇总 toolCards 的 durationMs；
+      // 采样=总-工具-压缩）—— 用于定位「到底慢在推理、工具还是压缩」。
+      {
+        const totalMs = Date.now() - startTime;
+        const toolsMs = toolCards.reduce((sum, c) => sum + (c.durationMs || 0), 0);
+        const samplingMs = Math.max(0, totalMs - toolsMs - turnTiming.compaction);
+        const s = (ms: number) => (ms / 1000).toFixed(1);
+        await dbg(
+          `[timing] 本轮 总 ${s(totalMs)}s｜采样(模型) ${s(samplingMs)}s｜工具 ${s(toolsMs)}s(${toolCards.length} 次)｜压缩 ${s(turnTiming.compaction)}s`,
+        );
+      }
+      // 目标 token 预算累加（吸收自 Codex 的 goal token_budget）：本轮消耗计入当前目标，
+      // 预算超支时下一轮注入的 goalPrompt 会要求模型收尾。
+      try {
+        const g = getGoal(convId);
+        if (g) saveGoal(convId, addGoalUsage(g, usageSum.total || assistantMsg.tokens || 0));
+      } catch {
+        /* 目标记录失败不影响主流程 */
+      }
       // 用量历史累计：即使删除会话也保留 token/费用统计（后端 usage_agg 表，按天累计）。
       // 只统计 LLM 消耗（/run、/read 等本地指令不走这里，不计入）。
       const aggTokens = assistantMsg.tokens || 0;

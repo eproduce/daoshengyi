@@ -243,6 +243,18 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     desc: '**主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "为什么要这个权限"}。授权**仅本会话有效**（重启失效，不落盘）；得到授权后本会话内同类操作不再逐次弹确认（命令执行策略里的 deny 规则仍不可绕过）。**使用时机**：你预计要连续做多次同类写操作/命令（如批量改文件、反复跑构建），每次弹确认会很低效时——先说明理由申请一次，而不是逐条触发弹窗。',
   },
   {
+    name: "get_goal",
+    desc: '**查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。返回目标描述/状态（active/blocked/complete/abandoned）/已消耗与预算百分比。**使用时机**：长任务中不确定「我们到底要做到哪一步」时先看一眼；预算接近用尽时应尽快收尾。系统每轮也会自动注入当前目标，因此无需频繁调用。',
+  },
+  {
+    name: "create_goal",
+    desc: '**登记一个跨回合目标（融合自 Codex ext/goal）**。参数 {"objective": "可验收的目标描述", "token_budget": 可选 token 上限}。**仅在用户/系统显式要求时创建**（如“帮我把这个项目重构完”），不要从普通任务臆测目标；**已有未完成目标时会拒绝**（改用 update_goal）。登记后每轮自动注入上下文，可用于长任务防跑题与预算控制。',
+  },
+  {
+    name: "update_goal",
+    desc: '**更新目标状态（融合自 Codex）**。参数 {"status": "active | complete | blocked | abandoned", "note": 可选备注}。**使用时机**：目标达成→complete；卡在外部依赖→blocked（并说明原因）；用户改主意/放弃→abandoned。不要用它改目标描述（换目标请先 abandoned 再 create_goal）。',
+  },
+  {
     name: "get_context_remaining",
     desc: '**查询当前上下文的占用与剩余预算（融合自 Codex）**。无参数。返回：已用/剩余 tokens、占用百分比、本次将发送多少条历史、以及**收尾建议**。**使用时机**：长任务中途、或准备把大段内容回填给模型前，先看一眼预算；接近上限（≥85%）时应**先收尾**——给结论与产物路径，把未完成部分写进文件/待办，必要时用 new_context_window 压缩历史。',
   },

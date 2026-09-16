@@ -271,6 +271,33 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["capability"],
     additionalProperties: true,
   },
+  get_goal: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
+  create_goal: {
+    type: "object",
+    properties: {
+      objective: { type: "string", description: "可验收的目标描述" },
+      token_budget: { type: "number", description: "可选，token 上限（仅在显式要求时设置）" },
+    },
+    required: ["objective"],
+    additionalProperties: true,
+  },
+  update_goal: {
+    type: "object",
+    properties: {
+      status: {
+        type: "string",
+        description: "active | complete | blocked | abandoned",
+      },
+      note: { type: "string", description: "可选备注（如阻塞原因）" },
+    },
+    required: ["status"],
+    additionalProperties: true,
+  },
   get_context_remaining: {
     type: "object",
     properties: {},
