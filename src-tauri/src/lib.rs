@@ -25,6 +25,7 @@ mod search;
 mod security;
 mod settings;
 mod ssrf;
+mod trash;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -704,7 +705,8 @@ fn apply_edits(
     Ok(res)
 }
 
-/// 删除文件（纯函数，仅允许删除用户主目录内的文件，不删除目录）。供 delete_file_agent 命令调用。
+/// 删除文件（纯函数）：只做**校验**（主目录内 + 是文件），实际删除见 trash 模块。
+/// 保留该函数是为了让调用方能先校验再动作（并集中一处错误文案）。
 fn delete_file_impl(path: String) -> Result<String, String> {
     let expanded = sanitize_home_path(&path)?;
     let p = std::path::Path::new(&expanded);
@@ -714,20 +716,57 @@ fn delete_file_impl(path: String) -> Result<String, String> {
     if p.is_dir() {
         return Err("仅允许删除文件，不删除目录（删除目录请用 git 或终端）".into());
     }
-    std::fs::remove_file(&expanded).map_err(|e| format!("删除文件失败: {}", e))?;
-    Ok(format!("已删除文件：{}", expanded))
+    Ok(expanded)
 }
 
-/// 删除文件（命令层）：删除前备份原内容记录撤销快照，再调用 delete_file_impl。
+/// 删除文件（命令层）：**移入回收站**（可列表 / 可还原），保留撤销快照。
+/// 吸收自 DSH P0-4b：误删是不可逆事故，命令门禁只能拦「删之前」，拦不住删错。
 #[tauri::command]
-fn delete_file_agent(db: State<Database>, path: String) -> Result<String, String> {
+fn delete_file_agent(
+    app: tauri::AppHandle,
+    db: State<Database>,
+    path: String,
+) -> Result<String, String> {
     let (backup_path, backup) = match sanitize_home_path(&path) {
         Ok(p) => (p.clone(), std::fs::read_to_string(&p).unwrap_or_default()),
         Err(_) => (String::new(), String::new()),
     };
-    let res = delete_file_impl(path.clone())?;
+    let expanded = delete_file_impl(path.clone())?;
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = trash::trash_dir(&app_dir);
+    let now_ms = trash::now_millis();
+    // 顺带清理过期条目，避免回收站无限膨胀（失败不影响本次删除）
+    let _ = trash::purge_old(&dir, now_ms, trash::AUTO_PURGE_DAYS);
+    let entry = trash::move_to_trash(&dir, std::path::Path::new(&expanded), now_ms)?;
     let _ = db.record_undo("delete", &backup_path, &backup, true);
-    Ok(res)
+    Ok(format!(
+        "已删除（移入回收站，可还原）：{}（回收站条目 ID：{}，保留 {} 天；可用 trash_restore 还原）",
+        expanded,
+        entry.id,
+        trash::AUTO_PURGE_DAYS
+    ))
+}
+
+/// 列出回收站条目（按删除时间倒序）
+#[tauri::command]
+fn trash_list(app: tauri::AppHandle) -> Result<Vec<trash::TrashEntry>, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(trash::list_trash(&trash::trash_dir(&app_dir)))
+}
+
+/// 从回收站还原指定条目（拒绝覆盖已存在文件，只允许落回主目录）
+#[tauri::command]
+fn trash_restore(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let home = home_dir().ok_or("无法获取用户主目录")?;
+    trash::restore(&trash::trash_dir(&app_dir), &id, &home)
+}
+
+/// 清空回收站（永久删除；返回清理数量）
+#[tauri::command]
+fn trash_empty(app: tauri::AppHandle) -> Result<usize, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    trash::empty_trash(&trash::trash_dir(&app_dir))
 }
 
 // --- 定时任务 ---
@@ -6917,6 +6956,9 @@ pub fn run() {
             local_runtime_status,
             local_runtime_import_ollama,
             local_runtime_stop,
+            trash_list,
+            trash_restore,
+            trash_empty,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,
@@ -7501,11 +7543,10 @@ mod tests {
         let path = file.to_str().unwrap().to_string();
         // 相对路径拒绝
         assert!(delete_file_impl("relative.txt".into()).is_err());
-        // 删除文件成功
-        assert!(delete_file_impl(path.clone()).unwrap().contains("已删除"));
-        assert!(!file.exists());
+        // 合法文件 → 返回展开后的绝对路径（实际删除在回收站流程里）
+        assert_eq!(delete_file_impl(path.clone()).unwrap(), path);
+        assert!(file.exists(), "校验阶段不得动文件");
         // 删除目录拒绝
-        std::fs::write(&file, "x").unwrap();
         assert!(delete_file_impl(dir.to_str().unwrap().to_string()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }

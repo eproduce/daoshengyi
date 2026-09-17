@@ -759,4 +759,28 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["schema"],
     additionalProperties: true,
   },
+  // --- 回收站（P0-4b）：删除可恢复 ---
+  trash_list: {
+    type: "object",
+    properties: {
+      limit: { type: "integer", description: "最多返回条数（默认 20）" },
+    },
+    required: [],
+    additionalProperties: true,
+  },
+  trash_restore: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "回收站条目 ID" },
+      entry_id: { type: "string", description: "id 的别名" },
+    },
+    required: ["id"],
+    additionalProperties: true,
+  },
+  trash_empty: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: true,
+  },
 };

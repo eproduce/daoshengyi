@@ -96,7 +96,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "delete_file",
-    desc: '**删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。',
+    desc: '**删除文件（仅主目录内文件，不删除目录）**。参数 {"path": "文件绝对路径"}。删除前先确认用户确实要求删除该文件。注意：实际是**移入回收站**（保留 30 天、可 trash_restore 还原），不是永久抹除——用户事后说「删错了」时不要慌，先 trash_list 看条目再还原。',
   },
   {
     name: "list_dir",
@@ -320,6 +320,18 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
     name: "schema_validate",
     desc: '**JSON Schema 校验（给出精确错误路径）**。参数 {"schema": "JSON Schema 文本或对象", "data": 待校验数据（对象/字符串）, "text"/"path": 或从文本/文件读数据}。覆盖 type/enum/const/required/properties/additionalProperties/items/长度与数值范围/pattern/anyOf/allOf/oneOf/not。**何时用**：产出结构化 JSON（配置、接口响应、工具参数）后自检，或校验用户给的数据是否符合其 schema——**不要靠肉眼逐字段比对**，漏 required 与类型错误极难靠看的。',
+  },
+  {
+    name: "trash_list",
+    desc: '**列出回收站内容（可恢复的删除）**。参数 {} 或 {"limit": 可选条数}。delete_file 与 `rm` 类删除不再直接永久抹除：文件会移入回收站并保留 30 天。**何时用**：用户说「刚才删错了 / 帮我找回来 / 我这文件哪去了」时，先用它看有什么，再用 trash_restore 还原。',
+  },
+  {
+    name: "trash_restore",
+    desc: '**从回收站还原文件到原位置**。参数 {"id": "回收站条目 ID（来自 trash_list 或 delete_file 的返回）"}。原位置已存在同名文件时会**拒绝覆盖**（不会默默盖掉新文件）。**何时用**：确认要恢复某个被删文件时——不要手动从回收站目录拷贝，那样不会清理索引。',
+  },
+  {
+    name: "trash_empty",
+    desc: '**清空回收站（永久删除，不可恢复）**。参数 {}。**何时用**：仅当用户明确要求「清空回收站/彻底删掉这些」时；默认**不要**主动清空——它会让所有可恢复删除永久丢失。',
   },
 ];
 

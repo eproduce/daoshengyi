@@ -17,7 +17,7 @@ export interface McpCatalogItem {
 /// 收录原则（2026-09-15 收敛，依据 docs/AGENT_DIAGNOSIS_2026-09-15.md 实测数据）：
 /// **只收录「内置工具确实没有」的长尾/账号型第三方服务**。与内置能力重叠的服务器
 /// 一律下架——两套同名工具（MCP 的 read_file vs 内置 read_file、MCP 的 git vs 内置 git）
-/// 会让模型二选一，既浪费工具 schema 预算（MAX_NATIVE_TOOLS=80，且 MCP 在末尾被静默
+/// 会让模型二选一，既浪费工具 schema 预算（MAX_NATIVE_TOOLS，且 MCP 在末尾被静默
 /// 截尾），又是参数名错/路由错的高发区（fetch_page 曾被按名字转发给 MCP → Tool not found）。
 /// 已下架：文件系统（内置 read_file/write_file/list_dir/… 全套）、Git（内置 git）、
 /// SQLite（内置 rusqlite 已在用）、记忆（内置 memory_*）、时间（内置即可）、

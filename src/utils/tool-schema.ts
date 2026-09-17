@@ -56,8 +56,16 @@ export interface NativeToolCatalogEntry {
   spec: OpenAIFunctionTool;
 }
 
-/** 单次请求最多声明的工具数：优先保证内置，MCP 截尾 */
-export const MAX_NATIVE_TOOLS = 80;
+/**
+ * 单次请求最多**声明**的工具数：优先保证内置，MCP 截尾（截尾的不会被丢弃，
+ * 而是进 catalog 由 `tool_search` 命中后激活）。
+ *
+ * 取值依据：内置工具会持续增长（2026-09-17 DSH 批次 +10 确定性工具、P0-4b +3 回收站工具
+ * → 内置 80），上限必须**随内置增长同步抬高**，否则 MCP 工具一个都分不到声明名额
+ * （单测 `内置工具总数必须给 MCP 留出声明名额` 会直接报错，避免静默退化）。
+ * 额度成本由「上下文成本审计（P0-3）」可见，长尾工具靠 `tool_search` 渐进披露。
+ */
+export const MAX_NATIVE_TOOLS = 96;
 
 /** 未收录显式 schema 时的兜底参数（宽松对象，配合描述文本中的参数示例） */
 export const GENERIC_PARAMETERS: Record<string, unknown> = {

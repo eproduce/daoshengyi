@@ -61,6 +61,8 @@ export const MUTATION_TOOLS = new Set([
   "apply_edits",
   "delete_file",
   "str_replace_editor",
+  // P0-4b：从回收站还原也会改变工作区 → 同样让「测试通过」类断言过期
+  "trash_restore",
 ]);
 
 /** 命令 → 验证类别。顺序敏感：build 放最后（`tsc -p` 更像类型检查，`npm run build` 才是构建） */

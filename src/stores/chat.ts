@@ -2879,6 +2879,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     }
     case "delete_file": {
       // 删除文件（仅主目录内文件，不删除目录）
+      // P0-4b：实际是**移入回收站**（保留 30 天、可 trash_restore 还原），不是永久抹除。
       const path = String(args.path || "");
       if (!path) throw new Error("delete_file 需要 path 参数");
       // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除（会话内已允许则直接放行）
@@ -2895,6 +2896,42 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const del = await invoke<string>("delete_file_agent", { path });
       notifyUndoChanged(); // 可撤销（删除）
       return del;
+    }
+    case "trash_list": {
+      // P0-4b 回收站：列出可恢复的删除（供用户找回文件）
+      const rows = await invoke<
+        { id: string; name: string; original: string; size: number; deleted_at: number }[]
+      >("trash_list");
+      const limit = Number(args.limit) > 0 ? Number(args.limit) : 20;
+      if (!rows.length) return "回收站是空的（没有可恢复的删除）。";
+      const lines = rows.slice(0, limit).map((r) => {
+        const when = new Date(r.deleted_at * 1000).toLocaleString();
+        const size = r.size >= 1048576
+          ? `${(r.size / 1048576).toFixed(1)} MB`
+          : `${Math.max(1, Math.round(r.size / 1024))} KB`;
+        return `- ${r.name}｜${size}｜${when}\n  原位置：${r.original || "（记录缺失，只能手动取出）"}\n  条目 ID：${r.id}`;
+      });
+      return `回收站共 ${rows.length} 项（显示 ${Math.min(rows.length, limit)} 项，按删除时间倒序）：\n${lines.join(
+        "\n",
+      )}\n\n还原用 trash_restore（id 填「条目 ID」）。`;
+    }
+    case "trash_restore": {
+      // P0-4b：还原到原位置（目标已存在时拒绝覆盖）
+      const id = String(args.id || args.entry_id || "");
+      if (!id) throw new Error("trash_restore 需要 id 参数（条目 ID，可从 trash_list 获取）");
+      const msg = await invoke<string>("trash_restore", { id });
+      notifyUndoChanged();
+      return msg;
+    }
+    case "trash_empty": {
+      // P0-4b：清空回收站（永久删除，不可恢复）——先确认，避免误清
+      const ok = await askConfirm(
+        "⚠️ 清空回收站会**永久删除**里面所有文件（无法恢复）。确定继续吗？",
+      );
+      if (!ok) return "用户取消了清空回收站，回收站内容未变动。";
+      const n = await invoke<number>("trash_empty");
+      notifyUndoChanged();
+      return `已清空回收站（永久删除 ${n} 个文件）。`;
     }
     case "plan_task": {
       // P-A5 Plan 模式：创建/替换当前任务计划（对话区顶部进度卡片实时更新）

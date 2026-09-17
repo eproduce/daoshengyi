@@ -8,11 +8,12 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `e99c208`，工作区干净）
-- **内置工具 77 个**（含 DSH 吸收新增的 10 个确定性工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `20 files / 203 passed`；cargo `148 passed / 8 ignored`
+### 当前状态（origin/main = `4f94713`，工作区干净）
+- **内置工具 80 个**（含 DSH 吸收新增的 10 个确定性工具 + 3 个回收站工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `20 files / 203 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退（详见下方 2026-09-17 段落）
+- **删除可恢复**：`delete_file` 移入回收站（保留 30 天），新增 `trash_list` / `trash_restore` / `trash_empty`
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -25,8 +26,8 @@
 | P1-1 工具调用参数自愈（别名 / 类型 / 包裹层） | ✅ | `6248f73` |
 | P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ✅ | `8524fd9` |
 | P0-3 上下文成本审计（Context Doctor） | ✅ | `3db1275` |
-| P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ✅ | 本批 |
-| P0-4b 删除进回收站（`delete_file` 可恢复） | ⬜ 待做 | — |
+| P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ✅ | `4f94713` |
+| P0-4b 删除进回收站（`delete_file` 可恢复） | ✅ | 本批 |
 
 **P1 待做**：哈希锚定编辑（3 字符行哈希定位、拒绝过期锚点）· 生命周期钩子（事件→工具/shell/HTTP→注入/拒绝/通知）·
 声明式权限规则（allow/deny/ask + dry-run + 热重载）· 压缩阶梯（30/50/70/90 + 关键词索引）·
@@ -35,6 +36,32 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P0-4b 删除进回收站）
+
+### ✅ 误删不再是不可逆事故（DSH P0 收尾项）
+- **问题**：命令层已有 danger 分级门禁（拦「删之前」），但**拦不住删错**——`undo_history` 只存文本快照，
+  二进制/大文件直接丢失；`rm` 与 `delete_file` 交错时更无从恢复。
+- 新增 `src-tauri/src/trash.rs`（纯函数 + 完整单测）：
+  - `move_to_trash()`：**同卷 rename，跨卷（EXDEV）回落 copy+remove**（用户文件可能在外置卷，
+    rename 失败不能当成「删除失败」）；sidecar 写失败会**回滚**，绝不留下「还原不了」的孤儿条目
+  - **每项一个 sidecar**（`<entry>.orig` 存原路径 + 删除时间）：不做全局索引 → 无并发写冲突，
+    坏一个条目只影响自己；孤儿条目仍能列出（展示名从 id 推导）
+  - `restore()`：**拒绝覆盖**原位置已存在的文件；**只允许落回主目录**（sidecar 是磁盘上的普通
+    文本，被改写也必须无害——防路径逃逸）
+  - `purge_old()`：超过 30 天（`AUTO_PURGE_DAYS`）的条目在下次删除时顺带清理，回收站不会无限膨胀
+- 接入：`delete_file_agent` 改为移入回收站并返回**条目 ID**；新增命令
+  `trash_list` / `trash_restore` / `trash_empty`；新增 3 个内置工具（工具三处同步：描述 + schema + 分发）
+- 前端：`UndoPanel` 新增「🗑️ 回收站」区块（列表 / 逐个还原 / 清空并二次确认）；
+  `trash_restore` 已加入 `MUTATION_TOOLS`（还原会改工作区 → 让「测试通过」类断言过期）
+- **顺带修掉一个真实回归**：内置工具 77 → 80 正好撞满 `MAX_NATIVE_TOOLS = 80`，
+  导致 MCP 工具**全部退化为延迟目录**（不声明 → 模型想不到用）。已把上限抬到 96，
+  并把护栏测试改为显式校验「内置必须给 MCP 留 ≥4 个声明名额」——这条护栏正是它的价值所在
+- 验证：`trash.rs` **9 项单测**（移入/还原往返内容一致 · 同毫秒不覆盖 · 拒绝覆盖 ·
+  拒绝主目录外路径 · 拒绝目录与不存在文件 · 清空 · 过期清理 · 孤儿条目 · 空目录不崩）
+- 门禁：`cargo test --lib` 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 20 files / 203 passed
 
 ---
 

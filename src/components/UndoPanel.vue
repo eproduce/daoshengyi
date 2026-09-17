@@ -4,11 +4,12 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Undo2, Download, ChevronRight } from "lucide-vue-next";
-import { notify } from "@/utils/dialog";
+import { notify, askConfirm } from "@/utils/dialog";
 
 // 写/删文件后会派发 undo-changed（chat.ts notifyUndoChanged）→ 面板实时刷新
 function onUndoChanged() {
   void refresh();
+  void refreshTrash();
 }
 
 interface UndoRow {
@@ -84,8 +85,55 @@ function exportJson() {
 onMounted(() => {
   window.addEventListener("undo-changed", onUndoChanged);
   void refresh();
+  void refreshTrash();
 });
 onUnmounted(() => window.removeEventListener("undo-changed", onUndoChanged));
+
+// --- P0-4b 回收站：delete_file 不再永久抹除，这里列出并可逐个还原 ---
+interface TrashRow {
+  id: string;
+  name: string;
+  original: string;
+  size: number;
+  deleted_at: number;
+}
+const trash = ref<TrashRow[]>([]);
+const trashOpen = ref(true);
+
+async function refreshTrash() {
+  try {
+    trash.value = await invoke<TrashRow[]>("trash_list");
+  } catch {
+    trash.value = [];
+  }
+}
+function fmtSize(n: number): string {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+async function restoreTrash(id: string, name: string) {
+  try {
+    const msg = await invoke<string>("trash_restore", { id });
+    notify(`↩️ ${name} 已还原\n${msg}`);
+    await Promise.all([refreshTrash(), refresh()]);
+  } catch (e) {
+    notify(`⚠️ 还原失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+async function emptyTrash() {
+  if (!trash.value.length) return;
+  const ok = await askConfirm(
+    `⚠️ 清空回收站会**永久删除** ${trash.value.length} 个文件（无法恢复）。确定继续？`,
+  );
+  if (!ok) return;
+  try {
+    const n = await invoke<number>("trash_empty");
+    notify(`已清空回收站（永久删除 ${n} 个文件）`);
+    await refreshTrash();
+  } catch (e) {
+    notify(`⚠️ 清空失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 </script>
 
 <template>
@@ -125,6 +173,36 @@ onUnmounted(() => window.removeEventListener("undo-changed", onUndoChanged));
         </div>
       </div>
       <div v-if="!filtered.length" class="up-empty">（暂无撤销记录——Agent 写/删文件后会出现）</div>
+    </div>
+
+    <!-- P0-4b 回收站：删除的可恢复副本 -->
+    <div class="up-trash">
+      <div class="up-trash__head" @click="trashOpen = !trashOpen">
+        <ChevronRight :size="13" class="up-chev" :class="{ down: trashOpen }" />
+        <b>🗑️ 回收站</b>
+        <span class="up-trash__count">{{ trash.length }} 项</span>
+        <span class="up-trash__hint">delete_file 的删除会先移到这里（保留 30 天）</span>
+        <button class="up-btn" @click.stop="refreshTrash"><RefreshCw :size="12" /> 刷新</button>
+        <button
+          class="up-btn up-btn--danger"
+          :disabled="!trash.length"
+          @click.stop="emptyTrash"
+        >
+          清空
+        </button>
+      </div>
+      <div v-if="trashOpen" class="up-trash__list">
+        <div v-for="t in trash" :key="t.id" class="up-trash__row">
+          <span class="up-trash__name">{{ t.name }}</span>
+          <span class="up-trash__size">{{ fmtSize(t.size) }}</span>
+          <span class="up-trash__time">{{ fmtTime(t.deleted_at * 1000) }}</span>
+          <span class="up-trash__orig" :title="t.original">{{ t.original || "（原路径记录缺失）" }}</span>
+          <button class="up-undo" @click="restoreTrash(t.id, t.name)">
+            <Undo2 :size="12" /> 还原
+          </button>
+        </div>
+        <div v-if="!trash.length" class="up-empty">（回收站为空）</div>
+      </div>
     </div>
   </div>
 </template>
@@ -276,5 +354,63 @@ onUnmounted(() => window.removeEventListener("undo-changed", onUndoChanged));
   color: var(--text-secondary, #888);
   padding: 16px;
   text-align: center;
+}
+
+/* P0-4b 回收站 */
+.up-trash {
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  background: var(--bg-soft, #fafafa);
+  padding: 8px 10px;
+}
+.up-trash__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.up-trash__count {
+  font-weight: 650;
+  color: var(--text-secondary, #777);
+}
+.up-trash__hint {
+  font-size: 11px;
+  color: var(--text-secondary, #999);
+  margin-left: auto;
+}
+.up-trash__list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.up-trash__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg-input, #fff);
+}
+.up-trash__name {
+  font-weight: 650;
+  flex-shrink: 0;
+}
+.up-trash__size,
+.up-trash__time {
+  color: var(--text-secondary, #999);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.up-trash__orig {
+  color: var(--text-secondary, #777);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 </style>

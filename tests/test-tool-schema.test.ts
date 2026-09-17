@@ -139,8 +139,12 @@ it("数量上限：优先保留内置，MCP 截尾", () => {
   expect(mcpCount).toBe(7);
 });
 
-it("内置工具总数必须小于 MAX_NATIVE_TOOLS（否则 MCP 一个都放不下）", () => {
-  // 护栏：内置工具持续增长（浏览器 6 个 + Codex 融合 4 个…），超限会静默截尾 MCP 工具
+it("内置工具总数必须给 MCP 留出声明名额", () => {
+  // 护栏：内置持续增长（浏览器 6 + Codex 融合 4 + DSH 确定性 10 + 回收站 3…）。
+  // 一旦内置吃满 MAX_NATIVE_TOOLS，MCP 工具会全部退化为「延迟目录」（仍可 tool_search
+  // 激活，但默认不声明 → 模型容易想不到用），历史上就是这么静默退化的。
+  const headroom = MAX_NATIVE_TOOLS - builtins.length;
+  expect(headroom).toBeGreaterThanOrEqual(4);
   expect(builtins.length).toBeLessThan(MAX_NATIVE_TOOLS);
 });
 
