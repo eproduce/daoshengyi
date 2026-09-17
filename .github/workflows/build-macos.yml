@@ -28,7 +28,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与 ci.yml 同源：版本只在 .nvmrc 里写一次
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Setup Rust

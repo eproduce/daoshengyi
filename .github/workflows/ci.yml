@@ -20,7 +20,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 版本唯一来源 = 仓库根的 .nvmrc（升级只改那一处，避免 CI 与本地不一致）
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install deps
