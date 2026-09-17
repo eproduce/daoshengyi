@@ -28,6 +28,21 @@ describe("tool-arg-normalize：参数名自愈", () => {
     expect(r.notes).toEqual([]);
   });
 
+  it("read_file 分段参数的常见别名 → offset/length", () => {
+    // 真实使用里模型会换着写法传行号/行数；schema 缺了就别让它变成“读了但没读到”
+    const a = normalizeToolArgs({ path: "a.ts", start_line: 60, lines: 20 }, schemaOf("read_file"));
+    expect(a.args.offset).toBe(60);
+    expect(a.args.length).toBe(20);
+
+    const b = normalizeToolArgs({ path: "a.ts", start: 5, count: 3 }, schemaOf("read_file"));
+    expect(b.args.offset).toBe(5);
+    expect(b.args.length).toBe(3);
+
+    // 规范参数在场时不覆盖
+    const c = normalizeToolArgs({ path: "a.ts", offset: 1, start_line: 99 }, schemaOf("read_file"));
+    expect(c.args.offset).toBe(1);
+  });
+
   it("展开一层包裹参数（arguments / params / input）", () => {
     const r = normalizeToolArgs({ arguments: { path: "/tmp/x" } }, schemaOf("read_file"));
     expect(r.args.path).toBe("/tmp/x");

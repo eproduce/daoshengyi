@@ -104,7 +104,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "read_file",
-    desc: '读取本地文本文件内容。参数 {"path": "文件绝对路径", "with_anchors": 可选 true}。用于精读文件、查看代码/配置/文档的具体内容。`with_anchors: true` 时每行会带 `行号#哈希| 内容` 锚点（共占约 7 字符/行）——**即将做多处/多处同名的精确编辑时用它拿锚点**，日常阅读不用开（省 token）。',
+    desc: '读取本地文本文件内容。参数 {"path": "文件绝对路径", "offset": 可选起始行号(1 起算), "length": 可选读取行数, "with_anchors": 可选 true}。用于精读文件、查看代码/配置/文档的具体内容。**长文件必须分段读**：单次最多返回 12000 字符，被截断时结果里会写明「只到第 N 行，续读请用 offset=N+1」——照它续读，不要改用 awk/sed 绕过。`with_anchors: true` 时每行带 `行号#哈希| 内容` 锚点（行号是文件真实行号，可与 offset 组合）——**即将做多处/同名内容的精确编辑时用它拿锚点**，日常阅读不用开（省 token）。',
   },
   {
     name: "git",

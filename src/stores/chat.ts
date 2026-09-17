@@ -167,6 +167,8 @@ import {
 import { applyOutputStyle } from "@/utils/output-styles";
 // P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
 import { failureHint } from "@/utils/failure-ledger";
+// read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
+import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
 import {
   planAutoContinue,
@@ -3439,19 +3441,30 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）") {
         return `（${path} 是目录，请用 list_dir/list_directory 查看目录内容）`;
       }
-      // P1-2：可选行锚点输出（`行号#哈希| 内容`）——需要精确/多处编辑时先取锚点，
-      // 之后 replace_string 带 anchor_line/anchor_hash 即可拒绝「拿旧内容改新文件」
+      if (!res) return `📄 ${path}（空文件，0 字节）`;
+      // 分段读取：schema 早就声明了 offset/length，但过去实现里被**静默忽略**
+      // （只做 slice(0,12000)），模型只能改用 awk/sed 绕 —— 真实使用暴露的缺陷。
+      // 现在真按行号取段，且越界/截断都明确说出来，不假装「读到了」。
+      const slice = sliceFileLines(res, {
+        offset: args.offset ?? args.start_line ?? args.from_line,
+        length: args.length ?? args.lines,
+      });
+      if (slice.outOfRange) return slice.note;
+      const scope = isWholeFile(slice)
+        ? `共 ${slice.totalLines} 行`
+        : `第 ${slice.startLine}–${slice.endLine} 行 / 共 ${slice.totalLines} 行`;
+      const tail = slice.note ? `\n${slice.note}` : "";
+      // P1-2：可选行锚点输出（`行号#哈希| 内容`）——行号必须是**文件真实行号**，
+      // 否则分段读出的锚点会指向错误位置（比没锚点更危险）
       const wantAnchors = args.with_anchors === true || args.anchors === true;
       if (wantAnchors) {
-        const clipped = res.slice(0, 12000);
-        const lineCount = clipped.split("\n").length;
         return (
-          `📄 ${path}（带行锚点，共 ${lineCount} 行）\n\n\`\`\`\n${annotateLines(clipped)}\n\`\`\`\n\n` +
+          `📄 ${path}（带行锚点，${scope}）${tail}\n\n\`\`\`\n${annotateLines(slice.text, slice.startLine)}\n\`\`\`\n\n` +
           `锚点格式：\`行号#哈希| 内容\`。改文件时把要改的那一行写成 \`"anchor_line": 行号, "anchor_hash": "哈希"\`（内容不要抄源锚点前缀）——` +
           `若文件已被改动，replace_string 会**拒绝执行**并告知新行号（比默默改错位置安全）。`
         );
       }
-      return `📄 ${path}\n\n\`\`\`\n${res.slice(0, 12000)}\n\`\`\``;
+      return `📄 ${path}（${scope}）${tail}\n\n\`\`\`\n${slice.text}\n\`\`\``;
     }
     case "read_multiple_files": {
       // 批量读取多个文件（filesystem MCP 风格名兼容；参数 paths 数组或 path 单个）

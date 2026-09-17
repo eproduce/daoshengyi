@@ -224,8 +224,8 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     type: "object",
     properties: {
       path: { type: "string", description: "文件绝对路径" },
-      offset: { type: "integer", description: "起始偏移（行/字符，长文件分段读取用）" },
-      length: { type: "integer", description: "读取长度" },
+      offset: { type: "integer", description: "起始行号（1 起算）；长文件分段读取用" },
+      length: { type: "integer", description: "读取行数（不是字符数）；缺省读到文件末尾" },
       with_anchors: { type: "boolean", description: "true = 每行带行锚点（行号#哈希），便于后续精确编辑" },
     },
     required: ["path"],
