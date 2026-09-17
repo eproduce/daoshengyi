@@ -7,6 +7,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ApiProfile } from "@/types";
 
+/** P1-4 权限规则的结构（与 utils/permission-rules.ts 的 PermissionRule 兼容） */
+export interface PermissionRuleShape {
+  id?: string;
+  action: "allow" | "deny" | "ask";
+  tool?: string;
+  command?: string;
+  path?: string;
+  reason?: string;
+  enabled?: boolean;
+}
+
 export interface McpServerPersist {
   id: string;
   name: string;
@@ -63,6 +74,9 @@ export interface AppSettingsPayload {
   budgetSession?: number;
   budgetDaily?: number;
   budgetMonthly?: number;
+  /// P1-4 声明式权限规则（有序，第一条命中即生效）：
+  /// `[{ "action": "deny", "tool": "run_command", "command": "rm -rf" }]`
+  permissionRules?: PermissionRuleShape[];
   /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
   imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）

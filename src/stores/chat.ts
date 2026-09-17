@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from "./uuid";
 import { formatSearchResults } from "@/api/search";
 import { getPersona } from "@/data/personas-catalog";
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSkillStore } from "./skill";
 import { MCP_CATALOG } from "@/data/mcp-catalog";
@@ -132,6 +133,13 @@ import {
   toLines,
   verifyAnchor,
 } from "@/utils/line-anchor";
+// P1-4 声明式权限规则（allow/deny/ask，有序、第一条命中）
+import {
+  evaluateRules,
+  parseRules,
+  type PermissionRule,
+  type ToolCallContext,
+} from "@/utils/permission-rules";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -333,6 +341,63 @@ function rememberSessionPermit(tool: string): boolean {
 }
 function clearSessionPermits() {
   sessionPermits.clear();
+}
+
+// --- P1-4 声明式权限规则：deny（硬拦截）/ ask（每次必须确认）/ allow（本会话免确认） ---
+// 安全边界：allow 只免掉「交互确认」，**不免掉 danger/forbidden 命令门禁**（系统级保护）。
+function permissionRules(): PermissionRule[] {
+  return parseRules(getSettings().permissionRules ?? []).rules;
+}
+// 主目录（用于规则里 `~/…` 的展开）：Tauri path API，取一次缓存
+let cachedHome = "";
+async function userHome(): Promise<string> {
+  if (cachedHome) return cachedHome;
+  try {
+    const h = await homeDir();
+    cachedHome = h.replace(/\/+$/, "");
+  } catch {
+    cachedHome = "";
+  }
+  return cachedHome;
+}
+/**
+ * 求值权限规则。返回字符串 = **应当直接返回给模型的结果**（命中 deny）；
+ * 返回 true = 放行（allow 已记住会话免确认）；false = 未命中（走原有审批流程）。
+ * `ask` 会在这里就地弹确认框，用户拒绝则返回拒绝文案。
+ */
+async function applyPermissionRules(tool: string, args: Record<string, unknown>): Promise<string | true | false> {
+  const rules = permissionRules();
+  if (!rules.length) return false;
+  const ctx: ToolCallContext = {
+    tool,
+    command:
+      typeof args.command === "string"
+        ? args.command
+        : typeof args.cmd === "string"
+          ? args.cmd
+          : undefined,
+    path:
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.file_path === "string"
+          ? args.file_path
+          : undefined,
+  };
+  const v = evaluateRules(rules, ctx, await userHome());
+  if (v.decision === "none") return false;
+  if (v.decision === "deny") {
+    dbg(`[rules] 拒绝 ${tool}：${v.message}`);
+    return v.message;
+  }
+  if (v.decision === "ask") {
+    const ok = await askConfirm(`${v.message}\n\n允许本次调用吗？`);
+    if (!ok) return `⚠️ 用户拒绝了本次调用（${tool}）。请与用户确认后重试，或改用其它方式。`;
+    return false; // 已确认过 → 不再走后续确认（避免同一动作连问两次）
+  }
+  // allow：记入本会话免确认（仅免交互确认，danger/forbidden 命令仍受门禁约束）
+  dbg(`[rules] 放行 ${tool}：${v.message}`);
+  rememberSessionPermit(tool);
+  return true;
 }
 export async function refreshMcpTools() {
   // 单飞（single-flight）：并发调用只执行一次、共享同一结果。并行子代理/主代理
@@ -873,6 +938,9 @@ export async function callMcpTool(
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
   }
+  // P1-4 声明式权限规则（deny 硬拦截 / ask 每次确认 / allow 记会话免确认）
+  const ruleVerdict = await applyPermissionRules(tool, args);
+  if (typeof ruleVerdict === "string") return ruleVerdict;
   // §3.11 Agent 多模式：模式工具白名单（如速答模式禁用全部工具）
   const mode = getModeById(activeModeId.value);
   if (!isToolAllowedByMode(mode, tool)) {

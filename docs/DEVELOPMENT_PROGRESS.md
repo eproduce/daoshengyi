@@ -8,13 +8,12 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `1ef45fb`，工作区干净）
-- **内置工具 80 个**（含 DSH 吸收新增的 10 个确定性工具 + 3 个回收站工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `21 files / 222 passed`；cargo `157 passed / 8 ignored`
+### 当前状态（origin/main = `ae523eb`，工作区干净）
+- **内置工具 80 个**；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `22 files / 241 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
-- **删除可恢复**：`delete_file` 移入回收站（保留 30 天），新增 `trash_list` / `trash_restore` / `trash_empty`
-- **编辑可锚定**：`read_file` 可带 `with_anchors`，`replace_string`/`insert_string` 可带行锚点（过期直接拒绝）
+- **安全/可控**：删除进回收站可恢复 · 行锚点编辑拒绝过期锚点 · 声明式权限规则（allow/deny/ask + dry-run）
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -37,6 +36,34 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-4 声明式权限规则）
+
+### ✅ 「只允许跑这些命令 / 改这些目录」终于表达得出来（吸收自 `PerryLink/dsh-permission-rules`）
+- **问题**：旧的权限矩阵只有两档——工具级禁用（黑名单）+ 路径白名单，粒度太粗：
+  ①「只允许跑 `npm test`/`git status`，其余命令都要问」表达不出来；
+  ②「改 `~/op/**` 免确认、改别处必须确认」也表达不出来；
+  ③ 结果要么每次人工点确认，要么为了省事直接开 YOLO（= 全放开）。
+- 新增 `src/utils/permission-rules.ts`（纯函数、零依赖）：
+  - 规则 = `匹配条件 → 处置`：`{ action: allow|deny|ask, tool?, command?(正则), path?(glob), reason? }`
+  - **有序，第一条命中即生效**——用户用顺序表达优先级，不引入隐式权重（好推理、好排查）
+  - `deny` 硬拦截；`ask` 每次都弹确认；`allow` 免掉**交互确认**（记为本会话免确认）
+  - **安全边界：`allow` 不得绕过危险命令门禁**（danger/forbidden 仍走原审批），这是系统级保护
+  - `globToRegExp()`：`*` 不跨目录、`**` 跨段、`**/` 可匹配零层；`~` **两侧都展开**
+    （规则写 `~/op/**`、调用路径是 `~/op/a.ts` 或绝对路径都能命中）
+  - `validateRules()`：非法 action / 非法正则 / 类型错误 / 空条件都给出**带下标**的错误
+    （避免规则写错却静默失效）；`parseRules()` 容错跳坏项
+  - `dryRun()` + `contextsFromAudit()`：拿**最近的官方工具审计记录**试跑规则，
+    统计 allow/deny/ask/none —— **启用前先看清会拦住什么**
+- 接线：`callMcpTool` 在权限矩阵检查之后求值规则；设置新增 `permissionRules`
+  （Rust 侧存 JSON 值，结构校验只在 TS 一处维护）；设置面板「权限」页新增规则编辑器：
+  保存并校验 + 「对最近 100 次真实调用试跑」+ 逐条试跑结果（带命中规则说明）
+- 验证：`tests/test-permission-rules.test.ts` **19 项**（校验/解析容错 · 工具名精确匹配 ·
+  命令正则（缺参不误放行） · glob 与 `~` 双向展开 · 有序首条命中 · deny/ask/allow/none ·
+  空规则表不影响行为 · dry-run 统计 · 审计行参数抽取）
+- 门禁：cargo 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 22 files / 241 passed
 
 ---
 

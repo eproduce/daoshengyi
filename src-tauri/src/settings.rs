@@ -136,6 +136,12 @@ pub struct AppSettings {
     /// P0-6 预算护栏：本月预算（元，本地时区 1 号重置；0 = 不限）
     #[serde(default)]
     pub budget_monthly: f64,
+    /// P1-4 声明式权限规则（有序数组，第一条命中即生效）：
+    /// `[{"action":"deny","tool":"run_command","command":"rm -rf"}]`
+    /// 存为 JSON 值（结构由前端 `utils/permission-rules.ts` 校验），避免 Rust 侧
+    /// 与 TS 类型双维护；坏数据在前端 `parseRules` 里会被逐条跳过并提示。
+    #[serde(default)]
+    pub permission_rules: serde_json::Value,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -207,6 +213,7 @@ impl Default for AppSettings {
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,
+            permission_rules: serde_json::json!([]),
         }
     }
 }
@@ -468,6 +475,7 @@ mod tests {
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,
+            permission_rules: serde_json::json!([]),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -528,6 +536,7 @@ mod tests {
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,
+            permission_rules: serde_json::json!([]),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

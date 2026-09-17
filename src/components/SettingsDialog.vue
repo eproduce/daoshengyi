@@ -5,7 +5,14 @@ import { useOllamaStore } from "@/stores/ollama";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
-import { getSettings, updateSettings } from "@/api/appSettings";
+import { homeDir } from "@tauri-apps/api/path";
+import { getSettings, updateSettings, type PermissionRuleShape } from "@/api/appSettings";
+import {
+  contextsFromAudit,
+  dryRun,
+  parseRules,
+  validateRules,
+} from "@/utils/permission-rules";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
@@ -245,6 +252,55 @@ function savePermissions() {
       .map((s) => s.trim())
       .filter(Boolean),
   });
+}
+
+// P1-4：主目录（规则里 `~/…` 的展开基准）
+const homeForRules = ref("");
+void (async () => {
+  try {
+    homeForRules.value = (await homeDir()).replace(/\/+$/, "");
+  } catch {
+    homeForRules.value = "";
+  }
+})();
+
+// P1-4 声明式权限规则：JSON 编辑 + 校验 + 用最近真实工具调用试跑（dry-run）
+const rulesText = ref(JSON.stringify(getSettings().permissionRules ?? [], null, 2));
+const rulesErrors = ref<string[]>([]);
+const dryRows = ref<{ detail: string; decision: string; matched: string }[]>([]);
+const dryCounts = ref<{ allow: number; deny: number; ask: number; none: number } | null>(null);
+
+function saveRules(): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rulesText.value || "[]");
+  } catch (e) {
+    rulesErrors.value = [`JSON 解析失败：${e instanceof Error ? e.message : String(e)}`];
+    return false;
+  }
+  const errs = validateRules(parsed);
+  rulesErrors.value = errs;
+  if (errs.length) return false;
+  updateSettings({ permissionRules: parsed as PermissionRuleShape[] });
+  return true;
+}
+
+/// 试跑：把规则套到最近的真实工具调用上，**启用前先看清会拦住/放开什么**
+async function dryRunRulesNow() {
+  dryCounts.value = null;
+  if (!saveRules()) return;
+  const { rules } = parseRules(JSON.parse(rulesText.value || "[]"));
+  let rows: { tool_name: string; arguments: string }[] = [];
+  try {
+    rows = await invoke<{ tool_name: string; arguments: string }[]>("list_tool_audit", {
+      limit: 100,
+    });
+  } catch {
+    rows = [];
+  }
+  const res = dryRun(rules, contextsFromAudit(rows), homeForRules.value);
+  dryRows.value = res.rows.slice(0, 30);
+  dryCounts.value = res.counts;
 }
 
 // P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘
@@ -1087,6 +1143,50 @@ function handleDelete() {
                 write_file/delete_file 防止 Agent 改文件、禁用浏览器工具防止弹窗。</span
               >
             </div>
+            <!-- P1-4 声明式权限规则：有序，第一条命中即生效；可先 dry-run 再生效 -->
+            <div class="form-group">
+              <label>声明式权限规则（JSON 数组，有序；第一条命中即生效）</label>
+              <textarea
+                v-model="rulesText"
+                rows="8"
+                spellcheck="false"
+                class="exec-rules-editor"
+                placeholder='[
+  {"id":"deny-rm","action":"deny","tool":"run_command","command":"rm -rf"},
+  {"id":"test-ok","action":"allow","tool":"run_command","command":"^npm (test|run lint)\\b"},
+  {"id":"code-ask","action":"ask","path":"~/op/**","reason":"改代码前确认"}
+]'
+              ></textarea>
+              <span class="form-hint"
+                >action：<code>allow</code>（免交互确认，仅本会话）· <code>deny</code>（硬拦截）·
+                <code>ask</code>（每次都弹确认）。匹配条件：<code>tool</code>（工具名精确匹配）/
+                <code>command</code>（命令正则）/ <code>path</code>（glob，<code>**</code> 跨目录、
+                可用 <code>~/</code>）。<b>deny 建议写在 allow 前面</b>——第一条命中即生效。
+                allow 只免「交互确认」，<b>不会绕过危险命令门禁</b>。未命中任何规则时按原有审批流程。</span
+              >
+              <div class="exec-rule-actions">
+                <button class="btn-primary" @click="saveRules">保存并校验</button>
+                <button class="btn-secondary" @click="dryRunRulesNow">
+                  对最近 100 次真实调用试跑
+                </button>
+              </div>
+              <ul v-if="rulesErrors.length" class="rules-errors">
+                <li v-for="(e, i) in rulesErrors" :key="i">{{ e }}</li>
+              </ul>
+              <p v-if="dryCounts" class="form-hint">
+                试跑结果：允许 {{ dryCounts.allow }} · 拒绝 {{ dryCounts.deny }} · 需确认
+                {{ dryCounts.ask }} · 不涉及 {{ dryCounts.none }}
+              </p>
+              <div v-if="dryRows.length" class="rules-dry">
+                <div v-for="(r, i) in dryRows" :key="i" class="rules-dry__row">
+                  <span class="rules-dry__badge" :class="'rules-dry__badge--' + r.decision">{{
+                    r.decision
+                  }}</span>
+                  <span class="rules-dry__detail">{{ r.detail }}</span>
+                  <span class="rules-dry__matched">{{ r.matched }}</span>
+                </div>
+              </div>
+            </div>
             <div class="form-group">
               <label>路径白名单（每行一个目录）</label>
               <textarea
@@ -1581,6 +1681,65 @@ function handleDelete() {
 .exec-rule-actions .btn-primary,
 .exec-rule-actions .btn-secondary {
   padding: 8px 16px;
+}
+
+/* P1-4 权限规则：校验错误与试跑结果 */
+.rules-errors {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--danger-color, #c62828);
+  line-height: 1.6;
+}
+.rules-dry {
+  margin-top: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rules-dry__row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+}
+.rules-dry__badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--text-secondary, #888);
+}
+.rules-dry__badge--allow {
+  background: #2e7d32;
+}
+.rules-dry__badge--deny {
+  background: #c62828;
+}
+.rules-dry__badge--ask {
+  background: #ef6c00;
+}
+.rules-dry__detail {
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rules-dry__matched {
+  color: var(--text-secondary, #888);
+  flex-shrink: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .form-group code {
   background: var(--bg-secondary);
