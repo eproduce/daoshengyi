@@ -148,6 +148,14 @@ import {
   type HookRule,
   type PlannedAction,
 } from "@/utils/hooks";
+// P1-5 压缩阶梯（30/50/70/82）：早档无损预备，硬压缩时带上确定性产物
+import {
+  mergeDigestIntoSummary,
+  pendingStages,
+  prepareDigest,
+  type PreparedDigest,
+  type StageId,
+} from "@/utils/compaction-ladder";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -1753,7 +1761,10 @@ const HANDOFF_SUMMARY_PROMPT =
   "不要编造；接续者看不到原始对话，摘要必须自足。";
 
 /// 自动压缩阈值：上下文占用达窗口的 82% 即自动压缩（Codex 亦有自动触发）
+/// 注：P1-5 把它接入压缩阶梯的 `hard` 档（`utils/compaction-ladder.ts` 的 HARD_RATIO，同值）
 const AUTO_COMPACT_RATIO = 0.82;
+/// P1-5：阶梯 hard 档阈值（与 AUTO_COMPACT_RATIO 同值，单独命名以便阅读时知道对应关系）
+const HARD_RATIO = AUTO_COMPACT_RATIO;
 /// 自动压缩保留的最近原始消息条数
 const AUTO_COMPACT_KEEP = 6;
 /// 压缩冷却（同一会话 60s 内不重复触发，避免连环压缩）
@@ -1762,11 +1773,19 @@ let lastAutoCompactAt = 0;
 
 /// 可压缩会话的最小结构（与 store 的 Conversation 结构兼容）
 interface CompactableConv {
+  id?: string;
   messages: ChatMessage[];
   compactBefore?: number;
   compactSummary?: string;
   updatedAt: number;
 }
+
+// P1-5 压缩阶梯运行时状态：
+// - `appliedStages`：每个会话已走过的档位（单调，不回头）
+// - `preparedDigest`：50%/70% 档在内存里备好的确定性产物（关键词索引/关键事实，**不占上下文**），
+//   等硬压缩时一并拼进摘要 → 摘要 = 模型语义摘要 + 确定性字面事实
+const appliedStages = new Map<string, Set<StageId>>();
+const preparedDigest = new Map<string, PreparedDigest>();
 
 /// 把会话中较早的历史压缩成 handoff 摘要，写回 compactBefore/compactSummary。
 /// 供 `new_context_window` 工具与自动压缩共用。失败返回 reason（不抛异常）。
@@ -1804,10 +1823,13 @@ async function compressConversation(
   });
   const summary = (data?.content || "").trim();
   if (!summary) return { ok: false, compressed: 0, chars: 0, reason: "模型未返回摘要" };
+  // P1-5：把阶梯早档备好的确定性产物拼进摘要（幂等，重复压缩不会叠第二份）
+  const digest = preparedDigest.get(conv.id ?? "") ?? {};
+  const merged = mergeDigestIntoSummary(summary, digest);
   conv.compactBefore = cut;
-  conv.compactSummary = summary;
+  conv.compactSummary = merged;
   conv.updatedAt = Date.now(); // 触发深监听 → 自动落库
-  return { ok: true, compressed: cut - already, chars: summary.length };
+  return { ok: true, compressed: cut - already, chars: merged.length };
 }
 
 /// 自动压缩（每次发送前调用）：占用 ≥ AUTO_COMPACT_RATIO 且不在冷却期 → 压缩。
@@ -1826,7 +1848,29 @@ async function maybeAutoCompact(
     0,
   );
   const used = Math.max(lastPromptTokens, est);
-  if (used / window < AUTO_COMPACT_RATIO) return 0;
+  const ratio = used / window;
+  // P1-5 压缩阶梯：早档（30/50/70）一律**无损且零上下文成本**，只在内存里备料
+  const convKey = conv.id ?? "current";
+  const applied = appliedStages.get(convKey) ?? new Set<StageId>();
+  appliedStages.set(convKey, applied);
+  for (const stage of pendingStages(ratio, [...applied])) {
+    if (stage.id === "hard") continue; // 硬压缩走下方原有流程（含冷却与摘要模型校验）
+    applied.add(stage.id);
+    if (stage.id === "note") {
+      await dbg(`[ladder] 占用 ${Math.round(ratio * 100)}% → ${stage.label}`);
+    } else {
+      // index / trim：对「即将被摘要覆盖的老消息」备料（droppable）
+      const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
+      const cut = Math.max(0, histAll.length - AUTO_COMPACT_KEEP);
+      const droppable = histAll.slice(0, cut).map((m) => ({ role: m.role, content: m.content || "" }));
+      const prev = preparedDigest.get(convKey) ?? {};
+      preparedDigest.set(convKey, { ...prev, ...prepareDigest(droppable) });
+      await dbg(
+        `[ladder] 占用 ${Math.round(ratio * 100)}% → ${stage.label}（备料 ${droppable.length} 条老消息）`,
+      );
+    }
+  }
+  if (ratio < HARD_RATIO) return 0;
   if (Date.now() - lastAutoCompactAt < AUTO_COMPACT_COOLDOWN_MS) return 0;
   try {
     const r = await compressConversation(useChatStore(), conv, AUTO_COMPACT_KEEP);
