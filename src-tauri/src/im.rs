@@ -362,7 +362,8 @@ impl ImGateway {
                         );
                     }
                     // 给发送者回一条引导（尽力而为，失败不阻塞）
-                    let hint = "🔐 新会话待审批：已在「道生一」桌面端弹出确认，批准后即可与我对话。";
+                    let hint =
+                        "🔐 新会话待审批：已在「道生一」桌面端弹出确认，批准后即可与我对话。";
                     let _ = self.adapter.send_message(&m.chat_id, hint).await;
                 }
                 return;

@@ -124,7 +124,8 @@ describe("P1-7 决策日志 · 幂等合并", () => {
   });
 
   it("已有文件但无固定头（用户手写的）也保留前言", () => {
-    const custom = "# 我的决策记录\n\n随手写的说明。\n\n## 2026-01-01 09:00 · 老决策\n- **决策**：老做法\n";
+    const custom =
+      "# 我的决策记录\n\n随手写的说明。\n\n## 2026-01-01 09:00 · 老决策\n- **决策**：老做法\n";
     const out = mergeDecision(custom, entry());
     expect(out).toContain("我的决策记录");
     expect(out).toContain("随手写的说明。");
@@ -165,18 +166,15 @@ describe("P1-7 决策日志 · 解析与路径", () => {
   });
 
   it("decisionPath 拼出目标文件；空目录退回相对文件名", () => {
-    expect(decisionPath("/Users/x/op/daoshengyi")).toBe(
-      `/Users/x/op/daoshengyi/${DECISION_FILE}`,
-    );
-    expect(decisionPath("/Users/x/op/daoshengyi/")).toBe(
-      `/Users/x/op/daoshengyi/${DECISION_FILE}`,
-    );
+    expect(decisionPath("/Users/x/op/daoshengyi")).toBe(`/Users/x/op/daoshengyi/${DECISION_FILE}`);
+    expect(decisionPath("/Users/x/op/daoshengyi/")).toBe(`/Users/x/op/daoshengyi/${DECISION_FILE}`);
     expect(decisionPath("")).toBe(DECISION_FILE);
   });
 
   it("长会话里反复记录（10 条）仍保持幂等与稳定结构", () => {
     let doc = "";
-    for (let i = 0; i < 10; i++) doc = mergeDecision(doc, entry({ title: `决策 ${i}`, decision: `D${i}` }));
+    for (let i = 0; i < 10; i++)
+      doc = mergeDecision(doc, entry({ title: `决策 ${i}`, decision: `D${i}` }));
     expect(countDecisions(doc)).toBe(10);
     // 再更新第 3 条
     doc = mergeDecision(doc, entry({ title: "决策 3", decision: "D3-updated" }));

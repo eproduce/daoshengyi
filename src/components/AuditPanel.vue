@@ -126,9 +126,15 @@ const okCount = computed(() => rows.value.filter((r) => !r.is_error).length);
 /** 历史台账（按工具聚合，只看有失败的工具） */
 const ledger = computed<ToolFailureSummary[]>(() => summarizeFailures(rows.value));
 /** 本会话内存台账（工具在跑时实时记账，随「刷新」同步过来） */
-const sessionFailures = ref<{ tool: string; signature: string; sample: string; count: number }[]>([]);
+const sessionFailures = ref<{ tool: string; signature: string; sample: string; count: number }[]>(
+  [],
+);
 function exportFailureLedger() {
-  download("failure-ledger.md", failureLedgerToMarkdown(ledger.value, rows.value.length), "text/markdown");
+  download(
+    "failure-ledger.md",
+    failureLedgerToMarkdown(ledger.value, rows.value.length),
+    "text/markdown",
+  );
 }
 function lastFailTime(ts: number | null): string {
   return ts ? fmtTime(ts) : "—";
@@ -156,9 +162,7 @@ function refreshAudit() {
       content?: string;
       reasoning?: string;
     }[];
-    const historyText = messages
-      .map((m) => `${m.content ?? ""}\n${m.reasoning ?? ""}`)
-      .join("\n");
+    const historyText = messages.map((m) => `${m.content ?? ""}\n${m.reasoning ?? ""}`).join("\n");
     ctxAudit.value = auditContext([
       { id: "tools", label: "工具定义（schema）", text: tools.text, count: tools.count },
       {
@@ -202,13 +206,13 @@ onMounted(() => {
     <div v-if="ctxAudit" class="ap-audit">
       <div class="ap-stats">
         <span class="ap-stat" :title="'点击下方条数可导出完整报告'"
-          >📊 上下文成本：约 {{ ctxAudit.totalTokens.toLocaleString() }} tokens / {{ ctxAudit.totalChars.toLocaleString() }} 字符</span
+          >📊 上下文成本：约 {{ ctxAudit.totalTokens.toLocaleString() }} tokens /
+          {{ ctxAudit.totalChars.toLocaleString() }} 字符</span
         >
-        <span
-          v-for="r in ctxAudit.rows"
-          :key="r.id"
-          class="ap-stat"
-          >{{ r.label }}：{{ r.tokens.toLocaleString() }} tokens（{{ Math.round(r.share * 100) }}%｜{{ r.count ?? "—" }} 项）</span
+        <span v-for="r in ctxAudit.rows" :key="r.id" class="ap-stat"
+          >{{ r.label }}：{{ r.tokens.toLocaleString() }} tokens（{{
+            Math.round(r.share * 100)
+          }}%｜{{ r.count ?? "—" }} 项）</span
         >
         <button class="ap-btn" @click="exportAudit">导出报告</button>
       </div>
@@ -241,11 +245,14 @@ onMounted(() => {
     <div v-if="ledger.length || sessionFailures.length" class="ap-audit">
       <div class="ap-stats">
         <span class="ap-stat">❌ 失败台账：{{ ledger.length }} 个工具失败过</span>
-        <button class="ap-btn" @click="exportFailureLedger"><Download :size="13" /> 导出台账</button>
+        <button class="ap-btn" @click="exportFailureLedger">
+          <Download :size="13" /> 导出台账
+        </button>
       </div>
       <ul class="ap-hints">
         <li v-for="s in ledger.slice(0, 6)" :key="s.tool">
-          <b>{{ s.tool }}</b>：{{ s.failed }}/{{ s.total }} 失败（{{ Math.round(s.rate * 100) }}%，最近
+          <b>{{ s.tool }}</b
+          >：{{ s.failed }}/{{ s.total }} 失败（{{ Math.round(s.rate * 100) }}%，最近
           {{ lastFailTime(s.lastFailedAt) }}）——{{ s.advice }}
           <details v-if="s.groups.length" class="ap-fg">
             <summary>相似错误 ×{{ s.groups.length }} 类</summary>

@@ -99,7 +99,8 @@ export function sliceFileLines(content: unknown, opts: FileSliceOptions = {}): F
   }
 
   const wantedLen = toInt(opts.length);
-  const requestedEnd = wantedLen == null || wantedLen <= 0 ? totalLines : Math.min(totalLines, start + wantedLen - 1);
+  const requestedEnd =
+    wantedLen == null || wantedLen <= 0 ? totalLines : Math.min(totalLines, start + wantedLen - 1);
 
   // 按字符上限收行：整行装不下就停（切在行中间会破坏行号/锚点的可读性）
   const picked: string[] = [];

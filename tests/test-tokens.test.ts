@@ -94,14 +94,8 @@ assert(
   modelContextWindowTokens("https://api.anthropic.com", "claude-sonnet") === 200_000,
   "Anthropic 200k",
 );
-assert(
-  modelContextWindowTokens("https://api.openai.com/v1", "gpt-4o") === 128_000,
-  "gpt-4o 128k",
-);
-assert(
-  modelContextWindowTokens("https://api.openai.com/v1", "o3") === 200_000,
-  "o 系列 200k",
-);
+assert(modelContextWindowTokens("https://api.openai.com/v1", "gpt-4o") === 128_000, "gpt-4o 128k");
+assert(modelContextWindowTokens("https://api.openai.com/v1", "o3") === 200_000, "o 系列 200k");
 assert(
   modelContextWindowTokens("https://custom.llm.example.com", "") === 128_000,
   "未知端点回退 128k",

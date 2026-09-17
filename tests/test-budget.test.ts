@@ -90,10 +90,7 @@ describe("P0-6 预算护栏 · 阈值判定", () => {
   });
 
   it("同级多档命中时 worst 取比例更大者", () => {
-    const v = evaluateBudget(
-      S({ session: 8.5, daily: 9 }),
-      L({ session: 10, daily: 10 }),
-    );
+    const v = evaluateBudget(S({ session: 8.5, daily: 9 }), L({ session: 10, daily: 10 }));
     expect(v.level).toBe("warn");
     expect(v.worst?.scope).toBe("daily");
   });
@@ -107,16 +104,12 @@ describe("P0-6 预算护栏 · 阈值判定", () => {
   });
 
   it("warnRatio 可自定义，非法值回落到 0.8", () => {
-    expect(
-      evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 0.5 }).level,
-    ).toBe("warn");
+    expect(evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 0.5 }).level).toBe(
+      "warn",
+    );
     // 0 / 1 / 越界值都不可用 → 回落默认 0.8
-    expect(
-      evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 0 }).level,
-    ).toBe("ok");
-    expect(
-      evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 2 }).level,
-    ).toBe("ok");
+    expect(evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 0 }).level).toBe("ok");
+    expect(evaluateBudget(S({ daily: 5 }), L({ daily: 10 }), { warnRatio: 2 }).level).toBe("ok");
   });
 
   it("金额格式化统一两位小数（不用科学计数法）", () => {

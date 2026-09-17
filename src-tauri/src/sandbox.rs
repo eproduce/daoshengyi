@@ -105,7 +105,12 @@ mod tests {
 
     #[test]
     fn workspace_write_allows_only_workspace_and_tmp() {
-        let p = profile_for("workspace-write", Some("/Users/tester/proj"), "/Users/tester").unwrap();
+        let p = profile_for(
+            "workspace-write",
+            Some("/Users/tester/proj"),
+            "/Users/tester",
+        )
+        .unwrap();
         assert!(p.contains("(subpath \"/Users/tester/proj\")"));
         assert!(p.contains("/private/tmp"));
         assert!(p.contains("/Library/Caches"));

@@ -28,7 +28,11 @@ export interface UnitCategory {
   units: UnitEntry[];
 }
 
-const u = (name: string, aliases: string[], factor: number): UnitEntry => ({ name, aliases, factor });
+const u = (name: string, aliases: string[], factor: number): UnitEntry => ({
+  name,
+  aliases,
+  factor,
+});
 
 export const UNIT_CATEGORIES: UnitCategory[] = [
   {

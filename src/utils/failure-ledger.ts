@@ -55,7 +55,8 @@ const FILE_EXT_SRC =
   "tsx?|jsx?|mjs|cjs|vue|rs|py|rb|go|java|kt|swift|md|json|jsonl|toml|ya?ml|css|scss|html|txt|log|csv|db|sqlite|sh|zsh|lock";
 
 /** 剥掉各工具自加的前缀标记，让 `⛔ ENOENT…` 与 `错误: ENOENT…` 归到同一组 */
-const LEADING_MARKERS = /^[\s\uFE0F]*(?:⛔|❌|⚠️|⚠|×|✗|✘|!)*(?:\s*(?:错误|失败|error|failed|exception|panic)[:：]?)?[\s\uFE0F]*/i;
+const LEADING_MARKERS =
+  /^[\s\uFE0F]*(?:⛔|❌|⚠️|⚠|×|✗|✘|!)*(?:\s*(?:错误|失败|error|failed|exception|panic)[:：]?)?[\s\uFE0F]*/i;
 
 /** 错误特征里「导致同因异文」的模式 → 建议。顺序即优先级，命中即用。 */
 const ADVICE_RULES: { re: RegExp; advice: string }[] = [
@@ -87,7 +88,10 @@ const ADVICE_RULES: { re: RegExp; advice: string }[] = [
     re: /\b(?:401|403)\b|unauthorized|forbidden|invalid api key|api key/i,
     advice: "凭据或授权有问题：检查设置里的 Key/权限，别反复重试同一个请求",
   },
-  { re: /\b429\b|rate limit|too many requests|限流/i, advice: "被限流：降低频率或换模型档，稍后重试" },
+  {
+    re: /\b429\b|rate limit|too many requests|限流/i,
+    advice: "被限流：降低频率或换模型档，稍后重试",
+  },
   {
     re: /unexpected token|json\.parse|invalid json|syntaxerror|不是合法(?:的)?json/i,
     advice: "JSON 不合法：检查是不是把自然语言混进参数，或先取原文再解析",
@@ -101,7 +105,10 @@ const ADVICE_RULES: { re: RegExp; advice: string }[] = [
     re: /old_text|not found in file|anchor|锚点|未匹配/i,
     advice: "文件内容已变（或 old_text 不唯一）：重新读取该文件取最新内容，必要时带行锚点",
   },
-  { re: /context (?:length|window)|too many tokens|token 超|超出上下文/i, advice: "上下文超限：先压缩历史或收尾本轮，再继续" },
+  {
+    re: /context (?:length|window)|too many tokens|token 超|超出上下文/i,
+    advice: "上下文超限：先压缩历史或收尾本轮，再继续",
+  },
   { re: /disk|enospc|no space|空间不足/i, advice: "磁盘空间不足：清理或换写入位置" },
 ];
 
@@ -163,11 +170,12 @@ export function failureSignature(tool: string, errorText: unknown): string {
 /** 一条人类可读的错误样本（首行、截断） */
 export function errorSample(text: unknown): string {
   const s = text == null ? "" : String(text);
-  const first = s
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)[0] ?? "";
+  const first =
+    s
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)[0] ?? "";
   const clipped = first.length > MAX_SAMPLE_TEXT ? first.slice(0, MAX_SAMPLE_TEXT) + "…" : first;
   return clipped || "(空结果)";
 }
@@ -235,7 +243,13 @@ export function summarizeFailures(
       if (at > g.lastAt) g.lastAt = at;
       if (at && (g.firstAt === 0 || at < g.firstAt)) g.firstAt = at;
     } else {
-      a.groups.set(sig, { signature: sig, sample: errorSample(r.result), count: 1, firstAt: at, lastAt: at });
+      a.groups.set(sig, {
+        signature: sig,
+        sample: errorSample(r.result),
+        count: 1,
+        firstAt: at,
+        lastAt: at,
+      });
     }
   }
   const out: ToolFailureSummary[] = [];
@@ -275,7 +289,9 @@ export function failureAdvice(
   const tool = summary.tool;
   // 失败率视角：高失败率说明「这个工具本身不好用」，而不是偶发
   if (summary.total >= 3 && summary.rate >= 0.5) {
-    parts.push(`失败率 ${Math.round(summary.rate * 100)}%（${summary.failed}/${summary.total}）——换工具或换思路，别硬用它`);
+    parts.push(
+      `失败率 ${Math.round(summary.rate * 100)}%（${summary.failed}/${summary.total}）——换工具或换思路，别硬用它`,
+    );
   } else if (summary.failed >= 3) {
     parts.push(`已失败 ${summary.failed} 次——同一处反复失败说明前提假设错了，先查现状`);
   }
@@ -287,17 +303,15 @@ export function failureAdvice(
 
 /** 台账 → Markdown（审计面板导出用） */
 export function failureLedgerToMarkdown(summaries: ToolFailureSummary[], totalRows = 0): string {
-  const lines = [
-    "# 工具失败台账",
-    "",
-    `样本：最近 ${totalRows || "?"} 条工具调用记录`,
-    "",
-  ];
+  const lines = ["# 工具失败台账", "", `样本：最近 ${totalRows || "?"} 条工具调用记录`, ""];
   if (!summaries.length) {
     lines.push("（样本内没有失败记录）");
     return lines.join("\n");
   }
-  lines.push("| 工具 | 调用 | 失败 | 失败率 | 最近失败 | 主要错误 | 建议 |", "|---|---|---|---|---|---|---|");
+  lines.push(
+    "| 工具 | 调用 | 失败 | 失败率 | 最近失败 | 主要错误 | 建议 |",
+    "|---|---|---|---|---|---|---|",
+  );
   for (const s of summaries) {
     lines.push(
       `| ${esc(s.tool)} | ${s.total} | ${s.failed} | ${Math.round(s.rate * 100)}% | ${
@@ -399,10 +413,16 @@ export function failureHint(tool: string, errorText: unknown): string | null {
 }
 
 /** 台账快照（供界面展示，按失败次数降序） */
-export function failureLedgerRows(): { tool: string; signature: string; sample: string; count: number }[] {
+export function failureLedgerRows(): {
+  tool: string;
+  signature: string;
+  sample: string;
+  count: number;
+}[] {
   const out: { tool: string; signature: string; sample: string; count: number }[] = [];
   for (const [tool, m] of ledger) {
-    for (const e of m.values()) out.push({ tool, signature: e.signature, sample: e.sample, count: e.count });
+    for (const e of m.values())
+      out.push({ tool, signature: e.signature, sample: e.sample, count: e.count });
   }
   return out.sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
 }

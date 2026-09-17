@@ -7,7 +7,6 @@ import {
   nudgeContextFrom,
   planAutoContinue,
   ruleById,
-  type GoalLike,
   type TurnSignals,
 } from "../src/utils/auto-continue";
 import type { Goal } from "../src/utils/goals";
@@ -131,9 +130,9 @@ describe("P1-6 续跑 · 护栏顺序", () => {
     expect(d.action).toBe("stop");
     if (d.action === "stop") expect(d.why).toContain("轮数");
     // 有余额则继续
-    expect(
-      decideAutoContinue({ reasons: [...reasons], remainingRounds: 5 }).action,
-    ).toBe("continue");
+    expect(decideAutoContinue({ reasons: [...reasons], remainingRounds: 5 }).action).toBe(
+      "continue",
+    );
   });
 
   it("本回合总次数上限", () => {
@@ -275,10 +274,11 @@ describe("P1-6 续跑 · nudge 文本可执行", () => {
 
 describe("P1-6 续跑 · 一体化入口 planAutoContinue", () => {
   it("返回决策同时带上命中的问题列表（便于日志排查）", () => {
-    const r = planAutoContinue(
-      signals({ verificationIssue: { kind: "test", status: "stale" } }),
-      { attempts: {}, totalContinues: 0, remainingRounds: 5 },
-    );
+    const r = planAutoContinue(signals({ verificationIssue: { kind: "test", status: "stale" } }), {
+      attempts: {},
+      totalContinues: 0,
+      remainingRounds: 5,
+    });
     expect(r.action).toBe("continue");
     expect(r.reasons).toContain("verify-gap");
     if (r.action === "continue") {

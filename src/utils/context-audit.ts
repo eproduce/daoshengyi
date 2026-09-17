@@ -133,10 +133,14 @@ export function auditContext(parts: ContextPart[], windowTokens?: number): Conte
     );
   }
   if (growingRow && growingRow.tokens > 0 && (!history || history.share < HISTORY_SHARE_HINT)) {
-    hints.push(`「${growingRow.label}」随对话增长，是唯一会持续变大的区块，排查窗口吃紧时优先看它。`);
+    hints.push(
+      `「${growingRow.label}」随对话增长，是唯一会持续变大的区块，排查窗口吃紧时优先看它。`,
+    );
   }
   if (duplicates.length > 0) {
-    hints.push(`检测到 ${duplicates.length} 处重复注入：同样内容被反复塞进上下文，等于白花 token（见下方明细）。`);
+    hints.push(
+      `检测到 ${duplicates.length} 处重复注入：同样内容被反复塞进上下文，等于白花 token（见下方明细）。`,
+    );
   }
   if (hints.length === 0) {
     hints.push("各区块占比均衡，没有明显浪费；继续观察「历史消息」随轮次的增长即可。");

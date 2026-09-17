@@ -37,7 +37,9 @@ const SAFE_RM_PATH =
 
 const TEMP_PATH = /^(\/tmp\/|\/var\/folders\/|\$TMPDIR|~\/Library\/Caches\/|\.\/?\.cache\/)/;
 
-function rmInvocation(cmd: string): { recursive: boolean; force: boolean; targets: string[] } | null {
+function rmInvocation(
+  cmd: string,
+): { recursive: boolean; force: boolean; targets: string[] } | null {
   const m = /\brm\b([^|;&\n]*)/.exec(cmd);
   if (!m) return null;
   const tokens = m[1].match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
@@ -314,7 +316,8 @@ export function assessCommandRisk(command: string): RiskVerdict {
       const inv = rmInvocation(cmd);
       if (!inv || !inv.recursive || inv.targets.length === 0) continue;
       const allSafe = inv.targets.every(
-        (t) => SAFE_RM_PATH.test(t) || TEMP_PATH.test(t) || /^\.\/(dist|build|out|target|tmp)/.test(t),
+        (t) =>
+          SAFE_RM_PATH.test(t) || TEMP_PATH.test(t) || /^\.\/(dist|build|out|target|tmp)/.test(t),
       );
       if (allSafe) {
         remember({

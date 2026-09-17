@@ -251,8 +251,8 @@ fn take_new_output(id: u32) -> Result<(String, bool, Option<i32>), String> {
 
 /// 等待至多 `yield_ms`：期间持续收集新增输出；进程提前结束则立即返回。
 async fn collect_output(id: u32, yield_ms: u64) -> Result<ExecResult, String> {
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(yield_ms.min(EXEC_MAX_YIELD_MS));
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(yield_ms.min(EXEC_MAX_YIELD_MS));
     let mut output = String::new();
     let (running, exit_code) = loop {
         let (text, run, code) = take_new_output(id)?;
@@ -292,12 +292,7 @@ pub async fn exec_command_agent(
     sandbox_mode: Option<String>,
     workspace: Option<String>,
 ) -> Result<ExecResult, String> {
-    let id = pty_spawn_with(
-        command,
-        cwd,
-        sandbox_mode.as_deref(),
-        workspace.as_deref(),
-    )?;
+    let id = pty_spawn_with(command, cwd, sandbox_mode.as_deref(), workspace.as_deref())?;
     collect_output(id, yield_ms.unwrap_or(1000)).await
 }
 
@@ -431,7 +426,9 @@ mod tests {
         assert!(r.running, "sleep 期间应报告仍在运行");
         assert!(r.output.contains("first"));
         // 再等一次：应拿到后续输出（增量语义）
-        let r2 = write_stdin_agent(r.session_id, None, Some(3000)).await.unwrap();
+        let r2 = write_stdin_agent(r.session_id, None, Some(3000))
+            .await
+            .unwrap();
         assert!(r2.output.contains("second"), "增量输出: {:?}", r2.output);
         assert!(!r2.running);
         pty_kill(r.session_id).unwrap();
@@ -440,7 +437,9 @@ mod tests {
     /// 会话不存在时给出明确错误（而不是 panic）
     #[tokio::test]
     async fn write_stdin_reports_missing_session() {
-        let err = write_stdin_agent(999_999, None, Some(100)).await.unwrap_err();
+        let err = write_stdin_agent(999_999, None, Some(100))
+            .await
+            .unwrap_err();
         assert!(err.contains("会话不存在"), "错误信息: {err}");
     }
 }

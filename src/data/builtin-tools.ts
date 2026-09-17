@@ -16,7 +16,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "current_time",
-    desc: '获取**当前真实时间**（本地时间 + 星期 + ISO 8601 + 时区）。**何时用**：需要「今天/现在/本周」这类判断（写日报、算日期差、判断交易日、生成带日期文件名）时**先调它**，不要凭训练数据猜日期或用「今天」含糊表述。无参数。',
+    desc: "获取**当前真实时间**（本地时间 + 星期 + ISO 8601 + 时区）。**何时用**：需要「今天/现在/本周」这类判断（写日报、算日期差、判断交易日、生成带日期文件名）时**先调它**，不要凭训练数据猜日期或用「今天」含糊表述。无参数。",
   },
   {
     name: "view_image",
@@ -48,7 +48,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "browser_close",
-    desc: '关闭内置浏览器，释放进程与端口。任务结束时调用（应用也会在每轮对话收尾自动关闭）。无参数。',
+    desc: "关闭内置浏览器，释放进程与端口。任务结束时调用（应用也会在每轮对话收尾自动关闭）。无参数。",
   },
   {
     name: "fetch_page",
@@ -200,7 +200,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "list_agents",
-    desc: '**列出 Agent 开的后台子会话及状态（融合自 Codex 的 list_agents）**。无参数。返回每个子会话的 id/标题/状态（执行中/已完成/已中断）/运行时长/结果预览。**使用时机**：开了多个后台子会话（session_spawn）后，不确定还有哪些在跑、哪个已完成时；取完整结果用 session_resume，不要了用 interrupt_agent。',
+    desc: "**列出 Agent 开的后台子会话及状态（融合自 Codex 的 list_agents）**。无参数。返回每个子会话的 id/标题/状态（执行中/已完成/已中断）/运行时长/结果预览。**使用时机**：开了多个后台子会话（session_spawn）后，不确定还有哪些在跑、哪个已完成时；取完整结果用 session_resume，不要了用 interrupt_agent。",
   },
   {
     name: "interrupt_agent",
@@ -248,7 +248,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "get_goal",
-    desc: '**查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。返回目标描述/状态（active/blocked/complete/abandoned）/已消耗与预算百分比。**使用时机**：长任务中不确定「我们到底要做到哪一步」时先看一眼；预算接近用尽时应尽快收尾。系统每轮也会自动注入当前目标，因此无需频繁调用。',
+    desc: "**查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。返回目标描述/状态（active/blocked/complete/abandoned）/已消耗与预算百分比。**使用时机**：长任务中不确定「我们到底要做到哪一步」时先看一眼；预算接近用尽时应尽快收尾。系统每轮也会自动注入当前目标，因此无需频繁调用。",
   },
   {
     name: "create_goal",
@@ -260,7 +260,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "get_context_remaining",
-    desc: '**查询当前上下文的占用与剩余预算（融合自 Codex）**。无参数。返回：已用/剩余 tokens、占用百分比、本次将发送多少条历史、以及**收尾建议**。**使用时机**：长任务中途、或准备把大段内容回填给模型前，先看一眼预算；接近上限（≥85%）时应**先收尾**——给结论与产物路径，把未完成部分写进文件/待办，必要时用 new_context_window 压缩历史。',
+    desc: "**查询当前上下文的占用与剩余预算（融合自 Codex）**。无参数。返回：已用/剩余 tokens、占用百分比、本次将发送多少条历史、以及**收尾建议**。**使用时机**：长任务中途、或准备把大段内容回填给模型前，先看一眼预算；接近上限（≥85%）时应**先收尾**——给结论与产物路径，把未完成部分写进文件/待办，必要时用 new_context_window 压缩历史。",
   },
   {
     name: "new_context_window",
@@ -335,7 +335,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "trash_empty",
-    desc: '**清空回收站（永久删除，不可恢复）**。参数 {}。**何时用**：仅当用户明确要求「清空回收站/彻底删掉这些」时；默认**不要**主动清空——它会让所有可恢复删除永久丢失。',
+    desc: "**清空回收站（永久删除，不可恢复）**。参数 {}。**何时用**：仅当用户明确要求「清空回收站/彻底删掉这些」时；默认**不要**主动清空——它会让所有可恢复删除永久丢失。",
   },
   {
     name: "log_decision",

@@ -38,7 +38,7 @@ function fnv1a(s: string): number {
 /// 行哈希：3 字符（36^3 = 46656 种）。空行/纯空白行也参与（否则空行锚点没意义）
 export function hashLine(line: string): string {
   const h = fnv1a(line.trim());
-  let n = h % (ALPHABET.length ** 3);
+  let n = h % ALPHABET.length ** 3;
   let out = "";
   for (let i = 0; i < 3; i++) {
     out = ALPHABET[n % ALPHABET.length] + out;
@@ -187,7 +187,7 @@ export function occurrenceForAnchor(
   let offset = 0;
   for (let i = 0; i < Math.min(index, lines.length); i++) offset += lines[i].length + 1; // +1 补 '\n'
   const hits: number[] = [];
-  for (let from = 0; ; ) {
+  for (let from = 0; ;) {
     const at = text.indexOf(oldText, from);
     if (at < 0) break;
     hits.push(at);

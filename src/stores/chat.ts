@@ -89,7 +89,11 @@ import {
   type MinedToolStep,
 } from "@/utils/workflow-mining";
 import { markExternalToolResult } from "@/utils/untrusted";
-import { buildSkillRoutingTable, matchSkillsForMessage, collectSkillRequires } from "@/utils/skill-router";
+import {
+  buildSkillRoutingTable,
+  matchSkillsForMessage,
+  collectSkillRequires,
+} from "@/utils/skill-router";
 import {
   buildNativeToolRegistry,
   activateCatalogTool,
@@ -157,12 +161,7 @@ import {
   type StageId,
 } from "@/utils/compaction-ladder";
 // P1-7 决策日志（DECISIONS.md）
-import {
-  countDecisions,
-  decisionPath,
-  mergeDecision,
-  oneLine,
-} from "@/utils/decision-log";
+import { countDecisions, decisionPath, mergeDecision, oneLine } from "@/utils/decision-log";
 // P1-8 输出风格（结论先行/详细/教学/审阅）
 import { applyOutputStyle } from "@/utils/output-styles";
 // P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
@@ -172,10 +171,7 @@ import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
 // OCR 读到长数字串时提示用 image_inspect 交叉验证（等宽数字串 OCR 最不可靠）
 import { ocrCrossCheckHint } from "@/utils/ocr-advice";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
-import {
-  planAutoContinue,
-  type TurnSignals,
-} from "@/utils/auto-continue";
+import { planAutoContinue, type TurnSignals } from "@/utils/auto-continue";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -401,7 +397,10 @@ async function userHome(): Promise<string> {
  * 返回 true = 放行（allow 已记住会话免确认）；false = 未命中（走原有审批流程）。
  * `ask` 会在这里就地弹确认框，用户拒绝则返回拒绝文案。
  */
-async function applyPermissionRules(tool: string, args: Record<string, unknown>): Promise<string | true | false> {
+async function applyPermissionRules(
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string | true | false> {
   const rules = permissionRules();
   if (!rules.length) return false;
   const ctx: ToolCallContext = {
@@ -463,9 +462,11 @@ async function runHookAction(a: PlannedAction): Promise<void> {
   const label = a.rule.id ?? `#${a.index + 1}`;
   try {
     if (a.kind === "notify") {
-      invoke("notify_user", { title: "道生一 · 钩子", body: a.text, onlyWhenUnfocused: true }).catch(
-        () => {},
-      );
+      invoke("notify_user", {
+        title: "道生一 · 钩子",
+        body: a.text,
+        onlyWhenUnfocused: true,
+      }).catch(() => {});
       return;
     }
     if (a.kind === "http") {
@@ -476,13 +477,19 @@ async function runHookAction(a: PlannedAction): Promise<void> {
     }
     if (a.kind === "shell") {
       // 边界④：钩子的命令同样受权限规则约束
-      const verdict = evaluateRules(permissionRules(), { tool: "run_command", command: a.command }, await userHome());
+      const verdict = evaluateRules(
+        permissionRules(),
+        { tool: "run_command", command: a.command },
+        await userHome(),
+      );
       if (verdict.decision === "deny") {
         dbg(`[hook] ${label} 命令被权限规则拒绝：${verdict.message}`);
         return;
       }
       if (verdict.decision === "ask") {
-        const ok = await askConfirm(`${verdict.message}\n\n钩子「${label}」要执行：\n$ ${a.command}\n\n允许吗？`);
+        const ok = await askConfirm(
+          `${verdict.message}\n\n钩子「${label}」要执行：\n$ ${a.command}\n\n允许吗？`,
+        );
         if (!ok) {
           dbg(`[hook] ${label} 用户拒绝了钩子命令`);
           return;
@@ -675,7 +682,7 @@ async function callToolStoppable(
   // P1-3：tool_after 钩子（成功）——这是 agent 四条工具路径的共同出口
   void fireHooks({ ...hookCtx, event: "tool_after", status: "success", result: data });
   return data;
-}/// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
+} /// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
 class AgentStoppedError extends Error {
   constructor() {
     super("任务已由用户停止");
@@ -802,10 +809,10 @@ function getMcpToolsPrompt(): string {
     '\n- **read_mcp_resource** (app): **读取 MCP 资源完整内容（融合自 Codex）**。参数 {"server": "MCP 服务器名", "uri": "资源 uri（先 list_mcp_resources 拿到）"}。内容过长会截断，需要全部时先让服务器分页/过滤或改用对应工具查。\n' +
     '\n- **request_user_input** (app): **向用户提问并等待回答（融合自 Codex）**。参数 {"question": "要问的问题", "context": 可选背景, "choices": 可选快捷选项数组, "default": 可选默认值}。**仅在关键信息缺失/歧义且猜错代价高时用**；能合理假设就先推进并标注假设。用户可点「跳过」，此时请按合理假设继续、不要反复追问。\n' +
     '\n- **request_permissions** (app): **主动申请会话级授权（融合自 Codex）**。参数 {"capability": "run_command | replace_string | insert_string | delete_file | apply_patch", "reason": "理由"}。得到授权后本会话同类操作不再逐次弹确认（仅本会话有效；命令策略的 deny 规则仍不可绕过）。预计要连续多次写操作/命令时先申请一次，比逐条触发弹窗更高效。\n' +
-    '\n- **get_goal** (app): **查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。系统每轮会自动注入当前目标，无需频繁调用；长任务中不确定「要做到哪一步」时看一眼；预算接近用尽就尽快收尾。\n' +
+    "\n- **get_goal** (app): **查看当前会话的目标与 token 预算（融合自 Codex ext/goal）**。无参数。系统每轮会自动注入当前目标，无需频繁调用；长任务中不确定「要做到哪一步」时看一眼；预算接近用尽就尽快收尾。\n" +
     '\n- **create_goal** (app): **登记跨回合目标（融合自 Codex）**。参数 {"objective": "可验收的目标描述", "token_budget": 可选 token 上限}。**仅在用户/系统显式要求时创建**，不要从普通任务臆测；**已有未完成目标会拒绝**（改用 update_goal）。\n' +
     '\n- **update_goal** (app): **更新目标状态（融合自 Codex）**。参数 {"status": "active | complete | blocked | abandoned", "note": 可选备注}。达成→complete；卡在外部依赖→blocked；放弃→abandoned。不要用它改目标描述。\n' +
-    '\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n' +
+    "\n- **get_context_remaining** (app): **查询当前上下文占用与剩余预算（融合自 Codex）**。无参数。长任务中途、或准备把大段内容回填给模型前先看一眼；接近上限（≥85%）时先收尾（给结论+产物路径，未完成部分写文件/待办），必要时用 new_context_window 压缩历史。\n" +
     '\n- **new_context_window** (app): **压缩历史上下文（融合自 Codex）**：把较早历史压成交接摘要后继续。参数 {"keep_last_messages": 可选，保留最近几条（默认 6）}。**系统已自动压缩**（占用达 ~82% 自动做一次），通常无需主动调用；只影响发给模型的历史（界面仍保留全部），压缩掉的细节请从已落盘文件读取、不要臆测。\n' +
     '\n- **tool_search** (app): **检索并激活未直接列出的工具（融合自 Codex，BM25 检索）**。参数 {"query": "自然语言描述你要做的事或能力，中英文均可", "limit": 可选返回条数}。**使用时机**：你需要某类能力（如「数据库查询」「发消息」「抓股票数据」）但当前工具列表里**找不到对应工具**时——先搜一下；系统会把命中的工具立即加入可用工具。也可用于**确认某个工具的真实参数名**（不要靠猜）。不要用它做普通信息搜索（那用 web_search）。\n' +
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
@@ -832,7 +839,7 @@ function getMcpToolsPrompt(): string {
     '\n- **memory_recall** (app): 按关键词检索长期记忆，回忆以前会话中记住的信息。参数 {"query": "关键词", "limit": 条数}。**使用时机**：用户问「我之前说过…吗」「记得我上次…」或需要结合历史偏好/决策回答时，先调用回忆，再基于回忆内容回答（不要凭编造）。\n' +
     '\n- **memory_forget** (app): 用户要求「忘掉/删除某条记忆」时，按关键词检索并删除相关记忆。参数 {"query": "要遗忘的记忆关键词"}。\n' +
     '\n- **send_im** (app): 主动推送一条消息到飞书/企业微信/钉钉群机器人（只发不收，无代理直连）。参数 {"platform": "feishu" 或 "wecom" 或 "dingtalk", "text": "要推送的内容"}。用于用户要求把信息/提醒推送到聊天工具时。' +
-    '\n- **list_agents** (app): **列出 Agent 开的后台子会话及状态（融合自 Codex）**。无参数。返回 id/标题/状态/运行时长/结果预览；开多个 session_spawn 后一眼看清谁在跑、谁已完成。取完整结果用 session_resume。\n' +
+    "\n- **list_agents** (app): **列出 Agent 开的后台子会话及状态（融合自 Codex）**。无参数。返回 id/标题/状态/运行时长/结果预览；开多个 session_spawn 后一眼看清谁在跑、谁已完成。取完整结果用 session_resume。\n" +
     '\n- **interrupt_agent** (app): **中断后台子会话（融合自 Codex）**。参数 {"session_id": "session_spawn 返回的 id", "reason": 可选}。后台是单次非流式请求，已发出的调用会跑完但**结果被丢弃**（不写进会话），省不下这次 token——只在方向错/不再需要时用。\n' +
     "\n- **workflow_list** (app): 列出已保存的工作流（名称 + id）。参数 {}。**使用时机**：接到多步骤/可复用任务时，先查是否已有匹配的工作流。" +
     '\n- **workflow_run** (app): **按名称或 id 执行已保存的工作流**（复用可视化工作流引擎：text/llm/tool/condition/code/end 节点按拓扑执行；LLM 节点用模型、工具节点调内置工具）。参数 {"name": "工作流名称或 id", "input": "可选外部输入（节点里以 {{user}} 引用）"}。返回节点日志与最终输出。**使用时机**：用户需求与已沉淀的工作流同类（同一流程复用）时，先 workflow_list 查匹配，命中直接 workflow_run。' +
@@ -907,7 +914,7 @@ function getMcpToolsPrompt(): string {
     "\n\n## 文件编辑规范（编程/改文件时）\n" +
     "- **修改已有文件优先用精确编辑**：小改动用 replace_string / insert_string（只改目标片段、返回 unified diff 显示改动）；只有新建文件或整体重写才用 write_file / create_file。\n" +
     "- 编辑前若不确定文件内容，先用 list_dir 确认路径、read_file 读取相关片段，再精确编辑（old_text/anchor 必须与文件内容**逐字一致**，含缩进/标点）。\n" +
-    "- **同一段文本可能出现多次 / 要连改多处 / 文件本轮已被改过时**：先用 `read_file` 带 `with_anchors: true` 拿行锚点，编辑时带 `\"anchor_line\": 行号, \"anchor_hash\": \"哈希\"`——锚点会自动消歧「改第几处」，且**文件已变动时直接拒绝执行**并告知新行号（比默默改错位置安全）。锚点前缀不要抄进 old_text。\n" +
+    '- **同一段文本可能出现多次 / 要连改多处 / 文件本轮已被改过时**：先用 `read_file` 带 `with_anchors: true` 拿行锚点，编辑时带 `"anchor_line": 行号, "anchor_hash": "哈希"`——锚点会自动消歧「改第几处」，且**文件已变动时直接拒绝执行**并告知新行号（比默默改错位置安全）。锚点前缀不要抄进 old_text。\n' +
     "- 每次编辑会返回 **unified diff**（@@ 头 + 改动行）：编辑后**必须在最终回复中说明改了什么**（列出新增/修改/删除的关键行），让用户看到确切改动；不要只说『已修改』。\n" +
     "- 修改代码后**必须用 run_tests 验证**（验证循环门禁），不能假设改对了。\n" +
     "- **非显然的技术决策要留痕**：换运行时/改架构/选依赖/定接口/否掉某个方案时，用 `log_decision` 写进项目 `DECISIONS.md`（做了什么 / 为什么 / 排除了什么）。琐碎改动不记；理由与排除方案才是它的价值——将来接手的人和新会话的你都靠它，不靠记忆。\n" +
@@ -967,7 +974,7 @@ function getMcpToolsPrompt(): string {
     "- 分析用户本地目录/项目时，这些就是本地文件系统操作（server 填 app，用内置 list_dir / read_file / write_file / replace_string），不要联网搜索。\n" +
     "\n## 浏览器自动化使用要点（内置 browser_* 工具，无需安装插件）\n" +
     "- **你具备内置浏览器能力**：`browser_navigate`（打开网址，返回标题+最终地址+正文前 4000 字）、`browser_evaluate`（执行 JS 取值）、`browser_screenshot`（截图存证）、`browser_click`（点击元素）、`browser_fill`（填输入框）。用户要求打开网页、跳转某网址、搜索、点击或操作页面时（含「打开 XX 浏览器去某网站/首页」这类带浏览器名的说法）——**必须实际调用这些工具完成**；**禁止声称「无法打开浏览器 / 纯文本环境 / 不具备图形界面」**，也不要让用户自己去操作。\n" +
-    '- **验证本地生成的 HTML/网页渲染**：先 `run_command` 起本地静态服务（如 `python3 -m http.server 8000`，在文件所在目录）或直接用 `file://` 路径，再用 `browser_navigate` 打开 → `browser_evaluate` 读 `document.body.innerText` / `browser_screenshot` 截图核对渲染。**严禁把 `file://` 路径或本地磁盘路径当作网页 URL 交给 `fetch_page`**——fetch_page 只抓取 HTTP(S) 网页并做 SSRF 防护，对本地文件会直接报错；本地文件内容用 `read_file` 读取。\n' +
+    "- **验证本地生成的 HTML/网页渲染**：先 `run_command` 起本地静态服务（如 `python3 -m http.server 8000`，在文件所在目录）或直接用 `file://` 路径，再用 `browser_navigate` 打开 → `browser_evaluate` 读 `document.body.innerText` / `browser_screenshot` 截图核对渲染。**严禁把 `file://` 路径或本地磁盘路径当作网页 URL 交给 `fetch_page`**——fetch_page 只抓取 HTTP(S) 网页并做 SSRF 防护，对本地文件会直接报错；本地文件内容用 `read_file` 读取。\n" +
     "- **不要再用 `puppeteer_*` 插件工具**（即便装过「浏览器自动化」插件也应优先内置 `browser_*`）：内置浏览器直连 CDP，无 Node/npx 依赖，实测失败率显著更低。\n" +
     "- **操作顺序**：先用 `browser_navigate` 打开目标页面 → 再 `browser_fill` 输入 / `browser_click` 点击 / `browser_evaluate` 提取 / `browser_screenshot` 截图。**不要跳过导航直接尝试输入或点击**（会返回未打开页面的错误）。\n" +
     "- **优先图形化操作（通用，适配任意站点/搜索引擎）**：搜索、输入用 `browser_fill` 填输入框（内部已触发 input/change 事件，兼容 React 受控组件）+ `browser_click` 点提交按钮。仅当页面确实无法图形化交互时，才兜底用带查询参数的 URL 直达（如 `https://www.baidu.com/s?wd=关键词`）。\n" +
@@ -1103,8 +1110,7 @@ export async function callMcpTool(
   args: Record<string, unknown>,
 ): Promise<string> {
   // 托盘「当前上下文」：记录正在执行的工具（本轮结束清空）
-  currentToolLabel.value =
-    server === "app" || server === "builtin" ? tool : `${server} · ${tool}`;
+  currentToolLabel.value = server === "app" || server === "builtin" ? tool : `${server} · ${tool}`;
   // P-A7 权限矩阵：工具级开关——被禁用的工具直接拦截（覆盖内置 + MCP 所有工具）
   if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
     return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
@@ -1160,7 +1166,10 @@ export async function callMcpTool(
       try {
         // create_file 转发到内置非覆盖版（已存在则拒绝），其余转发到内置 write_file（覆盖）
         const isCreate = /^create_file$/i.test(tool);
-        const res = await callBuiltinTool(isCreate ? "create_file" : "write_file", { path, content });
+        const res = await callBuiltinTool(isCreate ? "create_file" : "write_file", {
+          path,
+          content,
+        });
         // P0-5：写盘成功 = 一次改动（使之前的验证凭据过期）
         if (!/^(?:⛔|❌)/.test(res.trim())) noteMutation();
         return res;
@@ -1362,11 +1371,7 @@ function notifyTurnFinished(content: string, toolCount: number): void {
     const plan = useChatStore().taskPlan;
     const planAllDone =
       !!plan && plan.steps.length > 0 && plan.steps.every((s) => s.status === "done");
-    const title = planAllDone
-      ? "✅ 任务完成"
-      : toolCount > 0
-        ? "✅ 执行完成"
-        : "💬 回复完成";
+    const title = planAllDone ? "✅ 任务完成" : toolCount > 0 ? "✅ 执行完成" : "💬 回复完成";
     const suffix = plan
       ? `（${plan.steps.filter((s) => s.status === "done").length}/${plan.steps.length} 步）`
       : "";
@@ -1554,7 +1559,9 @@ function formatMcpResources(
   }
   if (resources.length > 40) lines.push(`…（还有 ${resources.length - 40} 个未列出）`);
   for (const t of templates.slice(0, 20)) {
-    lines.push(`- 模板 ${t.uriTemplate}${t.name ? `（${t.name}）` : ""} — 按模板填参后作为 uri 读取`);
+    lines.push(
+      `- 模板 ${t.uriTemplate}${t.name ? `（${t.name}）` : ""} — 按模板填参后作为 uri 读取`,
+    );
   }
   lines.push("\n用 read_mcp_resource(server, uri) 读取具体资源。");
   return lines.join("\n");
@@ -1768,7 +1775,8 @@ async function toolListAgents(): Promise<string> {
     }
     const conv = chat.conversations.find((c) => c.id === id);
     const last = conv?.messages[conv.messages.length - 1];
-    const done = !!last && last.role === "assistant" && String(last.content || "").trim().length > 0;
+    const done =
+      !!last && last.role === "assistant" && String(last.content || "").trim().length > 0;
     const state = meta.interrupted
       ? "⛔ 已中断"
       : done
@@ -1852,7 +1860,8 @@ async function compressConversation(
   const hist = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
   const cut = hist.length - keep;
   const already = conv.compactBefore ?? 0;
-  if (cut <= already + 1) return { ok: false, compressed: 0, chars: 0, reason: "历史很短，无需压缩" };
+  if (cut <= already + 1)
+    return { ok: false, compressed: 0, chars: 0, reason: "历史很短，无需压缩" };
   const aux = store.getRoutedAuxConfig("summarize");
   if (!aux.baseUrl || !aux.apiKey) {
     return { ok: false, compressed: 0, chars: 0, reason: "未配置可用的摘要模型/API Key" };
@@ -1895,9 +1904,7 @@ async function maybeAutoCompact(
 ): Promise<number> {
   const window = modelContextWindowTokens(config.baseUrl || "", config.model);
   const maxCtx = config.maxContextMessages || 50;
-  const hist = conv.messages
-    .filter((m) => m.role !== "system" && !m.streaming)
-    .slice(-maxCtx);
+  const hist = conv.messages.filter((m) => m.role !== "system" && !m.streaming).slice(-maxCtx);
   const est = hist.reduce(
     (s, m) => s + estimateMessageTokens(m.content || "", m.reasoning_content),
     0,
@@ -1917,7 +1924,9 @@ async function maybeAutoCompact(
       // index / trim：对「即将被摘要覆盖的老消息」备料（droppable）
       const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
       const cut = Math.max(0, histAll.length - AUTO_COMPACT_KEEP);
-      const droppable = histAll.slice(0, cut).map((m) => ({ role: m.role, content: m.content || "" }));
+      const droppable = histAll
+        .slice(0, cut)
+        .map((m) => ({ role: m.role, content: m.content || "" }));
       const prev = preparedDigest.get(convKey) ?? {};
       preparedDigest.set(convKey, { ...prev, ...prepareDigest(droppable) });
       await dbg(
@@ -2184,24 +2193,20 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       let emptyLlmOutput = false;
       const res = await executeWorkflow(graph, external, {
         llmCall: async (prompt, opts) => {
-          const data = await invoke<{ content?: string; reasoning_content?: string }>(
-            "chat_once",
-            {
-              config: {
-                base_url: config.baseUrl,
-                api_key: config.apiKey,
-                model: opts?.model || config.model,
-                max_tokens: config.maxTokens,
-                temperature: 0.3,
-                thinking_enabled: config.thinkingEnabled ?? false,
-                reasoning_effort: config.reasoningEffort ?? "low",
-                system_prompt:
-                  "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
-                enable_web_search: false,
-              },
-              messages: [{ role: "user", content: prompt }],
+          const data = await invoke<{ content?: string; reasoning_content?: string }>("chat_once", {
+            config: {
+              base_url: config.baseUrl,
+              api_key: config.apiKey,
+              model: opts?.model || config.model,
+              max_tokens: config.maxTokens,
+              temperature: 0.3,
+              thinking_enabled: config.thinkingEnabled ?? false,
+              reasoning_effort: config.reasoningEffort ?? "low",
+              system_prompt: "你是道生一工作流中的一个处理节点，根据输入上下文直接给出结果。",
+              enable_web_search: false,
             },
-          );
+            messages: [{ role: "user", content: prompt }],
+          });
           const body = (data?.content || "").trim();
           if (body) return body;
           // 思考兜底：思考型模型偶尔把结果只写在 reasoning 里
@@ -2459,7 +2464,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       try {
         const data = await invoke<unknown>("mcp_read_resource", { server, uri });
         const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-        return text.length > 20000 ? `${text.slice(0, 20000)}\n\n…（内容过长已截断，共 ${text.length} 字符）` : text;
+        return text.length > 20000
+          ? `${text.slice(0, 20000)}\n\n…（内容过长已截断，共 ${text.length} 字符）`
+          : text;
       } catch (e: unknown) {
         return `读取资源失败：${e instanceof Error ? e.message : String(e)}`;
       }
@@ -2469,7 +2476,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const question = String(args.question ?? args.prompt ?? "").trim();
       if (!question) throw new Error("request_user_input 需要 question 参数（要问用户的问题）");
       const choices = Array.isArray(args.choices)
-        ? (args.choices as unknown[]).map((c) => String(c)).filter(Boolean).slice(0, 6)
+        ? (args.choices as unknown[])
+            .map((c) => String(c))
+            .filter(Boolean)
+            .slice(0, 6)
         : undefined;
       const answer = await requestAskInput({
         question,
@@ -2565,7 +2575,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         return `已有未完成目标（${cur!.status}）：「${cur!.objective}」。**不能重复创建**——要改状态请用 update_goal（complete/blocked/abandoned）；确实要换目标先把它置为 abandoned。`;
       }
       const budgetRaw = Number(args.token_budget ?? args.tokenBudget ?? 0);
-      const tokenBudget = Number.isFinite(budgetRaw) && budgetRaw > 0 ? Math.round(budgetRaw) : null;
+      const tokenBudget =
+        Number.isFinite(budgetRaw) && budgetRaw > 0 ? Math.round(budgetRaw) : null;
       const now = Date.now();
       const goal: Goal = {
         objective,
@@ -2578,7 +2589,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       saveGoal(convId, goal);
       return (
         `✅ 已登记目标：「${objective}」\n${budgetLine(goal)}\n` +
-        "此后每轮都会把该目标注入上下文；你应持续推进直到达成，达成后调用 update_goal(status=\"complete\")。" +
+        '此后每轮都会把该目标注入上下文；你应持续推进直到达成，达成后调用 update_goal(status="complete")。' +
         (tokenBudget === null ? "（未设预算：如需限定消耗，可在创建时给 token_budget）" : "")
       );
     }
@@ -2809,7 +2820,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         notifyUndoChanged();
         out.push(`✅ ${res.path}（${f.hunks.length} 处片段）`);
       }
-      const warn = parsed.warnings.length > 0 ? `\n\n注意：\n- ${parsed.warnings.join("\n- ")}` : "";
+      const warn =
+        parsed.warnings.length > 0 ? `\n\n注意：\n- ${parsed.warnings.join("\n- ")}` : "";
       return `已应用补丁：${summarizePatch(parsed)}\n${out.join("\n")}${warn}`;
     }
     case "current_time": {
@@ -2840,7 +2852,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("view_image 需要 path 参数（本地图片文件路径）");
       const store = useChatStore();
       const cfg = store.currentConfig;
-      const isDeepSeek = ((cfg?.baseUrl || "") + (cfg?.model || "")).toLowerCase().includes("deepseek");
+      const isDeepSeek = ((cfg?.baseUrl || "") + (cfg?.model || ""))
+        .toLowerCase()
+        .includes("deepseek");
       if (!isDeepSeek) {
         const dataUrl = await invoke<string>("read_image_data_url", { path });
         pendingViewImages.push(dataUrl);
@@ -3174,7 +3188,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         }
         const idx = occurrenceForAnchor(lines, verdict.line - 1, oldText);
         if (idx && idx !== occurrence) {
-          dbg(`[anchor] 锚点第 ${verdict.line} 行 → old_text 第 ${idx} 次出现（原 occurrence=${occurrence ?? 1}）`);
+          dbg(
+            `[anchor] 锚点第 ${verdict.line} 行 → old_text 第 ${idx} 次出现（原 occurrence=${occurrence ?? 1}）`,
+          );
           occurrence = idx;
         } else if (!idx && !occurrence) {
           return (
@@ -3301,16 +3317,18 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     }
     case "trash_list": {
       // P0-4b 回收站：列出可恢复的删除（供用户找回文件）
-      const rows = await invoke<
-        { id: string; name: string; original: string; size: number; deleted_at: number }[]
-      >("trash_list");
+      const rows =
+        await invoke<
+          { id: string; name: string; original: string; size: number; deleted_at: number }[]
+        >("trash_list");
       const limit = Number(args.limit) > 0 ? Number(args.limit) : 20;
       if (!rows.length) return "回收站是空的（没有可恢复的删除）。";
       const lines = rows.slice(0, limit).map((r) => {
         const when = new Date(r.deleted_at * 1000).toLocaleString();
-        const size = r.size >= 1048576
-          ? `${(r.size / 1048576).toFixed(1)} MB`
-          : `${Math.max(1, Math.round(r.size / 1024))} KB`;
+        const size =
+          r.size >= 1048576
+            ? `${(r.size / 1048576).toFixed(1)} MB`
+            : `${Math.max(1, Math.round(r.size / 1024))} KB`;
         return `- ${r.name}｜${size}｜${when}\n  原位置：${r.original || "（记录缺失，只能手动取出）"}\n  条目 ID：${r.id}`;
       });
       return `回收站共 ${rows.length} 项（显示 ${Math.min(rows.length, limit)} 项，按删除时间倒序）：\n${lines.join(
@@ -3325,7 +3343,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       notifyUndoChanged();
       return msg;
     }
-    case "trash_empty": {      // P0-4b：清空回收站（永久删除，不可恢复）——先确认，避免误清
+    case "trash_empty": {
+      // P0-4b：清空回收站（永久删除，不可恢复）——先确认，避免误清
       const ok = await askConfirm(
         "⚠️ 清空回收站会**永久删除**里面所有文件（无法恢复）。确定继续吗？",
       );
@@ -3828,11 +3847,7 @@ const NATIVE_TOOLS_NOTE =
 /// `tools`：可选 OpenAI 风格 function schema 数组 → Rust chat_once 启用原生 function
 /// calling，返回 message.tool_calls。
 const CHAT_ONCE_TIMEOUT_MS = 60000;
-async function chatOnce(
-  config: ApiConfig,
-  convo: AgentMsg[],
-  tools?: OpenAIFunctionTool[] | null,
-) {
+async function chatOnce(config: ApiConfig, convo: AgentMsg[], tools?: OpenAIFunctionTool[] | null) {
   return Promise.race([
     invoke<{
       content: string;
@@ -4049,8 +4064,7 @@ async function runSubagentLoop(
         msgs.push({
           role: "tool",
           tool_call_id: call.id,
-          content:
-            truncateToolResult(markExternalToolResult(ref.tool, result)) + windDown,
+          content: truncateToolResult(markExternalToolResult(ref.tool, result)) + windDown,
         });
       }
       continue; // 结果已回填，继续下一轮
@@ -5248,8 +5262,7 @@ export const useChatStore = defineStore("chat", () => {
     let out = header ? `${header}\n` : "";
     out += (r.output || "").trimEnd() || "（本次没有新输出）";
     if (r.truncated) {
-      out +=
-        "\n\n…（输出过长已截断；需要完整日志请把命令重定向到文件，再用 read_file 分段读）";
+      out += "\n\n…（输出过长已截断；需要完整日志请把命令重定向到文件，再用 read_file 分段读）";
     }
     out += r.running
       ? `\n\n⏳ 进程仍在运行（session_id=${r.session_id}）。继续交互用 write_stdin（session_id=${r.session_id}；只取新输出可省略 input；输入需以 \\n 结尾；中断用 input="\\u0003" 即 Ctrl-C）。`
@@ -5260,7 +5273,9 @@ export const useChatStore = defineStore("chat", () => {
   /// 融合 Codex 的 exec_command：PTY 启动命令 + 等待 yieldMs 后返回【新增输出 + 会话号】。
   /// 与 run_command 共用安全门禁；关键区别：**超时不杀进程**，可由 write_stdin 继续交互。
   async function agentExecCommand(raw: string, cwd: string, yieldMs: number): Promise<string> {
-    const cmdStr = String(raw || "").replace(/～/g, "~").trim();
+    const cmdStr = String(raw || "")
+      .replace(/～/g, "~")
+      .trim();
     if (!cmdStr) throw new Error("exec_command 需要 command 参数（要执行的 shell 命令）");
     const denied = await gateAgentCommand(cmdStr);
     if (denied) return denied;
@@ -5623,7 +5638,7 @@ export const useChatStore = defineStore("chat", () => {
         sp +=
           `\n\n【工具发现】当前另有 ${deferredToolCount} 个工具**未直接列出**（长尾/MCP 工具）。` +
           "当你需要某类能力、但可用工具里找不到对应工具时，先调用 `tool_search` 用自然语言检索" +
-          "（如 tool_search(\"数据库查询\")）——命中的工具会立即加入你的可用工具，下一轮即可直接调用。" +
+          '（如 tool_search("数据库查询")）——命中的工具会立即加入你的可用工具，下一轮即可直接调用。' +
           "不要因为「列表里没有」就放弃、改用别的方式凑，或编造结果。";
       }
 
@@ -6223,7 +6238,13 @@ export const useChatStore = defineStore("chat", () => {
             );
           }
         }
-        return { toolCall, content: toolBuffer, nativeCalls, finishReason: roundFinish, usage: roundUsage };
+        return {
+          toolCall,
+          content: toolBuffer,
+          nativeCalls,
+          finishReason: roundFinish,
+          usage: roundUsage,
+        };
       }
 
       // 原生 function calling：执行一轮返回的结构化工具调用（一个或多个）。
@@ -6350,7 +6371,7 @@ export const useChatStore = defineStore("chat", () => {
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
-          if (stopRequested) break; // 用户停止 → 立即退出工具循环
+        if (stopRequested) break; // 用户停止 → 立即退出工具循环
         dbg(
           `[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}，原生=${!!nativeToolsOn}`,
         );
@@ -6362,8 +6383,7 @@ export const useChatStore = defineStore("chat", () => {
           // 端点不支持原生 tools（或首轮异常与 tools 相关）→ 降级文本模式重试本
           // 轮（错误发生在内容产出前，rustMsgs 未变）；仅对“本会话已启用原生”的首轮生效。
           const em = e instanceof Error ? e.message : String(e);
-          const toolsRelated =
-            /tool|function|tool_calls/i.test(em) || /argument/i.test(em);
+          const toolsRelated = /tool|function|tool_calls/i.test(em) || /argument/i.test(em);
           if (nativeToolsOn && !nativeDegraded && round === 0 && toolsRelated) {
             nativeDegraded = true;
             nativeToolsOn = null;
@@ -6421,7 +6441,7 @@ export const useChatStore = defineStore("chat", () => {
             rustMsgs.push({
               role: "user",
               content:
-                "⚠️ 你处于【任务模式】，但还没有创建任务计划。请**立即**调用 plan_task 为当前目标创建任务计划（参数 {\"title\":\"目标标题\",\"steps\":[\"子步骤1\",\"子步骤2\",...]}），再用 plan_update 逐步标记进度并执行。不要继续空想。",
+                '⚠️ 你处于【任务模式】，但还没有创建任务计划。请**立即**调用 plan_task 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），再用 plan_update 逐步标记进度并执行。不要继续空想。',
             });
             continue;
           }
@@ -6495,7 +6515,12 @@ export const useChatStore = defineStore("chat", () => {
           }
           // 防“假完成”：任务模式下若建了计划、却全程没执行任何实际工作工具，
           // 不能作为最终答案退出（避免只播报计划就宣称“全部完成”）。
-          if (isTaskModeActive() && useChatStore().taskPlan && !didRealWork && !fakeCompletionWarned) {
+          if (
+            isTaskModeActive() &&
+            useChatStore().taskPlan &&
+            !didRealWork &&
+            !fakeCompletionWarned
+          ) {
             fakeCompletionWarned = true;
             round++;
             dbg(`[loop] 任务模式但未执行任何实际工具，第 ${round} 轮强制要求真正执行`);

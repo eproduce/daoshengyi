@@ -50,7 +50,12 @@ function deepEqual(a: unknown, b: unknown): boolean {
 }
 
 /** 校验数据是否符合 schema；返回全部错误（带路径），符合则返回空数组 */
-export function validateJsonSchema(schema: unknown, data: unknown, path = "$", depth = 0): SchemaIssue[] {
+export function validateJsonSchema(
+  schema: unknown,
+  data: unknown,
+  path = "$",
+  depth = 0,
+): SchemaIssue[] {
   if (depth > MAX_DEPTH) return [{ path, message: "schema 嵌套过深，已停止校验" }];
   if (schema === true || schema === undefined) return [];
   if (schema === false) return [{ path, message: "schema 为 false：此处不允许任何值" }];
@@ -187,14 +192,21 @@ export function validateJsonSchema(schema: unknown, data: unknown, path = "$", d
     });
   }
   if (Array.isArray(s.anyOf)) {
-    const ok = (s.anyOf as unknown[]).some((sub) => validateJsonSchema(sub, data, path, depth + 1).length === 0);
-    if (!ok) issues.push({ path, message: `不满足 anyOf 中任何一个子 schema（共 ${(s.anyOf as unknown[]).length} 个）` });
+    const ok = (s.anyOf as unknown[]).some(
+      (sub) => validateJsonSchema(sub, data, path, depth + 1).length === 0,
+    );
+    if (!ok)
+      issues.push({
+        path,
+        message: `不满足 anyOf 中任何一个子 schema（共 ${(s.anyOf as unknown[]).length} 个）`,
+      });
   }
   if (Array.isArray(s.oneOf)) {
     const hits = (s.oneOf as unknown[]).filter(
       (sub) => validateJsonSchema(sub, data, path, depth + 1).length === 0,
     ).length;
-    if (hits !== 1) issues.push({ path, message: `oneOf 要求恰好满足 1 个子 schema，实际满足 ${hits} 个` });
+    if (hits !== 1)
+      issues.push({ path, message: `oneOf 要求恰好满足 1 个子 schema，实际满足 ${hits} 个` });
   }
   if (s.not !== undefined && validateJsonSchema(s.not, data, path, depth + 1).length === 0) {
     issues.push({ path, message: "不应满足 not 指定的 schema" });

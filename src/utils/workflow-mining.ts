@@ -71,11 +71,11 @@ export function buildMiningPrompt(goal: string, steps: MinedToolStep[]): string 
     `【用户目标】\n${goal}\n\n【工具调用序列】\n${lines}\n\n` +
     "要求：\n" +
     "1. 节点类型 text/llm/tool/condition/code/end；节点 id 用小写字母数字（n1、n2…）；每个节点必须有 label。\n" +
-    "2. 上游输出用 {{节点id}} 引用；tool 节点 config={\"tool\":\"工具名\",\"toolArgs\":{...}}；" +
-    "llm 节点 config={\"prompt\":\"提示词\"}；condition 节点 config={\"expression\":\"布尔表达式\"} 且其出边带 label true/false。\n" +
+    '2. 上游输出用 {{节点id}} 引用；tool 节点 config={"tool":"工具名","toolArgs":{...}}；' +
+    'llm 节点 config={"prompt":"提示词"}；condition 节点 config={"expression":"布尔表达式"} 且其出边带 label true/false。\n' +
     "3. 把**一次性的具体输入**（本次的文件名/关键词/日期等）抽象成占位符 {{user}}，不要写死本次的具体值。\n" +
     "4. 节点数量 3~8 个，只保留有复用价值的环节；**不要**包含规划/记忆类动作（plan_task、memory_*）。\n" +
-    "5. **只输出工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）：{\"nodes\":[...],\"edges\":[...]}"
+    '5. **只输出工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）：{"nodes":[...],"edges":[...]}'
   );
 }
 

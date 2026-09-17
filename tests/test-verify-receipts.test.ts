@@ -13,7 +13,14 @@ import {
 
 describe("classifyVerificationCommand：命令归类", () => {
   it("测试类", () => {
-    for (const cmd of ["npm test", "pnpm run test", "npx vitest run", "pytest -q", "cargo test --lib", "go test ./..."]) {
+    for (const cmd of [
+      "npm test",
+      "pnpm run test",
+      "npx vitest run",
+      "pytest -q",
+      "cargo test --lib",
+      "go test ./...",
+    ]) {
       expect(classifyVerificationCommand(cmd)).toBe("test");
     }
   });
@@ -25,7 +32,12 @@ describe("classifyVerificationCommand：命令归类", () => {
   });
 
   it("Lint 类", () => {
-    for (const cmd of ["npx eslint .", "cargo clippy --all-targets -- -D warnings", "ruff check .", "npx prettier --check ."]) {
+    for (const cmd of [
+      "npx eslint .",
+      "cargo clippy --all-targets -- -D warnings",
+      "ruff check .",
+      "npx prettier --check .",
+    ]) {
       expect(classifyVerificationCommand(cmd)).toBe("lint");
     }
   });
@@ -64,12 +76,18 @@ describe("detectVerificationClaims：正文断言识别", () => {
   });
 
   it("无断言的普通回复返回空", () => {
-    expect(detectVerificationClaims("已按你的要求把文件写到 ~/Documents/道生一产物/报告.md。")).toEqual([]);
+    expect(
+      detectVerificationClaims("已按你的要求把文件写到 ~/Documents/道生一产物/报告.md。"),
+    ).toEqual([]);
   });
 });
 
 describe("findVerificationIssue：三态判定（纯函数）", () => {
-  const r = (kind: VerificationReceipt["kind"], ok: boolean, mutationSeq: number): VerificationReceipt => ({
+  const r = (
+    kind: VerificationReceipt["kind"],
+    ok: boolean,
+    mutationSeq: number,
+  ): VerificationReceipt => ({
     kind,
     ok,
     command: "npm test",

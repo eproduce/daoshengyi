@@ -56,7 +56,9 @@ async fn post_chat_with_retry(
         if let Some(t) = total_timeout {
             builder = builder.timeout(t);
         }
-        let client = builder.build().map_err(|e| format!("客户端构建失败: {}", e))?;
+        let client = builder
+            .build()
+            .map_err(|e| format!("客户端构建失败: {}", e))?;
         match client
             .post(url)
             .header("Content-Type", "application/json")
@@ -70,10 +72,7 @@ async fn post_chat_with_retry(
                 let backoff_ms = 500u64 * (1 << (attempt - 1));
                 let warn = format!(
                     "[api] 连接失败（第 {}/{} 次）：{}，{}ms 后自动重试",
-                    attempt,
-                    MAX_ATTEMPTS,
-                    e,
-                    backoff_ms
+                    attempt, MAX_ATTEMPTS, e, backoff_ms
                 );
                 eprintln!("{}", warn);
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
@@ -217,27 +216,29 @@ pub fn parse_sse_line(line: &str) -> Option<SSEDelta> {
 
     // 原生 function calling：DeepSeek/OpenAI 流式把工具调用放在 delta.tool_calls（按 index 分片）。
     // 需要单独解析并透传，绝不能因为 content/reasoning 为空就把携带 tool_calls 的 chunk 丢弃。
-    let tool_calls = delta.and_then(|d| d.get("tool_calls").and_then(|v| v.as_array())).map(|arr| {
-        arr.iter()
-            .filter_map(|it| {
-                let index = it.get("index").and_then(|v| v.as_u64())? as usize;
-                Some(StreamToolCallDelta {
-                    index,
-                    id: it.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    name: it
-                        .get("function")
-                        .and_then(|f| f.get("name"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    arguments: it
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
+    let tool_calls = delta
+        .and_then(|d| d.get("tool_calls").and_then(|v| v.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|it| {
+                    let index = it.get("index").and_then(|v| v.as_u64())? as usize;
+                    Some(StreamToolCallDelta {
+                        index,
+                        id: it.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        name: it
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        arguments: it
+                            .get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                    })
                 })
-            })
-            .collect::<Vec<_>>()
-    });
+                .collect::<Vec<_>>()
+        });
 
     // 结束原因：最后的 chunk 往往只有 finish_reason（delta 为空），不能因此丢弃
     let finish_reason = parsed
@@ -514,9 +515,7 @@ pub async fn probe_native_tools(config: ApiConfig) -> Result<String, String> {
 
         let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
         let msg = &json["choices"][0]["message"];
-        let finish = json["choices"][0]["finish_reason"]
-            .as_str()
-            .unwrap_or("");
+        let finish = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
         let content_len = msg["content"].as_str().map(|s| s.len()).unwrap_or(0);
         let reasoning_len = msg
             .get("reasoning_content")
@@ -575,7 +574,9 @@ mod tests {
 
     #[test]
     fn parse_sse_line_extracts_native_tool_calls() {
-        let line = delta_line(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}]}"#);
+        let line = delta_line(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}]}"#,
+        );
         let d = parse_sse_line(&line).expect("应解析出 tool_calls");
         assert!(d.content.is_none(), "纯 tool_calls chunk 无 content");
         let calls = d.tool_calls.expect("应有 tool_calls");
@@ -589,7 +590,9 @@ mod tests {
     #[test]
     fn parse_sse_line_not_dropped_when_only_tool_calls() {
         // reasoning/content 都为空、仅带 tool_calls 的 chunk 绝不能丢弃
-        let line = delta_line(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"f"}}]}}]}"#);
+        let line = delta_line(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"f"}}]}}]}"#,
+        );
         let d = parse_sse_line(&line).expect("仅 tool_calls 也不应被丢弃");
         assert!(d.tool_calls.is_some());
     }
@@ -631,7 +634,8 @@ mod tests {
         assert_eq!(d.completion_tokens, Some(210));
         assert_eq!(d.tokens, Some(26210));
         // 只有 prompt/completion（没有 total）时也不能被丢弃
-        let no_total = delta_line(r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#);
+        let no_total =
+            delta_line(r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#);
         let d2 = parse_sse_line(&no_total).expect("缺 total_tokens 的 usage 仍应上报");
         assert_eq!(d2.prompt_tokens, Some(10));
         assert_eq!(d2.completion_tokens, Some(3));

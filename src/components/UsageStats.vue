@@ -218,7 +218,8 @@ function fmtSec(n: number): string {
     </div>
 
     <!-- 概况卡片 -->
-    <div class="usage-cards">      <div class="usage-card">
+    <div class="usage-cards">
+      <div class="usage-card">
         <div class="usage-card__num">{{ totalStats.conversations }}</div>
         <div class="usage-card__label">会话</div>
       </div>

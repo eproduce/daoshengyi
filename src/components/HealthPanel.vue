@@ -128,13 +128,16 @@ function fmtMem(mb: number): string {
         <button
           class="probe-btn"
           :disabled="probing"
-          @click="runProbe"
           title="检测当前模型是否支持原生 function calling（结构化 tool_calls）"
+          @click="runProbe"
         >
           {{ probing ? "探测中…" : "运行探针" }}
         </button>
       </div>
-      <pre class="health-log__body health-probe__body">{{ probe || "（点“运行探针”检测端点是否支持原生 tools，用于评估把 agent 工具循环升级为 harness 式 function calling）" }}</pre>
+      <pre class="health-log__body health-probe__body">{{
+        probe ||
+        "（点“运行探针”检测端点是否支持原生 tools，用于评估把 agent 工具循环升级为 harness 式 function calling）"
+      }}</pre>
     </div>
 
     <!-- 日志查看 -->

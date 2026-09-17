@@ -33,7 +33,8 @@ const codeReview = makeSkill({
   description: "资深代码审查专家，检查安全漏洞、性能问题和最佳实践",
   tags: ["代码", "审查", "安全"],
   whenToUse: "需要审查代码安全/质量时",
-});const shellExpert = makeSkill({
+});
+const shellExpert = makeSkill({
   id: "shell-expert",
   name: "Shell 专家",
   description: "精通 bash/zsh 脚本",

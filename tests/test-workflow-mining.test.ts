@@ -12,9 +12,9 @@ const step = (name: string, status = "done"): MinedToolStep => ({ name, status }
 
 describe("工作流沉淀门控 shouldMineWorkflow", () => {
   it("实际工作工具 ≥3 且无失败时才沉淀", () => {
-    expect(shouldMineWorkflow([step("read_file"), step("replace_string"), step("run_tests")]).ok).toBe(
-      true,
-    );
+    expect(
+      shouldMineWorkflow([step("read_file"), step("replace_string"), step("run_tests")]).ok,
+    ).toBe(true);
   });
 
   it("不足 3 个实际工作工具 → 不沉淀", () => {
@@ -60,7 +60,7 @@ describe("工作流命名 minedWorkflowName", () => {
   });
 
   it("压平空白、去掉引号类字符并限长", () => {
-    const n = minedWorkflowName('  生成「月度  简报」  ');
+    const n = minedWorkflowName("  生成「月度  简报」  ");
     expect(n).toBe("自动沉淀：生成月度 简报");
     const long = minedWorkflowName("一".repeat(60));
     expect(long.length).toBeLessThan(40);

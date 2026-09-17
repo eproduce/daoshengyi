@@ -167,7 +167,6 @@ function handleSend(text: string, images: ImageAttachment[], files: FileAttachme
   );
 }
 
-
 // 导出对话
 function exportMarkdown() {
   const conv = chatStore.activeConversation;
@@ -324,91 +323,89 @@ onUnmounted(() => {
 
       <!-- 对话栈：消息区与底部 dock（任务/子代理）共享纵向空间，dock 最多占此栈 1/4 -->
       <div class="chat-stack">
-      <!-- 消息区域 -->
-      <div ref="messagesContainer" class="messages-container">
-        <div class="messages-inner">
-          <!-- 空状态 -->
-          <div
-            v-if="
-              !chatStore.activeConversation || chatStore.activeConversation.messages.length === 0
-            "
-            class="empty-state"
-          >
-            <div class="empty-state__icon"><AppLogo :size="56" /></div>
-            <h2>道生一</h2>
-            <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
-            <div class="empty-state__tips">
-              <div class="tip-card">
-                <span class="tip-key"><MessageSquarePlus :size="14" /> ⌘/Ctrl + N</span> 新建对话
-              </div>
-              <div class="tip-card">
-                <span class="tip-key"><Terminal :size="14" /> /run</span> 执行终端命令
-              </div>
-              <div class="tip-card">
-                <span class="tip-key"><FileText :size="14" /> /read</span> 读取本地文件
-              </div>
-              <div class="tip-card">
-                <span class="tip-key"><Paperclip :size="14" /> 粘贴图片</span> 本地视觉识别
-              </div>
-              <div class="tip-card">
-                <span class="tip-key"><AlarmClock :size="14" /> 定时任务</span> 后台自动执行
-              </div>
-              <div class="tip-card">
-                <span class="tip-key"><Stethoscope :size="14" /> 诊断</span> 系统健康与日志
+        <!-- 消息区域 -->
+        <div ref="messagesContainer" class="messages-container">
+          <div class="messages-inner">
+            <!-- 空状态 -->
+            <div
+              v-if="
+                !chatStore.activeConversation || chatStore.activeConversation.messages.length === 0
+              "
+              class="empty-state"
+            >
+              <div class="empty-state__icon"><AppLogo :size="56" /></div>
+              <h2>道生一</h2>
+              <p>AI Agent 桌面客户端 · 支持多模态对话与图片识别</p>
+              <div class="empty-state__tips">
+                <div class="tip-card">
+                  <span class="tip-key"><MessageSquarePlus :size="14" /> ⌘/Ctrl + N</span> 新建对话
+                </div>
+                <div class="tip-card">
+                  <span class="tip-key"><Terminal :size="14" /> /run</span> 执行终端命令
+                </div>
+                <div class="tip-card">
+                  <span class="tip-key"><FileText :size="14" /> /read</span> 读取本地文件
+                </div>
+                <div class="tip-card">
+                  <span class="tip-key"><Paperclip :size="14" /> 粘贴图片</span> 本地视觉识别
+                </div>
+                <div class="tip-card">
+                  <span class="tip-key"><AlarmClock :size="14" /> 定时任务</span> 后台自动执行
+                </div>
+                <div class="tip-card">
+                  <span class="tip-key"><Stethoscope :size="14" /> 诊断</span> 系统健康与日志
+                </div>
               </div>
             </div>
+
+            <!-- 消息列表 -->
+            <template v-if="chatStore.activeConversation">
+              <ChatMessage
+                v-for="msg in chatStore.activeConversation.messages"
+                :key="msg.id"
+                :message="msg"
+              />
+            </template>
           </div>
+        </div>
 
-          <!-- 消息列表 -->
-          <template v-if="chatStore.activeConversation">
-            <ChatMessage
-              v-for="msg in chatStore.activeConversation.messages"
-              :key="msg.id"
-              :message="msg"
-            />
-          </template>
+        <!-- 底部辅助面板（任务计划 / 子代理）：tab 切换、可折叠，避免与消息争占纵向空间 -->
+        <div v-if="dockVisible" class="bottom-dock">
+          <div class="bottom-dock__tabbar">
+            <button
+              v-if="hasPlan"
+              class="bd-tab"
+              :class="{ 'bd-tab--active': bottomTab === 'task' }"
+              title="任务计划进度"
+              @click="pickDockTab('task')"
+            >
+              <ListChecks :size="14" /> 任务
+            </button>
+            <button
+              v-if="hasSub"
+              class="bd-tab"
+              :class="{ 'bd-tab--active': bottomTab === 'sub' }"
+              title="子代理进度"
+              @click="pickDockTab('sub')"
+            >
+              <Network :size="14" /> 子代理
+              <span v-if="runningSubs > 0" class="bd-badge">{{ runningSubs }}</span>
+            </button>
+            <span class="bd-spacer"></span>
+            <button class="bd-toggle" title="折叠面板" @click="dockCollapsed = true">收起 ▾</button>
+          </div>
+          <div class="bottom-dock__body">
+            <TaskPlanCard v-if="bottomTab === 'task' && hasPlan" />
+            <SubagentPanel v-else-if="bottomTab === 'sub' && hasSub" />
+            <div v-if="!dockActiveHasContent" class="bottom-dock__empty">（该页暂无内容）</div>
+          </div>
         </div>
-      </div>
-
-      <!-- 底部辅助面板（任务计划 / 子代理）：tab 切换、可折叠，避免与消息争占纵向空间 -->
-      <div v-if="dockVisible" class="bottom-dock">
-        <div class="bottom-dock__tabbar">
-          <button
-            v-if="hasPlan"
-            class="bd-tab"
-            :class="{ 'bd-tab--active': bottomTab === 'task' }"
-            title="任务计划进度"
-            @click="pickDockTab('task')"
-          >
-            <ListChecks :size="14" /> 任务
-          </button>
-          <button
-            v-if="hasSub"
-            class="bd-tab"
-            :class="{ 'bd-tab--active': bottomTab === 'sub' }"
-            title="子代理进度"
-            @click="pickDockTab('sub')"
-          >
-            <Network :size="14" /> 子代理
-            <span v-if="runningSubs > 0" class="bd-badge">{{ runningSubs }}</span>
-          </button>
-          <span class="bd-spacer"></span>
-          <button class="bd-toggle" title="折叠面板" @click="dockCollapsed = true">
-            收起 ▾
+        <!-- 折叠后仅留一条细恢复条 -->
+        <div v-else-if="hasPlan || hasSub" class="bottom-dock__reopen">
+          <button class="bd-toggle" title="展开任务 / 子代理面板" @click="dockCollapsed = false">
+            {{ dockReopenLabel }} ▴
           </button>
         </div>
-        <div class="bottom-dock__body">
-          <TaskPlanCard v-if="bottomTab === 'task' && hasPlan" />
-          <SubagentPanel v-else-if="bottomTab === 'sub' && hasSub" />
-          <div v-if="!dockActiveHasContent" class="bottom-dock__empty">（该页暂无内容）</div>
-        </div>
-      </div>
-      <!-- 折叠后仅留一条细恢复条 -->
-      <div v-else-if="hasPlan || hasSub" class="bottom-dock__reopen">
-        <button class="bd-toggle" title="展开任务 / 子代理面板" @click="dockCollapsed = false">
-          {{ dockReopenLabel }} ▴
-        </button>
-      </div>
       </div>
       <!-- /对话栈 -->
 

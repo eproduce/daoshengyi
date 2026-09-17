@@ -36,13 +36,13 @@ describe("P1-3 钩子 · 模板与转义（边界 1：不接受模型拼接）",
     const out = renderTemplate("echo {{tool}}", ctx({ tool: "a; rm -rf /" }), "shell");
     expect(out).toBe("echo 'a; rm -rf /'");
     // 引号内的单引号也被拆开而不是关闭引号
-    expect(renderTemplate("echo {{tool}}", ctx({ tool: "it's" }), "shell")).toBe(
-      "echo 'it'\\''s'",
-    );
+    expect(renderTemplate("echo {{tool}}", ctx({ tool: "it's" }), "shell")).toBe("echo 'it'\\''s'");
   });
 
   it("text 模式：净化控制字符、压缩空行、超长截断", () => {
-    expect(renderTemplate("结果：{{result}}", ctx({ result: "a\u0007b" }), "text")).toBe("结果：ab");
+    expect(renderTemplate("结果：{{result}}", ctx({ result: "a\u0007b" }), "text")).toBe(
+      "结果：ab",
+    );
     expect(renderTemplate("{{result}}", ctx({ result: "a\n\n\n\nb" }), "text")).toBe("a\n\nb");
     const long = "x".repeat(600);
     const out = renderTemplate("{{result}}", ctx({ result: long }), "text");
@@ -75,8 +75,12 @@ describe("P1-3 钩子 · 模板与转义（边界 1：不接受模型拼接）",
 
 describe("P1-3 钩子 · 事件/工具/状态匹配", () => {
   it("事件必须一致；tool 支持前缀通配与 *", () => {
-    expect(hookMatches({ event: "turn_end", action: "notify", text: "x" }, ctx({ event: "turn_end" }))).toBe(true);
-    expect(hookMatches({ event: "turn_end", action: "notify", text: "x" }, ctx({ event: "turn_start" }))).toBe(false);
+    expect(
+      hookMatches({ event: "turn_end", action: "notify", text: "x" }, ctx({ event: "turn_end" })),
+    ).toBe(true);
+    expect(
+      hookMatches({ event: "turn_end", action: "notify", text: "x" }, ctx({ event: "turn_start" })),
+    ).toBe(false);
     expect(toolMatches("puppeteer_*", "puppeteer_navigate")).toBe(true);
     expect(toolMatches("puppeteer_*", "browser_navigate")).toBe(false);
     expect(toolMatches("*", "anything")).toBe(true);
@@ -87,7 +91,12 @@ describe("P1-3 钩子 · 事件/工具/状态匹配", () => {
   });
 
   it("tool_after 的状态过滤只作用于 tool_after", () => {
-    const onlyError: HookRule = { event: "tool_after", action: "notify", text: "fail", when: "error" };
+    const onlyError: HookRule = {
+      event: "tool_after",
+      action: "notify",
+      text: "fail",
+      when: "error",
+    };
     expect(hookMatches(onlyError, ctx({ status: "error" }))).toBe(true);
     expect(hookMatches(onlyError, ctx({ status: "success" }))).toBe(false);
     expect(hookMatches(onlyError, ctx({ status: undefined }))).toBe(false);
@@ -126,9 +135,7 @@ describe("P1-3 钩子 · 配置期校验（边界 2/3：危险命令与内网地
       "allow_danger",
     );
     expect(
-      validateHooks([
-        { event: "turn_end", action: "shell", command: risky, allow_danger: true },
-      ]),
+      validateHooks([{ event: "turn_end", action: "shell", command: risky, allow_danger: true }]),
     ).toEqual([]);
   });
 
@@ -142,10 +149,12 @@ describe("P1-3 钩子 · 配置期校验（边界 2/3：危险命令与内网地
   });
 
   it("http：只允许 http/https，内网默认拒绝、可显式放行", () => {
-    expect(validateHooks([{ event: "turn_end", action: "http", url: "file:///etc/passwd" }])[0]).toContain(
-      "http/https",
+    expect(
+      validateHooks([{ event: "turn_end", action: "http", url: "file:///etc/passwd" }])[0],
+    ).toContain("http/https");
+    expect(validateHooks([{ event: "turn_end", action: "http", url: "" }])[0]).toContain(
+      "需要 url",
     );
-    expect(validateHooks([{ event: "turn_end", action: "http", url: "" }])[0]).toContain("需要 url");
     expect(
       validateHooks([{ event: "turn_end", action: "http", url: "http://127.0.0.1:8080/hook" }])[0],
     ).toContain("内网");
@@ -259,9 +268,13 @@ describe("P1-3 钩子 · 计划与预算", () => {
   });
 
   it("describeHook 覆盖所有动作类型", () => {
-    expect(describeHook({ action: "notify", event: "turn_end", text: "完事" }, 0)).toContain("通知");
+    expect(describeHook({ action: "notify", event: "turn_end", text: "完事" }, 0)).toContain(
+      "通知",
+    );
     expect(describeHook({ action: "inject", event: "tool_after", text: "x" }, 1)).toContain("#2");
-    expect(describeHook({ action: "block", event: "tool_before", text: "别" }, 0)).toContain("拦截");
+    expect(describeHook({ action: "block", event: "tool_before", text: "别" }, 0)).toContain(
+      "拦截",
+    );
     expect(
       describeHook({ action: "shell", event: "tool_after", command: "npm run build" }, 0),
     ).toContain("执行命令 npm run build");
@@ -269,7 +282,10 @@ describe("P1-3 钩子 · 计划与预算", () => {
       describeHook({ action: "http", event: "turn_end", url: "https://x/y", method: "POST" }, 0),
     ).toContain("POST https://x/y");
     expect(
-      describeHook({ id: "g", action: "shell", event: "tool_after", command: "ls", tool: "b_*" }, 0),
+      describeHook(
+        { id: "g", action: "shell", event: "tool_after", command: "ls", tool: "b_*" },
+        0,
+      ),
     ).toContain("tool=b_*");
   });
 });

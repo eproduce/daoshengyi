@@ -51,7 +51,12 @@ export function skillSourceSpecs(home: string, workspace = ""): SkillSourceSpec[
   const specs: SkillSourceSpec[] = [];
   if (h) {
     specs.push(
-      { id: "claude-code", label: "Claude Code 技能", dir: `${h}/.claude/skills`, file_name: "SKILL.md" },
+      {
+        id: "claude-code",
+        label: "Claude Code 技能",
+        dir: `${h}/.claude/skills`,
+        file_name: "SKILL.md",
+      },
       { id: "claude-commands", label: "Claude Code 命令", dir: `${h}/.claude/commands` },
       { id: "codex", label: "Codex 提示词", dir: `${h}/.codex/prompts` },
       { id: "generic", label: "道生一技能目录", dir: `${h}/Documents/道生一技能` },
@@ -139,7 +144,8 @@ export function planSkillImport(
       skipped.push({ path: file.path, reason: "解析失败或无正文" });
       continue;
     }
-    const rawName = parsed.name === "未命名技能" || parsed.name === "导入技能" ? fallbackName(file) : parsed.name;
+    const rawName =
+      parsed.name === "未命名技能" || parsed.name === "导入技能" ? fallbackName(file) : parsed.name;
     const name = rawName.trim() || fallbackName(file);
     const key = normalizeSkillName(name);
 

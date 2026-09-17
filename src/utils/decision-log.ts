@@ -112,7 +112,7 @@ export interface DecisionSection {
 export function splitSections(text: string): { preamble: string; sections: DecisionSection[] } {
   const lines = (text ?? "").split("\n");
   const sections: DecisionSection[] = [];
-  let preambleLines: string[] = [];
+  const preambleLines: string[] = [];
   let cur: DecisionSection | null = null;
   for (const line of lines) {
     const m = SECTION_RE.exec(line);
@@ -160,7 +160,10 @@ export function parseDecisions(text: string): DecisionEntry[] {
     const m = SECTION_RE.exec(s.body.split("\n")[0] ?? "");
     const at = m ? Date.parse(m[1].replace(" ", "T") + ":00") : Date.now();
     const field = (name: string): string => {
-      const re = new RegExp(`^-\\s*\\*\\*${name}\\*\\*\\s*：\\s*([\\s\\S]*?)(?=\\n-\\s*\\*\\*|$)`, "m");
+      const re = new RegExp(
+        `^-\\s*\\*\\*${name}\\*\\*\\s*：\\s*([\\s\\S]*?)(?=\\n-\\s*\\*\\*|$)`,
+        "m",
+      );
       const mm = re.exec(s.body);
       return mm ? mm[1].trim() : "";
     };

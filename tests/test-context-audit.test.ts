@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { auditContext, auditToMarkdown, type ContextPart } from "../src/utils/context-audit.ts";
 
-const part = (id: string, label: string, text: string, extra: Partial<ContextPart> = {}): ContextPart => ({
+const part = (
+  id: string,
+  label: string,
+  text: string,
+  extra: Partial<ContextPart> = {},
+): ContextPart => ({
   id,
   label,
   text,

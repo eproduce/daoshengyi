@@ -291,7 +291,8 @@ export function extractKeyFacts(items: { role?: string; content?: string }[]): K
   const pushPath = (p: string) => {
     const v = p.replace(/[.,;:)\]]+$/, "");
     if (v.length < 3 || seenPaths.has(v)) return;
-    if (/^\/\//.test(v) || /^\/(?:tmp|dev|proc|sys|private)\b/.test(v) === false && v === "/") return;
+    if (/^\/\//.test(v) || (/^\/(?:tmp|dev|proc|sys|private)\b/.test(v) === false && v === "/"))
+      return;
     seenPaths.add(v);
     paths.push(v);
   };
@@ -330,7 +331,12 @@ export function renderKeyFacts(facts: KeyFacts, maxChars = MAX_FACTS_CHARS): str
   const lines: string[] = [];
   if (facts.paths.length) lines.push(`路径：${facts.paths.slice(0, MAX_FACTS).join(" · ")}`);
   if (facts.commands.length) {
-    lines.push(`命令：${facts.commands.slice(0, MAX_FACTS).map((c) => `\`${c}\``).join(" · ")}`);
+    lines.push(
+      `命令：${facts.commands
+        .slice(0, MAX_FACTS)
+        .map((c) => `\`${c}\``)
+        .join(" · ")}`,
+    );
   }
   if (!lines.length) return "";
   const body = `${FACTS_MARKER}\n${lines.join("\n")}`;
@@ -344,9 +350,7 @@ export interface PreparedDigest {
 }
 
 /// 生成本次压缩要附带的确定性产物（老消息 = 即将被摘要覆盖的那些）
-export function prepareDigest(
-  droppable: { role?: string; content?: string }[],
-): PreparedDigest {
+export function prepareDigest(droppable: { role?: string; content?: string }[]): PreparedDigest {
   const out: PreparedDigest = {};
   const index = renderKeywordIndex(extractTerms(droppable));
   if (index) out.index = index;

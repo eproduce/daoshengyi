@@ -369,7 +369,11 @@ pub fn ascii_art(bm: &Bitmap, b: BBox, target_w: usize) -> Vec<String> {
                     }
                 }
             }
-            let ratio = if tot == 0 { 0.0 } else { hit as f64 / tot as f64 };
+            let ratio = if tot == 0 {
+                0.0
+            } else {
+                hit as f64 / tot as f64
+            };
             line.push(match ratio {
                 r if r >= 0.6 => '█',
                 r if r >= 0.35 => '▓',
@@ -439,7 +443,11 @@ pub fn render_report(
         bm.w,
         bm.h,
         threshold,
-        if opts.invert { "浅色=墨迹" } else { "深色=墨迹" },
+        if opts.invert {
+            "浅色=墨迹"
+        } else {
+            "深色=墨迹"
+        },
         pct
     ));
 
@@ -477,7 +485,10 @@ pub fn render_report(
         ));
     }
     if truncated > 0 {
-        extra.push_str(&format!("，另有 {} 段超出 max_glyphs={} 未列出", truncated, opts.max_glyphs));
+        extra.push_str(&format!(
+            "，另有 {} 段超出 max_glyphs={} 未列出",
+            truncated, opts.max_glyphs
+        ));
     }
     out.push_str(&format!(
         "\n共发现列段 {} 段；切出字符块 {} 个（列投影，最小宽 {}px，间隙≤{}px 视为同一字形）{}\n\n",
@@ -488,10 +499,14 @@ pub fn render_report(
         extra
     ));
     if glyphs.is_empty() {
-        out.push_str("（没有切出任何字符块——可能区域选错了，或阈值不适用；可用 mode=info 看灰度分布）\n");
+        out.push_str(
+            "（没有切出任何字符块——可能区域选错了，或阈值不适用；可用 mode=info 看灰度分布）\n",
+        );
         return out;
     }
-    out.push_str("| # | x 范围 | 宽 | 高 | 墨迹 | 封闭空洞 | 宽高比 |\n|---|---|---|---|---|---|---|\n");
+    out.push_str(
+        "| # | x 范围 | 宽 | 高 | 墨迹 | 封闭空洞 | 宽高比 |\n|---|---|---|---|---|---|---|\n",
+    );
     for (i, g) in glyphs.iter().enumerate() {
         out.push_str(&format!(
             "| {} | {}~{} | {} | {} | {} | {} | {} |\n",
@@ -512,7 +527,9 @@ pub fn render_report(
     let max_w = widths.iter().max().copied().unwrap_or(0);
     out.push_str(&format!(
         "\n宽度分布：{}~{}px（首 {} 块来自同一字形的可能性最大，宽度差越小越同构）\n",
-        min_w, max_w, glyphs.len()
+        min_w,
+        max_w,
+        glyphs.len()
     ));
 
     // 点阵只给前若干个字形：报告体积必须有界（否则 24 个字形 × 24 行会把上下文吃满）
@@ -534,7 +551,11 @@ pub fn render_report(
             out.push_str("```\n");
         }
         if glyphs.len() > art_limit {
-            out.push_str(&format!("\n（仅显示前 {} 个字形点阵，共 {} 个）\n", art_limit, glyphs.len()));
+            out.push_str(&format!(
+                "\n（仅显示前 {} 个字形点阵，共 {} 个）\n",
+                art_limit,
+                glyphs.len()
+            ));
         }
     }
     out.push_str(
@@ -610,7 +631,14 @@ pub fn inspect_file(
             None => String::new(),
         }
     );
-    Ok(inspect_gray(&label, (left, top), gray, w as usize, h as usize, opts))
+    Ok(inspect_gray(
+        &label,
+        (left, top),
+        gray,
+        w as usize,
+        h as usize,
+        opts,
+    ))
 }
 
 #[cfg(test)]
@@ -700,34 +728,89 @@ mod tests {
     fn count_holes_ring_has_one_hole() {
         // 空心方框 = 1 个封闭空洞
         let bm = bm_from_art(&["###", "#.#", "###"]);
-        assert_eq!(count_holes(&bm, BBox { x0: 0, y0: 0, x1: 2, y1: 2 }), 1);
+        assert_eq!(
+            count_holes(
+                &bm,
+                BBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 2,
+                    y1: 2
+                }
+            ),
+            1
+        );
     }
 
     #[test]
     fn count_holes_slashed_zero_has_two_holes() {
         // 带斜杠的零：斜杠把内腔切成两半 → 2 个封闭空洞（这正是「数位数」时区分字形的依据）
         let bm = bm_from_art(&["#####", "#..##", "#.#.#", "##..#", "#####"]);
-        assert_eq!(count_holes(&bm, BBox { x0: 0, y0: 0, x1: 4, y1: 4 }), 2);
+        assert_eq!(
+            count_holes(
+                &bm,
+                BBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 4,
+                    y1: 4
+                }
+            ),
+            2
+        );
     }
 
     #[test]
     fn count_holes_checkerboard_cavity_counts_every_isolated_gap() {
         // 非字形也能诚实报数：每个「四面被墨迹围住的单格」各算一个空洞
         let bm = bm_from_art(&["#####", "#.#.#", "##.##", "#.#.#", "#####"]);
-        assert_eq!(count_holes(&bm, BBox { x0: 0, y0: 0, x1: 4, y1: 4 }), 5);
+        assert_eq!(
+            count_holes(
+                &bm,
+                BBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 4,
+                    y1: 4
+                }
+            ),
+            5
+        );
     }
 
     #[test]
     fn count_holes_open_shape_has_none() {
         // 2 这种开放字形：没有封闭区域
         let bm = bm_from_art(&["####", "...#", ".###", "#...", "####"]);
-        assert_eq!(count_holes(&bm, BBox { x0: 0, y0: 0, x1: 3, y1: 4 }), 0);
+        assert_eq!(
+            count_holes(
+                &bm,
+                BBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 3,
+                    y1: 4
+                }
+            ),
+            0
+        );
     }
 
     #[test]
     fn count_holes_is_zero_for_solid_block() {
         let bm = bm_from_art(&["###", "###", "###"]);
-        assert_eq!(count_holes(&bm, BBox { x0: 0, y0: 0, x1: 2, y1: 2 }), 0);
+        assert_eq!(
+            count_holes(
+                &bm,
+                BBox {
+                    x0: 0,
+                    y0: 0,
+                    x1: 2,
+                    y1: 2
+                }
+            ),
+            0
+        );
     }
 
     #[test]
@@ -767,8 +850,19 @@ mod tests {
 
     #[test]
     fn ascii_art_keeps_shape_and_size() {
-        let bm = bm_from_art(&["#####", "#####", "#####", "#####", "#####", "#####", "#####", "#####"]);
-        let art = ascii_art(&bm, BBox { x0: 0, y0: 0, x1: 4, y1: 7 }, 10);
+        let bm = bm_from_art(&[
+            "#####", "#####", "#####", "#####", "#####", "#####", "#####", "#####",
+        ]);
+        let art = ascii_art(
+            &bm,
+            BBox {
+                x0: 0,
+                y0: 0,
+                x1: 4,
+                y1: 7,
+            },
+            10,
+        );
         assert!(!art.is_empty());
         // 高度按 2:1 折算：8 行 × (10/5/2) = 8
         assert!(art.len() <= 10, "不应超过目标尺寸，实际 {}", art.len());
@@ -780,7 +874,17 @@ mod tests {
     #[test]
     fn ascii_art_handles_degenerate_bbox() {
         let bm = bm_from_art(&["#", "#"]);
-        assert!(!ascii_art(&bm, BBox { x0: 0, y0: 0, x1: 0, y1: 1 }, 24).is_empty());
+        assert!(!ascii_art(
+            &bm,
+            BBox {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 1
+            },
+            24
+        )
+        .is_empty());
     }
 
     #[test]
@@ -874,8 +978,12 @@ mod tests {
 
     #[test]
     fn inspect_missing_file_errors_clearly() {
-        let err = inspect_file("/tmp/definitely-not-here-9x8.png", None, &InspectOptions::default())
-            .unwrap_err();
+        let err = inspect_file(
+            "/tmp/definitely-not-here-9x8.png",
+            None,
+            &InspectOptions::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("打开图片失败"));
     }
 

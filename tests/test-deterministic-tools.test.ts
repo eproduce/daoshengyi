@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { evalExpression, runDeterministicTool, parseCsv } from "../src/utils/deterministic-tools.ts";
+import {
+  evalExpression,
+  runDeterministicTool,
+  parseCsv,
+} from "../src/utils/deterministic-tools.ts";
 
 describe("calc：精确算术（不使用 eval）", () => {
   it("四则、括号、幂与优先级", () => {
@@ -37,7 +41,11 @@ describe("calc：精确算术（不使用 eval）", () => {
 
 describe("convert_unit：表驱动单位换算", () => {
   it("同类线性换算（含中文单位）", async () => {
-    const speed = await runDeterministicTool("convert_unit", { value: 100, from: "km/h", to: "m/s" });
+    const speed = await runDeterministicTool("convert_unit", {
+      value: 100,
+      from: "km/h",
+      to: "m/s",
+    });
     expect(speed).toContain("27.77");
     const jin = await runDeterministicTool("convert_unit", { value: 1, from: "kg", to: "斤" });
     expect(jin).toContain("= 2 ");
@@ -60,12 +68,12 @@ describe("convert_unit：表驱动单位换算", () => {
   });
 
   it("跨类别与未知单位拒绝并给出提示", async () => {
-    await expect(runDeterministicTool("convert_unit", { value: 1, from: "kg", to: "m" })).rejects.toThrow(
-      /不能直接换算/,
-    );
-    await expect(runDeterministicTool("convert_unit", { value: 1, from: "斤", to: "光年" })).rejects.toThrow(
-      /未知单位/,
-    );
+    await expect(
+      runDeterministicTool("convert_unit", { value: 1, from: "kg", to: "m" }),
+    ).rejects.toThrow(/不能直接换算/);
+    await expect(
+      runDeterministicTool("convert_unit", { value: 1, from: "斤", to: "光年" }),
+    ).rejects.toThrow(/未知单位/);
   });
 
   it("list 模式列出全部单位", async () => {
@@ -112,7 +120,11 @@ describe("time_convert：时区与日期差", () => {
 
   it("非法时区/时间给出可读报错", async () => {
     await expect(
-      runDeterministicTool("time_convert", { action: "convert", time: "2026-01-01T00:00", to_tz: "Mars/Base" }),
+      runDeterministicTool("time_convert", {
+        action: "convert",
+        time: "2026-01-01T00:00",
+        to_tz: "Mars/Base",
+      }),
     ).rejects.toThrow(/未知时区/);
     await expect(
       runDeterministicTool("time_convert", { action: "convert", time: "下周三", from_tz: "UTC" }),
@@ -160,17 +172,32 @@ describe("csv_query：解析、筛选、分组聚合", () => {
 
   it("未知操作符给出可用清单", async () => {
     await expect(
-      runDeterministicTool("csv_query", { text: csv, where: { amount: { op: "about", value: 1 } } }),
+      runDeterministicTool("csv_query", {
+        text: csv,
+        where: { amount: { op: "about", value: 1 } },
+      }),
     ).rejects.toThrow(/不支持的操作符/);
   });
 });
 
 describe("json_query：路径取值与结构探查", () => {
-  const json = JSON.stringify({ data: { items: [{ id: 1, name: "a" }, { id: 2, name: "b" }] } });
+  const json = JSON.stringify({
+    data: {
+      items: [
+        { id: 1, name: "a" },
+        { id: 2, name: "b" },
+      ],
+    },
+  });
 
   it("路径取值（含数组下标与映射）", async () => {
-    expect(await runDeterministicTool("json_query", { json, json_path: "data.items[1].name" })).toContain('"b"');
-    const mapped = await runDeterministicTool("json_query", { json, json_path: "data.items[*].id" });
+    expect(
+      await runDeterministicTool("json_query", { json, json_path: "data.items[1].name" }),
+    ).toContain('"b"');
+    const mapped = await runDeterministicTool("json_query", {
+      json,
+      json_path: "data.items[*].id",
+    });
     expect(mapped).toContain("1");
     expect(mapped).toContain("2");
   });
@@ -178,31 +205,47 @@ describe("json_query：路径取值与结构探查", () => {
   it("keys 模式列出结构；table 模式转表格", async () => {
     const keys = await runDeterministicTool("json_query", { json, keys: true });
     expect(keys).toContain("data");
-    const table = await runDeterministicTool("json_query", { json, json_path: "data.items", table: true });
+    const table = await runDeterministicTool("json_query", {
+      json,
+      json_path: "data.items",
+      table: true,
+    });
     expect(table).toContain("| id | name |");
   });
 
   it("未命中与非法 JSON 都有明确提示", async () => {
-    expect(await runDeterministicTool("json_query", { json, json_path: "data.nope" })).toContain("未命中");
+    expect(await runDeterministicTool("json_query", { json, json_path: "data.nope" })).toContain(
+      "未命中",
+    );
     await expect(runDeterministicTool("json_query", { json: "{oops" })).rejects.toThrow(/解析失败/);
   });
 });
 
 describe("regex_test：先验证再断言", () => {
   it("列出匹配位置、长度与分组", async () => {
-    const out = await runDeterministicTool("regex_test", { pattern: "(\\d+)", text: "a1b22", max: 5 });
+    const out = await runDeterministicTool("regex_test", {
+      pattern: "(\\d+)",
+      text: "a1b22",
+      max: 5,
+    });
     expect(out).toContain("命中 2 处");
     expect(out).toContain("分组");
   });
 
   it("替换预览", async () => {
-    const out = await runDeterministicTool("regex_test", { pattern: "\\d", text: "a1b2", replace: "#" });
+    const out = await runDeterministicTool("regex_test", {
+      pattern: "\\d",
+      text: "a1b2",
+      replace: "#",
+    });
     expect(out).toContain("替换预览");
     expect(out).toContain("a#b#");
   });
 
   it("非法正则报错；嵌套量词预警", async () => {
-    await expect(runDeterministicTool("regex_test", { pattern: "(", text: "x" })).rejects.toThrow(/编译失败/);
+    await expect(runDeterministicTool("regex_test", { pattern: "(", text: "x" })).rejects.toThrow(
+      /编译失败/,
+    );
     const warned = await runDeterministicTool("regex_test", { pattern: "(a+)+", text: "aa" });
     expect(warned).toContain("嵌套量词");
   });
@@ -215,19 +258,31 @@ describe("hash_encode：哈希与编解码", () => {
   });
 
   it("base64 / hex / url 往返", async () => {
-    expect(await runDeterministicTool("hash_encode", { op: "base64", input: "hello" })).toBe("aGVsbG8=");
+    expect(await runDeterministicTool("hash_encode", { op: "base64", input: "hello" })).toBe(
+      "aGVsbG8=",
+    );
     const b64 = await runDeterministicTool("hash_encode", { op: "base64", input: "中文 ok" });
-    expect(await runDeterministicTool("hash_encode", { op: "base64_decode", input: b64 })).toBe("中文 ok");
+    expect(await runDeterministicTool("hash_encode", { op: "base64_decode", input: b64 })).toBe(
+      "中文 ok",
+    );
     expect(await runDeterministicTool("hash_encode", { op: "hex", input: "hi" })).toBe("6869");
-    expect(await runDeterministicTool("hash_encode", { op: "url_encode", input: "a b&c" })).toBe("a%20b%26c");
-    expect(await runDeterministicTool("hash_encode", { op: "url_decode", input: "a%20b" })).toBe("a b");
+    expect(await runDeterministicTool("hash_encode", { op: "url_encode", input: "a b&c" })).toBe(
+      "a%20b%26c",
+    );
+    expect(await runDeterministicTool("hash_encode", { op: "url_decode", input: "a%20b" })).toBe(
+      "a b",
+    );
   });
 
   it("uuid / random_hex 形态正确；未知 op 报错", async () => {
     const uuid = await runDeterministicTool("hash_encode", { op: "uuid" });
     expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    expect(await runDeterministicTool("hash_encode", { op: "random_hex", length: 8 })).toMatch(/^[0-9a-f]{16}$/);
-    await expect(runDeterministicTool("hash_encode", { op: "md5", input: "x" })).rejects.toThrow(/不支持的 op/);
+    expect(await runDeterministicTool("hash_encode", { op: "random_hex", length: 8 })).toMatch(
+      /^[0-9a-f]{16}$/,
+    );
+    await expect(runDeterministicTool("hash_encode", { op: "md5", input: "x" })).rejects.toThrow(
+      /不支持的 op/,
+    );
   });
 });
 
@@ -241,7 +296,10 @@ describe("stats_describe：统计、离群与回归", () => {
   });
 
   it("两组数据的相关与线性回归", async () => {
-    const out = await runDeterministicTool("stats_describe", { values: [1, 2, 3], values2: [2, 4, 6] });
+    const out = await runDeterministicTool("stats_describe", {
+      values: [1, 2, 3],
+      values2: [2, 4, 6],
+    });
     expect(out).toContain("皮尔逊相关系数 r：1.000000");
     expect(out).toContain("y = 2.000000x + 0.000000");
   });
@@ -250,7 +308,9 @@ describe("stats_describe：统计、离群与回归", () => {
     const out = await runDeterministicTool("stats_describe", { text: "1 2 abc 3\n4" });
     expect(out).toContain("样本数：4");
     expect(out).toContain("已跳过 1 个非数值项");
-    await expect(runDeterministicTool("stats_describe", { text: "a b c" })).rejects.toThrow(/没有解析到任何数值/);
+    await expect(runDeterministicTool("stats_describe", { text: "a b c" })).rejects.toThrow(
+      /没有解析到任何数值/,
+    );
   });
 });
 
@@ -284,13 +344,20 @@ describe("diff_text 与 schema_validate", () => {
     expect(bad).toContain("$.age");
     expect(bad).toContain("$.extra");
 
-    const ok = await runDeterministicTool("schema_validate", { schema, data: { name: "x", age: 1 } });
+    const ok = await runDeterministicTool("schema_validate", {
+      schema,
+      data: { name: "x", age: 1 },
+    });
     expect(ok).toContain("校验通过");
   });
 
   it("枚举与 anyOf", async () => {
     const schema = JSON.stringify({ anyOf: [{ enum: ["a"] }, { type: "number", minimum: 10 }] });
-    expect(await runDeterministicTool("schema_validate", { schema, data: "a" })).toContain("校验通过");
-    expect(await runDeterministicTool("schema_validate", { schema, data: 5 })).toContain("不满足 anyOf");
+    expect(await runDeterministicTool("schema_validate", { schema, data: "a" })).toContain(
+      "校验通过",
+    );
+    expect(await runDeterministicTool("schema_validate", { schema, data: 5 })).toContain(
+      "不满足 anyOf",
+    );
   });
 });

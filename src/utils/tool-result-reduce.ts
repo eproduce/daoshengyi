@@ -24,6 +24,9 @@ export interface ReduceResult {
   removedChars: number;
 }
 
+// 剥离 ANSI 颜色/光标控制序列：**这里就必须匹配控制字符** \u001b（ESC），
+// 不是笔误 —— 否则工具输出里的彩色转义噪声会被当正文塞进上下文。
+// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 /** 失败/错误信号（中英混合；CJK 无 \b，故不用词边界） */
 const IMPORTANT_RE =
@@ -148,7 +151,10 @@ function sampleTable(lines: string[]): { lines: string[]; folded: number } | nul
 }
 
 /** 单行钳制：超长行保留首尾（base64、单行 JSON、长 hash 列表） */
-function clampLongLines(lines: string[], maxLineChars: number): { lines: string[]; folded: number } {
+function clampLongLines(
+  lines: string[],
+  maxLineChars: number,
+): { lines: string[]; folded: number } {
   let folded = 0;
   const out = lines.map((l) => {
     if (l.length <= maxLineChars) return l;
@@ -199,7 +205,9 @@ function capWithPriority(lines: string[], maxChars: number): { lines: string[]; 
   const omitted = others.length - head.length - tail.length;
   const out = [
     ...keptImportant,
-    ...(keptImportant.length ? [`…[以上为全部「错误/失败」相关行，共 ${Math.min(important.length, 80)} 行]`] : []),
+    ...(keptImportant.length
+      ? [`…[以上为全部「错误/失败」相关行，共 ${Math.min(important.length, 80)} 行]`]
+      : []),
     ...head,
     `…[已省略 ${omitted} 行低信息量内容（可按需缩小查询范围，或用 offset/length 读取落盘原文）]`,
     ...tail,
@@ -211,7 +219,11 @@ function capWithPriority(lines: string[], maxChars: number): { lines: string[]; 
  * 压缩工具结果。返回的 text 仍可能超过调用方的折叠阈值（由调用方决定是否落盘），
  * 但已剔除绝大部分冗余。notes 为空表示「未做任何压缩」。
  */
-export function reduceToolResult(tool: string, input: string, opts: ReduceOptions = {}): ReduceResult {
+export function reduceToolResult(
+  tool: string,
+  input: string,
+  opts: ReduceOptions = {},
+): ReduceResult {
   const minChars = opts.minChars ?? 1600;
   const maxChars = opts.maxChars ?? 16000;
   const maxLineChars = opts.maxLineChars ?? 1500;
@@ -240,7 +252,8 @@ export function reduceToolResult(tool: string, input: string, opts: ReduceOption
   }
 
   // 「通过条目折叠」只对命令/测试类输出有意义（其它工具不会产出 ✓/ok 这类噪声行）
-  const commandLike = /test|command|exec|build|lint|compile|cargo|npm|pnpm|pytest|make|git|stdin/i.test(tool);
+  const commandLike =
+    /test|command|exec|build|lint|compile|cargo|npm|pnpm|pytest|make|git|stdin/i.test(tool);
   if (commandLike) {
     const pass = collapsePassing(lines);
     if (pass.folded > 0) {

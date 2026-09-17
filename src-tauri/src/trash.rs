@@ -61,7 +61,13 @@ pub fn now_millis() -> u64 {
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == ':' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim().trim_start_matches('.').to_string();
     if trimmed.is_empty() {
@@ -182,14 +188,21 @@ pub fn list_trash(dir: &Path) -> Vec<TrashEntry> {
         if !p.is_file() || is_sidecar(&p) {
             continue;
         }
-        let Some(id) = p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()) else {
+        let Some(id) = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
             continue;
         };
         let meta = std::fs::metadata(&p).ok();
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
         let (original, deleted_at) = match read_sidecar(dir, &id) {
             Some(v) => v,
-            None => (String::new(), id_millis(&id).map(|ms| ms / 1000).unwrap_or(0)),
+            None => (
+                String::new(),
+                id_millis(&id).map(|ms| ms / 1000).unwrap_or(0),
+            ),
         };
         out.push(TrashEntry {
             name: if original.is_empty() {
@@ -218,8 +231,13 @@ pub fn restore(dir: &Path, id: &str, root: &Path) -> Result<String, String> {
     if !src.is_file() {
         return Err(format!("回收站中找不到条目: {}", id));
     }
-    let (original, _) = read_sidecar(dir, id)
-        .ok_or_else(|| format!("条目 {} 缺少原始路径记录，无法自动还原（可手动从 {} 取出）", id, src.display()))?;
+    let (original, _) = read_sidecar(dir, id).ok_or_else(|| {
+        format!(
+            "条目 {} 缺少原始路径记录，无法自动还原（可手动从 {} 取出）",
+            id,
+            src.display()
+        )
+    })?;
     let target = PathBuf::from(&original);
     if !target.is_absolute() || !target.starts_with(root) {
         return Err(format!(
@@ -323,7 +341,10 @@ mod tests {
         let second = move_to_trash(&trash, &a, 1_700_000_000_000).unwrap();
         assert_ne!(first.id, second.id);
         assert_eq!(std::fs::read_to_string(trash.join(&first.id)).unwrap(), "A");
-        assert_eq!(std::fs::read_to_string(trash.join(&second.id)).unwrap(), "B");
+        assert_eq!(
+            std::fs::read_to_string(trash.join(&second.id)).unwrap(),
+            "B"
+        );
         assert_eq!(list_trash(&trash).len(), 2);
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&trash);
@@ -339,7 +360,11 @@ mod tests {
         std::fs::write(&file, "新").unwrap(); // 用户又建了同名文件
         let err = restore(&trash, &e.id, &home).unwrap_err();
         assert!(err.contains("已存在"), "应拒绝覆盖: {}", err);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "新", "新文件不能被盖掉");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "新",
+            "新文件不能被盖掉"
+        );
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&trash);
     }
@@ -368,7 +393,9 @@ mod tests {
         let dir = tmp_dir("dirfile");
         assert!(move_to_trash(&trash, &dir, 1).unwrap_err().contains("目录"));
         let missing = dir.join("nope.txt");
-        assert!(move_to_trash(&trash, &missing, 1).unwrap_err().contains("不存在"));
+        assert!(move_to_trash(&trash, &missing, 1)
+            .unwrap_err()
+            .contains("不存在"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&trash);
     }
@@ -446,7 +473,10 @@ mod tests {
         // 不存在的条目 → 明确报错
         assert!(restore(&trash, "ghost.txt", &home).is_err());
         // 展示名推导：去时间戳前缀；无前缀时原样返回
-        assert_eq!(display_name_from_id("1700000000000-lonely.txt"), "lonely.txt");
+        assert_eq!(
+            display_name_from_id("1700000000000-lonely.txt"),
+            "lonely.txt"
+        );
         assert_eq!(display_name_from_id("plain.txt"), "plain.txt");
         assert_eq!(display_name_from_id("1700000000000-"), "1700000000000-");
         let _ = std::fs::remove_dir_all(&home);

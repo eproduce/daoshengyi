@@ -16,7 +16,7 @@ import {
 } from "../src/utils/line-anchor";
 
 const FILE = [
-  "import { ref } from \"vue\";", // 1
+  'import { ref } from "vue";', // 1
   "", // 2
   "export function useThing() {", // 3
   "  const a = 1;", // 4
@@ -49,9 +49,7 @@ describe("P1-2 行锚点 · 哈希", () => {
 describe("P1-2 行锚点 · 格式化与解析", () => {
   it("formatAnchoredLine 产出 `行号#哈希| 内容`", () => {
     // 注意：内容原样保留（含自身缩进），前缀后固定一个空格
-    expect(formatAnchoredLine(42, "  const x = 1;")).toMatch(
-      /^42#[0-9a-z]{3}\| {3}const x = 1;$/,
-    );
+    expect(formatAnchoredLine(42, "  const x = 1;")).toMatch(/^42#[0-9a-z]{3}\| {3}const x = 1;$/);
     expect(formatAnchoredLine(1, "")).toMatch(/^1#[0-9a-z]{3}\| $/);
   });
 
@@ -142,10 +140,14 @@ describe("P1-2 行锚点 · 校验", () => {
 
   it("findHash 由近及远搜索，超过容差就放弃", () => {
     // 第 100 行的锚点，哈希实际在第 3 行 → 距离 97 > 容差
-    const long = toLines([...Array(120)].map((_, i) => (i === 2 ? "target" : `line${i}`)).join("\n"));
+    const long = toLines(
+      [...Array(120)].map((_, i) => (i === 2 ? "target" : `line${i}`)).join("\n"),
+    );
     expect(findHash(long, hashLine("target"), 100)).toBeNull();
     // 距离在容差内 → 找到且标注非 exact
-    const near = toLines([...Array(120)].map((_, i) => (i === 100 ? "target" : `line${i}`)).join("\n"));
+    const near = toLines(
+      [...Array(120)].map((_, i) => (i === 100 ? "target" : `line${i}`)).join("\n"),
+    );
     const found = findHash(near, hashLine("target"), 110);
     expect(found).toEqual({ line: 101, exact: false });
     expect(ANCHOR_TOLERANCE).toBe(30);

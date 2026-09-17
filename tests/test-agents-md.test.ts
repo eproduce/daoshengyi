@@ -53,5 +53,8 @@ for (let i = 0; i + 2 < paths.length; i += 3) {
     layersOk = false;
 }
 assert(layersOk, "候选按层成组、AGENTS.md → 道生一.md → DECISIONS.md");
-assert(paths.some((p) => p.endsWith("DECISIONS.md")), "决策日志在候选里");
+assert(
+  paths.some((p) => p.endsWith("DECISIONS.md")),
+  "决策日志在候选里",
+);
 it("脚本式断言（顶层执行）", () => {});

@@ -87,7 +87,9 @@ describe("tool-result-reduce：内容感知压缩", () => {
 
   it("有失败时省略「通过」条目，但绝不丢失败行", () => {
     const pass = Array.from({ length: 40 }, (_, i) => `✓ tests/case-${i}.test.ts (1 test)`);
-    const text = [...pass, "FAIL tests/real.test.ts", "AssertionError: expected 1 to be 2"].join("\n");
+    const text = [...pass, "FAIL tests/real.test.ts", "AssertionError: expected 1 to be 2"].join(
+      "\n",
+    );
     const r = reduceToolResult("run_test", text);
     expect(r.text).toContain("FAIL tests/real.test.ts");
     expect(r.text).toContain("AssertionError");
@@ -120,7 +122,9 @@ describe("tool-result-reduce：内容感知压缩", () => {
   it("按预算裁剪时，错误行优先保留", () => {
     const noise = Array.from({ length: 300 }, (_, i) => `noise line ${i} ${"y".repeat(60)}`);
     const important = Array.from({ length: 20 }, (_, i) => `ERROR: critical failure ${i}`);
-    const r = reduceToolResult("run_command", [...noise, ...important, ...noise].join("\n"), { maxChars: 5000 });
+    const r = reduceToolResult("run_command", [...noise, ...important, ...noise].join("\n"), {
+      maxChars: 5000,
+    });
     expect(r.text).toContain("ERROR: critical failure 0");
     expect(r.text).toContain("ERROR: critical failure 19");
     expect(r.text).toContain("已省略");

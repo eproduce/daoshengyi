@@ -133,11 +133,7 @@ export function contextValue(ctx: HookContext, key: string): string {
  * - `mode: "text"` → 值净化（去控制字符 + 截断）
  * - 未知占位符原样保留（便于发现写错），已知但缺值的 → 空串
  */
-export function renderTemplate(
-  template: string,
-  ctx: HookContext,
-  mode: "shell" | "text",
-): string {
+export function renderTemplate(template: string, ctx: HookContext, mode: "shell" | "text"): string {
   return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (raw, name: string) => {
     const key = name.toLowerCase();
     if (!PLACEHOLDER_KEYS.includes(key as (typeof PLACEHOLDER_KEYS)[number])) return raw;
@@ -213,7 +209,7 @@ function checkHttpUrl(rule: HookRule): string | null {
   if (!url) return "http 动作需要 url";
   if (!/^https?:\/\//i.test(url)) return "只允许 http/https 地址（不支持 file:// 等本地协议）";
   if (isPrivateUrl(url) && rule.allow_private !== true) {
-    return "该地址指向内网/环回，默认禁止；确需使用请显式写 \"allow_private\": true。";
+    return '该地址指向内网/环回，默认禁止；确需使用请显式写 "allow_private": true。';
   }
   if (rule.method && !["GET", "POST"].includes(rule.method)) return "method 只能是 GET / POST";
   return null;
@@ -354,7 +350,9 @@ export function planHooks(
     const action = renderAction(rule, idx, ctx);
     if (action.kind === "inject") {
       if (injected >= MAX_INJECTIONS_PER_EVENT || budget <= 0) {
-        skipped.push(`注入超限（已注入 ${injected} 条 / ${MAX_INJECT_CHARS} 字符）：${describeHook(rule, idx)}`);
+        skipped.push(
+          `注入超限（已注入 ${injected} 条 / ${MAX_INJECT_CHARS} 字符）：${describeHook(rule, idx)}`,
+        );
         continue;
       }
       const body = action.text.slice(0, budget);

@@ -97,51 +97,54 @@ function show(origin: HTMLElement, delay: number) {
     clearTimeout(hideTimer);
     hideTimer = undefined;
   }
-  showTimer = window.setTimeout(() => {
-    const text = textOf(origin);
-    if (!text) return;
-    // 移除原生 title 防双重（文本备份到 data-orig-title + aria-label）
-    if (origin.hasAttribute("title")) {
-      origin.setAttribute("data-orig-title", text);
-      origin.removeAttribute("title");
-      origin.setAttribute("aria-label", text);
-    }
-    const t = tip();
-    t.textContent = text;
-    // 先移出视口再测量，避免闪现于错误位置
-    t.style.left = "-9999px";
-    t.style.top = "-9999px";
-    t.style.transform = "none";
-    // 清掉上一次显示残留的内联样式（宽度锁定 / 折行策略 / 上限），
-    // 否则单例浮层会被前一个 tooltip 的宽或 nowrap 状态污染。
-    t.style.width = "";
-    t.style.maxWidth = "";
-    t.style.whiteSpace = "";
-    t.classList.add("app-tip--show");
-
-    // —— 单行优先：先以 nowrap 测完整单行宽度（不再受 280 上限截断）——
-    t.style.whiteSpace = "nowrap";
-    t.style.maxWidth = "none";
-    let tipW = t.offsetWidth;
-    let tipH = t.offsetHeight;
-    if (tipW > window.innerWidth - 16) {
-      // 单行宽都放不下视口（极少数超长文案）→ 退回折行并限宽
-      t.style.whiteSpace = "";
-      const wrapMax = Math.min(280, window.innerWidth - 24);
-      t.style.maxWidth = `${wrapMax}px`;
+  showTimer = window.setTimeout(
+    () => {
+      const text = textOf(origin);
+      if (!text) return;
+      // 移除原生 title 防双重（文本备份到 data-orig-title + aria-label）
+      if (origin.hasAttribute("title")) {
+        origin.setAttribute("data-orig-title", text);
+        origin.removeAttribute("title");
+        origin.setAttribute("aria-label", text);
+      }
+      const t = tip();
+      t.textContent = text;
+      // 先移出视口再测量，避免闪现于错误位置
+      t.style.left = "-9999px";
+      t.style.top = "-9999px";
+      t.style.transform = "none";
+      // 清掉上一次显示残留的内联样式（宽度锁定 / 折行策略 / 上限），
+      // 否则单例浮层会被前一个 tooltip 的宽或 nowrap 状态污染。
       t.style.width = "";
-      tipW = t.offsetWidth;
-      tipH = t.offsetHeight;
-    }
-    // 锁定测量宽高 + 直接按左上角定位（不再 translateX(-50%)）：
-    // 防止边缘钳位后浏览器按剩余空间二次布局，把文字压窄成多行。
-    t.style.width = `${tipW}px`;
-    const r = origin.getBoundingClientRect();
-    const p = computeTipRect(r, window.innerWidth, window.innerHeight, tipW, tipH);
-    t.style.left = `${p.left}px`;
-    t.style.top = `${p.top}px`;
-    curOrigin = origin;
-  }, Math.max(0, delay));
+      t.style.maxWidth = "";
+      t.style.whiteSpace = "";
+      t.classList.add("app-tip--show");
+
+      // —— 单行优先：先以 nowrap 测完整单行宽度（不再受 280 上限截断）——
+      t.style.whiteSpace = "nowrap";
+      t.style.maxWidth = "none";
+      let tipW = t.offsetWidth;
+      let tipH = t.offsetHeight;
+      if (tipW > window.innerWidth - 16) {
+        // 单行宽都放不下视口（极少数超长文案）→ 退回折行并限宽
+        t.style.whiteSpace = "";
+        const wrapMax = Math.min(280, window.innerWidth - 24);
+        t.style.maxWidth = `${wrapMax}px`;
+        t.style.width = "";
+        tipW = t.offsetWidth;
+        tipH = t.offsetHeight;
+      }
+      // 锁定测量宽高 + 直接按左上角定位（不再 translateX(-50%)）：
+      // 防止边缘钳位后浏览器按剩余空间二次布局，把文字压窄成多行。
+      t.style.width = `${tipW}px`;
+      const r = origin.getBoundingClientRect();
+      const p = computeTipRect(r, window.innerWidth, window.innerHeight, tipW, tipH);
+      t.style.left = `${p.left}px`;
+      t.style.top = `${p.top}px`;
+      curOrigin = origin;
+    },
+    Math.max(0, delay),
+  );
 }
 
 function hideNow() {

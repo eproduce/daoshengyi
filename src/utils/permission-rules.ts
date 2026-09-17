@@ -66,7 +66,8 @@ export type RuleDecision =
 /** 校验规则表：返回错误信息列表（空 = 合法）。含正则/glob 非法时给出精确下标，避免静默失效。 */
 export function validateRules(input: unknown): string[] {
   const errs: string[] = [];
-  if (!Array.isArray(input)) return ["规则表必须是数组（每项形如 {\"action\":\"allow\",\"tool\":\"run_command\"}）"];
+  if (!Array.isArray(input))
+    return ['规则表必须是数组（每项形如 {"action":"allow","tool":"run_command"}）'];
   input.forEach((r, i) => {
     const at = `第 ${i + 1} 条`;
     if (!r || typeof r !== "object" || Array.isArray(r)) {
@@ -169,7 +170,9 @@ export function ruleMatches(rule: PermissionRule, call: ToolCallContext, home = 
       rule.path.startsWith("~") && home ? expandPathVariants(rule.path, home) : [rule.path];
     let res: RegExp[];
     try {
-      res = patterns.map((p) => globToRegExp(p.startsWith("~") || p.startsWith("/") ? p : `**/${p}`));
+      res = patterns.map((p) =>
+        globToRegExp(p.startsWith("~") || p.startsWith("/") ? p : `**/${p}`),
+      );
     } catch {
       return false;
     }
@@ -186,7 +189,8 @@ export function describeRule(rule: PermissionRule, index: number): string {
   if (rule.tool) cond.push(`工具=${rule.tool}`);
   if (rule.command) cond.push(`命令匹配 /${rule.command}/`);
   if (rule.path) cond.push(`路径匹配 ${rule.path}`);
-  const label = rule.action === "allow" ? "允许（免确认）" : rule.action === "deny" ? "禁止" : "必须确认";
+  const label =
+    rule.action === "allow" ? "允许（免确认）" : rule.action === "deny" ? "禁止" : "必须确认";
   return `${id} ${label}${cond.length ? `（${cond.join("、")}）` : ""}${rule.reason ? ` —— ${rule.reason}` : ""}`;
 }
 

@@ -101,11 +101,15 @@ describe("goals（目标 + token 预算，吸收自 Codex ext/goal）", () => {
   });
 
   it("goalPrompt：注入文案含目标与预算；超预算时要求立即收尾", () => {
-    const active = goalPrompt(makeGoal({ objective: "生成季度报告", tokenBudget: 1000, tokensUsed: 100 }));
+    const active = goalPrompt(
+      makeGoal({ objective: "生成季度报告", tokenBudget: 1000, tokensUsed: 100 }),
+    );
     expect(active).toContain("生成季度报告");
     expect(active).toContain("进行中");
 
-    const over = goalPrompt(makeGoal({ objective: "生成季度报告", tokenBudget: 1000, tokensUsed: 1500 }));
+    const over = goalPrompt(
+      makeGoal({ objective: "生成季度报告", tokenBudget: 1000, tokensUsed: 1500 }),
+    );
     expect(over).toContain("立即收尾");
 
     const blocked = goalPrompt(makeGoal({ status: "blocked", note: "缺 API Key" }));

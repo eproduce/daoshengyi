@@ -151,7 +151,9 @@ export function startTrayStatusSync(): void {
           doneSnapshot = {
             title: plan.title,
             progress: `${doneCount}/${plan.steps.length}`,
-            steps: plan.steps.slice(0, 8).map((s) => ({ text: s.text, status: s.status as string })),
+            steps: plan.steps
+              .slice(0, 8)
+              .map((s) => ({ text: s.text, status: s.status as string })),
           };
           linger = setTimeout(() => {
             doneSnapshot = null;

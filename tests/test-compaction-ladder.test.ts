@@ -170,7 +170,10 @@ describe("P1-5 压缩阶梯 · 关键事实（路径/命令）", () => {
 describe("P1-5 压缩阶梯 · 产物准备与幂等合并", () => {
   const droppable = [
     { role: "user", content: "跑 `npm test` 检查 /Users/x/op/src/a.ts" },
-    { role: "assistant", content: "改完 /Users/x/op/src/a.ts，npm test 通过，a.ts 相关内容也检查了" },
+    {
+      role: "assistant",
+      content: "改完 /Users/x/op/src/a.ts，npm test 通过，a.ts 相关内容也检查了",
+    },
   ];
 
   it("prepareDigest 同时备好索引与事实（老消息为空则什么都不产生）", () => {

@@ -54,7 +54,9 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
   browser_screenshot: {
     type: "object",
-    properties: { path: { type: "string", description: "可选，PNG 保存路径（缺省存到应用数据目录）" } },
+    properties: {
+      path: { type: "string", description: "可选，PNG 保存路径（缺省存到应用数据目录）" },
+    },
     required: [],
     additionalProperties: true,
   },
@@ -124,7 +126,10 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       },
       threshold: { type: "integer", description: "可选灰度阈值 0~255；缺省用 Otsu 自动计算" },
       invert: { type: "boolean", description: "true = 浅色为字（深底浅字）；缺省深色为字" },
-      mode: { type: "string", description: "glyphs（默认，切字符+点阵）| info（只出尺寸与灰度分布）" },
+      mode: {
+        type: "string",
+        description: "glyphs（默认，切字符+点阵）| info（只出尺寸与灰度分布）",
+      },
       ascii_width: { type: "integer", description: "字形点阵宽度，默认 24（4~80）" },
       max_glyphs: { type: "integer", description: "最多列出多少个字符块，默认 24" },
       min_glyph_width: { type: "integer", description: "最小字符宽（px），默认 1=不丢弃任何列段" },
@@ -212,12 +217,18 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     type: "object",
     properties: {
       path: { type: "string", description: "文件绝对路径" },
-      old_text: { type: "string", description: "要替换的原文（须与文件内容完全一致，不要带行锚点前缀）" },
+      old_text: {
+        type: "string",
+        description: "要替换的原文（须与文件内容完全一致，不要带行锚点前缀）",
+      },
       new_text: { type: "string", description: "新文本（可为空=删除该段）" },
       occurrence: { type: "integer", description: "第几次出现（默认 1；给了行锚点则自动推算）" },
       anchor_line: { type: "integer", description: "行锚点：刚从 with_anchors 读取到的行号" },
       anchor_hash: { type: "string", description: "行锚点：该行的 3 字符哈希" },
-      line_anchor: { type: "string", description: "行锚点简写：\"42#a7f\"（等价于 anchor_line+anchor_hash）" },
+      line_anchor: {
+        type: "string",
+        description: '行锚点简写："42#a7f"（等价于 anchor_line+anchor_hash）',
+      },
     },
     required: ["path", "old_text", "new_text"],
     additionalProperties: true,
@@ -229,7 +240,7 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       anchor: { type: "string", description: "锚点文本（须唯一且与文件内容完全一致）" },
       position: { type: "string", description: "before 之前 | after 之后（默认 before）" },
       new_text: { type: "string", description: "要插入的内容" },
-      line_anchor: { type: "string", description: "可选行锚点：\"42#a7f\"（校验文件未被改动）" },
+      line_anchor: { type: "string", description: '可选行锚点："42#a7f"（校验文件未被改动）' },
     },
     required: ["path", "anchor", "new_text"],
     additionalProperties: true,
@@ -252,7 +263,10 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       path: { type: "string", description: "文件绝对路径" },
       offset: { type: "integer", description: "起始行号（1 起算）；长文件分段读取用" },
       length: { type: "integer", description: "读取行数（不是字符数）；缺省读到文件末尾" },
-      with_anchors: { type: "boolean", description: "true = 每行带行锚点（行号#哈希），便于后续精确编辑" },
+      with_anchors: {
+        type: "boolean",
+        description: "true = 每行带行锚点（行号#哈希），便于后续精确编辑",
+      },
     },
     required: ["path"],
     additionalProperties: true,
@@ -396,7 +410,8 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       cwd: { type: "string", description: "仓库目录绝对路径" },
       action: {
         type: "string",
-        description: "status | diff | log | branch | add | commit | pull | push | checkout | rev-parse",
+        description:
+          "status | diff | log | branch | add | commit | pull | push | checkout | rev-parse",
       },
       args: { type: "array", items: { type: "string" }, description: "附加参数" },
     },
@@ -653,7 +668,10 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   calc: {
     type: "object",
     properties: {
-      expression: { type: "string", description: "算术表达式，如 (1+2)*3/4、sqrt(2)、2^10、round(3.14159,2)" },
+      expression: {
+        type: "string",
+        description: "算术表达式，如 (1+2)*3/4、sqrt(2)、2^10、round(3.14159,2)",
+      },
       precision: { type: "number", description: "可选，结果保留的小数位（0~15）" },
     },
     required: ["expression"],
@@ -693,7 +711,10 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       path: { type: "string", description: "或 CSV 文件路径" },
       delimiter: { type: "string", description: "分隔符，缺省自动识别" },
       select: { type: "array", items: { type: "string" }, description: "要输出的列名" },
-      where: { type: "object", description: "筛选条件：{\"列\": 值} 或 {\"列\": {\"op\":\"gt\",\"value\":10}}" },
+      where: {
+        type: "object",
+        description: '筛选条件：{"列": 值} 或 {"列": {"op":"gt","value":10}}',
+      },
       sort_by: { type: "string", description: "排序列" },
       sort_desc: { type: "boolean", description: "是否降序" },
       limit: { type: "integer", description: "最多显示行数（默认 30）" },
@@ -757,7 +778,11 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       path: { type: "string", description: "或文件路径" },
       column: { type: "string", description: "从 CSV 某列取数" },
       delimiter: { type: "string", description: "CSV 分隔符" },
-      values2: { type: "array", items: { type: "number" }, description: "可选第二组（算相关与回归）" },
+      values2: {
+        type: "array",
+        items: { type: "number" },
+        description: "可选第二组（算相关与回归）",
+      },
       column2: { type: "string", description: "可选，第二组取自 CSV 某列" },
     },
     required: [],

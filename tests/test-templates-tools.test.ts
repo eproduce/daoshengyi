@@ -1236,7 +1236,10 @@ console.log("\n== 自动联网搜索触发门槛（shouldSkipAutoSearch） ==");
   assert(shouldSkipAutoSearch("") === true, "空消息跳过");
 
   // 意图正向回归：默认不搜，仅明确需要才搜（修复「无论发什么都先搜索」）
-  assert(shouldSkipAutoSearch("打开edge浏览器跳转到google首页") === true, "打开浏览器去某网址是本地操作不搜索（用户场景）");
+  assert(
+    shouldSkipAutoSearch("打开edge浏览器跳转到google首页") === true,
+    "打开浏览器去某网址是本地操作不搜索（用户场景）",
+  );
   assert(shouldSkipAutoSearch("你好") === true, "闲聊不搜索");
   assert(shouldSkipAutoSearch("解释一下什么是区块链") === true, "纯知识问答不搜索");
   assert(shouldSkipAutoSearch("如何学习 Rust 编程") === true, "学习类纯知识问答不自动搜索");

@@ -21,10 +21,7 @@ const ui = useUiStore();
 const activeTab = ref<"mine" | "catalog" | "import">("mine");
 const editing = ref<string | null>(null);
 const form = ref<
-  Pick<
-    Skill,
-    "name" | "description" | "prompt" | "category" | "enabled" | "source" | "whenToUse"
-  >
+  Pick<Skill, "name" | "description" | "prompt" | "category" | "enabled" | "source" | "whenToUse">
 >({
   name: "",
   description: "",
@@ -183,8 +180,9 @@ async function doExternalImport() {
     const srcText = Object.entries(plan.bySource)
       .map(([k, v]) => `${k} ${v}`)
       .join(" · ");
+    // 用**实际写入**的计数（plan 里的新增/更新是意图，这里是结果，两者不一致时以这里为准）
     importMsg.value =
-      `✅ ${summarizePlan(plan)}（扫到 ${files.length} 个文件：${srcText}）` +
+      `✅ ${summarizePlan(plan)}（实际写入：新增 ${added}、更新 ${updated}；扫到 ${files.length} 个文件：${srcText}）` +
       (plan.conflicts.length ? `；冲突 ${plan.conflicts.length} 个已跳过` : "");
   } catch (e) {
     importMsg.value = `❌ ${e instanceof Error ? e.message : "扫描失败"}`;
@@ -312,11 +310,7 @@ const categoryColors: Record<string, string> = {
                   </span>
                 </div>
                 <div class="sk-item-desc">{{ s.description || "无描述" }}</div>
-                <div
-                  v-if="s.whenToUse"
-                  class="sk-item-desc"
-                  style="opacity: 0.65; font-size: 11px"
-                >
+                <div v-if="s.whenToUse" class="sk-item-desc" style="opacity: 0.65; font-size: 11px">
                   适用：{{ s.whenToUse }}
                 </div>
               </div>
@@ -382,7 +376,8 @@ const categoryColors: Record<string, string> = {
             <div class="sk-import-block">
               <h4>从其它工具的技能目录导入（推荐）</h4>
               <p class="sk-hint">
-                扫描 Claude Code（~/.claude/skills、~/.claude/commands）、Codex（~/.codex/prompts）、
+                扫描 Claude
+                Code（~/.claude/skills、~/.claude/commands）、Codex（~/.codex/prompts）、
                 Cursor（当前项目 .cursor/rules）与你自己的 ~/Documents/道生一技能。
                 <b>永不覆盖你手写的同名技能</b>：来源文件没变过的会更新正文，同名冲突会跳过并告知。
               </p>

@@ -109,9 +109,7 @@ export function buildSkillRoutingTable(skills: SkillRouteLike[]): string {
   if (!skills.length) return "";
   return skills
     .map((s) => {
-      const scope =
-        s.whenToUse ||
-        (s.description || "").split(/[。;；]/)[0].trim();
+      const scope = s.whenToUse || (s.description || "").split(/[。;；]/)[0].trim();
       return `- ${s.name}${s.category ? `（${s.category}）` : ""}：${scope}`;
     })
     .join("\n");
@@ -129,11 +127,7 @@ export function scoreSkillMatch(text: string, s: SkillRouteLike): number {
 }
 
 /** 从启用技能里选出与当前请求最相关的前 maxHits 个（渐进披露正文注入目标） */
-export function matchSkillsForMessage(
-  text: string,
-  skills: Skill[],
-  maxHits = 2,
-): Skill[] {
+export function matchSkillsForMessage(text: string, skills: Skill[], maxHits = 2): Skill[] {
   const scored = skills
     .map((s) => ({ s, score: scoreSkillMatch(text, s) }))
     .filter((x) => x.score > 0)

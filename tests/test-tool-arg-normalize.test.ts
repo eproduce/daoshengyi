@@ -58,7 +58,10 @@ describe("tool-arg-normalize：类型自愈", () => {
   it("字符串数字 → number/integer", () => {
     const r = normalizeToolArgs({ seconds: "5" }, schemaOf("sleep"));
     expect(r.args.seconds).toBe(5);
-    const ctx = normalizeToolArgs({ context: "2", a: "b" }, { type: "object", properties: { context: { type: "integer" } } });
+    const ctx = normalizeToolArgs(
+      { context: "2", a: "b" },
+      { type: "object", properties: { context: { type: "integer" } } },
+    );
     expect(ctx.args.context).toBe(2);
   });
 

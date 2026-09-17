@@ -109,7 +109,10 @@ pub fn parse_ollama_manifest(v: &serde_json::Value) -> Option<(String, Option<St
     let mut model: Option<String> = None;
     let mut projector: Option<String> = None;
     for layer in layers {
-        let media = layer.get("mediaType").and_then(|m| m.as_str()).unwrap_or("");
+        let media = layer
+            .get("mediaType")
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
         let digest = layer.get("digest").and_then(|d| d.as_str()).unwrap_or("");
         if digest.is_empty() {
             continue;
@@ -414,7 +417,9 @@ fn collect_manifests(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth == 0 || out.len() > 200 {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -492,7 +497,8 @@ pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String
     let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let dest = models_dir(&app_dir);
     std::fs::create_dir_all(&dest).map_err(|e| format!("创建模型目录失败: {}", e))?;
-    let root = ollama_models_root().ok_or("未找到 Ollama 模型目录（HOME / OLLAMA_MODELS 均不可用）")?;
+    let root =
+        ollama_models_root().ok_or("未找到 Ollama 模型目录（HOME / OLLAMA_MODELS 均不可用）")?;
     if !root.exists() {
         return Err(format!(
             "Ollama 模型目录不存在：{}（需先在 Ollama 中拉取多模态模型）",
@@ -525,7 +531,9 @@ pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String
     let proj_out = dest.join(format!("{}-mmproj.gguf", name));
     let model_link = link_or_copy(&model_blob, &model_out)?;
     let projector_link = link_or_copy(&proj_blob, &proj_out)?;
-    let model_mb = std::fs::metadata(&model_out).map(|m| m.len() / 1_048_576).unwrap_or(0);
+    let model_mb = std::fs::metadata(&model_out)
+        .map(|m| m.len() / 1_048_576)
+        .unwrap_or(0);
     Ok(ImportReport {
         label,
         model_file: model_out
@@ -668,8 +676,14 @@ mod tests {
         );
         // 垃圾输入 → None（调用方跳过该 manifest，绝不 panic）
         assert_eq!(parse_ollama_manifest(&serde_json::json!({})), None);
-        assert_eq!(parse_ollama_manifest(&serde_json::json!({ "layers": "x" })), None);
-        assert_eq!(parse_ollama_manifest(&serde_json::json!({ "layers": [] })), None);
+        assert_eq!(
+            parse_ollama_manifest(&serde_json::json!({ "layers": "x" })),
+            None
+        );
+        assert_eq!(
+            parse_ollama_manifest(&serde_json::json!({ "layers": [] })),
+            None
+        );
     }
 
     #[test]
@@ -726,7 +740,9 @@ mod tests {
     #[test]
     fn default_threads_leaves_headroom() {
         assert!(default_threads() >= 2);
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         assert!(default_threads() <= cores);
     }
 
@@ -749,14 +765,20 @@ mod tests {
     /// 这正是「零下载导入」的关键依据（blob 必须是 GGUF）。本机没装/没有多模态模型 → 跳过。
     #[test]
     fn find_ollama_multimodal_on_real_store_if_present() {
-        let Some(root) = ollama_models_root() else { return };
+        let Some(root) = ollama_models_root() else {
+            return;
+        };
         if !root.join("manifests").exists() {
             return;
         }
         let Some((label, model, proj)) = find_ollama_multimodal(&root) else {
             return; // 本机无「带投影器」的多模态模型 → 不算失败
         };
-        assert!(label.contains(':'), "标签应形如 llava-phi3:latest，实际 {}", label);
+        assert!(
+            label.contains(':'),
+            "标签应形如 llava-phi3:latest，实际 {}",
+            label
+        );
         assert!(model.exists(), "模型 blob 应存在: {}", model.display());
         assert!(proj.exists(), "投影器 blob 应存在: {}", proj.display());
         use std::io::Read as _;
@@ -784,8 +806,16 @@ mod tests {
         std::fs::write(dir.join("tiny.gguf"), b"GGUF").unwrap();
         std::fs::write(dir.join("note.txt"), b"GGUF").unwrap();
         let found = list_gguf(&dir);
-        assert_eq!(found.len(), 1, "只应认魔数正确且体积合理的 GGUF：{:?}", found);
-        assert_eq!(found[0].0.file_name().unwrap().to_str().unwrap(), "real.gguf");
+        assert_eq!(
+            found.len(),
+            1,
+            "只应认魔数正确且体积合理的 GGUF：{:?}",
+            found
+        );
+        assert_eq!(
+            found[0].0.file_name().unwrap().to_str().unwrap(),
+            "real.gguf"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         // 不存在的目录 → 空列表（不 panic）
         assert!(list_gguf(&p("/definitely/not/here")).is_empty());

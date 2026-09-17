@@ -451,8 +451,8 @@ function cancel() {
           <p class="mcp-community-warn">
             ⚠️ 这些是<strong>第三方远程服务</strong>（数据会离开本机）。能力主干优先用
             <strong>内置工具 + 技能</strong
-            >（已覆盖文件/命令/Git/浏览器/工作流/记忆等）；社区端点只在需要长尾/账号型集成
-            （如 gmail、notion）时使用。
+            >（已覆盖文件/命令/Git/浏览器/工作流/记忆等）；社区端点只在需要长尾/账号型集成 （如
+            gmail、notion）时使用。
           </p>
           点击「🔍 加载」从 Smithery 社区市场拉取可用插件，安装即连接远程端点，无需本地进程。
         </div>

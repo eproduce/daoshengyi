@@ -27,11 +27,7 @@ import { isUnfinished, type Goal } from "./goals";
 
 /** 收尾时检测到的问题类型 */
 export type StopReason =
-  | "all-tools-failed"
-  | "verify-gap"
-  | "plan-incomplete"
-  | "goal-unfinished"
-  | "empty-answer";
+  "all-tools-failed" | "verify-gap" | "plan-incomplete" | "goal-unfinished" | "empty-answer";
 
 /** 本轮可用的信号（由 chat.ts 从实际状态拼装） */
 export interface TurnSignals {
@@ -230,7 +226,9 @@ export function decideAutoContinue(input: DecideInput): Decision {
   }
   return {
     action: "stop",
-    why: skipped.length ? `所有命中规则的纠偏次数都已用尽：${skipped.join("；")}` : "无可用的纠偏规则",
+    why: skipped.length
+      ? `所有命中规则的纠偏次数都已用尽：${skipped.join("；")}`
+      : "无可用的纠偏规则",
   };
 }
 

@@ -95,11 +95,7 @@ import { LOCAL_FILE_RE } from "@/utils/local-file-re";
 function linkifyLocalPaths(s: string): string {
   // 属性值转义：路径可能含引号 / & / <，直接拼进 HTML 会破坏结构
   const esc = (v: string) =>
-    v
-      .replace(/&/g, "&amp;")
-      .replace(/"/g, "&quot;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   // 符号跳转：路径后紧跟 `:行号`（如 code_search 的 `file:12`）时把行号一并捕获，
   // 点击用 VSCode goto 定位到行；无行号则照常打开文件。
   let out = "";
@@ -360,7 +356,9 @@ watch(
             <span class="reason-label"><Brain :size="14" /> 深度思考</span>
             <span v-if="!chatStore.streamingContent" class="reason-badge">进行中</span>
           </div>
-          <div v-show="showReasoning" ref="streamingReasonRef" class="reason-body">{{ chatStore.streamingReasoning }}</div>
+          <div v-show="showReasoning" ref="streamingReasonRef" class="reason-body">
+            {{ chatStore.streamingReasoning }}
+          </div>
         </div>
         <div
           v-if="chatStore.streamingContent"

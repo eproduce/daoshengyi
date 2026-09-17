@@ -114,7 +114,11 @@ const CALC_FNS: Record<string, CalcFn> = {
   ln: { min: 1, max: 1, fn: ([x]) => Math.log(x) },
   log10: { min: 1, max: 1, fn: ([x]) => Math.log10(x) },
   log2: { min: 1, max: 1, fn: ([x]) => Math.log2(x) },
-  log: { min: 1, max: 2, fn: ([x, b]) => (b === undefined ? Math.log10(x) : Math.log(x) / Math.log(b)) },
+  log: {
+    min: 1,
+    max: 2,
+    fn: ([x, b]) => (b === undefined ? Math.log10(x) : Math.log(x) / Math.log(b)),
+  },
   sin: { min: 1, max: 1, fn: ([x]) => Math.sin(x) },
   cos: { min: 1, max: 1, fn: ([x]) => Math.cos(x) },
   tan: { min: 1, max: 1, fn: ([x]) => Math.tan(x) },
@@ -132,24 +136,29 @@ const CALC_FNS: Record<string, CalcFn> = {
   gcd: {
     min: 2,
     max: -1,
-    fn: (a) => a.map((x) => Math.abs(Math.trunc(x))).reduce((x, y) => {
-      let p = x;
-      let q = y;
-      while (q) [p, q] = [q, p % q];
-      return p;
-    }),
+    fn: (a) =>
+      a
+        .map((x) => Math.abs(Math.trunc(x)))
+        .reduce((x, y) => {
+          let p = x;
+          let q = y;
+          while (q) [p, q] = [q, p % q];
+          return p;
+        }),
   },
   lcm: {
     min: 2,
     max: -1,
     fn: (a) =>
-      a.map((x) => Math.abs(Math.trunc(x))).reduce((x, y) => {
-        if (x === 0 || y === 0) return 0;
-        let p = x;
-        let q = y;
-        while (q) [p, q] = [q, p % q];
-        return (x / p) * y;
-      }),
+      a
+        .map((x) => Math.abs(Math.trunc(x)))
+        .reduce((x, y) => {
+          if (x === 0 || y === 0) return 0;
+          let p = x;
+          let q = y;
+          while (q) [p, q] = [q, p % q];
+          return (x / p) * y;
+        }),
   },
   factorial: {
     min: 1,
@@ -248,7 +257,9 @@ class CalcParser {
       return v;
     }
     // 只允许下划线做千分位（不能收逗号：否则会与函数参数分隔符冲突，如 min(3,5,1) 被读成 351）
-    const numMatch = /^(?:\d[\d_]*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(this.src.slice(this.pos));
+    const numMatch = /^(?:\d[\d_]*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(
+      this.src.slice(this.pos),
+    );
     if (numMatch) {
       this.pos += numMatch[0].length;
       const v = Number(numMatch[0].replace(/[_,]/g, ""));
@@ -289,7 +300,9 @@ class CalcParser {
       if (k in CALC_CONSTS) return CALC_CONSTS[k];
       throw new Error(`未知标识符「${name}」（可用常量：${Object.keys(CALC_CONSTS).join("、")}）`);
     }
-    throw new Error(`表达式在位置 ${this.pos} 处无法解析：「${this.src.slice(this.pos, this.pos + 12)}」`);
+    throw new Error(
+      `表达式在位置 ${this.pos} 处无法解析：「${this.src.slice(this.pos, this.pos + 12)}」`,
+    );
   }
 }
 
@@ -310,7 +323,9 @@ function toolCalc(args: Record<string, unknown>): string {
     const p = Math.max(0, Math.min(15, Math.trunc(precision)));
     shown = value.toFixed(p);
   }
-  const intNote = Number.isInteger(value) ? "" : "（非整数结果，默认保留 JavaScript 双精度最长表示；需要定点请传 precision）";
+  const intNote = Number.isInteger(value)
+    ? ""
+    : "（非整数结果，默认保留 JavaScript 双精度最长表示；需要定点请传 precision）";
   return `表达式：${expression}\n计算结果：${shown}${intNote}`;
 }
 
@@ -383,7 +398,10 @@ function formatInTz(d: Date, tz: string): string {
 /** 把「某时区的墙上时间」转成绝对时刻（两轮修正覆盖夏令时边界） */
 function zonedWallToUtc(wall: string, tz: string): Date {
   const m = /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(wall.trim());
-  if (!m) throw new Error(`时间格式无法识别：「${wall}」（请用 2026-03-01T09:30 或 2026-03-01T09:30:00）`);
+  if (!m)
+    throw new Error(
+      `时间格式无法识别：「${wall}」（请用 2026-03-01T09:30 或 2026-03-01T09:30:00）`,
+    );
   const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? 0));
   let ms = guess - tzOffsetMs(new Date(guess), tz);
   ms = guess - tzOffsetMs(new Date(ms), tz);
@@ -437,13 +455,19 @@ function toolTimeConvert(args: Record<string, unknown>): string {
   const actionRaw = sArg(args, "action").trim().toLowerCase();
   const action =
     actionRaw ||
-    (sArg(args, "to").trim() || sArg(args, "time").trim() ? (sArg(args, "amount").trim() ? "add" : "convert") : "now");
+    (sArg(args, "to").trim() || sArg(args, "time").trim()
+      ? sArg(args, "amount").trim()
+        ? "add"
+        : "convert"
+      : "now");
 
   try {
     // 校验时区
     new Intl.DateTimeFormat("en-US", { timeZone: toTz }).format(new Date());
   } catch {
-    throw new Error(`未知时区「${toTz}」。请用 IANA 名称，如 Asia/Shanghai、UTC、America/New_York、Europe/London`);
+    throw new Error(
+      `未知时区「${toTz}」。请用 IANA 名称，如 Asia/Shanghai、UTC、America/New_York、Europe/London`,
+    );
   }
 
   if (action === "now") {
@@ -457,7 +481,8 @@ function toolTimeConvert(args: Record<string, unknown>): string {
 
   if (action === "convert") {
     const timeStr = sArg(args, "time").trim() || sArg(args, "from").trim();
-    if (!timeStr) throw new Error("time_convert(convert) 需要 time（如 2026-03-01T09:30，或用 to_tz 反推）");
+    if (!timeStr)
+      throw new Error("time_convert(convert) 需要 time（如 2026-03-01T09:30，或用 to_tz 反推）");
     const d = parseTimeArg(timeStr, fromTz);
     return [
       `输入：${timeStr}（按 ${fromTz} 解释）`,
@@ -473,7 +498,8 @@ function toolTimeConvert(args: Record<string, unknown>): string {
     const amount = nArg(args, "amount") ?? 0;
     const unit = (sArg(args, "unit").trim() || "d").toLowerCase();
     const factor = TIME_UNIT_MS[unit];
-    if (!factor) throw new Error(`未知时间单位「${unit}」（可用：${Object.keys(TIME_UNIT_MS).join("、")}）`);
+    if (!factor)
+      throw new Error(`未知时间单位「${unit}」（可用：${Object.keys(TIME_UNIT_MS).join("、")}）`);
     const delta = amount * factor * (action === "sub" ? -1 : 1);
     const out = new Date(base.getTime() + delta);
     return [
@@ -492,13 +518,14 @@ function toolTimeConvert(args: Record<string, unknown>): string {
     const ms = b.getTime() - a.getTime();
     const unit = (sArg(args, "unit").trim() || "").toLowerCase();
     const factor = unit ? TIME_UNIT_MS[unit] : undefined;
-    if (unit && !factor) throw new Error(`未知时间单位「${unit}」（可用：${Object.keys(TIME_UNIT_MS).join("、")}）`);
+    if (unit && !factor)
+      throw new Error(`未知时间单位「${unit}」（可用：${Object.keys(TIME_UNIT_MS).join("、")}）`);
     return [
       `from：${formatInTz(a, fromTz)}`,
       `to：  ${formatInTz(b, fromTz)}`,
       `相差：${humanDuration(ms)}（${ms} 毫秒）`,
       factor ? `折合：${(ms / factor).toFixed(4)} ${unit}` : "",
-      `含工作日估算：约 ${Math.max(0, Math.round(Math.abs(ms) / 86400000 / 7 * 5))} 个工作日（按 5/7 折算，仅参考）`,
+      `含工作日估算：约 ${Math.max(0, Math.round((Math.abs(ms) / 86400000 / 7) * 5))} 个工作日（按 5/7 折算，仅参考）`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -515,7 +542,7 @@ export function parseCsv(text: string, delimiter?: string): string[][] {
   const delim =
     delimiter && delimiter !== "auto"
       ? delimiter
-      : [",", "\t", ";", "|"].find((d) => firstLine.split(d).length > 1) ?? ",";
+      : ([",", "\t", ";", "|"].find((d) => firstLine.split(d).length > 1) ?? ",");
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
@@ -628,15 +655,22 @@ function matchWhere(cell: string, clause: WhereClause): boolean {
         return false;
       }
     default:
-      throw new Error(`where 不支持的操作符「${clause.op}」（可用 eq/ne/gt/gte/lt/lte/contains/startswith/endswith/in/regex）`);
+      throw new Error(
+        `where 不支持的操作符「${clause.op}」（可用 eq/ne/gt/gte/lt/lte/contains/startswith/endswith/in/regex）`,
+      );
   }
 }
 
 function mdTable(rows: string[][]): string {
   if (!rows.length) return "（无数据）";
   const width = Math.max(...rows.map((r) => r.length));
-  const cell = (r: string[]) => `| ${Array.from({ length: width }, (_, i) => r[i] ?? "").join(" | ")} |`;
-  return [cell(rows[0]), `| ${Array.from({ length: width }, () => "---").join(" | ")} |`, ...rows.slice(1).map(cell)].join("\n");
+  const cell = (r: string[]) =>
+    `| ${Array.from({ length: width }, (_, i) => r[i] ?? "").join(" | ")} |`;
+  return [
+    cell(rows[0]),
+    `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+    ...rows.slice(1).map(cell),
+  ].join("\n");
 }
 
 function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
@@ -649,7 +683,10 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
     header.forEach((h, i) => (o[h] = r[i] ?? ""));
     return o;
   });
-  const out: string[] = [`CSV 共 ${body.length} 行数据 × ${header.length} 列`, `列名：${header.join(" | ")}`];
+  const out: string[] = [
+    `CSV 共 ${body.length} 行数据 × ${header.length} 列`,
+    `列名：${header.join(" | ")}`,
+  ];
 
   if (args.profile === true) {
     out.push("", "列画像：");
@@ -674,7 +711,9 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
   let filtered = body;
   if (where.length) {
     filtered = body.filter((r) => where.every((c) => matchWhere(r[c.column] ?? "", c)));
-    out.push(`过滤条件 ${where.length} 条（${where.map((c) => `${c.column} ${c.op} ${JSON.stringify(c.value)}`).join(" 且 ")}）→ 命中 ${filtered.length} 行`);
+    out.push(
+      `过滤条件 ${where.length} 条（${where.map((c) => `${c.column} ${c.op} ${JSON.stringify(c.value)}`).join(" 且 ")}）→ 命中 ${filtered.length} 行`,
+    );
   }
 
   const groupBy = sArg(args, "group_by").trim();
@@ -694,7 +733,8 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
       }
     }
   } else if (rawAgg && typeof rawAgg === "object") {
-    for (const [alias, expr] of Object.entries(rawAgg as Record<string, unknown>)) pushAgg(`${String(expr)}:${alias}`);
+    for (const [alias, expr] of Object.entries(rawAgg as Record<string, unknown>))
+      pushAgg(`${String(expr)}:${alias}`);
   }
   if (groupBy && aggSpec.length === 0) aggSpec.push({ fn: "count", column: "" });
 
@@ -706,10 +746,14 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
       arr.push(r);
       groups.set(k, arr);
     }
-    const table: string[][] = [[groupBy, ...aggSpec.map((a) => (a.column ? `${a.fn}(${a.column})` : a.fn))]];
+    const table: string[][] = [
+      [groupBy, ...aggSpec.map((a) => (a.column ? `${a.fn}(${a.column})` : a.fn))],
+    ];
     for (const [k, items] of groups) {
       const cells = aggSpec.map((a) => {
-        const nums = items.map((r) => asNumber(r[a.column] ?? "")).filter((n): n is number => n !== null);
+        const nums = items
+          .map((r) => asNumber(r[a.column] ?? ""))
+          .filter((n): n is number => n !== null);
         switch (a.fn) {
           case "count":
             return String(items.length);
@@ -718,13 +762,17 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
           case "sum":
             return String(nums.reduce((x, y) => x + y, 0));
           case "avg":
-            return nums.length ? String(Number((nums.reduce((x, y) => x + y, 0) / nums.length).toFixed(4))) : "-";
+            return nums.length
+              ? String(Number((nums.reduce((x, y) => x + y, 0) / nums.length).toFixed(4)))
+              : "-";
           case "min":
             return nums.length ? String(Math.min(...nums)) : "-";
           case "max":
             return nums.length ? String(Math.max(...nums)) : "-";
           default:
-            throw new Error(`不支持的聚合函数「${a.fn}」（可用 count/count_distinct/sum/avg/min/max）`);
+            throw new Error(
+              `不支持的聚合函数「${a.fn}」（可用 count/count_distinct/sum/avg/min/max）`,
+            );
         }
       });
       table.push([k, ...cells]);
@@ -736,21 +784,29 @@ function toolCsvQuery(args: Record<string, unknown>, raw: string): string {
   const select = Array.isArray(args.select)
     ? (args.select as unknown[]).map((x) => String(x))
     : sArg(args, "select").trim()
-      ? sArg(args, "select").split(",").map((x) => x.trim())
+      ? sArg(args, "select")
+          .split(",")
+          .map((x) => x.trim())
       : header;
 
   const sortBy = sArg(args, "sort_by").trim();
   if (sortBy) {
     const desc = args.sort_desc === true || sArg(args, "sort_desc") === "true";
-    filtered = [...filtered].sort((a, b) => (desc ? -1 : 1) * cmpValues(a[sortBy] ?? "", b[sortBy] ?? ""));
+    filtered = [...filtered].sort(
+      (a, b) => (desc ? -1 : 1) * cmpValues(a[sortBy] ?? "", b[sortBy] ?? ""),
+    );
     out.push(`已按「${sortBy}」${desc ? "降序" : "升序"}排序`);
   }
 
   const limit = Math.max(1, Math.trunc(numOr(args, "limit", 30)));
   const shown = filtered.slice(0, limit);
   const table: string[][] = [select, ...shown.map((r) => select.map((c) => r[c] ?? ""))];
-  out.push(`结果 ${filtered.length} 行，显示前 ${Math.min(limit, filtered.length)} 行：`, mdTable(table));
-  if (filtered.length > shown.length) out.push(`（还有 ${filtered.length - shown.length} 行未显示，可调大 limit）`);
+  out.push(
+    `结果 ${filtered.length} 行，显示前 ${Math.min(limit, filtered.length)} 行：`,
+    mdTable(table),
+  );
+  if (filtered.length > shown.length)
+    out.push(`（还有 ${filtered.length - shown.length} 行未显示，可调大 limit）`);
   return clip(out.join("\n"));
 }
 
@@ -822,12 +878,15 @@ function toolJsonQuery(args: Record<string, unknown>, raw: string): string {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    throw new Error(`JSON 解析失败（${e instanceof Error ? e.message : String(e)}）。请先用 schema_validate 检查或修正文本`);
+    throw new Error(
+      `JSON 解析失败（${e instanceof Error ? e.message : String(e)}）。请先用 schema_validate 检查或修正文本`,
+    );
   }
   if (args.keys === true) {
     if (Array.isArray(data)) {
       const first = data[0];
-      const keys = first && typeof first === "object" ? Object.keys(first as Record<string, unknown>) : [];
+      const keys =
+        first && typeof first === "object" ? Object.keys(first as Record<string, unknown>) : [];
       return `顶层为数组（${data.length} 项）；元素字段：${keys.join(" | ") || "（元素非对象）"}`;
     }
     if (data && typeof data === "object") {
@@ -837,17 +896,33 @@ function toolJsonQuery(args: Record<string, unknown>, raw: string): string {
   }
   const expr = sArg(args, "json_path").trim() || sArg(args, "expr").trim() || "$";
   const picked = jsonPathLookup(data, expr);
-  if (picked === undefined) return `json_path「${expr}」未命中任何值（可用 keys:true 先看有哪些字段）`;
+  if (picked === undefined)
+    return `json_path「${expr}」未命中任何值（可用 keys:true 先看有哪些字段）`;
 
-  if (args.table === true && Array.isArray(picked) && picked.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
+  if (
+    args.table === true &&
+    Array.isArray(picked) &&
+    picked.every((x) => x && typeof x === "object" && !Array.isArray(x))
+  ) {
     const cols = Array.from(
       new Set(picked.flatMap((x) => Object.keys(x as Record<string, unknown>))),
     );
-    const rows: string[][] = [cols, ...picked.slice(0, 40).map((x) => cols.map((c) => {
-      const v = (x as Record<string, unknown>)[c];
-      return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
-    }))];
-    return clip(`json_path「${expr}」命中 ${picked.length} 项，表格视图（显示前 ${Math.min(40, picked.length)} 项）：\n${mdTable(rows)}`);
+    const rows: string[][] = [
+      cols,
+      ...picked.slice(0, 40).map((x) =>
+        cols.map((c) => {
+          const v = (x as Record<string, unknown>)[c];
+          return v === undefined || v === null
+            ? ""
+            : typeof v === "object"
+              ? JSON.stringify(v)
+              : String(v);
+        }),
+      ),
+    ];
+    return clip(
+      `json_path「${expr}」命中 ${picked.length} 项，表格视图（显示前 ${Math.min(40, picked.length)} 项）：\n${mdTable(rows)}`,
+    );
   }
   const pretty = JSON.stringify(picked, null, 2);
   return clip(`json_path「${expr}」结果：\n${pretty}`);
@@ -869,7 +944,8 @@ function toolRegexTest(raw: string, args: Record<string, unknown>): string {
   if (/\([^()]*[*+][^()]*\)[*+{]/.test(pattern)) {
     warnings.push("⚠️ 检测到嵌套量词（(…*)+ 形态），特定输入下可能灾难性回溯——建议先限定输入长度");
   }
-  if (/\.\*.*\.\*/s.test(pattern)) warnings.push("⚠️ 多个 .* 串联：可能匹配范围过大，建议用更精确的字符类");
+  if (/\.\*.*\.\*/s.test(pattern))
+    warnings.push("⚠️ 多个 .* 串联：可能匹配范围过大，建议用更精确的字符类");
 
   const out: string[] = [`正则 /${pattern}/${flags}`, `输入长度：${raw.length} 字符`];
   const matches: { index: number; text: string; groups: string[] }[] = [];
@@ -889,15 +965,26 @@ function toolRegexTest(raw: string, args: Record<string, unknown>): string {
     if (warnings.length) out.push(...warnings);
     return out.join("\n");
   }
-  out.push(`结果：命中 ${matches.length}${matches.length >= max ? "+" : ""} 处（显示前 ${matches.length} 处）`);
+  out.push(
+    `结果：命中 ${matches.length}${matches.length >= max ? "+" : ""} 处（显示前 ${matches.length} 处）`,
+  );
   matches.forEach((m, i) => {
-    const g = m.groups.length ? `；分组：${m.groups.map((x, gi) => `${gi + 1}=${JSON.stringify(x)}`).join(", ")}` : "";
-    out.push(`${i + 1}) 位置 ${m.index}，长度 ${m.text.length} → ${JSON.stringify(m.text.slice(0, 200))}${g}`);
+    const g = m.groups.length
+      ? `；分组：${m.groups.map((x, gi) => `${gi + 1}=${JSON.stringify(x)}`).join(", ")}`
+      : "";
+    out.push(
+      `${i + 1}) 位置 ${m.index}，长度 ${m.text.length} → ${JSON.stringify(m.text.slice(0, 200))}${g}`,
+    );
   });
   if (typeof args.replace === "string") {
     try {
-      const replaced = raw.replace(new RegExp(pattern, flags.includes("g") ? flags : `${flags}g`), args.replace);
-      out.push(`替换预览（${args.replace}）→ 结果长度 ${replaced.length} 字符：\n${replaced.slice(0, 600)}`);
+      const replaced = raw.replace(
+        new RegExp(pattern, flags.includes("g") ? flags : `${flags}g`),
+        args.replace,
+      );
+      out.push(
+        `替换预览（${args.replace}）→ 结果长度 ${replaced.length} 字符：\n${replaced.slice(0, 600)}`,
+      );
     } catch (e) {
       out.push(`替换失败：${e instanceof Error ? e.message : String(e)}`);
     }
@@ -958,7 +1045,8 @@ function bytesToHex(b: Uint8Array): string {
 
 function hexToBytes(s: string): Uint8Array {
   const clean = s.replace(/[\s]/g, "").replace(/^0x/i, "");
-  if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) throw new Error("十六进制字符串非法（应为偶数长度的 0-9a-f）");
+  if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean))
+    throw new Error("十六进制字符串非法（应为偶数长度的 0-9a-f）");
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   return out;
@@ -966,7 +1054,10 @@ function hexToBytes(s: string): Uint8Array {
 
 async function subtleDigest(algo: string, bytes: Uint8Array): Promise<string> {
   const c = globalThis.crypto;
-  if (!c?.subtle) throw new Error("当前运行环境没有 WebCrypto，无法计算摘要（请改用 hash_encode 的 base64/hex 编码功能）");
+  if (!c?.subtle)
+    throw new Error(
+      "当前运行环境没有 WebCrypto，无法计算摘要（请改用 hash_encode 的 base64/hex 编码功能）",
+    );
   const buf = await c.subtle.digest(algo, bytes as unknown as ArrayBuffer);
   return bytesToHex(new Uint8Array(buf));
 }
@@ -1008,7 +1099,10 @@ async function toolHashEncode(args: Record<string, unknown>): Promise<string> {
     case "base64_encode":
       return bytesToBase64(utf8Bytes(input));
     case "base64url":
-      return bytesToBase64(utf8Bytes(input)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return bytesToBase64(utf8Bytes(input))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
     case "base64_decode": {
       const bytes = base64ToBytes(input.replace(/-/g, "+").replace(/_/g, "/"));
       return bytesToUtf8(bytes);
@@ -1160,7 +1254,8 @@ function toolStatsDescribe(args: Record<string, unknown>, raw: string): string {
     values = p.values;
     skipped = p.skipped;
   }
-  if (values.length === 0) throw new Error("没有解析到任何数值（可传 values 数组，或 text 里每行一个数字）");
+  if (values.length === 0)
+    throw new Error("没有解析到任何数值（可传 values 数组，或 text 里每行一个数字）");
 
   const out = [`数值统计（${column ? `列「${column}」` : "输入序列"}）：`, ...describe(values)];
   if (skipped > 0) out.push(`（已跳过 ${skipped} 个非数值项）`);
@@ -1172,16 +1267,27 @@ function toolStatsDescribe(args: Record<string, unknown>, raw: string): string {
           const rows = parseCsv(raw, sArg(args, "delimiter").trim() || undefined);
           const idx = (rows[0] ?? []).indexOf(sArg(args, "column2").trim());
           if (idx < 0) throw new Error(`CSV 中找不到列「${sArg(args, "column2")}」`);
-          return rows.slice(1).map((r) => asNumber(r[idx] ?? "")).filter((n): n is number => n !== null);
+          return rows
+            .slice(1)
+            .map((r) => asNumber(r[idx] ?? ""))
+            .filter((n): n is number => n !== null);
         })()
       : null;
-  if (values2) out.push("", `与「${sArg(args, "column2").trim() || "values2"}」的关系：`, correlation(values, values2));
+  if (values2)
+    out.push(
+      "",
+      `与「${sArg(args, "column2").trim() || "values2"}」的关系：`,
+      correlation(values, values2),
+    );
   return clip(out.join("\n"));
 }
 
 // ---------------------------------------------------------------- dispatcher
 
-async function toolDiffText(args: Record<string, unknown>, ctx: DeterministicToolContext): Promise<string> {
+async function toolDiffText(
+  args: Record<string, unknown>,
+  ctx: DeterministicToolContext,
+): Promise<string> {
   const pick = async (a: string, b: string, pathKey: string): Promise<string> => {
     if (typeof args[a] === "string") return args[a];
     if (typeof args[b] === "string") return args[b];
@@ -1196,13 +1302,20 @@ async function toolDiffText(args: Record<string, unknown>, ctx: DeterministicToo
   const b = await pick("b", "text_b", "path_b");
   const context = Math.max(0, Math.trunc(numOr(args, "context", 3)));
   const r = unifiedDiff(a, b, sArg(args, "a_label") || "a", sArg(args, "b_label") || "b", context);
-  return clip(`差异统计：+${r.added} 行 / -${r.removed} 行${r.truncated ? "（输入过大，已降级）" : ""}\n\n${r.diff}`);
+  return clip(
+    `差异统计：+${r.added} 行 / -${r.removed} 行${r.truncated ? "（输入过大，已降级）" : ""}\n\n${r.diff}`,
+  );
 }
 
-function toolSchemaValidate(args: Record<string, unknown>, raw: string, rawIsData: boolean): string {
+function toolSchemaValidate(
+  args: Record<string, unknown>,
+  raw: string,
+  rawIsData: boolean,
+): string {
   const schemaRaw = args.schema;
   const schema = typeof schemaRaw === "string" ? JSON.parse(schemaRaw) : schemaRaw;
-  if (schema === undefined || schema === null) throw new Error("schema_validate 需要 schema（JSON Schema 字符串或对象）");
+  if (schema === undefined || schema === null)
+    throw new Error("schema_validate 需要 schema（JSON Schema 字符串或对象）");
   let data: unknown;
   if (rawIsData) {
     try {
@@ -1259,8 +1372,11 @@ export async function runDeterministicTool(
     case "diff_text":
       return await toolDiffText(args, ctx);
     case "schema_validate": {
-      const hasInlineData = typeof args.data === "string" || (args.data !== undefined && args.data !== null);
-      const text = hasInlineData ? "" : await textOf(args, ctx, ["data", "text", "json", "content"]);
+      const hasInlineData =
+        typeof args.data === "string" || (args.data !== undefined && args.data !== null);
+      const text = hasInlineData
+        ? ""
+        : await textOf(args, ctx, ["data", "text", "json", "content"]);
       return toolSchemaValidate(args, text, !hasInlineData);
     }
     default:

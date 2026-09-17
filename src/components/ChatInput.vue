@@ -47,9 +47,7 @@ const currentMode = computed(() => MODES.find((m) => m.id === chatStore.activeMo
 // 角色/人设（原在顶栏右上，整合到底部输入工具栏、与「模式」相邻）
 const showPersonaDropdown = ref(false);
 const personaDropdownRef = ref<HTMLDivElement>();
-const currentPersona = computed(
-  () => PERSONAS.find((p) => p.id === chatStore.activePersonaId),
-);
+const currentPersona = computed(() => PERSONAS.find((p) => p.id === chatStore.activePersonaId));
 // 模式记忆（Phase B）：各模式使用频次（下拉显示「常用 ×N」）
 const modeHist = computed(() => chatStore.readModeHist());
 
@@ -492,10 +490,7 @@ onUnmounted(() => {
 // 已用 = 当前会话将发送的最近消息文本估算 token（图片按 ~850/张粗估）；
 // 总量 = 模型 context window（按端点/模型推断）。
 const ctxLimit = computed(() =>
-  modelContextWindowTokens(
-    chatStore.currentConfig?.baseUrl || "",
-    chatStore.currentConfig?.model,
-  ),
+  modelContextWindowTokens(chatStore.currentConfig?.baseUrl || "", chatStore.currentConfig?.model),
 );
 const ctxUsed = computed(() => {
   const conv = chatStore.activeConversation;
@@ -802,7 +797,9 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
             title="切换角色 / 人设"
             @click.stop="showPersonaDropdown = !showPersonaDropdown"
           >
-            <span>{{ currentPersona ? `${currentPersona.emoji} ${currentPersona.name}` : "🧑 通用助手" }}</span>
+            <span>{{
+              currentPersona ? `${currentPersona.emoji} ${currentPersona.name}` : "🧑 通用助手"
+            }}</span>
             <svg
               class="ci-chev"
               width="8"
@@ -832,8 +829,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
               "
             >
               <span class="ci-drop-name"
-                >{{ p.emoji }} {{ p.name
-                }}<span class="ci-drop-cat">{{ p.category }}</span></span
+                >{{ p.emoji }} {{ p.name }}<span class="ci-drop-cat">{{ p.category }}</span></span
               >
               <span class="ci-drop-desc">{{ p.description }}</span>
               <span v-if="chatStore.activePersonaId === p.id" class="ci-drop-check">✓</span>

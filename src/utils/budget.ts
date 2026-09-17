@@ -75,9 +75,7 @@ function asSpend(v: unknown): number {
 }
 
 /// 归一化限额：把 null / undefined / 负数 / NaN 一律收敛成「不限(0)」
-export function normalizeLimits(
-  raw?: Partial<Record<BudgetScope, number>> | null,
-): BudgetLimits {
+export function normalizeLimits(raw?: Partial<Record<BudgetScope, number>> | null): BudgetLimits {
   return {
     session: asLimit(raw?.session),
     daily: asLimit(raw?.daily),
@@ -86,9 +84,7 @@ export function normalizeLimits(
 }
 
 /// 归一化花费
-export function normalizeSpend(
-  raw?: Partial<Record<BudgetScope, number>> | null,
-): BudgetSpend {
+export function normalizeSpend(raw?: Partial<Record<BudgetScope, number>> | null): BudgetSpend {
   return {
     session: asSpend(raw?.session),
     daily: asSpend(raw?.daily),
@@ -166,9 +162,7 @@ export function evaluateBudget(
 
   const lines = items.filter((i) => i.level !== "ok").map((i) => i.message);
   if (level === "blocked") {
-    lines.push(
-      "继续对话会超支：可调高「用量统计 → 预算上限」，或切换到更便宜的模型后再继续。",
-    );
+    lines.push("继续对话会超支：可调高「用量统计 → 预算上限」，或切换到更便宜的模型后再继续。");
   }
   return { level, items, worst, notice: lines.join("\n") };
 }

@@ -46,7 +46,9 @@ describe("P1-4 权限规则 · 校验与解析", () => {
   });
 
   it("非数组直接报错；parseRules 容错跳过非法项但保留合法项", () => {
-    expect(validateRules(null)).toEqual(["规则表必须是数组（每项形如 {\"action\":\"allow\",\"tool\":\"run_command\"}）"]);
+    expect(validateRules(null)).toEqual([
+      '规则表必须是数组（每项形如 {"action":"allow","tool":"run_command"}）',
+    ]);
     expect(validateRules({ action: "allow" }).length).toBe(1);
     const { rules, errors } = parseRules([
       { action: "deny", command: "rm -rf" },
@@ -99,9 +101,13 @@ describe("P1-4 权限规则 · 匹配", () => {
 
   it("`~` 展开：同时匹配 `~/x` 与展开后的绝对路径", () => {
     const r: PermissionRule = { action: "ask", path: "~/proj/**" };
-    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/a.ts" }, HOME)).toBe(true);
+    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/a.ts" }, HOME)).toBe(
+      true,
+    );
     expect(ruleMatches(r, { tool: "write_file", path: "~/proj/a.ts" }, HOME)).toBe(true);
-    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/other/a.ts" }, HOME)).toBe(false);
+    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/other/a.ts" }, HOME)).toBe(
+      false,
+    );
     expect(ruleMatches(r, { tool: "write_file" }, HOME)).toBe(false);
     expect(expandPathVariants("~/a.txt", HOME)).toEqual(["~/a.txt", "/Users/tester/a.txt"]);
     expect(expandPathVariants("~", HOME)).toEqual(["~", HOME]);
@@ -110,8 +116,12 @@ describe("P1-4 权限规则 · 匹配", () => {
 
   it("相对 glob（没有前缀）按「任意位置」匹配，方便写 `*.env`", () => {
     const r: PermissionRule = { action: "deny", path: "**/*.env" };
-    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/.env" }, HOME)).toBe(true);
-    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/config.ts" }, HOME)).toBe(false);
+    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/.env" }, HOME)).toBe(
+      true,
+    );
+    expect(ruleMatches(r, { tool: "write_file", path: "/Users/tester/proj/config.ts" }, HOME)).toBe(
+      false,
+    );
   });
 });
 
@@ -147,9 +157,9 @@ describe("P1-4 权限规则 · 求值（有序、第一条命中）", () => {
       { action: "allow", tool: "run_command", command: "rm" },
       { action: "deny", tool: "run_command", command: "rm -rf /" },
     ];
-    expect(evaluateRules(reversed, { tool: "run_command", command: "rm -rf /" }, HOME).decision).toBe(
-      "allow",
-    );
+    expect(
+      evaluateRules(reversed, { tool: "run_command", command: "rm -rf /" }, HOME).decision,
+    ).toBe("allow");
   });
 
   it("ask 命中 → 返回确认要求；未命中任何规则 → none 且无文案", () => {
@@ -162,13 +172,15 @@ describe("P1-4 权限规则 · 求值（有序、第一条命中）", () => {
   });
 
   it("空规则表 → 永远 none（未配置不影响任何行为）", () => {
-    expect(evaluateRules([], { tool: "run_command", command: "rm -rf /" }, HOME).decision).toBe("none");
+    expect(evaluateRules([], { tool: "run_command", command: "rm -rf /" }, HOME).decision).toBe(
+      "none",
+    );
   });
 
   it("describeRule 覆盖三种处置与全部条件", () => {
-    expect(describeRule({ action: "allow", tool: "run_command", command: "^npm test" }, 0)).toContain(
-      "允许（免确认）",
-    );
+    expect(
+      describeRule({ action: "allow", tool: "run_command", command: "^npm test" }, 0),
+    ).toContain("允许（免确认）");
     const d = describeRule({ id: "x", action: "deny", path: "~/a/**", reason: "别动" }, 3);
     expect(d).toContain("「x」");
     expect(d).toContain("禁止");

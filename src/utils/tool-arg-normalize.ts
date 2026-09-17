@@ -22,7 +22,18 @@ export interface NormalizeResult {
 
 /** 常见别名 → 规范参数名（按工具族分组，多组可叠加） */
 const ALIASES: Record<string, string[]> = {
-  path: ["file_path", "filepath", "filename", "file", "file_name", "dir_path", "directory", "folder", "target_path", "abs_path"],
+  path: [
+    "file_path",
+    "filepath",
+    "filename",
+    "file",
+    "file_name",
+    "dir_path",
+    "directory",
+    "folder",
+    "target_path",
+    "abs_path",
+  ],
   content: ["file_content", "body", "text_content", "contents"],
   old_text: ["old_string", "old_str", "search", "find", "from_text", "before"],
   new_text: ["new_string", "new_str", "replace", "replacement", "to_text", "after"],
@@ -54,7 +65,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** 展开包裹层（只在最外层只含包裹键 + 少量元数据时展开，避免误伤正常嵌套） */
-function unwrap(args: Record<string, unknown>): { args: Record<string, unknown>; wrapped: boolean } {
+function unwrap(args: Record<string, unknown>): {
+  args: Record<string, unknown>;
+  wrapped: boolean;
+} {
   for (const key of WRAPPER_KEYS) {
     const inner = args[key];
     if (isPlainObject(inner)) {
@@ -65,7 +79,10 @@ function unwrap(args: Record<string, unknown>): { args: Record<string, unknown>;
   return { args, wrapped: false };
 }
 
-function coerce(value: unknown, schema: Record<string, unknown> | undefined): { value: unknown; changed: boolean } {
+function coerce(
+  value: unknown,
+  schema: Record<string, unknown> | undefined,
+): { value: unknown; changed: boolean } {
   if (!schema) return { value, changed: false };
   const type = schema.type;
   if (typeof type !== "string") {
@@ -89,13 +106,20 @@ function coerce(value: unknown, schema: Record<string, unknown> | undefined): { 
   if (type === "array") {
     if (Array.isArray(value)) return { value, changed: false };
     if (typeof value === "string" && value.trim() !== "") {
-      return { value: value.split(",").map((x) => x.trim()).filter(Boolean), changed: true };
+      return {
+        value: value
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        changed: true,
+      };
     }
     return { value, changed: false };
   }
   if (type === "string") {
     if (typeof value === "string") return { value, changed: false };
-    if (typeof value === "number" || typeof value === "boolean") return { value: String(value), changed: true };
+    if (typeof value === "number" || typeof value === "boolean")
+      return { value: String(value), changed: true };
     if (Array.isArray(value) && value.every((x) => typeof x === "string")) {
       return { value: value.join("\n"), changed: true };
     }
@@ -121,7 +145,9 @@ export function normalizeToolArgs(
     notes.push("展开了一层包裹参数（arguments/params/input）");
   }
 
-  const props = isPlainObject(schema?.properties) ? (schema.properties as Record<string, unknown>) : undefined;
+  const props = isPlainObject(schema?.properties)
+    ? (schema.properties as Record<string, unknown>)
+    : undefined;
   const allowed = props ? new Set(Object.keys(props)) : undefined;
 
   // 1) 别名映射：仅当规范名缺失时生效

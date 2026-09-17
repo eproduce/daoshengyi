@@ -106,7 +106,9 @@ fn collect_inner(root: &Path, file_name: Option<&str>, depth: usize, out: &mut V
 /// 目录是否允许扫描：必须位于主目录或工作区内（防误扫系统目录）
 pub fn dir_allowed(dir: &Path, home: &Path, workspace: Option<&Path>) -> bool {
     let inside_home = dir == home || dir.starts_with(home);
-    let inside_ws = workspace.map(|w| dir == w || dir.starts_with(w)).unwrap_or(false);
+    let inside_ws = workspace
+        .map(|w| dir == w || dir.starts_with(w))
+        .unwrap_or(false);
     inside_home || inside_ws
 }
 
@@ -129,7 +131,9 @@ pub fn scan_external_skills(
 ) -> Result<Vec<ExternalSkillFile>, String> {
     let home = std::env::var("HOME").map_err(|_| "无法获取用户主目录".to_string())?;
     let home = PathBuf::from(home);
-    let ws = workspace.filter(|w| !w.trim().is_empty()).map(PathBuf::from);
+    let ws = workspace
+        .filter(|w| !w.trim().is_empty())
+        .map(PathBuf::from);
     let mut out: Vec<ExternalSkillFile> = Vec::new();
     for spec in sources {
         let dir = expand_tilde(spec.dir.trim(), &home);
@@ -140,7 +144,9 @@ pub fn scan_external_skills(
             if out.len() >= MAX_SKILL_FILES {
                 break;
             }
-            let Ok(meta) = std::fs::metadata(&file) else { continue };
+            let Ok(meta) = std::fs::metadata(&file) else {
+                continue;
+            };
             if meta.len() > MAX_SKILL_BYTES {
                 continue; // 超大文件跳过（技能正文不该这么大）
             }
@@ -201,7 +207,14 @@ mod tests {
         let files = collect_skill_files(&root, Some("SKILL.md"), 3);
         let names: Vec<String> = files
             .iter()
-            .map(|p| p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string())
+            .map(|p| {
+                p.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
             .collect();
         assert_eq!(names, vec!["alpha", "beta"]);
         let _ = std::fs::remove_dir_all(&root);
@@ -216,7 +229,9 @@ mod tests {
         write(&root.join("nested/d.md"), "D");
         let files = collect_skill_files(&root, None, 3);
         assert_eq!(files.len(), 3, "应收到 2 个 .md/.mdc + 1 个嵌套 .md");
-        assert!(files.iter().all(|p| p.extension().and_then(|e| e.to_str()) != Some("txt")));
+        assert!(files
+            .iter()
+            .all(|p| p.extension().and_then(|e| e.to_str()) != Some("txt")));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -240,10 +255,16 @@ mod tests {
 
     #[test]
     fn candidate_file_matching() {
-        assert!(is_candidate_file(Path::new("/x/SKILL.md"), Some("skill.md")));
+        assert!(is_candidate_file(
+            Path::new("/x/SKILL.md"),
+            Some("skill.md")
+        ));
         assert!(is_candidate_file(Path::new("/x/a.MDC"), None));
         assert!(!is_candidate_file(Path::new("/x/a.txt"), None));
-        assert!(!is_candidate_file(Path::new("/x/SKILL.md"), Some("other.md")));
+        assert!(!is_candidate_file(
+            Path::new("/x/SKILL.md"),
+            Some("other.md")
+        ));
     }
 
     #[test]
@@ -252,7 +273,11 @@ mod tests {
         let ws = PathBuf::from("/Volumes/work/proj");
         assert!(dir_allowed(&home.join(".claude/skills"), &home, None));
         assert!(dir_allowed(&home, &home, None));
-        assert!(dir_allowed(&ws.join("proj/.cursor/rules"), &home, Some(&ws)));
+        assert!(dir_allowed(
+            &ws.join("proj/.cursor/rules"),
+            &home,
+            Some(&ws)
+        ));
         assert!(!dir_allowed(Path::new("/etc"), &home, None));
         assert!(!dir_allowed(Path::new("/Users/other/skills"), &home, None));
     }
@@ -261,7 +286,10 @@ mod tests {
     fn expand_tilde_handles_home_and_nested() {
         let home = PathBuf::from("/Users/tester");
         assert_eq!(expand_tilde("~", &home), home);
-        assert_eq!(expand_tilde("~/.claude/skills", &home), home.join(".claude/skills"));
+        assert_eq!(
+            expand_tilde("~/.claude/skills", &home),
+            home.join(".claude/skills")
+        );
         assert_eq!(expand_tilde("/abs/dir", &home), PathBuf::from("/abs/dir"));
     }
 }

@@ -89,7 +89,9 @@ function keepTopLevelSurface(schema: Record<string, unknown>): Record<string, un
   for (const [k, v] of Object.entries(props)) {
     const t = (v as Record<string, unknown> | null)?.type;
     const d = (v as Record<string, unknown> | null)?.description;
-    surface[k] = t ? { type: t, ...(typeof d === "string" ? { description: truncateDesc(d) } : {}) } : {};
+    surface[k] = t
+      ? { type: t, ...(typeof d === "string" ? { description: truncateDesc(d) } : {}) }
+      : {};
   }
   const out: Record<string, unknown> = { type: "object", properties: surface };
   if (Array.isArray(schema.required)) out.required = schema.required;

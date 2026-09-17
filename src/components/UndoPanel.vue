@@ -183,11 +183,7 @@ async function emptyTrash() {
         <span class="up-trash__count">{{ trash.length }} 项</span>
         <span class="up-trash__hint">delete_file 的删除会先移到这里（保留 30 天）</span>
         <button class="up-btn" @click.stop="refreshTrash"><RefreshCw :size="12" /> 刷新</button>
-        <button
-          class="up-btn up-btn--danger"
-          :disabled="!trash.length"
-          @click.stop="emptyTrash"
-        >
+        <button class="up-btn up-btn--danger" :disabled="!trash.length" @click.stop="emptyTrash">
           清空
         </button>
       </div>
@@ -196,7 +192,9 @@ async function emptyTrash() {
           <span class="up-trash__name">{{ t.name }}</span>
           <span class="up-trash__size">{{ fmtSize(t.size) }}</span>
           <span class="up-trash__time">{{ fmtTime(t.deleted_at * 1000) }}</span>
-          <span class="up-trash__orig" :title="t.original">{{ t.original || "（原路径记录缺失）" }}</span>
+          <span class="up-trash__orig" :title="t.original">{{
+            t.original || "（原路径记录缺失）"
+          }}</span>
           <button class="up-undo" @click="restoreTrash(t.id, t.name)">
             <Undo2 :size="12" /> 还原
           </button>

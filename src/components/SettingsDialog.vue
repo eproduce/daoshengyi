@@ -7,18 +7,9 @@ import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { getSettings, updateSettings, type PermissionRuleShape } from "@/api/appSettings";
-import {
-  contextsFromAudit,
-  dryRun,
-  parseRules,
-  validateRules,
-} from "@/utils/permission-rules";
+import { contextsFromAudit, dryRun, parseRules, validateRules } from "@/utils/permission-rules";
 import { validateHooks } from "@/utils/hooks";
-import {
-  DEFAULT_STYLE_ID,
-  OUTPUT_STYLES,
-  getOutputStyle,
-} from "@/utils/output-styles";
+import { DEFAULT_STYLE_ID, OUTPUT_STYLES, getOutputStyle } from "@/utils/output-styles";
 import type { HookRuleShape } from "@/api/appSettings";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
@@ -222,7 +213,11 @@ function onApprovalModeChange(mode: "manual" | "smart" | "yolo" | "on-failure") 
 // off=不加沙箱（默认，行为不变）｜read-only=禁一切写入｜workspace-write=只允许写工作区。
 const SANDBOX_MODES = [
   { value: "off" as const, label: "关闭", desc: "不加沙箱，命令照旧执行（默认）" },
-  { value: "read-only" as const, label: "只读", desc: "禁止命令写入文件（/tmp 除外）——调研/分析类任务" },
+  {
+    value: "read-only" as const,
+    label: "只读",
+    desc: "禁止命令写入文件（/tmp 除外）——调研/分析类任务",
+  },
   {
     value: "workspace-write" as const,
     label: "工作区可写",
@@ -319,7 +314,8 @@ function saveRules(): boolean {
 }
 
 /// 试跑：把规则套到最近的真实工具调用上，**启用前先看清会拦住/放开什么**
-async function dryRunRulesNow() {  dryCounts.value = null;
+async function dryRunRulesNow() {
+  dryCounts.value = null;
   if (!saveRules()) return;
   const { rules } = parseRules(JSON.parse(rulesText.value || "[]"));
   let rows: { tool_name: string; arguments: string }[] = [];
@@ -456,9 +452,12 @@ function resetShortcuts() {
 const notifyOnFinish = ref(getSettings().notifyOnFinish ?? true);
 const notifGranted = ref<boolean | null>(null);
 /// 通知可用性诊断：把「为什么发不出去」说清楚（非 .app / 未授权 / 已就绪）
-const notifDiagnose = ref<{ granted: boolean; state: string; bundled: boolean; hint: string } | null>(
-  null,
-);
+const notifDiagnose = ref<{
+  granted: boolean;
+  state: string;
+  bundled: boolean;
+  hint: string;
+} | null>(null);
 async function refreshNotifPermission() {
   try {
     notifGranted.value = await invoke<boolean>("notification_permission_granted");
@@ -852,7 +851,9 @@ function handleDelete() {
 
             <!-- 命令沙箱 -->
             <div class="form-group">
-              <label class="form-label"><ShieldAlert :size="14" /> 命令沙箱（macOS Seatbelt）</label>
+              <label class="form-label"
+                ><ShieldAlert :size="14" /> 命令沙箱（macOS Seatbelt）</label
+              >
               <div class="approval-modes">
                 <button
                   v-for="m in SANDBOX_MODES"
@@ -929,8 +930,8 @@ function handleDelete() {
               <div class="runtime-card__title">⚙️ 本地运行时</div>
               <p class="runtime-card__hint">
                 两者推理速度基本一致（实测同一张图 41.5s vs
-                44.6s），差别在<strong>内存与常驻</strong>：llama.cpp
-                按需启动、空闲自动退出（空闲 0 常驻），Ollama 默认会把权重藕 5 分钟。
+                44.6s），差别在<strong>内存与常驻</strong>：llama.cpp 按需启动、空闲自动退出（空闲 0
+                常驻），Ollama 默认会把权重藕 5 分钟。
               </p>
               <div class="runtime-card__row">
                 <select v-model="localVisionRuntime" @change="saveLocalVisionRuntime">
@@ -939,20 +940,24 @@ function handleDelete() {
                   <option value="ollama">强制 Ollama</option>
                 </select>
                 <span v-if="ollamaStore.status?.vision_backend" class="runtime-badge">
-                  当前生效：{{ ollamaStore.status.vision_backend === "llamacpp" ? "llama.cpp" : "Ollama" }}
+                  当前生效：{{
+                    ollamaStore.status.vision_backend === "llamacpp" ? "llama.cpp" : "Ollama"
+                  }}
                 </span>
               </div>
               <div v-if="ollamaStore.runtime" class="runtime-card__grid">
                 <div>
-                  llama-server：{{ ollamaStore.runtime.bin_found ? "已安装" : "未安装（brew install llama.cpp）" }}
-                </div>
-                <div>
-                  已导入模型：{{ ollamaStore.runtime.active_model || "无" }}{{
-                    ollamaStore.runtime.has_projector ? "（含投影器）" : ""
+                  llama-server：{{
+                    ollamaStore.runtime.bin_found ? "已安装" : "未安装（brew install llama.cpp）"
                   }}
                 </div>
                 <div>
-                  服务状态：{{ ollamaStore.runtime.serving ? "运行中" : "未运行" }}{{
+                  已导入模型：{{ ollamaStore.runtime.active_model || "无"
+                  }}{{ ollamaStore.runtime.has_projector ? "（含投影器）" : "" }}
+                </div>
+                <div>
+                  服务状态：{{ ollamaStore.runtime.serving ? "运行中" : "未运行"
+                  }}{{
                     ollamaStore.runtime.serving && ollamaStore.runtime.idle_secs != null
                       ? `（空闲 ${ollamaStore.runtime.idle_secs}s，${ollamaStore.runtime.idle_kill_secs}s 后自动停止）`
                       : ""
@@ -971,11 +976,11 @@ function handleDelete() {
                 <button class="btn-secondary" @click="ollamaStore.stopRuntime()">
                   立即停止运行时
                 </button>
-                <button class="btn-secondary" @click="ollamaStore.refreshRuntime()">
-                  刷新
-                </button>
+                <button class="btn-secondary" @click="ollamaStore.refreshRuntime()">刷新</button>
               </div>
-              <p v-if="ollamaStore.runtimeMsg" class="runtime-card__msg">{{ ollamaStore.runtimeMsg }}</p>
+              <p v-if="ollamaStore.runtimeMsg" class="runtime-card__msg">
+                {{ ollamaStore.runtimeMsg }}
+              </p>
             </div>
 
             <div v-if="ollamaStore.hw" class="hw-card">
@@ -1213,8 +1218,8 @@ function handleDelete() {
                 >action：<code>allow</code>（免交互确认，仅本会话）· <code>deny</code>（硬拦截）·
                 <code>ask</code>（每次都弹确认）。匹配条件：<code>tool</code>（工具名精确匹配）/
                 <code>command</code>（命令正则）/ <code>path</code>（glob，<code>**</code> 跨目录、
-                可用 <code>~/</code>）。<b>deny 建议写在 allow 前面</b>——第一条命中即生效。
-                allow 只免「交互确认」，<b>不会绕过危险命令门禁</b>。未命中任何规则时按原有审批流程。</span
+                可用 <code>~/</code>）。<b>deny 建议写在 allow 前面</b>——第一条命中即生效。 allow
+                只免「交互确认」，<b>不会绕过危险命令门禁</b>。未命中任何规则时按原有审批流程。</span
               >
               <div class="exec-rule-actions">
                 <button class="btn-primary" @click="saveRules">保存并校验</button>
@@ -1253,16 +1258,23 @@ function handleDelete() {
   {"event":"tool_after","action":"inject","when":"error","text":"上次调用失败了：{{error}}"}
 ]'
               ></textarea>
-              <span class="form-hint" v-pre>
-                event：<code>turn_start</code> / <code>tool_before</code> / <code>tool_after</code> /
-                <code>turn_end</code>。action：<code>notify</code>（系统通知）· <code>inject</code>（把文本注回下一轮上下文）·
-                <code>block</code>（仅 tool_before，拦下这次调用）· <code>shell</code>（执行命令）· <code>http</code>（发请求）。
-                可选过滤：<code>tool</code>（精确名或 <code>prefix_*</code>）、<code>when</code>（success/error）。
-                占位符：<code>{{tool}}</code> <code>{{command}}</code> <code>{{path}}</code> <code>{{result}}</code> <code>{{error}}</code>
+              <span v-pre class="form-hint">
+                event：<code>turn_start</code> / <code>tool_before</code> /
+                <code>tool_after</code> /
+                <code>turn_end</code>。action：<code>notify</code>（系统通知）·
+                <code>inject</code>（把文本注回下一轮上下文）· <code>block</code>（仅
+                tool_before，拦下这次调用）· <code>shell</code>（执行命令）·
+                <code>http</code>（发请求）。 可选过滤：<code>tool</code>（精确名或
+                <code>prefix_*</code>）、<code>when</code>（success/error）。 占位符：<code>{{
+                  tool
+                }}</code>
+                <code>{{ command }}</code> <code>{{ path }}</code> <code>{{ result }}</code>
+                <code>{{ error }}</code>
                 —— shell 里会自动单引号转义（模型内容无法拼接命令）。
-                <b>安全边界</b>：禁止级命令直接拒绝入表，危险级需显式写 <code>"allow_danger": true</code>；
-                HTTP 只允许 http/https 且默认拒绝内网地址（需 <code>"allow_private": true</code>）；
-                运行时 shell 动作还会再受「声明式权限规则」约束。
+                <b>安全边界</b>：禁止级命令直接拒绝入表，危险级需显式写
+                <code>"allow_danger": true</code>； HTTP 只允许 http/https 且默认拒绝内网地址（需
+                <code>"allow_private": true</code>）； 运行时 shell
+                动作还会再受「声明式权限规则」约束。
               </span>
               <div class="exec-rule-actions">
                 <button class="btn-primary" @click="saveHooks">保存并校验</button>
@@ -1378,8 +1390,9 @@ function handleDelete() {
                       ? "✅ 已允许"
                       : "❌ 未允许"
                 }}<template v-if="notifDiagnose">
-                  ｜权限状态：{{ notifDiagnose.state }}
-                  ｜运行方式：{{ notifDiagnose.bundled ? "已打包 .app" : "开发模式（裸二进制）" }}</template
+                  ｜权限状态：{{ notifDiagnose.state }} ｜运行方式：{{
+                    notifDiagnose.bundled ? "已打包 .app" : "开发模式（裸二进制）"
+                  }}</template
                 >
               </span>
               <p

@@ -33,7 +33,9 @@ use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
     test_command_policy,
 };
-use pty::{exec_command_agent, pty_kill, pty_list, pty_poll, pty_spawn, pty_write, write_stdin_agent};
+use pty::{
+    exec_command_agent, pty_kill, pty_list, pty_poll, pty_spawn, pty_write, write_stdin_agent,
+};
 
 use db::Database;
 use futures::StreamExt;
@@ -72,7 +74,10 @@ static LOG_WRITE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 fn rotate_log_if_needed(dir: &std::path::Path, file_name: &str) {
     use std::sync::atomic::Ordering;
     // 每 256 次写入才做一次 metadata 检查，避免每行日志都多一次系统调用
-    if !LOG_WRITE_COUNT.fetch_add(1, Ordering::Relaxed).is_multiple_of(256) {
+    if !LOG_WRITE_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(256)
+    {
         return;
     }
     let path = dir.join(file_name);
@@ -111,9 +116,7 @@ fn append_log(app: &tauri::AppHandle, msg: &str) {
         .create(true)
         .append(true)
         .open(dir.join(FILE_NAME))
-        .and_then(|mut f| {
-            writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), shown)
-        });
+        .and_then(|mut f| writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), shown));
 }
 
 /// 供前端写诊断日志（排查前端工具循环等看不到终端的问题）
@@ -950,26 +953,26 @@ async fn send_message(
     let mut finish_reason: Option<String>;
     'attempts: loop {
         attempt += 1;
-        let mut stream = match api::stream_chat(config.clone(), messages.clone(), tools.clone()).await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                if attempt < MAX_STREAM_ATTEMPTS {
-                    let rm = format!(
-                        "[send_message] stream_chat 失败（第 {} 次），1 秒后重试: {}",
-                        attempt, e
-                    );
-                    eprintln!("{}", rm);
-                    append_log(&app, &rm);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    continue;
+        let mut stream =
+            match api::stream_chat(config.clone(), messages.clone(), tools.clone()).await {
+                Ok(s) => s,
+                Err(e) => {
+                    if attempt < MAX_STREAM_ATTEMPTS {
+                        let rm = format!(
+                            "[send_message] stream_chat 失败（第 {} 次），1 秒后重试: {}",
+                            attempt, e
+                        );
+                        eprintln!("{}", rm);
+                        append_log(&app, &rm);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    let em = format!("[send_message] stream_chat 失败: {}", e);
+                    eprintln!("{}", em);
+                    append_log(&app, &em);
+                    return Err(e);
                 }
-                let em = format!("[send_message] stream_chat 失败: {}", e);
-                eprintln!("{}", em);
-                append_log(&app, &em);
-                return Err(e);
-            }
-        };
+            };
 
         // 每次尝试从干净状态开始（能走到重试就说明上一轮什么都没产出）
         buf.clear();
@@ -3825,7 +3828,10 @@ async fn vision_chat_once(
 /// - **llama.cpp**（`llama-server`）：按需启动 + 空闲自动退出（0 常驻，实测 3.9GB 进程退出即归还）
 /// - **Ollama**：保留原链路，但 keep_alive 缩到 30 秒（实测卸载后 4.5GB 立即释放）
 #[tauri::command]
-async fn ollama_describe_image(app: tauri::AppHandle, images: Vec<String>) -> Result<String, String> {
+async fn ollama_describe_image(
+    app: tauri::AppHandle,
+    images: Vec<String>,
+) -> Result<String, String> {
     let pref = local_vision_runtime_pref(&app);
     let app_dir = app.path().app_data_dir().ok();
     let llama_ready = local_runtime::ready(app_dir.as_deref());
@@ -3889,7 +3895,9 @@ fn local_runtime_status(app: tauri::AppHandle) -> local_runtime::RuntimeStatus {
 
 /// 从 Ollama 模型库导入多模态模型（硬链接优先：**不额外占磁盘、无需重新下载**）
 #[tauri::command]
-fn local_runtime_import_ollama(app: tauri::AppHandle) -> Result<local_runtime::ImportReport, String> {
+fn local_runtime_import_ollama(
+    app: tauri::AppHandle,
+) -> Result<local_runtime::ImportReport, String> {
     local_runtime::import_from_ollama(&app)
 }
 
@@ -4022,7 +4030,9 @@ fn downscale_data_uri(data_uri: &str, max_side: u32) -> String {
 
 /// 产物目录（用户可见、固定）：`~/Documents/道生一产物/`（与 `~/Pictures/道生一截图/` 约定一致）。
 fn artifact_root(home: &str) -> std::path::PathBuf {
-    std::path::Path::new(home).join("Documents").join("道生一产物")
+    std::path::Path::new(home)
+        .join("Documents")
+        .join("道生一产物")
 }
 
 /// 若目标文件**直接位于主目录根**（`$HOME/<文件名>`）→ 返回改写后的产物路径；否则 None。
@@ -4145,7 +4155,10 @@ mod artifact_helpers_tests {
             redirect_home_root("/Users/tester/demo.svg", home),
             Some("/Users/tester/Documents/道生一产物/demo.svg".to_string())
         );
-        assert_eq!(redirect_home_root("/Users/tester/Desktop/demo.svg", home), None);
+        assert_eq!(
+            redirect_home_root("/Users/tester/Desktop/demo.svg", home),
+            None
+        );
         assert_eq!(redirect_home_root("/Users/tester", home), None);
         assert_eq!(redirect_home_root("/tmp/demo.svg", home), None);
         assert_eq!(redirect_home_root("/Users/tester/demo.svg", ""), None);
@@ -4339,9 +4352,14 @@ async fn execute_command(
         format!("{} {}", command, args.join(" "))
     };
     let audit_args = full_cmd.clone();
-    let mut out =
-        run_shell_command_with(&full_cmd, cwd.as_deref(), timeout_secs, sandbox_mode.as_deref(), workspace.as_deref())
-            .await;
+    let mut out = run_shell_command_with(
+        &full_cmd,
+        cwd.as_deref(),
+        timeout_secs,
+        sandbox_mode.as_deref(),
+        workspace.as_deref(),
+    )
+    .await;
     let duration = start.elapsed().as_millis() as i64;
     match &out {
         Ok(CommandOutput {
@@ -4477,12 +4495,8 @@ async fn run_shell_command_with(
     use tokio::io::AsyncReadExt;
 
     let home = std::env::var("HOME").unwrap_or_default();
-    let (prog, args, applied) = sandbox::build_exec(
-        sandbox_mode.unwrap_or("off"),
-        workspace,
-        &home,
-        full_cmd,
-    );
+    let (prog, args, applied) =
+        sandbox::build_exec(sandbox_mode.unwrap_or("off"), workspace, &home, full_cmd);
     if applied {
         let m = format!(
             "[sandbox] 已加沙箱执行（mode={}，工作区={}）",
@@ -5646,10 +5660,11 @@ async fn mcp_list_resources(
     let mut clients = manager.clients.lock().await;
     let key = resolve_mcp_server(&clients, &server).ok_or("MCP Server 未连接")?;
     let client = clients.get_mut(&key).ok_or("MCP Server 未连接")?;
-    let resources = tokio::time::timeout(std::time::Duration::from_secs(15), client.list_resources())
-        .await
-        .map_err(|_| "获取资源列表超时（15 秒）".to_string())?
-        .unwrap_or(serde_json::Value::Null);
+    let resources =
+        tokio::time::timeout(std::time::Duration::from_secs(15), client.list_resources())
+            .await
+            .map_err(|_| "获取资源列表超时（15 秒）".to_string())?
+            .unwrap_or(serde_json::Value::Null);
     // 模板属于可选能力：不支持时忽略（不因此让整个调用失败）
     let templates = tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -5683,9 +5698,9 @@ async fn mcp_read_resource(
     match result {
         Ok(Ok(v)) => {
             let text = v.to_string();
-            let _ = app
-                .state::<Database>()
-                .log_tool_call(&audit_name, &uri, &text, false, duration);
+            let _ =
+                app.state::<Database>()
+                    .log_tool_call(&audit_name, &uri, &text, false, duration);
             Ok(v)
         }
         Ok(Err(e)) => {
@@ -6362,10 +6377,7 @@ fn tray_menu_with_status(
         None::<&str>,
     )?));
     boxes.push(Box::new(PredefinedMenuItem::separator(app)?));
-    boxes.push(Box::new(PredefinedMenuItem::quit(
-        app,
-        Some("退出道生一"),
-    )?));
+    boxes.push(Box::new(PredefinedMenuItem::quit(app, Some("退出道生一"))?));
 
     let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = boxes.iter().map(|b| b.as_ref()).collect();
     Menu::with_items(app, &refs)
@@ -6596,7 +6608,11 @@ fn prune_tool_outputs(dir: &std::path::Path, keep: usize) {
 
 /// 把完整工具输出落盘，返回真实路径（供回填给模型，让它用 read_file 分段取回）
 #[tauri::command]
-fn save_tool_output(app: tauri::AppHandle, tool: String, content: String) -> Result<String, String> {
+fn save_tool_output(
+    app: tauri::AppHandle,
+    tool: String,
+    content: String,
+) -> Result<String, String> {
     let dir = browser_app_dir(&app)?.join("tool-output");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
@@ -6622,10 +6638,7 @@ async fn browser_evaluate(app: tauri::AppHandle, script: String) -> Result<Strin
 }
 
 #[tauri::command]
-async fn browser_screenshot(
-    app: tauri::AppHandle,
-    path: Option<String>,
-) -> Result<String, String> {
+async fn browser_screenshot(app: tauri::AppHandle, path: Option<String>) -> Result<String, String> {
     browser::screenshot(browser_app_dir(&app)?, path).await
 }
 

@@ -27,13 +27,7 @@ it("parseTipDelay：合法非负数字生效，非法/空回退默认", () => {
 
 it("computeTipRect：空间足够时放元素下方并水平居中", () => {
   // 元素：x 100..200，y 200..260；视口 1000x800；浮层 200x40
-  const p = computeTipRect(
-    { left: 100, top: 200, right: 200, bottom: 260 },
-    1000,
-    800,
-    200,
-    40,
-  );
+  const p = computeTipRect({ left: 100, top: 200, right: 200, bottom: 260 }, 1000, 800, 200, 40);
   expect(p.above).toBe(false);
   expect(p.top).toBe(260 + 8); // bottom + gap
   // left 为浮层左上角：元素中心 150 − 宽一半 100 = 50，整块 [50,250] 居中于元素

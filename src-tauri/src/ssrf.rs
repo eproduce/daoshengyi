@@ -143,7 +143,12 @@ fn is_internal_hostname(host: &str) -> bool {
         return true; // 单标签 = 内网主机名（localhost / router / nas 等）
     }
     const INTERNAL_SUFFIXES: [&str; 6] = [
-        ".local", ".internal", ".lan", ".corp", ".home.arpa", ".localhost",
+        ".local",
+        ".internal",
+        ".lan",
+        ".corp",
+        ".home.arpa",
+        ".localhost",
     ];
     if INTERNAL_SUFFIXES.iter().any(|s| h.ends_with(s)) {
         return true;

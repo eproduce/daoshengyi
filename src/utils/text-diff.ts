@@ -122,7 +122,8 @@ export function unifiedDiff(
   const keep = new Array<boolean>(ops.length).fill(false);
   ops.forEach((op, idx) => {
     if (op.type === "eq") return;
-    for (let k = Math.max(0, idx - ctx); k <= Math.min(ops.length - 1, idx + ctx); k++) keep[k] = true;
+    for (let k = Math.max(0, idx - ctx); k <= Math.min(ops.length - 1, idx + ctx); k++)
+      keep[k] = true;
   });
 
   const lines: string[] = [`--- ${aLabel}`, `+++ ${bLabel}`];

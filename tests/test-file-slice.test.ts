@@ -50,7 +50,7 @@ describe("sliceFileLines 基本分段", () => {
     }
   });
 
-  it("数字字符串也能用（模型常传 \"60\"）", () => {
+  it('数字字符串也能用（模型常传 "60"）', () => {
     const r = sliceFileLines(file, { offset: "60", length: "2" });
     expect(r.text).toBe("行60\n行61");
   });

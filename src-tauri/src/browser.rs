@@ -26,7 +26,8 @@ const CDP_TIMEOUT: Duration = Duration::from_secs(30);
 /// 浏览器启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Session {
     child: tokio::process::Child,
@@ -149,10 +150,7 @@ pub fn probe_browser() -> Option<PathBuf> {
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     ];
-    SYSTEM
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    SYSTEM.iter().map(PathBuf::from).find(|p| p.is_file())
 }
 
 /// 是否需要显式传 `--headless`（chrome-headless-shell 本身即无头，不认该参数）
@@ -183,7 +181,9 @@ async fn wait_ready(port: u16) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    Err(format!("浏览器调试端口 {port} 未在 {READY_TIMEOUT:?} 内就绪"))
+    Err(format!(
+        "浏览器调试端口 {port} 未在 {READY_TIMEOUT:?} 内就绪"
+    ))
 }
 
 /// 取页面级 WebSocket 调试地址（无 page 目标时新建一个）
@@ -283,12 +283,9 @@ async fn ensure_session(app_dir: &std::path::Path) -> Result<bool, String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(false);
-    let child = cmd.spawn().map_err(|e| {
-        format!(
-            "启动浏览器失败（{}）: {e}",
-            binary.display()
-        )
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("启动浏览器失败（{}）: {e}", binary.display()))?;
 
     wait_ready(port).await?;
     let ws_url = page_ws_url(port).await?;
@@ -319,7 +316,9 @@ where
 {
     ensure_session(&app_dir).await?;
     let mut slot = session_slot().lock().await;
-    let session = slot.as_mut().ok_or_else(|| "浏览器会话不可用".to_string())?;
+    let session = slot
+        .as_mut()
+        .ok_or_else(|| "浏览器会话不可用".to_string())?;
     f(session).await
 }
 
@@ -340,7 +339,9 @@ async fn eval_js(session: &mut Session, expression: &str) -> Result<String, Stri
 async fn wait_load(session: &mut Session) -> Result<(), String> {
     // 轮询 readyState：比等 Page.loadEventFired 事件简单，且对 SPA 也够用
     for _ in 0..40 {
-        let state = eval_js(session, "document.readyState").await.unwrap_or_default();
+        let state = eval_js(session, "document.readyState")
+            .await
+            .unwrap_or_default();
         if state.contains("complete") {
             // 再等一拍，给同步渲染留时间（实测 SPA 首帧常晚于 complete）
             tokio::time::sleep(Duration::from_millis(300)).await;
