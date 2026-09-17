@@ -333,6 +333,10 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "trash_empty",
     desc: '**清空回收站（永久删除，不可恢复）**。参数 {}。**何时用**：仅当用户明确要求「清空回收站/彻底删掉这些」时；默认**不要**主动清空——它会让所有可恢复删除永久丢失。',
   },
+  {
+    name: "log_decision",
+    desc: '**把一项技术决策写入项目的 DECISIONS.md（做了什么、为什么、排除了什么）**。参数 {"title": "一句话标题", "decision": "决定了什么", "rationale": "为什么（约束/取舍/依据）", "alternatives": ["排除的方案（可省）"], "files": ["相关文件（可省）"], "dir": 可选项目目录}。**何时用**：做了**不明显、将来会被人质疑**的技术选择时（换运行时/改架构/选依赖/定接口/否掉某个方案）。同一标题重复记录会**原地更新**（不会堆重复条目）。**不要**为琐碎改动记录；也不要在只有一句「改了 X」时记——理由与排除方案才是它的价值。',
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

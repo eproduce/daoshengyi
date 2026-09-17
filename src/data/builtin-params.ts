@@ -782,6 +782,24 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["id"],
     additionalProperties: true,
   },
+  // --- P1-7 决策日志 ---
+  log_decision: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "一句话标题（同标题 = 同一条，原地更新）" },
+      decision: { type: "string", description: "决定了什么" },
+      rationale: { type: "string", description: "为什么（约束/取舍/依据）" },
+      alternatives: {
+        type: "array",
+        items: { type: "string" },
+        description: "排除掉的方案（含原因），最多 5 条",
+      },
+      files: { type: "array", items: { type: "string" }, description: "相关文件路径" },
+      dir: { type: "string", description: "项目目录（缺省 = 当前工作区）" },
+    },
+    required: ["title", "decision", "rationale"],
+    additionalProperties: true,
+  },
   trash_empty: {
     type: "object",
     properties: {},

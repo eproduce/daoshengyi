@@ -156,6 +156,13 @@ import {
   type PreparedDigest,
   type StageId,
 } from "@/utils/compaction-ladder";
+// P1-7 决策日志（DECISIONS.md）
+import {
+  countDecisions,
+  decisionPath,
+  mergeDecision,
+  oneLine,
+} from "@/utils/decision-log";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
 import {
   planAutoContinue,
@@ -881,6 +888,7 @@ function getMcpToolsPrompt(): string {
     "- **同一段文本可能出现多次 / 要连改多处 / 文件本轮已被改过时**：先用 `read_file` 带 `with_anchors: true` 拿行锚点，编辑时带 `\"anchor_line\": 行号, \"anchor_hash\": \"哈希\"`——锚点会自动消歧「改第几处」，且**文件已变动时直接拒绝执行**并告知新行号（比默默改错位置安全）。锚点前缀不要抄进 old_text。\n" +
     "- 每次编辑会返回 **unified diff**（@@ 头 + 改动行）：编辑后**必须在最终回复中说明改了什么**（列出新增/修改/删除的关键行），让用户看到确切改动；不要只说『已修改』。\n" +
     "- 修改代码后**必须用 run_tests 验证**（验证循环门禁），不能假设改对了。\n" +
+    "- **非显然的技术决策要留痕**：换运行时/改架构/选依赖/定接口/否掉某个方案时，用 `log_decision` 写进项目 `DECISIONS.md`（做了什么 / 为什么 / 排除了什么）。琐碎改动不记；理由与排除方案才是它的价值——将来接手的人和新会话的你都靠它，不靠记忆。\n" +
     "- 编辑失败（未找到文本）时，用 read_file 读取实际内容核对后重试，不要盲目重复相同编辑。";
   // 文件导出规范：必须用内置可信 write_file，禁止在正文模拟工具调用、编造路径
   const fileRule =
@@ -3047,6 +3055,43 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       notifyUndoChanged(); // 可撤销（编辑覆盖/新建）
       return real;
     }
+    case "log_decision": {
+      // P1-7 决策日志：把「做了什么决定、为什么、排除了什么」写进项目 DECISIONS.md
+      // 幂等：同一标题原地更新，不会堆重复条目（由 utils/decision-log.ts 保证）
+      const title = String(args.title ?? "").trim();
+      const decision = String(args.decision ?? "").trim();
+      const rationale = String(args.rationale ?? "").trim();
+      if (!title) throw new Error("log_decision 需要 title 参数（一句话标题）");
+      if (!decision) throw new Error("log_decision 需要 decision 参数（决定了什么）");
+      if (!rationale)
+        throw new Error("log_decision 需要 rationale 参数（为什么）——没有理由的决策不值得记录");
+      // 目标目录：显式 dir → 工作区目录；都没有则落到产物目录，避免污染主目录根
+      const explicitDir = String(args.dir ?? "").trim();
+      const workspaceDir = String(getSettings().workspace ?? "").trim();
+      const targetDir = explicitDir || workspaceDir || "~/Documents/道生一产物";
+      const path = decisionPath(targetDir);
+      let existing = "";
+      try {
+        existing = await invoke<string>("read_file", { path });
+      } catch {
+        existing = ""; // 首次记录（文件不存在）
+      }
+      const merged = mergeDecision(existing, {
+        at: Date.now(),
+        title,
+        decision,
+        rationale,
+        alternatives: Array.isArray(args.alternatives)
+          ? args.alternatives.map((x) => String(x))
+          : undefined,
+        files: Array.isArray(args.files) ? args.files.map((x) => String(x)) : undefined,
+        session: useChatStore().activeConversationId ?? undefined,
+      });
+      const real = await invoke<string>("write_file_agent", { path, content: merged });
+      notifyUndoChanged();
+      const total = countDecisions(merged);
+      return `📌 已记录决策（${total} 条总计）：${oneLine(title)}\n文件：${real}`;
+    }
     case "replace_string": {
       // 精确编辑：替换文件中一段文本（occurrence 指定第几次出现，默认第 1 次），返回 unified diff
       const path = String(args.path || "");
@@ -3225,8 +3270,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       notifyUndoChanged();
       return msg;
     }
-    case "trash_empty": {
-      // P0-4b：清空回收站（永久删除，不可恢复）——先确认，避免误清
+    case "trash_empty": {      // P0-4b：清空回收站（永久删除，不可恢复）——先确认，避免误清
       const ok = await askConfirm(
         "⚠️ 清空回收站会**永久删除**里面所有文件（无法恢复）。确定继续吗？",
       );

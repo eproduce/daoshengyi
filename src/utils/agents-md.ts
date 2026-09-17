@@ -15,6 +15,8 @@ export interface ProjectInstructions {
 }
 
 const INSTRUCTION_FILE_NAMES = ["AGENTS.md", "道生一.md"];
+// P1-7：决策日志也作为项目级上下文来源（排在指令文件之后：先约定、后决策）
+const DECISION_FILE_NAMES = ["DECISIONS.md"];
 
 /** 纯函数：从 cwd 向上生成候选指令文件路径（每层 AGENTS.md 优先于 道生一.md，最近目录优先）。 */
 export function candidateInstructionPaths(cwd: string): string[] {
@@ -22,6 +24,7 @@ export function candidateInstructionPaths(cwd: string): string[] {
   let dir = (cwd || "").replace(/\/+$/, "");
   for (let depth = 0; depth < 8 && dir; depth++) {
     for (const name of INSTRUCTION_FILE_NAMES) out.push(`${dir}/${name}`);
+    for (const name of DECISION_FILE_NAMES) out.push(`${dir}/${name}`);
     const idx = dir.lastIndexOf("/");
     if (idx <= 0) break;
     dir = dir.slice(0, idx);

@@ -20,9 +20,14 @@ assert(
   paths[1],
 );
 assert(
-  paths[2] === "/Users/wanghuan/op/daoshengyi/src/AGENTS.md",
-  "第3候选 = 上层 AGENTS.md",
+  paths[2] === "/Users/wanghuan/op/daoshengyi/src/utils/DECISIONS.md",
+  "第3候选 = cwd/DECISIONS.md（P1-7 决策日志也作为项目级上下文）",
   paths[2],
+);
+assert(
+  paths[3] === "/Users/wanghuan/op/daoshengyi/src/AGENTS.md",
+  "第4候选 = 上层 AGENTS.md",
+  paths[3],
 );
 assert(paths.includes("/Users/wanghuan/op/daoshengyi/AGENTS.md"), "项目根 AGENTS.md 在候选里");
 assert(paths.includes("/Users/wanghuan/op/AGENTS.md"), "向上递归到父级");
@@ -37,10 +42,16 @@ assert(paths2[0] === "/Users/wanghuan/op/AGENTS.md", "尾斜杠被清理", paths
 assert(candidateInstructionPaths("").length === 0, "空 cwd 返回空数组");
 assert(candidateInstructionPaths("/").length === 0, "根目录返回空数组（不再向上）");
 
-// 每层两个候选：AGENTS.md 与 道生一.md 交替
+// 每层三个候选：AGENTS.md → 道生一.md → DECISIONS.md
 let layersOk = true;
-for (let i = 0; i + 1 < paths.length; i += 2) {
-  if (!paths[i].endsWith("AGENTS.md") || !paths[i + 1].endsWith("道生一.md")) layersOk = false;
+for (let i = 0; i + 2 < paths.length; i += 3) {
+  if (
+    !paths[i].endsWith("AGENTS.md") ||
+    !paths[i + 1].endsWith("道生一.md") ||
+    !paths[i + 2].endsWith("DECISIONS.md")
+  )
+    layersOk = false;
 }
-assert(layersOk, "候选按层成对、AGENTS.md 在前");
+assert(layersOk, "候选按层成组、AGENTS.md → 道生一.md → DECISIONS.md");
+assert(paths.some((p) => p.endsWith("DECISIONS.md")), "决策日志在候选里");
 it("脚本式断言（顶层执行）", () => {});
