@@ -11,6 +11,34 @@ export interface OllamaStatus {
   running: boolean;
   installing: boolean;
   models: string[];
+  /** 本地运行时（llama.cpp）：llama-server + 模型都就绪 */
+  local_runtime_ready?: boolean;
+  /** 当前实际会用的视觉后端：llamacpp | ollama */
+  vision_backend?: string;
+}
+
+/** llama.cpp 运行时状态（来自 local_runtime_status 命令） */
+export interface LocalRuntimeStatus {
+  bin_found: boolean;
+  bin_path: string;
+  models_dir: string;
+  models: string[];
+  serving: boolean;
+  idle_secs: number | null;
+  port: number;
+  idle_kill_secs: number;
+  active_model: string;
+  has_projector: boolean;
+}
+
+/** 从 Ollama 导入模型的结果（硬链接优先 → 不额外占磁盘、无需重新下载） */
+export interface ImportReport {
+  label: string;
+  model_file: string;
+  projector_file: string | null;
+  model_mb: number;
+  model_link: string;
+  projector_link: string | null;
 }
 
 /**
@@ -25,6 +53,9 @@ export const useOllamaStore = defineStore("ollama", () => {
   const busy = ref(false);
   const progress = ref("");
   const percent = ref<number | null>(null);
+  // llama.cpp 运行时（P0-资源）：状态 + 导入结果文本
+  const runtime = ref<LocalRuntimeStatus | null>(null);
+  const runtimeMsg = ref("");
   let unlisten: (() => void) | null = null;
 
   const hasLlava = computed(
@@ -65,10 +96,39 @@ export const useOllamaStore = defineStore("ollama", () => {
     }
   }
 
+  async function refreshRuntime() {
+    try {
+      runtime.value = await invoke<LocalRuntimeStatus>("local_runtime_status");
+    } catch {
+      runtime.value = null;
+    }
+  }
+
+  /// 从 Ollama 模型库导入多模态模型（硬链接，零下载、不额外占盘）
+  async function importFromOllama() {
+    runtimeMsg.value = "正在导入…";
+    try {
+      const r = await invoke<ImportReport>("local_runtime_import_ollama");
+      const linkText = (k: string) =>
+        k === "hardlink" ? "硬链接（零额外磁盘）" : k === "copy" ? "复制" : "已存在，跳过";
+      runtimeMsg.value = `✅ 已导入 ${r.label}（${r.model_mb} MB，${linkText(r.model_link)}）`;
+      await Promise.all([refreshRuntime(), refreshStatus()]);
+    } catch (e) {
+      runtimeMsg.value = `❌ ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  /// 立即停止 llama-server（内存立刻归还；下次识图会自动再拉起）
+  async function stopRuntime() {
+    await invoke("local_runtime_stop");
+    await refreshRuntime();
+    runtimeMsg.value = "已停止本地运行时（空闲时本就不常驻）";
+  }
+
   // 应用启动时初始化：注册监听 + 首次检测
   async function init() {
     ensureListen();
-    await Promise.all([refreshStatus(), refreshHardware()]);
+    await Promise.all([refreshStatus(), refreshHardware(), refreshRuntime()]);
   }
 
   async function deploy() {
@@ -92,9 +152,14 @@ export const useOllamaStore = defineStore("ollama", () => {
     progress,
     percent,
     hasLlava,
+    runtime,
+    runtimeMsg,
     init,
     refreshStatus,
     refreshHardware,
+    refreshRuntime,
+    importFromOllama,
+    stopRuntime,
     deploy,
   };
 });

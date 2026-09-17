@@ -253,6 +253,17 @@ function saveEditConfirm() {
   updateSettings({ fileEditConfirm: fileEditConfirm.value });
 }
 
+// P0-资源 本地视觉运行时：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
+// 切换后需重查一次状态：ollama_status 会返回「当前实际会用哪个后端」
+const localVisionRuntime = ref<"auto" | "llamacpp" | "ollama">(
+  getSettings().localVisionRuntime ?? "auto",
+);
+function saveLocalVisionRuntime() {
+  updateSettings({ localVisionRuntime: localVisionRuntime.value });
+  void ollamaStore.refreshStatus();
+  void ollamaStore.refreshRuntime();
+}
+
 // S1 命令执行策略引擎：规则文件编辑（设置→权限 区块；规则持久化在 app_data/execpolicy.rules）
 const execRules = ref("");
 const execTestCmd = ref("");
@@ -824,6 +835,61 @@ function handleDelete() {
             <p class="ollama-desc">
               用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。
             </p>
+
+            <!-- 运行时选择（llama.cpp / Ollama）：默认 Ollama 默认 5 分钟 keep_alive 会把 2.3GB 权重藕在内存里 -->
+            <div class="runtime-card">
+              <div class="runtime-card__title">⚙️ 本地运行时</div>
+              <p class="runtime-card__hint">
+                两者推理速度基本一致（实测同一张图 41.5s vs
+                44.6s），差别在<strong>内存与常驻</strong>：llama.cpp
+                按需启动、空闲自动退出（空闲 0 常驻），Ollama 默认会把权重藕 5 分钟。
+              </p>
+              <div class="runtime-card__row">
+                <select v-model="localVisionRuntime" @change="saveLocalVisionRuntime">
+                  <option value="auto">自动（推荐：llama.cpp 可用就用它）</option>
+                  <option value="llamacpp">强制 llama.cpp</option>
+                  <option value="ollama">强制 Ollama</option>
+                </select>
+                <span v-if="ollamaStore.status?.vision_backend" class="runtime-badge">
+                  当前生效：{{ ollamaStore.status.vision_backend === "llamacpp" ? "llama.cpp" : "Ollama" }}
+                </span>
+              </div>
+              <div v-if="ollamaStore.runtime" class="runtime-card__grid">
+                <div>
+                  llama-server：{{ ollamaStore.runtime.bin_found ? "已安装" : "未安装（brew install llama.cpp）" }}
+                </div>
+                <div>
+                  已导入模型：{{ ollamaStore.runtime.active_model || "无" }}{{
+                    ollamaStore.runtime.has_projector ? "（含投影器）" : ""
+                  }}
+                </div>
+                <div>
+                  服务状态：{{ ollamaStore.runtime.serving ? "运行中" : "未运行" }}{{
+                    ollamaStore.runtime.serving && ollamaStore.runtime.idle_secs != null
+                      ? `（空闲 ${ollamaStore.runtime.idle_secs}s，${ollamaStore.runtime.idle_kill_secs}s 后自动停止）`
+                      : ""
+                  }}
+                </div>
+                <div class="runtime-card__path">目录：{{ ollamaStore.runtime.models_dir }}</div>
+              </div>
+              <div class="runtime-card__row">
+                <button
+                  class="btn-secondary"
+                  :disabled="!ollamaStore.runtime?.bin_found"
+                  @click="ollamaStore.importFromOllama()"
+                >
+                  从 Ollama 导入模型（硬链接，零下载）
+                </button>
+                <button class="btn-secondary" @click="ollamaStore.stopRuntime()">
+                  立即停止运行时
+                </button>
+                <button class="btn-secondary" @click="ollamaStore.refreshRuntime()">
+                  刷新
+                </button>
+              </div>
+              <p v-if="ollamaStore.runtimeMsg" class="runtime-card__msg">{{ ollamaStore.runtimeMsg }}</p>
+            </div>
+
             <div v-if="ollamaStore.hw" class="hw-card">
               <div class="hw-card__title">
                 <Monitor :size="15" /> 硬件评估
@@ -1618,6 +1684,76 @@ function handleDelete() {
 }
 .btn-danger:hover {
   background: rgba(239, 68, 68, 0.15);
+}
+
+/* P0-资源 本地运行时卡片（llama.cpp / Ollama 选择与状态） */
+.runtime-card {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.runtime-card__title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.runtime-card__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.runtime-card__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.runtime-card__row select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.runtime-card__row .btn-secondary {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.runtime-card__row .btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.runtime-card__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.runtime-card__path {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  opacity: 0.85;
+}
+.runtime-card__msg {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.runtime-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-color);
+  color: #fff;
 }
 
 @keyframes fadeIn {

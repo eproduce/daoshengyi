@@ -57,6 +57,8 @@ export interface AppSettingsPayload {
   ragKb: string;
   /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
   fileEditConfirm: boolean;
+  /// 本地视觉运行时（P0-资源）：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
+  localVisionRuntime?: "auto" | "llamacpp" | "ollama";
   /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
   imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）

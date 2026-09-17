@@ -121,6 +121,12 @@ pub struct AppSettings {
     /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
     #[serde(default = "default_true")]
     pub notify_on_finish: bool,
+    /// 本地视觉运行时（P0-资源）：
+    /// - `auto`（默认）：llama.cpp 可用（有 llama-server + 已导入模型）就用它，否则回落 Ollama
+    /// - `llamacpp`：强制 llama.cpp（按需启动 / 空闲自动退出，空闲 0 常驻）
+    /// - `ollama`：强制 Ollama（保留原一键部署链路）
+    #[serde(default = "default_local_vision_runtime")]
+    pub local_vision_runtime: String,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -149,6 +155,11 @@ fn default_recall_limit() -> i64 {
 
 fn default_approval_mode() -> String {
     "manual".to_string()
+}
+
+/// 本地视觉运行时默认值：auto（有 llama.cpp 模型就用它，否则用 Ollama）
+fn default_local_vision_runtime() -> String {
+    "auto".to_string()
 }
 
 impl Default for AppSettings {
@@ -183,6 +194,7 @@ impl Default for AppSettings {
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
+            local_vision_runtime: default_local_vision_runtime(),
         }
     }
 }
@@ -440,6 +452,7 @@ mod tests {
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
+            local_vision_runtime: default_local_vision_runtime(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -496,6 +509,7 @@ mod tests {
             ssrf_allow_hosts: Vec::new(),
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
+            local_vision_runtime: default_local_vision_runtime(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

@@ -15,6 +15,7 @@ mod browser;
 mod db;
 mod execpolicy;
 mod im;
+mod local_runtime;
 mod mcp;
 mod mcp_server;
 mod middleware;
@@ -2559,6 +2560,10 @@ struct OllamaStatus {
     /// 是否有安装进程正在后台进行（brew install ollama / 官方脚本）
     installing: bool,
     models: Vec<String>,
+    /// 本地运行时（llama.cpp）：二进制 + 模型都就绪
+    local_runtime_ready: bool,
+    /// 当前实际会用的视觉后端："llamacpp" | "ollama"（按设置与就绪情况算出）
+    vision_backend: String,
 }
 
 /// Homebrew 是否可用（决定一键部署走 brew 还是官方 zip 直装）
@@ -2978,6 +2983,42 @@ async fn ollama_models() -> Result<Vec<String>, String> {
 /// 本地语义检索使用的 embedding 模型
 const EMBED_MODEL: &str = "nomic-embed-text";
 
+// --- 本地模型资源阀门（换 llama.cpp 讨论的第一阶段：先拧紧 Ollama） ---
+//
+// Ollama 默认行为对单用户桌面偏浪费：
+// 1. `OLLAMA_NUM_PARALLEL` 默认 4 → KV cache 按 4 个并发槽预留（视觉模型加载时白占几百 MB～1GB）
+// 2. `keep_alive` 默认 5 分钟 → 用一次 describe_image，2.3GB 权重在内存里赖五分钟
+// 3. `OLLAMA_MAX_LOADED_MODELS` 默认 >1 → 视觉模型与 embedding 模型可能同时常驻
+//
+// 注意：**不设全局 OLLAMA_KEEP_ALIVE**——用户若真的在用本地模型聊天，短 keep_alive 会导致
+// 每条消息都重新加载权重（约 10 秒），反而更差；这里只对「副作用类」调用按次指定。
+
+/// 视觉描述（llava-phi3，2.3GB 权重）：30 秒。
+/// 够同一轮里连续几张图复用，用完很快归还内存（视觉调用是偶发的人工触发，不属于对话主循环）。
+const OLLAMA_KEEP_ALIVE_VISION: &str = "30s";
+
+/// 向量生成（nomic-embed-text，约 300MB）：2 分钟。
+/// 批量索引是循环调用，太短会把「加载/卸载」放大成每批一次。
+const OLLAMA_KEEP_ALIVE_EMBED: &str = "2m";
+
+/// 由本应用启动 `ollama serve` 时注入的环境变量（纯函数，便于单测）。
+/// 只改「并发/同时加载模型数」，不碰 keep_alive（见上方说明），保证聊天体验不变。
+fn ollama_serve_env() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("OLLAMA_NUM_PARALLEL", "1"),
+        ("OLLAMA_MAX_LOADED_MODELS", "1"),
+    ]
+}
+
+/// keep_alive 取值是否合法（Ollama 接受 "30s"/"5m" 这类时长串）——只用于单测自检
+#[cfg(test)]
+fn is_valid_keep_alive(v: &str) -> bool {
+    let mut chars = v.chars();
+    let unit_ok = matches!(chars.next_back(), Some('s' | 'm' | 'h'));
+    let num = chars.as_str();
+    unit_ok && !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+}
+
 /// 模型列表中是否已安装本地 embedding 模型（纯函数，可测试）
 fn embed_model_installed(models: &[String]) -> bool {
     models.iter().any(|m| m.starts_with(EMBED_MODEL))
@@ -3028,7 +3069,12 @@ async fn ollama_embed_impl(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> 
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
     let resp = client
         .post("http://localhost:11434/api/embed")
-        .json(&serde_json::json!({ "model": EMBED_MODEL, "input": texts }))
+        .json(&serde_json::json!({
+            "model": EMBED_MODEL,
+            "input": texts,
+            // 资源阀门：批量索引跑完后让 embedding 模型尽快退出内存
+            "keep_alive": OLLAMA_KEEP_ALIVE_EMBED
+        }))
         .send()
         .await
         .map_err(|e| format!("请求 embedding 失败: {}", e))?;
@@ -3053,7 +3099,7 @@ async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
 
 /// 检测 Ollama 安装状态、服务状态与已部署模型
 #[tauri::command]
-async fn ollama_status() -> Result<OllamaStatus, String> {
+async fn ollama_status(app: tauri::AppHandle) -> Result<OllamaStatus, String> {
     let installed = ollama_installed();
     let installing = !installed && ollama_installing();
     let mut running = false;
@@ -3069,6 +3115,12 @@ async fn ollama_status() -> Result<OllamaStatus, String> {
         running,
         installing,
         models,
+        local_runtime_ready: local_runtime::ready(app.path().app_data_dir().ok().as_deref()),
+        vision_backend: pick_vision_backend(
+            &local_vision_runtime_pref(&app),
+            local_runtime::ready(app.path().app_data_dir().ok().as_deref()),
+        )
+        .to_string(),
     })
 }
 
@@ -3302,6 +3354,8 @@ async fn ollama_setup(
         let bin = ollama_bin().ok_or("未找到 ollama 可执行文件")?;
         let child = tokio::process::Command::new(&bin)
             .arg("serve")
+            // 资源阀门：单并发 + 只加载一个模型（默认 4 并发槽会多预留几份 KV cache）
+            .envs(ollama_serve_env())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3587,75 +3641,184 @@ async fn ensure_ollama_profile(
     db.set_setting(SETTINGS_KEY, &json)
 }
 
-/// 用本地 Ollama 视觉模型识别图片，返回文字描述（供前端图片预处理调用）。
-/// 走 Rust 后端 reqwest，避免 webview 直接 fetch localhost 受限导致识别失败；
-/// 与 send_message 同链路（Rust → 本地 Ollama /v1/chat/completions）。
-#[tauri::command]
-async fn ollama_describe_image(images: Vec<String>) -> Result<String, String> {
-    let models = ollama_models().await.unwrap_or_default();
-    let model = models
-        .iter()
-        .find(|m| m.contains("llava-phi3"))
-        .cloned()
-        .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
-
-    let url = "http://localhost:11434/v1/chat/completions";
-    let client = reqwest::Client::new();
-    let mut parts: Vec<String> = Vec::new();
-
-    for img in images {
-        // 支持 data URI 或本地文件路径（file:// 前缀）输入
-        let img = resolve_image_data_uri(&img)?;
-        // 本地小模型对像素数极敏感：先缩到最长边 ≤ VISION_MAX_SIDE（实测快 3~4 倍）
-        let img = downscale_data_uri(&img, VISION_MAX_SIDE);
-        let content = serde_json::json!([
-            { "type": "text", "text": "请简要描述这张图片的内容，如果图中有文字请转录。用中文，一两句话即可。" },
-            { "type": "image_url", "image_url": { "url": img, "detail": "auto" } }
-        ]);
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [{ "role": "user", "content": content }],
-            "max_tokens": 200,
-            "stream": false,
-        });
-
-        let resp = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            client
-                .post(url)
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send(),
-        )
-        .await
-        .map_err(|_| "本地 Ollama 识别图片超时（120 秒），请稍后重试".to_string())?
-        .map_err(|e| format!("请求本地 Ollama 失败: {}", e))?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Ollama 图片识别失败 [{}]: {}",
-                status,
-                text.chars().take(300).collect::<String>()
-            ));
+/// 选择视觉后端（纯函数，便于单测）。
+/// - `"llamacpp"` / `"ollama"`：显式指定（llamacpp 不可用时由调用方报错，**不静默降级**，
+///   否则用户以为换掉了其实没换）
+/// - 其他（含缺省 `"auto"`）：llama.cpp 就绪就用它，否则回落 Ollama（保证永远能用）
+fn pick_vision_backend(pref: &str, llama_ready: bool) -> &'static str {
+    match pref {
+        "llamacpp" => "llamacpp",
+        "ollama" => "ollama",
+        _ => {
+            if llama_ready {
+                "llamacpp"
+            } else {
+                "ollama"
+            }
         }
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("解析响应失败: {}", e))?;
-        let desc = json
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
+    }
+}
+
+/// 读取「本地视觉运行时」偏好（读不到 → auto）。字段名与前端 camelCase 一致。
+fn local_vision_runtime_pref(app: &tauri::AppHandle) -> String {
+    let Ok(app_dir) = app.path().app_data_dir() else {
+        return "auto".into();
+    };
+    let Ok(db) = db::Database::new(app_dir) else {
+        return "auto".into();
+    };
+    let Ok(Some(json)) = db.get_setting(SETTINGS_KEY) else {
+        return "auto".into();
+    };
+    serde_json::from_str::<serde_json::Value>(&json)
+        .ok()
+        .and_then(|v| {
+            v.get("localVisionRuntime")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "auto".into())
+}
+
+/// 单张图片走一次 OpenAI 兼容的视觉请求。
+/// `keep_alive = Some(..)` 是 Ollama 专有字段（控制权重驻留时长）；llama.cpp 传 None。
+async fn vision_chat_once(
+    url: &str,
+    model: &str,
+    image_data_uri: &str,
+    keep_alive: Option<&str>,
+    label: &str,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let content = serde_json::json!([
+        { "type": "text", "text": "请简要描述这张图片的内容，如果图中有文字请转录。用中文，一两句话即可。" },
+        { "type": "image_url", "image_url": { "url": image_data_uri, "detail": "auto" } }
+    ]);
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": content }],
+        "max_tokens": 200,
+        "stream": false,
+    });
+    if let Some(ka) = keep_alive {
+        // 资源阀门：视觉权重 2.3GB，用完 30 秒退内存（Ollama 默认 5 分钟太赖）
+        body["keep_alive"] = serde_json::json!(ka);
+    }
+
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send(),
+    )
+    .await
+    .map_err(|_| format!("{} 识别图片超时（120 秒），请稍后重试", label))?
+    .map_err(|e| format!("请求{}失败: {}", label, e))?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "{} 图片识别失败 [{}]: {}",
+            label,
+            status,
+            text.chars().take(300).collect::<String>()
+        ));
+    }
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+    Ok(json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
+/// 用本地视觉模型识别图片，返回文字描述（供前端图片预处理调用）。
+/// 走 Rust 后端 reqwest，避免 webview 直接 fetch localhost 受限导致识别失败。
+///
+/// 后端二选一（`settings.localVisionRuntime`）：
+/// - **llama.cpp**（`llama-server`）：按需启动 + 空闲自动退出（0 常驻，实测 3.9GB 进程退出即归还）
+/// - **Ollama**：保留原链路，但 keep_alive 缩到 30 秒（实测卸载后 4.5GB 立即释放）
+#[tauri::command]
+async fn ollama_describe_image(app: tauri::AppHandle, images: Vec<String>) -> Result<String, String> {
+    let pref = local_vision_runtime_pref(&app);
+    let app_dir = app.path().app_data_dir().ok();
+    let llama_ready = local_runtime::ready(app_dir.as_deref());
+    let backend = pick_vision_backend(&pref, llama_ready);
+    if pref == "llamacpp" && !llama_ready {
+        return Err(
+            "已选择 llama.cpp 运行时，但缺少 llama-server 或模型：请安装 llama.cpp（`brew install llama.cpp`），并在设置里「从 Ollama 导入模型」"
+                .into(),
+        );
+    }
+
+    // 图片预处理两个后端共用：统一成「最长边 ≤ VISION_MAX_SIDE 的 data URI」
+    // （本地小模型对像素数极敏感，实测缩到 768px 快 3~4 倍）
+    let mut prepared: Vec<String> = Vec::new();
+    for img in images {
+        let img = resolve_image_data_uri(&img)?;
+        prepared.push(downscale_data_uri(&img, VISION_MAX_SIDE));
+    }
+
+    let (url, model, keep_alive, label) = if backend == "llamacpp" {
+        let info = local_runtime::ensure_server(&app).await?;
+        (
+            format!("http://127.0.0.1:{}/v1/chat/completions", info.port),
+            info.model,
+            None,
+            "本地视觉模型（llama.cpp）",
+        )
+    } else {
+        let models = ollama_models().await.unwrap_or_default();
+        let m = models
+            .iter()
+            .find(|m| m.contains("llava-phi3"))
+            .cloned()
+            .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
+        (
+            "http://localhost:11434/v1/chat/completions".to_string(),
+            m,
+            Some(OLLAMA_KEEP_ALIVE_VISION),
+            "Ollama",
+        )
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    for img in prepared {
+        let desc = vision_chat_once(&url, &model, &img, keep_alive, label).await?;
         if !desc.is_empty() {
             parts.push(desc);
         }
     }
+    if backend == "llamacpp" {
+        local_runtime::touch(); // 推迟空闲回收
+    }
     Ok(parts.join("\n\n"))
+}
+
+/// 本地运行时（llama.cpp）状态：二进制 / 模型目录 / 是否在跑 / 空闲秒数
+#[tauri::command]
+fn local_runtime_status(app: tauri::AppHandle) -> local_runtime::RuntimeStatus {
+    local_runtime::status(&app)
+}
+
+/// 从 Ollama 模型库导入多模态模型（硬链接优先：**不额外占磁盘、无需重新下载**）
+#[tauri::command]
+fn local_runtime_import_ollama(app: tauri::AppHandle) -> Result<local_runtime::ImportReport, String> {
+    local_runtime::import_from_ollama(&app)
+}
+
+/// 立即停止由本应用启动的 llama-server（内存立刻归还；下次识图会自动再拉起）
+#[tauri::command]
+fn local_runtime_stop() {
+    local_runtime::stop_server();
 }
 
 /// 用 macOS 系统 Vision OCR 提取图片文字（准确、离线、快）。
@@ -6751,6 +6914,9 @@ pub fn run() {
             ollama_setup,
             ollama_describe_image,
             ollama_embed,
+            local_runtime_status,
+            local_runtime_import_ollama,
+            local_runtime_stop,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,
@@ -6781,6 +6947,8 @@ pub fn run() {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }
             }
+            // 本地运行时（llama.cpp）同样退出即停：不留常驻进程、内存立即归还
+            local_runtime::stop_server();
         }
     });
 }
@@ -6789,10 +6957,49 @@ pub fn run() {
 mod tests {
     use super::{
         chunk_text, compute_edits, delete_file_impl, detect_test_framework, diff_lines,
-        embed_model_installed, extract_redirected_files, format_unified_diff, nth_occurrence,
-        parse_allowed_paths, parse_embed_response, path_within_any, run_shell_command_with,
-        validate_git_operation, EditOp,
+        embed_model_installed, extract_redirected_files, format_unified_diff, is_valid_keep_alive,
+        nth_occurrence, ollama_serve_env, parse_allowed_paths, parse_embed_response,
+        path_within_any, pick_vision_backend, run_shell_command_with, validate_git_operation,
+        EditOp, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
     };
+
+    // 本地视觉后端选择（P0-资源）：显式指定不静默降级，auto 才有回落
+    #[test]
+    fn pick_vision_backend_respects_explicit_choice_and_auto_fallback() {
+        // 显式 ollama：即使用 llama.cpp 已就绪也不能偷换
+        assert_eq!(pick_vision_backend("ollama", true), "ollama");
+        // 显式 llamacpp：即使模型未就绪也返回 llamacpp（由调用方报错，而不是静默用 Ollama
+        // 让用户以为换成了 llama.cpp）
+        assert_eq!(pick_vision_backend("llamacpp", false), "llamacpp");
+        // auto / 空值 / 未知值：就绪则 llama.cpp，否则 Ollama（保证总能识图）
+        assert_eq!(pick_vision_backend("auto", true), "llamacpp");
+        assert_eq!(pick_vision_backend("auto", false), "ollama");
+        assert_eq!(pick_vision_backend("", true), "llamacpp");
+        assert_eq!(pick_vision_backend("unknown", false), "ollama");
+    }
+
+    // 本地模型资源阀门（P0-资源）：keep_alive 取值与会话环境变量（纯函数）
+    #[test]
+    fn keep_alive_values_are_valid_durations() {
+        assert!(is_valid_keep_alive(OLLAMA_KEEP_ALIVE_VISION));
+        assert!(is_valid_keep_alive(OLLAMA_KEEP_ALIVE_EMBED));
+        // 视觉权重大且调用偶发 → 必须比默认 5m 更短；向量批量索引 → 不能短到每批重载
+        assert_eq!(OLLAMA_KEEP_ALIVE_VISION, "30s");
+        assert_eq!(OLLAMA_KEEP_ALIVE_EMBED, "2m");
+        // 反例：没有单位 / 纯单位 / 空串都不算合法
+        assert!(!is_valid_keep_alive("30"));
+        assert!(!is_valid_keep_alive("s"));
+        assert!(!is_valid_keep_alive(""));
+    }
+
+    #[test]
+    fn serve_env_pins_single_parallel_and_single_model() {
+        let env = ollama_serve_env();
+        assert!(env.contains(&("OLLAMA_NUM_PARALLEL", "1")));
+        assert!(env.contains(&("OLLAMA_MAX_LOADED_MODELS", "1")));
+        // 刻意不动全局 keep_alive：本地聊天时短 keep_alive 会导致每条消息重载权重
+        assert!(!env.iter().any(|(k, _)| *k == "OLLAMA_KEEP_ALIVE"));
+    }
 
     // Phase 3 知识库 RAG：分块纯函数
     #[test]
