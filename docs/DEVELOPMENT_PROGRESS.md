@@ -8,7 +8,7 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `113a352`，工作区干净）
+### 当前状态（origin/main = `0bf61d1`，工作区干净）
 - **内置工具 82 个**（本轮新增 `log_decision`、`image_inspect`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
 - **测试**：vitest `31 files / 411 passed`；cargo `190 passed / 9 ignored`（含 1 项真机图像 e2e）
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
@@ -76,7 +76,21 @@
   而 x86_64 job **等 runner 等了 24 小时超时**（注释：`exceeded the maximum execution time while awaiting a runner`）
 - 结论：旧的「双 job（各架构一个 job）」方案在 Intel runner 退役后已不可用。现仓库里的版本
   已改成在 arm64 runner 上 `npm run tauri build -- --target universal-apple-darwin`
-  交叉编译两个目标 + `lipo` 合并，但**改完从未跑过** —— 已手动触发实测（见下）
+  交叉编译两个目标 + `lipo` 合并，但**改完从未跑过** —— 已手动触发实测
+- **实测结果（run `35284236472`，✓ success）**：八个步骤全过，产物拿到：
+  - `ocr_tool: Mach-O universal binary with 2 architectures: [x86_64] [arm64]`
+  - `Bundling 道生一_1.0.0-alpha.1_universal.dmg`（`Finished 2 bundles`）
+  - 上传产物 `daoshengyi-universal` **41MB**（单一 arm64 版 dmg 只有 ~11MB，体量也对得上双架构）
+  - 用的正是 rust-toolchain.toml 固定的 1.98.0
+- 结论：**打包流水线已可用**；`v*` 标签会自动跑这条流水线并把 dmg 发成 GitHub Release
+  （`publish` job 仅在 tag 触发，本次 workflow_dispatch 按预期跳过）
+
+### ④ 三条流水线现状（2026-09-18）
+| 工作流 | 状态 | 说明 |
+|---|---|---|
+| `ci.yml` | ✅ 绿 | 首次转绿，后续连续 3 次 success（含 dependabot PR） |
+| `build-macos.yml` | ✅ 绿 | 手动实测通过，产出 universal dmg |
+| `publish`（Release） | 待标签 | 推 `v*` 标签才会跑；上次 tag 还是 1.0.0-alpha.1 |
 
 ---
 
