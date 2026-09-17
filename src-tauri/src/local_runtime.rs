@@ -38,12 +38,26 @@ pub const IDLE_KILL_SECS: u64 = 120;
 /// 启动就绪最长等待（模型 2.3GB + 投影器 608MB，首次加载约 10~20 秒）
 const READY_TIMEOUT_SECS: u64 = 90;
 
+/// 嵌入服务端口（与聊天服务分开：两边参数完全不同，混在一个进程里没有干净的做法）
+/// 2026-09-18 实测：`llama-server --embedding --pooling mean` 能直接加载 Ollama 的
+/// nomic-embed-text blob（GGUF），返回 768 维已归一化向量，与 Ollama 侧一致。
+pub const EMBED_PORT: u16 = 18081;
+/// 嵌入上下文：nomic-embed-text 训练长度 2048，但分块后单段短得多，512 够用且更省内存
+pub const EMBED_CTX: u32 = 512;
+/// 单次请求最多送几段文本（llama.cpp 会按 n_batch 分批，超量会被截断）
+pub const EMBED_MAX_BATCH: usize = 16;
+
 /// 本应用启动的 llama-server PID（0 = 未运行）
 static SERVER_PID: AtomicU32 = AtomicU32::new(0);
 /// 最后一次使用时刻（Unix 秒）：空闲看门狗据此回收进程
 static LAST_USED: AtomicU64 = AtomicU64::new(0);
 /// 启动互斥：避免并发请求各拉一个进程（那才是真的浪费）
 static SPAWN_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+/// 嵌入服务独立的一套进程状态（与聊天服务互不影响：一个挂了不影响另一个）
+static EMBED_PID: AtomicU32 = AtomicU32::new(0);
+static EMBED_LAST_USED: AtomicU64 = AtomicU64::new(0);
+static EMBED_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -157,9 +171,12 @@ pub fn pick_model_pair(entries: &[(PathBuf, u64)]) -> Option<(PathBuf, Option<Pa
         .filter(|(p, _)| looks_like_projector(p))
         .max_by_key(|(_, s)| *s)
         .map(|(p, _)| p.clone());
+    // **必须排除嵌入模型**：挑选规则是「取最大的非投影器文件」，而嵌入模型与聊天模型
+    // 放在同一个目录里 —— 哪天某个嵌入模型比聊天模型大，就会拿它当聊天模型加载并输出垃圾。
+    // 只有嵌入模型时不回退（宁可报「未找到模型」）：拿嵌入模型聊天没有任何意义。
     let model = entries
         .iter()
-        .filter(|(p, _)| !looks_like_projector(p))
+        .filter(|(p, _)| !looks_like_projector(p) && !looks_like_embed(p))
         .max_by_key(|(_, s)| *s)
         .map(|(p, _)| p.clone())?;
     Some((model, projector))
@@ -237,6 +254,11 @@ pub struct ServerInfo {
 
 /// 服务是否就绪（llama.cpp 的 `GET /health` 返回 `{"status":"ok"}`）
 pub async fn health_ok() -> bool {
+    health_ok_port(LLAMA_PORT).await
+}
+
+/// 指定端口的服务是否就绪（聊天/嵌入共用）
+pub async fn health_ok_port(port: u16) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
@@ -244,7 +266,7 @@ pub async fn health_ok() -> bool {
         return false;
     };
     match client
-        .get(format!("http://127.0.0.1:{}/health", LLAMA_PORT))
+        .get(format!("http://127.0.0.1:{}/health", port))
         .send()
         .await
     {
@@ -377,6 +399,9 @@ pub struct ImportReport {
     pub model_file: String,
     pub projector_file: Option<String>,
     pub model_mb: u64,
+    /// 导入的嵌入模型文件名（没有可导入的嵌入模型时为空）
+    pub embed_file: Option<String>,
+    pub embed_mb: Option<u64>,
     /// hardlink=硬链接（不额外占盘）/ copy=复制 / exists=已存在跳过
     pub model_link: String,
     pub projector_link: Option<String>,
@@ -492,6 +517,36 @@ pub fn find_ollama_multimodal(root: &Path) -> Option<(String, PathBuf, PathBuf)>
     None
 }
 
+/// 扫描 Ollama 模型库，返回第一个**嵌入模型**：(label, 模型 blob)。
+/// 只认「无投影器 + 名字像嵌入模型」的项 —— 不确定就不导入，宁可让用户手动指定。
+pub fn find_ollama_embed(root: &Path) -> Option<(String, PathBuf)> {
+    let manifests = root.join("manifests");
+    let mut files = Vec::new();
+    collect_manifests(&manifests, 5, &mut files);
+    files.sort(); // 确定性：按路径排序，不依赖 readdir 顺序
+    for m in files {
+        let Ok(text) = std::fs::read_to_string(&m) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        // 带投影器的属于多模态，交给 find_ollama_multimodal
+        let Some((digest, None)) = parse_ollama_manifest(&v) else {
+            continue;
+        };
+        let label = label_from_manifest(&m);
+        if !looks_like_embed(Path::new(&label)) {
+            continue;
+        }
+        let blob = blob_path(&root.join("blobs"), &digest);
+        if blob.exists() {
+            return Some((label, blob));
+        }
+    }
+    None
+}
+
 /// 把 Ollama 的多模态模型导入到本应用模型目录（硬链接优先，**不新增磁盘占用、无需下载**）。
 pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String> {
     let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -505,14 +560,17 @@ pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String
             root.display()
         ));
     }
-    let (label, model_blob, proj_blob) = find_ollama_multimodal(&root).ok_or_else(|| {
-        format!(
-            "未在 {} 找到「带投影器」的多模态模型（如 llava-phi3）",
+    // 两类模型都可以代管：多模态（聊天/识图）与嵌入（语义检索）。至少有一类才继续。
+    let multi = find_ollama_multimodal(&root);
+    let embed = find_ollama_embed(&root);
+    if multi.is_none() && embed.is_none() {
+        return Err(format!(
+            "未在 {} 找到可代管的模型：需要「带投影器的多模态模型」（如 llava-phi3）或「嵌入模型」（如 nomic-embed-text）",
             root.display()
-        )
-    })?;
+        ));
+    }
     // 双保险：确认确实是 GGUF（Ollama blob 格式若变更，这里会明确报错而不是留个坏文件）
-    for (p, what) in [(&model_blob, "模型"), (&proj_blob, "投影器")] {
+    let gguf_check = |p: &Path, what: &str| -> Result<(), String> {
         let mut f = std::fs::File::open(p).map_err(|e| format!("读取{}失败: {}", what, e))?;
         let mut magic = [0u8; 4];
         use std::io::Read as _;
@@ -525,33 +583,362 @@ pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String
                 p.display()
             ));
         }
+        Ok(())
+    };
+
+    let mut label = String::new();
+    let mut model_file = String::new();
+    let mut projector_file = None;
+    let mut model_mb = 0u64;
+    let mut model_link = "exists".to_string();
+    let mut projector_link = None;
+
+    // ① 多模态（可选）
+    if let Some((l, model_blob, proj_blob)) = multi {
+        gguf_check(&model_blob, "模型")?;
+        gguf_check(&proj_blob, "投影器")?;
+        let name = sanitize_name(&l);
+        let model_out = dest.join(format!("{}.gguf", name));
+        let proj_out = dest.join(format!("{}-mmproj.gguf", name));
+        let ml = link_or_copy(&model_blob, &model_out)?;
+        let pl = link_or_copy(&proj_blob, &proj_out)?;
+        label = l;
+        model_mb = std::fs::metadata(&model_out)
+            .map(|m| m.len() / 1_048_576)
+            .unwrap_or(0);
+        model_file = file_name_of(&model_out);
+        projector_file = Some(file_name_of(&proj_out));
+        model_link = ml.as_str().to_string();
+        projector_link = Some(pl.as_str().to_string());
     }
-    let name = sanitize_name(&label);
-    let model_out = dest.join(format!("{}.gguf", name));
-    let proj_out = dest.join(format!("{}-mmproj.gguf", name));
-    let model_link = link_or_copy(&model_blob, &model_out)?;
-    let projector_link = link_or_copy(&proj_blob, &proj_out)?;
-    let model_mb = std::fs::metadata(&model_out)
-        .map(|m| m.len() / 1_048_576)
-        .unwrap_or(0);
+
+    // ② 嵌入模型（可选）—— 语义检索能不能用起来就看它
+    let mut embed_file = None;
+    let mut embed_mb = None;
+    if let Some((l, blob)) = embed {
+        gguf_check(&blob, "嵌入模型")?;
+        let out = dest.join(format!("{}.gguf", sanitize_name(&l)));
+        link_or_copy(&blob, &out)?;
+        if label.is_empty() {
+            label = l;
+        }
+        embed_mb = Some(
+            std::fs::metadata(&out)
+                .map(|m| m.len() / 1_048_576)
+                .unwrap_or(0),
+        );
+        embed_file = Some(file_name_of(&out));
+    }
+
     Ok(ImportReport {
         label,
-        model_file: model_out
-            .file_name()
+        model_file,
+        projector_file,
+        model_mb,
+        embed_file,
+        embed_mb,
+        model_link,
+        projector_link,
+    })
+}
+
+fn file_name_of(p: &Path) -> String {
+    p.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+// --- 本地嵌入（语义检索的 llama.cpp 后端） ---
+//
+// 2026-09-18 实测（Intel Mac）：Ollama 的 `nomic-embed-text` blob 是合法 GGUF，
+// `llama-server --embedding --pooling mean -c 512` 能直接加载并返回 **768 维已归一化**向量，
+// 与 Ollama 侧同模型同维度 —— 所以换运行时**不需要重建任何已存向量**。
+// 收益与聊天侧一致：按需启动 + 空闲退出 = **空闲 0 常驻**。
+//
+// 另一个实测结论：本机此前**根本没装嵌入模型**，语义检索一直按设计降级到 FTS5 关键词。
+// 所以这条链路的价值不只是「换运行时」，而是「把一直关着的能力真正打开」。
+
+/// 文件名看起来是嵌入模型？（只认名字，不做猜测 —— 不确定就返回 false）
+pub fn looks_like_embed(path: &Path) -> bool {
+    let s = path
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    s.contains("embed") || s.contains("bge-") || s.contains("gte-") || s.contains("e5-")
+}
+
+/// 从模型目录里挑嵌入模型：只认名字像嵌入模型的，多个时取最大的（确定性排序）
+pub fn pick_embed_model(entries: &[(PathBuf, u64)]) -> Option<PathBuf> {
+    let mut cands: Vec<&(PathBuf, u64)> = entries
+        .iter()
+        .filter(|(p, _)| looks_like_embed(p))
+        .collect();
+    cands.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    cands.first().map(|(p, _)| p.clone())
+}
+
+/// 嵌入服务启动参数（纯函数）：`--embedding --pooling mean` 是 llama.cpp 的嵌入模式；
+/// `-b/-ub` 都设成上下文大小，避免服务端出现 `n_batch > n_ubatch` 的告警并自动降级。
+pub fn embed_server_args(model: &Path, threads: usize) -> Vec<String> {
+    vec![
+        "-m".to_string(),
+        model.display().to_string(),
+        "--host".to_string(),
+        "127.0.0.1".to_string(),
+        "--port".to_string(),
+        EMBED_PORT.to_string(),
+        "--embedding".to_string(),
+        "--pooling".to_string(),
+        "mean".to_string(),
+        "-c".to_string(),
+        EMBED_CTX.to_string(),
+        "-b".to_string(),
+        EMBED_CTX.to_string(),
+        "-ub".to_string(),
+        EMBED_CTX.to_string(),
+        "-t".to_string(),
+        threads.max(1).to_string(),
+        "-np".to_string(),
+        "1".to_string(),
+    ]
+}
+
+/// 解析 `/v1/embeddings` 响应为向量列表（纯函数）。
+/// 两点必须较真：① 按 `index` 排序（OpenAI 兼容接口不保证返回顺序，顺序错了会张冠李戴）
+/// ② 校验维度一致（维度混用会让余弦相似度整片算错，宁可报错也不要静默入库）
+pub fn parse_embed_response(v: &serde_json::Value) -> Result<Vec<Vec<f32>>, String> {
+    let data = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or("embedding 响应缺少 data 数组")?;
+    if data.is_empty() {
+        return Err("embedding 响应 data 为空".to_string());
+    }
+    let mut items: Vec<(usize, Vec<f32>)> = Vec::with_capacity(data.len());
+    for (i, item) in data.iter().enumerate() {
+        let idx = item
+            .get("index")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(i);
+        let arr = item
+            .get("embedding")
+            .and_then(|e| e.as_array())
+            .ok_or_else(|| format!("第 {} 项缺少 embedding 字段", i))?;
+        let mut vec = Vec::with_capacity(arr.len());
+        for x in arr {
+            vec.push(
+                x.as_f64()
+                    .ok_or_else(|| format!("第 {} 项含非数字分量", i))? as f32,
+            );
+        }
+        if vec.is_empty() {
+            return Err(format!("第 {} 项向量为空", i));
+        }
+        items.push((idx, vec));
+    }
+    items.sort_by_key(|(i, _)| *i);
+    let dim = items[0].1.len();
+    if let Some((_, bad)) = items.iter().find(|(_, v)| v.len() != dim) {
+        return Err(format!("向量维度不一致：{} vs {}", dim, bad.len()));
+    }
+    Ok(items.into_iter().map(|(_, v)| v).collect())
+}
+
+/// 标记嵌入服务刚被使用（推迟空闲回收）
+pub fn touch_embed() {
+    EMBED_LAST_USED.store(now_secs(), Ordering::SeqCst);
+}
+
+/// 停止嵌入服务
+pub fn stop_embed_server() {
+    let pid = EMBED_PID.swap(0, Ordering::SeqCst);
+    if pid != 0 {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+}
+
+/// 嵌入进程是否由本应用持有且仍在运行
+pub fn embed_serving() -> bool {
+    EMBED_PID.load(Ordering::SeqCst) != 0
+}
+
+/// 嵌入服务空闲秒数（未启用时 None）
+pub fn embed_idle_secs() -> Option<u64> {
+    if !embed_serving() {
+        return None;
+    }
+    Some(now_secs().saturating_sub(EMBED_LAST_USED.load(Ordering::SeqCst)))
+}
+
+/// 嵌入模型小（261MB），加载快得多，30 秒足够
+const EMBED_READY_TIMEOUT_SECS: u64 = 30;
+
+/// 嵌入服务的空闲看门狗（与聊天服务各一套，互不影响）
+fn start_embed_watchdog() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if let Some(idle) = embed_idle_secs() {
+                if idle >= IDLE_KILL_SECS {
+                    stop_embed_server();
+                }
+            }
+        }
+    });
+}
+
+/// 确保嵌入服务就绪（按需启动 + 复用），返回模型文件名。
+/// 核心逻辑放在 `*_at` 版本里，便于真机测试直接传入路径调用（不依赖 AppHandle）。
+pub async fn ensure_embed_server(app: &tauri::AppHandle) -> Result<String, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    ensure_embed_server_at(llama_bin(Some(&app_dir)), &models_dir(&app_dir)).await
+}
+
+/// 不依赖 AppHandle 的嵌入服务拉起逻辑（真机测试入口）
+pub async fn ensure_embed_server_at(bin: Option<PathBuf>, dir: &Path) -> Result<String, String> {
+    let bin = bin.ok_or_else(|| {
+        "未找到 llama-server（可 `brew install llama.cpp`，或把二进制放到应用数据目录 runtimes/ 下）"
+            .to_string()
+    })?;
+    let entries = list_gguf(dir);
+    let model = pick_embed_model(&entries).ok_or_else(|| {
+        format!(
+            "未在 {} 找到嵌入模型（可在设置里从 Ollama 导入，需先 `ollama pull nomic-embed-text`）",
+            dir.display()
+        )
+    })?;
+    let label = model
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("embed.gguf")
+        .to_string();
+
+    // 已在跑且健康 → 直接复用（不重复拉进程）
+    if health_ok_port(EMBED_PORT).await {
+        touch_embed();
+        return Ok(label);
+    }
+    let lock = EMBED_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _guard = lock.lock().await;
+    if health_ok_port(EMBED_PORT).await {
+        touch_embed();
+        return Ok(label);
+    }
+    stop_embed_server();
+    start_embed_watchdog();
+
+    let child = tokio::process::Command::new(&bin)
+        .args(embed_server_args(&model, default_threads()))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动嵌入服务失败: {}", e))?;
+    if let Some(pid) = child.id() {
+        EMBED_PID.store(pid, Ordering::SeqCst);
+    }
+    touch_embed();
+
+    for _ in 0..(EMBED_READY_TIMEOUT_SECS * 2) {
+        if health_ok_port(EMBED_PORT).await {
+            return Ok(label);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    stop_embed_server();
+    Err(format!(
+        "嵌入服务启动超时（{} 秒）：{}",
+        EMBED_READY_TIMEOUT_SECS,
+        bin.display()
+    ))
+}
+
+/// 生成嵌入向量：分批 POST `/v1/embeddings`，服务不在就按需拉起。
+/// 只在**服务/模型都就绪**时返回 Ok —— 失败一律给明确错误，绝不返回假向量。
+pub async fn embed_texts(
+    app: &tauri::AppHandle,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let model = ensure_embed_server(app).await?;
+    touch_embed();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+    for chunk in texts.chunks(EMBED_MAX_BATCH) {
+        let body = serde_json::json!({ "input": chunk, "model": model });
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/v1/embeddings", EMBED_PORT))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("嵌入请求失败：{}", e))?;
+        if !resp.status().is_success() {
+            let code = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("嵌入服务返回 {}：{}", code, text));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析嵌入响应失败：{}", e))?;
+        out.extend(parse_embed_response(&json)?);
+    }
+    if out.len() != texts.len() {
+        return Err(format!(
+            "向量数量不匹配：请求 {} 段，返回 {} 段",
+            texts.len(),
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// 嵌入运行时状态（供设置面板展示）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmbedStatus {
+    /// 找到 llama-server 可执行文件
+    pub bin_found: bool,
+    /// 模型目录里找到嵌入模型
+    pub model_found: bool,
+    /// 模型文件名（未找到时为空）
+    pub model: String,
+    /// 本应用启动的嵌入进程正在运行
+    pub serving: bool,
+    pub port: u16,
+}
+
+pub fn embed_status(app: &tauri::AppHandle) -> EmbedStatus {
+    let app_dir = app.path().app_data_dir().ok();
+    let bin_found = llama_bin(app_dir.as_deref()).is_some();
+    let model = app_dir
+        .as_deref()
+        .map(models_dir)
+        .and_then(|d| pick_embed_model(&list_gguf(&d)));
+    EmbedStatus {
+        bin_found,
+        model_found: model.is_some(),
+        model: model
+            .as_ref()
+            .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string(),
-        projector_file: Some(
-            proj_out
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string(),
-        ),
-        model_mb,
-        model_link: model_link.as_str().to_string(),
-        projector_link: Some(projector_link.as_str().to_string()),
-    })
+        serving: embed_serving(),
+        port: EMBED_PORT,
+    }
 }
 
 /// 运行时状态（供设置面板展示）
@@ -569,6 +956,8 @@ pub struct RuntimeStatus {
     pub active_model: String,
     /// 是否带投影器（多模态可用）
     pub has_projector: bool,
+    /// 嵌入（语义检索）子系统状态
+    pub embed: EmbedStatus,
 }
 
 pub fn status(app: &tauri::AppHandle) -> RuntimeStatus {
@@ -608,6 +997,7 @@ pub fn status(app: &tauri::AppHandle) -> RuntimeStatus {
         idle_kill_secs: IDLE_KILL_SECS,
         active_model,
         has_projector,
+        embed: embed_status(app),
     }
 }
 
@@ -841,5 +1231,245 @@ mod tests {
         stop_server();
         assert!(!serving());
         assert_eq!(idle_secs(), None);
+    }
+
+    // --- 嵌入（语义检索）---
+
+    #[test]
+    fn looks_like_embed_only_matches_embedding_names() {
+        assert!(looks_like_embed(&p("/m/nomic-embed-text.gguf")));
+        assert!(looks_like_embed(&p("/m/NOMIC-EMBED-TEXT-1.5.gguf")));
+        assert!(looks_like_embed(&p("/m/bge-m3.gguf")));
+        assert!(looks_like_embed(&p("/m/multilingual-e5-small.gguf")));
+        // 聊天/视觉模型绝不能被误认成嵌入模型（否则嵌入服务会去加载 4B 视觉模型）
+        assert!(!looks_like_embed(&p("/m/llava-phi3-3.8b.gguf")));
+        assert!(!looks_like_embed(&p("/m/llama-3.2-3b-q4.gguf")));
+        assert!(!looks_like_embed(&p("/m/whatever.gguf")));
+    }
+
+    #[test]
+    fn pick_embed_model_takes_largest_embed_and_never_guesses() {
+        let entries = vec![
+            (p("/m/llava-phi3-3.8b.gguf"), 2_900_000_000),
+            (p("/m/nomic-embed-text.gguf"), 274_000_000),
+            (p("/m/bge-small.gguf"), 90_000_000),
+        ];
+        // 只在「像嵌入模型」的里面选，且取最大的
+        assert_eq!(
+            pick_embed_model(&entries),
+            Some(p("/m/nomic-embed-text.gguf"))
+        );
+        // 一个都不像 → None（不猜：宁可明确报「未找到嵌入模型」）
+        let no_embed = vec![(p("/m/llava-phi3-3.8b.gguf"), 1), (p("/m/qwen.gguf"), 2)];
+        assert_eq!(pick_embed_model(&no_embed), None);
+        assert_eq!(pick_embed_model(&[]), None);
+    }
+
+    #[test]
+    fn chat_model_never_picks_the_embed_model() {
+        // 回归：嵌入模型与聊天模型共用一个目录。若挑选规则只看「最大的非投影器文件」，
+        // 哪天嵌入模型更大就会被当成聊天模型加载 → 输出垃圾而不报错。
+        let with_embed = vec![
+            (p("/m/llava-phi3-latest.gguf"), 2_318_919_200),
+            (p("/m/llava-phi3-latest-mmproj.gguf"), 607_648_960),
+            (p("/m/nomic-embed-text-latest.gguf"), 274_290_656),
+        ];
+        let (model, proj) = pick_model_pair(&with_embed).unwrap();
+        assert_eq!(model, p("/m/llava-phi3-latest.gguf"));
+        assert_eq!(proj, Some(p("/m/llava-phi3-latest-mmproj.gguf")));
+
+        // 嵌入模型比聊天模型大也不行
+        let embed_bigger = vec![
+            (p("/m/small-chat.gguf"), 100),
+            (p("/m/bge-large-embed.gguf"), 999_999),
+        ];
+        assert_eq!(
+            pick_model_pair(&embed_bigger).unwrap().0,
+            p("/m/small-chat.gguf")
+        );
+
+        // 只有嵌入模型 → 明确返回 None（不许拿嵌入模型聊天）
+        let only_embed = vec![(p("/m/nomic-embed-text.gguf"), 274_000_000)];
+        assert!(pick_model_pair(&only_embed).is_none());
+    }
+
+    #[test]
+    fn embed_server_args_use_embedding_mode_and_own_port() {
+        let args = embed_server_args(&p("/m/nomic-embed-text.gguf"), 6);
+        let s = args.join(" ");
+        assert!(s.contains("--embedding"), "必须开嵌入模式：{}", s);
+        assert!(s.contains("--pooling mean"), "池化方式要显式指定：{}", s);
+        assert!(
+            s.contains(&format!("--port {}", EMBED_PORT)),
+            "嵌入端口独立：{}",
+            s
+        );
+        assert!(s.contains(&format!("-c {}", EMBED_CTX)));
+        // -b/-ub 与上下文一致：否则服务端会告警并自动降级
+        assert!(
+            s.contains(&format!("-b {}", EMBED_CTX)) && s.contains(&format!("-ub {}", EMBED_CTX))
+        );
+        assert!(s.contains("-np 1"), "只留一份 KV cache");
+        // 聊天服务的端口绝不能被占用
+        assert!(!s.contains(&format!("--port {}", LLAMA_PORT)));
+    }
+
+    #[test]
+    fn parse_embed_response_reads_vectors_in_index_order() {
+        // 服务端不保证顺序：index=1 先返回也要按 index 排回来
+        let v = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "index": 1, "embedding": [0.3, 0.4] },
+                { "index": 0, "embedding": [0.1, 0.2] }
+            ]
+        });
+        let out = parse_embed_response(&v).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], vec![0.1f32, 0.2]);
+        assert_eq!(out[1], vec![0.3f32, 0.4]);
+    }
+
+    #[test]
+    fn parse_embed_response_rejects_malformed_and_mixed_dims() {
+        assert!(parse_embed_response(&serde_json::json!({})).is_err());
+        assert!(parse_embed_response(&serde_json::json!({ "data": [] })).is_err());
+        // 缺 embedding 字段
+        assert!(parse_embed_response(&serde_json::json!({ "data": [{ "index": 0 }] })).is_err());
+        // 空向量
+        assert!(
+            parse_embed_response(&serde_json::json!({ "data": [{ "embedding": [] }] })).is_err()
+        );
+        // 非数字分量
+        assert!(
+            parse_embed_response(&serde_json::json!({ "data": [{ "embedding": ["x"] }] })).is_err()
+        );
+        // 维度混用会让余弦相似度整片算错 → 必须报错
+        let mixed = serde_json::json!({
+            "data": [{ "index": 0, "embedding": [1.0, 2.0] }, { "index": 1, "embedding": [1.0] }]
+        });
+        assert!(parse_embed_response(&mixed).is_err());
+    }
+
+    #[test]
+    fn find_ollama_embed_discovers_only_embedding_models() {
+        let root = std::env::temp_dir().join(format!("dsy-ollama-{}", std::process::id()));
+        let mdir = root.join("manifests/registry.ollama.ai/library/nomic-embed-text");
+        let vdir = root.join("manifests/registry.ollama.ai/library/llava-phi3");
+        std::fs::create_dir_all(&mdir).unwrap();
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::create_dir_all(root.join("blobs")).unwrap();
+        // 造一个合法 GGUF 的 blob
+        let blob = root.join("blobs/sha256-embed1");
+        std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
+        std::fs::write(
+            mdir.join("latest"),
+            serde_json::json!({
+                "layers": [{ "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:embed1" }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // 多模态模型（带投影器）不该被当成嵌入模型
+        let peer = root.join("blobs/sha256-vis1");
+        let proj = root.join("blobs/sha256-proj1");
+        std::fs::write(&peer, b"GGUF").unwrap();
+        std::fs::write(&proj, b"GGUF").unwrap();
+        std::fs::write(
+            vdir.join("latest"),
+            serde_json::json!({
+                "layers": [
+                    { "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:vis1" },
+                    { "mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:proj1" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let found = find_ollama_embed(&root).expect("应找到嵌入模型");
+        assert_eq!(found.0, "nomic-embed-text:latest");
+        assert_eq!(found.1, blob);
+        let _ = std::fs::remove_dir_all(&root);
+        // 不存在的根目录 → None（不 panic）
+        assert!(find_ollama_embed(&p("/definitely/not/here")).is_none());
+    }
+
+    #[test]
+    fn embed_status_reports_missing_bin_and_model_clearly() {
+        // 未导入模型 / 未找到二进制的组合下不 panic，字段语义明确
+        stop_embed_server();
+        assert!(!embed_serving());
+        assert_eq!(embed_idle_secs(), None);
+        let st = EmbedStatus {
+            bin_found: false,
+            model_found: false,
+            model: String::new(),
+            serving: false,
+            port: EMBED_PORT,
+        };
+        assert_eq!(st.port, 18081);
+        assert!(!st.model_found);
+    }
+
+    /// 真机端到端（`cargo test --lib local_runtime:: -- --ignored`）：
+    /// 从 Ollama 模型库发现嵌入模型 → 硬链接到临时目录 → 按需拉起嵌入服务 → 真的取回向量。
+    /// 这一步覆盖「发现 + 参数 + 生命周期 + 响应解析」全链路，是这条功能唯一的硬证据。
+    #[test]
+    #[ignore]
+    fn real_ollama_embed_model_end_to_end() {
+        let Some(root) = ollama_models_root() else {
+            eprintln!("跳过：未找到 Ollama 模型目录");
+            return;
+        };
+        let Some((label, blob)) = find_ollama_embed(&root) else {
+            eprintln!("跳过：Ollama 里没有嵌入模型（ollama pull nomic-embed-text）");
+            return;
+        };
+        eprintln!("发现嵌入模型：{} → {}", label, blob.display());
+
+        let dir = std::env::temp_dir().join(format!("dsy-embed-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join(format!("{}.gguf", sanitize_name(&label)));
+        link_or_copy(&blob, &dest).unwrap();
+
+        let bin = llama_bin(None);
+        assert!(bin.is_some(), "本机没有 llama-server");
+        let model = tauri::async_runtime::block_on(ensure_embed_server_at(bin, &dir))
+            .expect("嵌入服务应能拉起");
+        eprintln!("嵌入服务已就绪，模型：{}", model);
+
+        // 直接打 /v1/embeddings，验证维度与归一化
+        let out = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap();
+            let resp = client
+                .post(format!("http://127.0.0.1:{}/v1/embeddings", EMBED_PORT))
+                .json(&serde_json::json!({ "input": ["道生一，一生二", "hello world"], "model": model }))
+                .send()
+                .await
+                .unwrap();
+            assert!(resp.status().is_success(), "HTTP {}", resp.status());
+            let v: serde_json::Value = resp.json().await.unwrap();
+            parse_embed_response(&v).unwrap()
+        });
+        assert_eq!(out.len(), 2, "两段文本应返回两个向量");
+        assert_eq!(out[0].len(), 768, "nomic-embed-text 应为 768 维");
+        assert_eq!(out[0].len(), out[1].len(), "维度必须一致");
+        let norm: f32 = out[0].iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 0.01,
+            "应为已归一化向量，实际范数 {}",
+            norm
+        );
+        // 不同文本必须得到不同向量（否则说明拿到了假向量）
+        assert_ne!(out[0], out[1]);
+
+        stop_embed_server();
+        assert!(!embed_serving(), "停止后应回到 0 常驻");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

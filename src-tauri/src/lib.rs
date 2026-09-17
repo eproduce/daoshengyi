@@ -3905,6 +3905,15 @@ fn local_runtime_import_ollama(
 #[tauri::command]
 fn local_runtime_stop() {
     local_runtime::stop_server();
+    local_runtime::stop_embed_server();
+}
+
+/// 本地嵌入（llama.cpp 后端）：按需拉起 `--embedding` 服务并分批取回向量。
+/// 失败一律返回明确错误（未装模型/未找到二进制），由调用方决定是否回退到 Ollama ——
+/// **绝不返回假向量**：语义检索宁可暂时不可用，也不能用错向量污染记忆库。
+#[tauri::command]
+async fn local_embed(app: tauri::AppHandle, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+    local_runtime::embed_texts(&app, texts).await
 }
 
 /// 用 macOS 系统 Vision OCR 提取图片文字（准确、离线、快）。
@@ -7008,6 +7017,7 @@ pub fn run() {
             local_runtime_status,
             local_runtime_import_ollama,
             local_runtime_stop,
+            local_embed,
             trash_list,
             trash_restore,
             trash_empty,

@@ -17,6 +17,15 @@ export interface OllamaStatus {
   vision_backend?: string;
 }
 
+/** 嵌入（语义检索）子系统状态 */
+export interface EmbedRuntimeStatus {
+  bin_found: boolean;
+  model_found: boolean;
+  model: string;
+  serving: boolean;
+  port: number;
+}
+
 /** llama.cpp 运行时状态（来自 local_runtime_status 命令） */
 export interface LocalRuntimeStatus {
   bin_found: boolean;
@@ -29,6 +38,7 @@ export interface LocalRuntimeStatus {
   idle_kill_secs: number;
   active_model: string;
   has_projector: boolean;
+  embed: EmbedRuntimeStatus;
 }
 
 /** 从 Ollama 导入模型的结果（硬链接优先 → 不额外占磁盘、无需重新下载） */
@@ -37,6 +47,8 @@ export interface ImportReport {
   model_file: string;
   projector_file: string | null;
   model_mb: number;
+  embed_file: string | null;
+  embed_mb: number | null;
   model_link: string;
   projector_link: string | null;
 }
@@ -104,14 +116,21 @@ export const useOllamaStore = defineStore("ollama", () => {
     }
   }
 
-  /// 从 Ollama 模型库导入多模态模型（硬链接，零下载、不额外占盘）
+  /// 从 Ollama 模型库导入模型（硬链接，零下载、不额外占盘）：多模态 + 嵌入一次尽量都拿上
   async function importFromOllama() {
     runtimeMsg.value = "正在导入…";
     try {
       const r = await invoke<ImportReport>("local_runtime_import_ollama");
       const linkText = (k: string) =>
         k === "hardlink" ? "硬链接（零额外磁盘）" : k === "copy" ? "复制" : "已存在，跳过";
-      runtimeMsg.value = `✅ 已导入 ${r.label}（${r.model_mb} MB，${linkText(r.model_link)}）`;
+      const parts: string[] = [];
+      if (r.model_file)
+        parts.push(`多模态 ${r.model_file}（${r.model_mb} MB，${linkText(r.model_link)}）`);
+      // 嵌入模型单独说清楚：它决定语义检索能不能用
+      if (r.embed_file) parts.push(`嵌入 ${r.embed_file}（${r.embed_mb ?? 0} MB，语义检索已可用）`);
+      runtimeMsg.value = parts.length
+        ? `✅ 已导入：${parts.join("；")}`
+        : `✅ ${r.label} 已在模型目录，无需重复导入`;
       await Promise.all([refreshRuntime(), refreshStatus()]);
     } catch (e) {
       runtimeMsg.value = `❌ ${e instanceof Error ? e.message : String(e)}`;
