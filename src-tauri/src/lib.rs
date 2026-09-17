@@ -24,6 +24,7 @@ mod sandbox;
 mod search;
 mod security;
 mod settings;
+mod skill_import;
 mod ssrf;
 mod trash;
 
@@ -6959,6 +6960,7 @@ pub fn run() {
             trash_list,
             trash_restore,
             trash_empty,
+            skill_import::scan_external_skills,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,

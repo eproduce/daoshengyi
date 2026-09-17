@@ -4,6 +4,9 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import type { Skill, SkillCatalogItem } from "@/types";
 import { v4 as uuidv4 } from "./uuid";
+// 解析规则已抽到纯工具（供技能外部导入复用；util 不反向依赖 store）
+export { parseSkillMd } from "@/utils/skill-md";
+import { parseSkillMd } from "@/utils/skill-md";
 
 const STORAGE_KEY = "daoshengyi_skills";
 
@@ -25,54 +28,7 @@ function loadSkills(): Skill[] {
   }
 }
 
-/** 解析 .md 文件 frontmatter */
-function parseMd(
-  md: string,
-): {
-  name: string;
-  description: string;
-  prompt: string;
-  category: string;
-  author?: string;
-  whenToUse?: string;
-  requires?: { tools?: string[]; servers?: string[] };
-} | null {
-  const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-  if (fmMatch) {
-    const front = fmMatch[1];
-    const body = fmMatch[2].trim();
-    const get = (key: string) => {
-      const m = front.match(new RegExp(`${key}:\\s*(.+)`, "i"));
-      return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
-    };
-    const name = get("name") || get("title") || "未命名技能";
-    const desc = get("description");
-    const cat = get("category") || "导入";
-    const author = get("author");
-    const whenToUse = get("when_to_use") || get("whenToUse");
-    // 能力需求（与 tool_search 延迟加载配套）：`requires_tools: browser_navigate, ocr_image`
-    // `requires_servers: GitHub, PostgreSQL`（逗号分隔；中英文逗号均可）
-    const csv = (v: string) =>
-      v
-        .split(/[,，]/)
-        .map((x) => x.trim())
-        .filter(Boolean);
-    const reqTools = csv(get("requires_tools") || get("requiresTools"));
-    const reqServers = csv(get("requires_servers") || get("requiresServers"));
-    const requires =
-      reqTools.length || reqServers.length
-        ? {
-            tools: reqTools.length ? reqTools : undefined,
-            servers: reqServers.length ? reqServers : undefined,
-          }
-        : undefined;
-    return { name, description: desc, prompt: body, category: cat, author, whenToUse, requires };
-  }
-  // 无 frontmatter：整个文件就是 prompt
-  const lines = md.trim().split("\n");
-  const name = lines[0].replace(/^#+\s*/, "").slice(0, 50) || "导入技能";
-  return { name, description: "", prompt: md.trim(), category: "导入" };
-}
+/** 技能 Markdown 解析已抽到 `utils/skill-md.ts`（见文件头注释） */
 
 export const useSkillStore = defineStore("skill", () => {
   const skills = ref<Skill[]>(loadSkills());
@@ -126,7 +82,7 @@ export const useSkillStore = defineStore("skill", () => {
 
   // 从 .md 文本导入
   function importFromMd(md: string, url?: string): Skill | null {
-    const parsed = parseMd(md);
+    const parsed = parseSkillMd(md);
     if (!parsed || !parsed.prompt.trim()) return null;
     const s: Skill = {
       id: uuidv4(),

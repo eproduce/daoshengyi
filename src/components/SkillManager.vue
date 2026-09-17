@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useSkillStore } from "@/stores/skill";
+import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
+import { getSettings } from "@/api/appSettings";
+import {
+  planSkillImport,
+  skillSourceSpecs,
+  summarizePlan,
+  type ExternalSkillFile,
+} from "@/utils/skill-import";
 import { useUiStore } from "@/stores/ui";
 import { SKILL_CATALOG } from "@/data/skills-catalog";
 import { BookOpen, Package, Download, Pencil, Upload, Trash2, FolderUp } from "lucide-vue-next";
@@ -123,6 +132,64 @@ function onFileChange(e: Event) {
     .catch((err) => {
       importMsg.value = `❌ ${err.message}`;
     });
+}
+
+// P1-9a 外部技能导入：扫描 Claude Code / Codex / Cursor 等目录并一键导入
+async function doExternalImport() {
+  importing.value = true;
+  importMsg.value = "正在扫描外部技能目录…";
+  try {
+    const home = (await homeDir()).replace(/\/+$/, "");
+    const workspace = String(getSettings().workspace ?? "");
+    const specs = skillSourceSpecs(home, workspace);
+    if (!specs.length) {
+      importMsg.value = "❌ 未能确定主目录，无法扫描外部技能";
+      importing.value = false;
+      return;
+    }
+    const files = await invoke<ExternalSkillFile[]>("scan_external_skills", {
+      sources: specs,
+      workspace: workspace || null,
+    });
+    const plan = planSkillImport(files, store.skills);
+    if (!plan.items.length) {
+      const detail = [
+        plan.conflicts.length ? `${plan.conflicts.length} 个同名冲突（不会覆盖你已有的）` : "",
+        plan.skipped.length ? `${plan.skipped.length} 个跳过` : "",
+      ]
+        .filter(Boolean)
+        .join("；");
+      importMsg.value = `没找到可导入的技能（扫描 ${files.length} 个文件）${detail ? `：${detail}` : ""}`;
+      importing.value = false;
+      return;
+    }
+    let added = 0;
+    let updated = 0;
+    for (const item of plan.items) {
+      if (item.action === "update" && item.targetId) {
+        const target = store.skills.find((s) => s.id === item.targetId);
+        if (target) {
+          target.name = item.draft.name;
+          target.description = item.draft.description;
+          target.prompt = item.draft.prompt;
+          target.updatedAt = Date.now();
+          updated++;
+          continue;
+        }
+      }
+      const s = store.importFromMd(item.file.content, item.file.path);
+      if (s) added++;
+    }
+    const srcText = Object.entries(plan.bySource)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(" · ");
+    importMsg.value =
+      `✅ ${summarizePlan(plan)}（扫到 ${files.length} 个文件：${srcText}）` +
+      (plan.conflicts.length ? `；冲突 ${plan.conflicts.length} 个已跳过` : "");
+  } catch (e) {
+    importMsg.value = `❌ ${e instanceof Error ? e.message : "扫描失败"}`;
+  }
+  importing.value = false;
 }
 
 // 导出
@@ -311,6 +378,21 @@ const categoryColors: Record<string, string> = {
 
           <!-- Tab: 导入 -->
           <div v-if="activeTab === 'import'" class="sk-body">
+            <!-- P1-9a 外部技能目录（Claude Code / Codex / Cursor） -->
+            <div class="sk-import-block">
+              <h4>从其它工具的技能目录导入（推荐）</h4>
+              <p class="sk-hint">
+                扫描 Claude Code（~/.claude/skills、~/.claude/commands）、Codex（~/.codex/prompts）、
+                Cursor（当前项目 .cursor/rules）与你自己的 ~/Documents/道生一技能。
+                <b>永不覆盖你手写的同名技能</b>：来源文件没变过的会更新正文，同名冲突会跳过并告知。
+              </p>
+              <div class="sk-import-row">
+                <button class="sk-btn sk-btn-pri" :disabled="importing" @click="doExternalImport">
+                  {{ importing ? "扫描中…" : "扫描并导入" }}
+                </button>
+              </div>
+            </div>
+
             <!-- URL -->
             <div class="sk-import-block">
               <h4>从 URL 导入</h4>
@@ -633,6 +715,13 @@ category: 开发
 .sk-import-row {
   display: flex;
   gap: 8px;
+}
+/* P1-9a 外部技能导入的说明文字 */
+.sk-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #888;
 }
 .sk-import-row .sk-input {
   flex: 1;
