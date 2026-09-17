@@ -22,7 +22,7 @@
 | P0-2 工具结果「先脱敏 → 内容感知压缩 → 超预算落盘」 | ✅ | `d7abde2` |
 | P0-4 危险命令分级语义门禁（forbidden / danger / caution） | ✅ | `fb96ed6` |
 | P1-1 工具调用参数自愈（别名 / 类型 / 包裹层） | ✅ | `6248f73` |
-| P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ⬜ 待做 | — |
+| P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ✅ | 本批 |
 | P0-3 上下文成本审计（Context Doctor） | ⬜ 待做 | — |
 | P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ⬜ 待做 | — |
 | P0-4b 删除进回收站（`delete_file` 可恢复） | ⬜ 待做 | — |
@@ -34,6 +34,28 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P0-5 验证凭据）
+
+### ✅ 声称「通过」必须有新鲜凭据（吸收自 dsh-stalegreen / dsh-verification / dsh-doublecheck）
+- **问题**：模型最伤信任的失败模式 —— 声称「测试通过 / 构建成功 / lint 干净」但**根本没跑**，
+  或**跑完之后又改了代码**（结论已过期）。靠提示词反复叮嘱属于「靠提醒别忘」，无效 → 必须做成代码门禁。
+- 新增 `src/utils/verify-receipts.ts`（纯逻辑 + 回合内凭据表，全部可单测）：
+  - `classifyVerificationCommand`：命令归类 `test` / `typecheck` / `lint` / `build`
+    （覆盖 npm test、vitest、jest、pytest、cargo test/check/clippy/build、vue-tsc、tsc、eslint、ruff、vite build、make…）
+  - `detectVerificationClaims`：正文断言识别（中英双语、句子级），带**否定/假设过滤**
+    （「测试未通过」「尚未运行测试」「如果测试通过就…」不算断言 —— 避免误伤导致无谓追问）
+  - `findVerificationIssue`：三态判定 —— **missing**（根本没跑）/ **failed**（最近一次失败）/
+    **stale**（跑完之后又改过文件），并生成可直接注入模型的纠偏指令（含建议执行的命令）
+- 接入 `chat.ts`：
+  - **凭据记录**：`run_tests`（结构化退出码）· `run_command`（`execute_command` 退出码）· `exec_command`（进程结束后的退出码）
+  - **过期判定**：`callMcpTool` 内置分支 + write_file 转发分支，写盘成功即 `noteMutation()`
+  - **回合收尾**（原生 function calling 路径、即将输出最终答案时）：有断言但凭据不新鲜 → 注入纠偏一轮（至多一次），
+    要求真跑一次或删掉断言；同时写 `[verify]` 调试日志便于排查
+- 验证：`tests/test-verify-receipts.test.ts` **19 项**（命令归类 / 断言识别 / 三态判定 / 回合闭环与误报抑制）
+- 门禁：`npm test` 18 files / 175 passed · `npx vue-tsc --noEmit` 干净 · `npx vite build` 成功
 
 ---
 

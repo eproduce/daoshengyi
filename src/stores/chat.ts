@@ -109,6 +109,15 @@ import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/dange
 // 工具调用参数自愈（吸收自 DSH 生态 dsh-tool-normalizer：别名/类型/包裹层）
 import { normalizeToolArgs } from "@/utils/tool-arg-normalize";
 import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
+// 验证凭据（吸收自 DSH 生态 stalegreen / dsh-verification：声称「通过」必须有新鲜凭据）
+import {
+  MUTATION_TOOLS,
+  classifyVerificationCommand,
+  noteMutation,
+  noteVerification,
+  resetVerificationReceipts,
+  evaluateVerificationClaims,
+} from "@/utils/verify-receipts";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -863,7 +872,10 @@ export async function callMcpTool(
   if (server === "app" || server === "builtin") {
     const routed = resolveToolServer(server, tool);
     if (routed !== server) return callMcpTool(routed, tool, args);
-    return callBuiltinTool(tool, args);
+    const res = await callBuiltinTool(tool, args);
+    // P0-5 验证凭据：成功的文件改动会使此前的「测试通过」结论过期（stale）
+    if (MUTATION_TOOLS.has(tool) && !/^(?:⛔|❌)/.test(res.trim())) noteMutation();
+    return res;
   }
 
   // 拦截 directory_tree：它会递归列整个目录树（含 .git/node_modules/target 等海量文件），
@@ -886,7 +898,10 @@ export async function callMcpTool(
       try {
         // create_file 转发到内置非覆盖版（已存在则拒绝），其余转发到内置 write_file（覆盖）
         const isCreate = /^create_file$/i.test(tool);
-        return await callBuiltinTool(isCreate ? "create_file" : "write_file", { path, content });
+        const res = await callBuiltinTool(isCreate ? "create_file" : "write_file", { path, content });
+        // P0-5：写盘成功 = 一次改动（使之前的验证凭据过期）
+        if (!/^(?:⛔|❌)/.test(res.trim())) noteMutation();
+        return res;
       } catch (e) {
         return `【文件写入被内置工具接管，但执行失败】${e instanceof Error ? e.message : String(e)}`;
       }
@@ -3162,6 +3177,8 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const out = (res.stdout || res.stderr || "").trim();
       const head = out.length > 6000 ? out.slice(0, 6000) + "\n…（输出过长已截断）" : out;
       const pass = res.exit_code === 0;
+      // P0-5 验证凭据：run_tests 是「测试通过」断言最直接的凭据来源
+      noteVerification(classifyVerificationCommand(res.command) ?? "test", pass, res.command);
       // 结构化返回：明确成功/失败 + 失败摘要，供 Agent 判断并迭代修复
       const failLines = res.stdout
         .split("\n")
@@ -4710,6 +4727,12 @@ export const useChatStore = defineStore("chat", () => {
       const created = result.created_files || [];
       if (created.length > 0)
         content += `\n\n📄 生成的文件：\n` + created.map((f) => `- ${f}`).join("\n");
+      // P0-5 验证凭据：验证类命令的真实退出码是「通过/失败」断言的唯一依据
+      noteVerification(
+        classifyVerificationCommand(cmdStr),
+        result.exit_code === 0 && !result.timed_out,
+        cmdStr,
+      );
       // on-failure：失败后才升级请求授权（Codex ApprovalMode::OnFailure 语义）
       if (
         getSettings().approvalMode === "on-failure" &&
@@ -4769,6 +4792,10 @@ export const useChatStore = defineStore("chat", () => {
         workspace: getSettings().workspace || null,
       });
       const rendered = formatExecResult(r, `$ ${cmdStr}`);
+      // P0-5 验证凭据：进程已结束时记录真实退出码
+      if (!r.running && r.exit_code !== null) {
+        noteVerification(classifyVerificationCommand(cmdStr), r.exit_code === 0, cmdStr);
+      }
       // on-failure：进程已结束且非 0 退出 → 升级请求授权重试
       if (
         getSettings().approvalMode === "on-failure" &&
@@ -5795,6 +5822,8 @@ export const useChatStore = defineStore("chat", () => {
       let round = 0;
       let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
       let didRealWork = false; // 本轮是否真正执行过“实际工作”类工具（非 plan_*）
+      let verifyNudged = false; // P0-5：验证凭据纠偏是否已提示（至多一次）
+      resetVerificationReceipts(); // P0-5：回合开始清空验证凭据与文件改动计数
       let fakeCompletionWarned = false; // 是否已就“假完成”给出纠正（至多一次）
       let roundResult: {
         toolCall: ToolCall | null;
@@ -5963,6 +5992,21 @@ export const useChatStore = defineStore("chat", () => {
                 "2) 若确实无需任何工具即可回答，直接在正文给出完整答案并说明“无需工具即可完成”。",
             });
             continue;
+          }
+          // P0-5 验证凭据（吸收自 DSH 生态 stalegreen / dsh-verification）：
+          // 正文若声称「测试 / 类型检查 / Lint / 构建 通过」，必须有本回合的**新鲜**凭据
+          // （真实执行过且成功、且在最后一次文件改动之后）；否则纠偏一轮，
+          // 要求真跑一次或删掉该断言。这是「反复提醒模型别忘」换不来的代码门禁。
+          if (!verifyNudged && round + 1 < MAX_TOOL_ROUNDS) {
+            const issue = evaluateVerificationClaims(roundResult.content);
+            if (issue) {
+              verifyNudged = true;
+              round++;
+              await dbg(`[verify] 第 ${round} 轮注入验证凭据纠偏（${issue.kind}/${issue.status}）`);
+              rustMsgs.push({ role: "assistant", content: roundResult.content });
+              rustMsgs.push({ role: "user", content: issue.notice });
+              continue;
+            }
           }
           break; // 无工具调用 → 最终答案，退出循环
         }
