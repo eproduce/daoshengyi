@@ -8,12 +8,12 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `7315d8c`，工作区干净）
+### 当前状态（origin/main = `ce60afe`，工作区干净）
 - **内置工具 81 个**（本轮新增 `log_decision`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `27 files / 329 passed`；cargo `157 passed / 8 ignored`
+- **测试**：vitest `28 files / 344 passed`；cargo `164 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
-- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格
+- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入
 - **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（**2026-09-17 23:30 重建**，含 P1-7/P1-8）+ `dmg/道生一_1.0.0-alpha.1_x64.dmg`。**macOS 系统通知只能在打包版里生效**。
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -29,13 +29,55 @@
 | P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ✅ | `4f94713` |
 | P0-4b 删除进回收站（`delete_file` 可恢复） | ✅ | 本批 |
 
-**P1 待做**：哈希锚定编辑（3 字符行哈希定位、拒绝过期锚点）· 生命周期钩子（事件→工具/shell/HTTP→注入/拒绝/通知）·
-声明式权限规则（allow/deny/ask + dry-run + 热重载）· 压缩阶梯（30/50/70/90 + 关键词索引）·
-自动续跑规则表（按失败类型路由）· 决策日志 `DECISIONS.md` · 输出风格 · 技能外部导入（Claude Code/Codex/Cursor 目录）+ 失败台账。
+**P1 已补齐**：哈希锚定编辑（`ae523eb`）· 生命周期钩子（`55042a3`）· 声明式权限规则（`6165e66`）·
+压缩阶梯（`d52753a`）· 自动续跑规则表（`c56db46`）· 决策日志（`7315d8c`）· 输出风格（`d8982b1`）·
+技能外部导入（`ce60afe`）。
+
+**P1 待做**：失败台账（复用 `tool_audit` 归并相似错误 + 同会话重复失败提示）。
 
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-9a 技能外部导入）
+
+### ✅ 目标
+别的工具里已经攒下的技能（Claude Code 的 `~/.claude/skills`、Codex 的 `~/.codex/prompts`、
+Cursor 的 `.cursor/rules` 等）不该让人手工复制粘贴。做成**只读扫描 + 规划 + 一键导入**。
+
+### 后端 `src-tauri/src/skill_import.rs`（**7 项单测**）
+- 命令 `scan_external_skills(sources, workspace)`：按前端给的来源清单递归收集候选文件，**只读、不写、不删**。
+- 边界（全部可单测的纯函数）：单文件 ≤256KB、单来源 ≤200 条、递归深度 ≤3；跳过隐藏项与符号链接（防止扫描被
+  符号链接带出目录树）；`dir_allowed()` 限**主目录或当前工作区内**；`~` 展开显式传入 home。
+- 返回值只带 `{source,label,path,name,content,bytes}`，**由前端决定收哪些**——后端不做业务判断。
+
+### 前端 `src/utils/skill-import.ts`（**15 项单测**）
+- `skillSourceSpecs()`：五个来源规格（claude-code / claude-commands / codex / cursor / 通用 `~/Documents/道生一技能`），
+  每种带自己的候选文件名（`SKILL.md` vs `.mdc` etc.），目录不存在就自然扫到 0 条。
+- `planSkillImport(files, existing)` → `{items, conflicts, skipped, bySource}`，规则：
+  - 空内容/只有 frontmatter → **跳过**（`parseSkillMd` 返回 `null`）；
+  - 同名且**同一** `importUrl` → **更新**（可反复点「扫描并导入」而不产生重复）；
+  - 同名但来源是**用户手写或内置目录** → **冲突**，只报不动；
+  - 同名但来自**另一个**外部工具 → 冲突（不猜谁更新）；
+  - 批内重名 → 跳过后者。
+- 硬约束：**永不覆盖用户手写的技能**。冲突项在 UI 里单独列出，让人自己决定。
+- `summarizePlan()` 出一句话结论（新增 n / 更新 n / 冲突 n / 跳过 n）。
+
+### 接线与重构
+- `src/utils/skill-md.ts`（新）：把 `parseSkillMd` 从 store 抽成**纯函数（零依赖）**。两个动机：
+  ① 分层——util 不能反向依赖 store（Pinia + localStorage 副作用）；② vitest 解析不了 `src/utils/*` 里的 `@/` 别名，
+  所以 util 之间的引用必须是相对路径。store 改为**再导出** `parseSkillMd`，调用方签名不变。
+- `SkillManager.vue`「导入」页顶部加「扫描并导入」，跑完显示处置明细；`.sk-hint` 说明文字（低调灰）。
+
+### 本批踩到的两个真问题
+1. `parseSkillMd` 抽出后对「空/只有 frontmatter」的行为变了（原来不算错）→ 由新单测兜住，改为返回 `null` 明确表达「不是有效技能」。
+2. 中文名断言曾用 `.sort()` 比较顺序——JS 字符串排序是 UTF-16 序不是拼音序，改成 `Set` 比较。
+
+### 门禁
+`cargo test --lib` 164 passed / 8 ignored · `cargo clippy -D warnings` 干净 · `npx vue-tsc --noEmit` 干净 ·
+`npx vite build` 成功 · `npm test` 28 files / 344 passed。
 
 ---
 
