@@ -146,6 +146,9 @@ pub struct AppSettings {
     /// `[{"event":"turn_end","action":"notify","text":"完成"}]`
     #[serde(default)]
     pub hooks: serde_json::Value,
+    /// P1-8 输出风格 id（default / concise / detailed / teaching / review）
+    #[serde(default)]
+    pub output_style: String,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -219,6 +222,7 @@ impl Default for AppSettings {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            output_style: String::new(),
         }
     }
 }
@@ -482,6 +486,7 @@ mod tests {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            output_style: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -544,6 +549,7 @@ mod tests {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            output_style: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

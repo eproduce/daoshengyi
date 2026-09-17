@@ -14,6 +14,11 @@ import {
   validateRules,
 } from "@/utils/permission-rules";
 import { validateHooks } from "@/utils/hooks";
+import {
+  DEFAULT_STYLE_ID,
+  OUTPUT_STYLES,
+  getOutputStyle,
+} from "@/utils/output-styles";
 import type { HookRuleShape } from "@/api/appSettings";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
@@ -265,6 +270,13 @@ void (async () => {
     homeForRules.value = "";
   }
 })();
+
+// P1-8 输出风格：一次设置、全会话生效（写在系统提示末尾，幂等替换）
+const outputStyle = ref(getSettings().outputStyle ?? DEFAULT_STYLE_ID);
+function saveOutputStyle() {
+  updateSettings({ outputStyle: outputStyle.value });
+  notify(`回复风格已切换为：${getOutputStyle(outputStyle.value)?.label ?? outputStyle.value}`);
+}
 
 // P1-3 生命周期钩子：JSON 编辑 + 校验（危险命令/内网地址在 utils/hooks.ts 里拦）
 const hooksText = ref(JSON.stringify(getSettings().hooks ?? [], null, 2));
@@ -1132,6 +1144,26 @@ function handleDelete() {
           <!-- P-A7 权限矩阵：工具级开关 + 路径白名单 -->
           <div v-show="activeTab === 'permissions'">
             <h3><Shield :size="17" /> 权限矩阵</h3>
+            <!-- P1-8 输出风格：与权限同页（都属于「约束模型行为」的设置） -->
+            <div class="form-group">
+              <label>回复风格</label>
+              <div class="style-row">
+                <button
+                  v-for="s in OUTPUT_STYLES"
+                  :key="s.id"
+                  class="style-chip"
+                  :class="{ 'style-chip--on': outputStyle === s.id }"
+                  @click="((outputStyle = s.id), saveOutputStyle())"
+                >
+                  <b>{{ s.label }}</b>
+                  <span>{{ s.hint }}</span>
+                </button>
+              </div>
+              <span class="form-hint">
+                写法会写进系统提示末尾（幂等替换，不会叠加）；切换后<b>下一轮</b>对话生效。
+                「默认」= 不加额外约束，跟随模型自身风格。
+              </span>
+            </div>
             <p class="ollama-desc">
               工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent
               的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。
@@ -1734,6 +1766,40 @@ function handleDelete() {
 .exec-rule-actions .btn-primary,
 .exec-rule-actions .btn-secondary {
   padding: 8px 16px;
+}
+
+/* P1-8 输出风格选择器 */
+.style-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.style-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: all 0.15s;
+}
+.style-chip span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.style-chip:hover {
+  background: var(--bg-hover);
+}
+.style-chip--on {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 1px var(--accent-color) inset;
 }
 
 /* P1-4 权限规则：校验错误与试跑结果 */

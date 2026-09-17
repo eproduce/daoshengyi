@@ -163,6 +163,8 @@ import {
   mergeDecision,
   oneLine,
 } from "@/utils/decision-log";
+// P1-8 输出风格（结论先行/详细/教学/审阅）
+import { applyOutputStyle } from "@/utils/output-styles";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
 import {
   planAutoContinue,
@@ -5581,6 +5583,9 @@ export const useChatStore = defineStore("chat", () => {
       // 注入 MCP 工具（工具描述相对稳定）
       const mcpPrompt = getMcpToolsPrompt();
       if (mcpPrompt) sp = sp ? `${sp}\n\n${mcpPrompt}` : mcpPrompt;
+
+      // P1-8 输出风格：在末尾追加风格段（幂等替换；默认/未知风格会剥掉旧风格段）
+      sp = applyOutputStyle(sp, getSettings().outputStyle);
 
       // 原生 function calling：当 tools 走 API（tool_choice=auto）时，上文文本模式
       // 的「唯一方式是输出 <tool_call> JSON」引导已不适用 → 追加覆盖说明（共享常量，

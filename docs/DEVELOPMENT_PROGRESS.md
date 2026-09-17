@@ -8,13 +8,13 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `d52753a`，工作区干净）
-- **内置工具 80 个**；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `25 files / 301 passed`；cargo `157 passed / 8 ignored`
+### 当前状态（origin/main = `7315d8c`，工作区干净）
+- **内置工具 81 个**（本轮新增 `log_decision`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `27 files / 329 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
-- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表
-- **打包版已更新**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-17 22:46 构建，含本地运行时/钩子/权限规则/行锚点/压缩阶梯/自动续跑全部改动）+ `dmg/道生一_1.0.0-alpha.1_x64.dmg`（11 MB）。**macOS 系统通知只能在打包版里生效**。
+- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app` + `dmg/道生一_1.0.0-alpha.1_x64.dmg`（记录见下方最新一条）。**macOS 系统通知只能在打包版里生效**。
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
 
@@ -36,6 +36,29 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-7 决策日志 + P1-8 输出风格）
+
+### ✅ P1-7 决策日志 `DECISIONS.md`（两批合一提交）
+- **问题**：会话摘要是**会话级、易失**的；项目级「当初为什么这么做」没写下来，下次会话就会重新论证、甚至推翻已
+  有结论。代码注释又放不下「排除了哪些方案」。
+- 新增 `src/utils/decision-log.ts`（纯函数，**16 项单测**）：条目渲染（决策/理由/排除方案/文件/会话）、字段清洗与限量、
+  **幂等合并**（同一标题 = 同一条决策 → **原地更新**，不堆重复条目）、宽容解析（供列表/UI）。
+- 新增内置工具 `log_decision`（描述 + schema + 分发三处同步）：默认写到**工作区目录**，无工作区则落到产物目录
+  （不污染主目录根）；`rationale` 缺失直接报错——**没有理由的决策不值得记录**。
+- 项目指令发现（`agents-md`）纳入 `DECISIONS.md`：每层 `AGENTS.md` → `道生一.md` → `DECISIONS.md`，
+  新会话会自动读到既有决策（配套测试断言已更新为三文件分层）。
+- 提示词补一条：非显然的技术决策（换运行时/改架构/选依赖/否掉方案）要留痕，琐碎改动不记。
+
+### ✅ P1-8 输出风格（默认 / 简洁 / 详细 / 教学 / 审阅）
+- 新增 `src/utils/output-styles.ts`（纯函数，**12 项单测**）：一次设置、全会话生效的风格档，写在系统提示末尾。
+- 两条关键约束：**不叠加**（切换风格是**替换**固定标记段，不会出现「既简短又详细」）、**fail-safe**
+  （未知/缺省风格 → 剥掉旧风格段并原样返回，配置写错不破坏系统提示）。
+- 接线：设置新增 `outputStyle`（Rust + TS），设置面板「权限」页风格选择器（chip 形式，带一句话说明）；
+  系统提示组装末尾调用 `applyOutputStyle`（下一轮生效）。
+- 门禁（两批合并）：cargo 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 27 files / 329 passed
 
 ---
 

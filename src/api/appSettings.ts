@@ -98,6 +98,8 @@ export interface AppSettingsPayload {
   /// P1-3 生命周期钩子（事件 → 动作）：
   /// `[{ "event": "turn_end", "action": "notify", "text": "完成" }]`
   hooks?: HookRuleShape[];
+  /// P1-8 输出风格 id（default / concise / detailed / teaching / review）
+  outputStyle?: string;
   /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
   imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）
