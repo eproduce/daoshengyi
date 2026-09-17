@@ -16,6 +16,7 @@ import { useChatStore } from "./stores/chat";
 import { useOllamaStore } from "./stores/ollama";
 import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
+import { themePrefLabel } from "@/utils/theme";
 import { formatCost } from "@/utils/tokens";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImageAttachment, FileAttachment } from "@/types";
@@ -39,7 +40,7 @@ import {
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
 const ui = useUiStore();
-const { theme, toggleTheme } = useTheme();
+const { theme, pref, toggleTheme } = useTheme();
 
 // 桌面环境检测：非 Tauri（浏览器 dev/preview 预览）时本地文件写入/系统命令等能力不可用，
 // 顶部显示警示条，避免用户在纯浏览器里误以为 agent「不能写文件」
@@ -275,7 +276,11 @@ onUnmounted(() => {
           >
             <Trash2 :size="17" />
           </button>
-          <button class="topbar__btn" title="切换主题" @click="toggleTheme">
+          <button
+            class="topbar__btn"
+            :title="`主题：${themePrefLabel(pref)}（点击切换）`"
+            @click="toggleTheme"
+          >
             <Moon v-if="theme === 'light'" :size="17" />
             <Sun v-else :size="17" />
           </button>

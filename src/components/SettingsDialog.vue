@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, type Component } from "vue";
 import { useChatStore } from "@/stores/chat";
 import { useOllamaStore } from "@/stores/ollama";
 import type { ApiProfile } from "@/types";
@@ -10,6 +10,9 @@ import { getSettings, updateSettings, type PermissionRuleShape } from "@/api/app
 import { contextsFromAudit, dryRun, parseRules, validateRules } from "@/utils/permission-rules";
 import { validateHooks } from "@/utils/hooks";
 import { DEFAULT_STYLE_ID, OUTPUT_STYLES, getOutputStyle } from "@/utils/output-styles";
+// 主题偏好（含「跟随系统」）——纯逻辑在 utils/theme.ts，composable 只负责响应式与落地
+import { useTheme } from "@/composables/useTheme";
+import { themePrefHint, themePrefLabel, resolveTheme, type ThemePref } from "@/utils/theme";
 import type { HookRuleShape } from "@/api/appSettings";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
@@ -45,6 +48,7 @@ import {
   History,
   Bell,
   Terminal as TerminalIcon,
+  Palette,
 } from "lucide-vue-next";
 
 type SettingsTabId =
@@ -61,7 +65,67 @@ type SettingsTabId =
   | "undo"
   | "permissions"
   | "shortcuts"
+  | "appearance"
   | "pty";
+
+/**
+ * 设置导航分组。
+ *
+ * 分类依据是**用户意图**（「我来这儿想干嘛」），不是实现模块 —— 15 个 tab 平铺时，
+ * 用户得逐个扫完才知道该点哪个；按意图分组后每个问题只需要看一组：
+ *
+ *  模型与工具    接哪家的模型、能调什么工具    （把「插件」与 API/本地模型归在一起：
+ *                                              它们回答的是同一个问题）
+ *  记忆与知识    它记得什么、能查什么
+ *  安全与恢复    能做什么 → 做了什么 → 怎么撒回  （权限/审计/撤销 是闭环的三步）
+ *  自动化与连接  让它自己跑 / 对外通信 / 手动执行
+ *  界面与运行    长什么样、怎么操作、花了多少、卡哪了
+ */
+const SETTINGS_GROUPS: {
+  label: string;
+  tabs: { id: SettingsTabId; label: string; icon: Component }[];
+}[] = [
+  {
+    label: "模型与工具",
+    tabs: [
+      { id: "api", label: "API 配置", icon: KeyRound },
+      { id: "ollama", label: "本地模型", icon: Brain },
+      { id: "mcp", label: "插件", icon: Puzzle },
+    ],
+  },
+  {
+    label: "记忆与知识",
+    tabs: [
+      { id: "memory", label: "记忆", icon: BookOpen },
+      { id: "kb", label: "知识库", icon: Database },
+    ],
+  },
+  {
+    label: "安全与恢复",
+    tabs: [
+      { id: "permissions", label: "权限", icon: Shield },
+      { id: "audit", label: "审计", icon: ListChecks },
+      { id: "undo", label: "撤销", icon: History },
+    ],
+  },
+  {
+    label: "自动化与连接",
+    tabs: [
+      { id: "tasks", label: "定时任务", icon: AlarmClock },
+      { id: "im", label: "即时聊天", icon: MessagesSquare },
+      { id: "pty", label: "终端", icon: TerminalIcon },
+    ],
+  },
+  {
+    label: "界面与运行",
+    tabs: [
+      { id: "appearance", label: "外观", icon: Palette },
+      { id: "shortcuts", label: "快捷键", icon: Keyboard },
+      { id: "stats", label: "用量统计", icon: ChartColumn },
+      { id: "health", label: "诊断", icon: Stethoscope },
+    ],
+  },
+];
 const props = defineProps<{ initialTab?: SettingsTabId }>();
 const emit = defineEmits<{
   close: [];
@@ -69,6 +133,15 @@ const emit = defineEmits<{
 
 const chatStore = useChatStore();
 const ollamaStore = useOllamaStore();
+// 主题：跟随系统 / 深色 / 浅色（生效值由 composable 算好，这里只管偏好）
+const { pref: themePref, systemDark, setThemePref } = useTheme();
+/** 当前真正生效的主题（跟随系统时由系统决定）—— 展示层用它，避免用户对着「跟随系统」猜 */
+const resolvedTheme = computed(() => resolveTheme(themePref.value, systemDark.value));
+const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
+  { value: "system", label: "跟随系统" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+];
 const activeTab = ref<SettingsTabId>("api");
 watch(
   () => props.initialTab,
@@ -570,91 +643,20 @@ function handleDelete() {
 
       <div class="settings-dialog__body">
         <!-- 左侧菜单 -->
+        <!-- 左侧菜单：按「你来这儿想干嘛」分 5 组（而不是按实现模块平铺 15 项） -->
         <nav class="settings-nav">
-          <button
-            :class="['settings-tab', { active: activeTab === 'api' }]"
-            @click="activeTab = 'api'"
-          >
-            <span class="settings-tab__icon"><KeyRound :size="15" /></span>API 配置
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'mcp' }]"
-            @click="activeTab = 'mcp'"
-          >
-            <span class="settings-tab__icon"><Puzzle :size="15" /></span>插件
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'ollama' }]"
-            @click="activeTab = 'ollama'"
-          >
-            <span class="settings-tab__icon"><Brain :size="15" /></span>本地模型
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'stats' }]"
-            @click="activeTab = 'stats'"
-          >
-            <span class="settings-tab__icon"><ChartColumn :size="15" /></span>用量统计
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'health' }]"
-            @click="activeTab = 'health'"
-          >
-            <span class="settings-tab__icon"><Stethoscope :size="15" /></span>诊断
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'tasks' }]"
-            @click="activeTab = 'tasks'"
-          >
-            <span class="settings-tab__icon"><AlarmClock :size="15" /></span>定时任务
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'memory' }]"
-            @click="activeTab = 'memory'"
-          >
-            <span class="settings-tab__icon"><BookOpen :size="15" /></span>记忆
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'kb' }]"
-            @click="activeTab = 'kb'"
-          >
-            <span class="settings-tab__icon"><Database :size="15" /></span>知识库
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'im' }]"
-            @click="activeTab = 'im'"
-          >
-            <span class="settings-tab__icon"><MessagesSquare :size="15" /></span>即时聊天
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'audit' }]"
-            @click="activeTab = 'audit'"
-          >
-            <span class="settings-tab__icon"><ListChecks :size="15" /></span>审计
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'undo' }]"
-            @click="activeTab = 'undo'"
-          >
-            <span class="settings-tab__icon"><History :size="15" /></span>撤销
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'pty' }]"
-            @click="activeTab = 'pty'"
-          >
-            <span class="settings-tab__icon"><TerminalIcon :size="15" /></span>终端
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'permissions' }]"
-            @click="activeTab = 'permissions'"
-          >
-            <span class="settings-tab__icon"><Shield :size="15" /></span>权限
-          </button>
-          <button
-            :class="['settings-tab', { active: activeTab === 'shortcuts' }]"
-            @click="activeTab = 'shortcuts'"
-          >
-            <span class="settings-tab__icon"><Keyboard :size="15" /></span>快捷键
-          </button>
+          <div v-for="g in SETTINGS_GROUPS" :key="g.label" class="settings-nav__group">
+            <div class="settings-nav__group-title">{{ g.label }}</div>
+            <button
+              v-for="t in g.tabs"
+              :key="t.id"
+              :class="['settings-tab', { active: activeTab === t.id }]"
+              @click="activeTab = t.id"
+            >
+              <span class="settings-tab__icon"><component :is="t.icon" :size="15" /></span
+              >{{ t.label }}
+            </button>
+          </div>
         </nav>
 
         <!-- 右侧内容 -->
@@ -1341,6 +1343,33 @@ function handleDelete() {
             </div>
           </div>
 
+          <!-- 外观：主题偏好（跟随系统 / 深色 / 浅色） -->
+          <div v-show="activeTab === 'appearance'">
+            <h3><Palette :size="17" /> 外观</h3>
+            <p class="ollama-desc">
+              主题选择会立即生效并记住；选「跟随系统」时 macOS 切换浅色/深色，应用会
+              <strong>立刻</strong>跟着变（不是只在启动时读一次）。
+            </p>
+            <div class="form-group">
+              <label>主题</label>
+              <div class="style-chips">
+                <button
+                  v-for="opt in THEME_OPTIONS"
+                  :key="opt.value"
+                  :class="['style-chip', { active: themePref === opt.value }]"
+                  @click="setThemePref(opt.value as ThemePref)"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+              <span class="form-hint"
+                >当前偏好：{{ themePrefLabel(themePref) }}（生效：{{
+                  resolvedTheme === "dark" ? "深色" : "浅色"
+                }}）· {{ themePrefHint(themePref, systemDark) }}</span
+              >
+            </div>
+          </div>
+
           <!-- Phase 5 全局快捷键 -->
           <div v-show="activeTab === 'shortcuts'">
             <h3><Keyboard :size="17" /> 全局快捷键</h3>
@@ -1482,12 +1511,30 @@ function handleDelete() {
   width: 168px;
   flex-shrink: 0;
   border-right: 1px solid var(--border-color);
-  padding: 12px 8px;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+/* 分组不再是一个个孤立的 tab，而是「一组回答一个问题」 */
+.settings-nav__group {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  overflow-y: auto;
-  background: var(--bg-secondary);
+}
+.settings-nav__group-title {
+  padding: 8px 12px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  user-select: none;
+}
+.settings-nav__group:first-child .settings-nav__group-title {
+  padding-top: 2px;
 }
 .settings-tab {
   display: flex;

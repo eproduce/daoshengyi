@@ -120,6 +120,8 @@
 - **审计面板** — 工具调用全记录（参数 / 结果 / 耗时）+ 筛选 + 失败台账 + 导出
 - **API Key 加密落盘** — AES-256-GCM，密钥文件权限 0600
 - **本地优先** — 数据、密钥、记忆全部存储在本机
+- **主题** — 浅色 / 深色 / **跟随系统**三态（设置 → 外观）；选跟随系统时，macOS 切换外观应用会
+  **立刻**跟着变（监听 `prefers-color-scheme`，不是只在启动时读一次）；顶栏按钮可一键切换
 - **系统托盘 / 全局快捷键** — 托盘图标 + `Ctrl+Shift+Space` 显隐 / `Ctrl+Shift+K` 新对话（可配置）
 - **中文系统菜单栏** — 6 个菜单，快捷键直达核心功能
 
@@ -273,7 +275,7 @@ daoshengyi/
 │   │   ├── ChatInput.vue       # 消息输入框（模式切换）
 │   │   ├── ChatMessage.vue     # 消息气泡（流式 + Markdown + KaTeX + 思考 + 分支）
 │   │   ├── McpSettings.vue     # MCP 服务器设置
-│   │   ├── SettingsDialog.vue  # 设置（API/插件/Ollama/用量/诊断/定时/推送/记忆/知识库/即时聊天/审计/撤销/权限/快捷键/终端）
+│   │   ├── SettingsDialog.vue  # 设置（**导航按用户意图分 5 组**：模型与工具 / 记忆与知识 / 安全与恢复 / 自动化与连接 / 界面与运行）
 │   │   ├── SkillManager.vue    # 技能管理
 │   │   ├── MemoryPanel.vue     # 记忆管理面板
 │   │   ├── AuditPanel.vue      # 审计面板
