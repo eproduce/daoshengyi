@@ -1,6 +1,6 @@
 [package]
 name = "daoshengyi"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 description = "道生一 AI Agent 桌面客户端"
 authors = ["you"]
 edition = "2021"

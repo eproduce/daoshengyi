@@ -8,20 +8,27 @@
 
 ## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `23c063e`，工作区干净）
+### 当前状态（origin/main = `f726173`，工作区干净）
+- **版本 `1.0.0-alpha.2`**（三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`；
+  `package-lock.json`、`Cargo.lock` 一并跟进）
 - **内置工具 82 个**（本轮新增 `log_decision`、`image_inspect`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `31 files / 411 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
+- **测试**：vitest `32 files / 422 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
-- **流水线**：`ci.yml` ✅（首次转绿 09-18）· `build-macos.yml` ✅（universal dmg 实测通过）· 发布走 `v*` 标签
+- **流水线**：`ci.yml` ✅（首次转绿 09-18）· `build-macos.yml` ✅（universal dmg 实测通过）；
+  **发布唯一入口是推 `v*` 标签**——`workflow_dispatch` 只会出 artifact，`publish` job 有
+  `if: startsWith(github.ref, 'refs/tags/v')`，手动触发永远不建 Release
 - **本地运行时**：llama.cpp（识别图 18080 / 嵌入 18081，按需启停 + 空闲 0 常驻），Ollama 作回退；
   **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入 · 失败台账 · 确定性图像核验
-- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 00:03 重建）；
-  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-2359` 可回滚）。
+- **界面**：主题支持**跟随系统**（实时监听系统外观）· 设置导航按用户意图分 5 组
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
+  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
 - **待做**：code-mode（`run_code` 工具桥）· P2 各项 · 云端视觉档（需用户配 Key）
+
+---
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
 
@@ -45,6 +52,59 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-18（界面收尾：主题跟随系统 + 设置导航分组；发版到 `v1.0.0-alpha.2`）
+
+### ① 主题支持「跟随系统」（`f726173`）
+
+- **区分两个概念**：*偏好*（`system` / `light` / `dark`，持久化）与*生效主题*（`light` / `dark`，写进 `data-theme`）。
+  纯逻辑抽到 `src/utils/theme.ts`（`parseThemePref` / `resolveTheme` / `nextPrefOnToggle`，**11 项单测**），
+  composable `src/composables/useTheme.ts` 只负责响应式与落地
+- **实时跟随**：监听 `prefers-color-scheme` 变化（`addEventListener` 为主、`addListener` 兜底）→
+  系统切换外观应用**立刻**跟着变。老实现只在启动时读一次，等于「跟随系统」只是个默认值
+- **切换语义**：跟随系统时点顶栏按钮 → 切成「当前生效主题的反面」并记为显式偏好
+  （否则用户在跟随模式下点击可能毫无视觉变化，像坏了）；显式偏好不受系统变化影响
+- **旧数据兼容**：沿用同一存储键，且**没存过值就不写** → 从没手动切过主题的老用户自然落到
+  跟随系统（正是他们原本的隐式行为），显式选过的保持原样
+- 新增「外观」tab（三态 chip + 「当前偏好（生效）」与实际明暗说明）；顶栏按钮 tooltip 显示当前模式
+- **实测**（浏览器 + Playwright 模拟系统外观）：模拟系统深浅 → 应用实时跟随且**不写脏存储**；
+  点一次后系统反转不再影响；设置页三态与提示文案均正确
+
+### ② 设置导航分组：15 个平铺 tab → 5 组
+
+分类依据是**用户意图**（「我来这儿想干嘛」），不是实现模块——后者只有开发者找得到：
+
+| 分组 | 回答的问题 | tab |
+| --- | --- | --- |
+| 模型与工具 | 接哪家模型、能调什么工具 | API 配置 · 本地模型 · 插件 |
+| 记忆与知识 | 它记得什么、能查什么 | 记忆 · 知识库 |
+| 安全与恢复 | 能做什么 → 做了什么 → 怎么撤回 | 权限 · 审计 · 撤销 |
+| 自动化与连接 | 让它自己跑 / 对外通信 / 手动执行 | 定时任务 · 即时聊天 · 终端 |
+| 界面与运行 | 长什么样、怎么操作、花了多少、卡哪了 | 外观 · 快捷键 · 用量统计 · 诊断 |
+
+- **刻意的取舍**：「插件」与 API/本地模型同组（都回答「给 agent 加能力」）；权限/审计/撤销成闭环；
+  用量统计与诊断同属「看看跑成什么样」
+- 实现改为数据驱动（`SETTINGS_GROUPS` + `<component :is>`），导航标记 **3706 字符 → 628**，
+  同时消掉 15 处重复的 class/click 绑定
+- **实测**：5 组 15 个 tab 一个不少，逐个点击均可打开，且同一时刻只有一个内容块可见
+
+### ③ 搞清「产物没进 Release」的真因（不是流水线坏）
+
+- `publish` job 挂着 `if: startsWith(github.ref, 'refs/tags/v')` ⇒ **`workflow_dispatch` 永远不建 Release**，
+  只出一份 artifact。所以「手动点 Build macOS → 期望 Release」这条路径**结构上就不可能成功**
+- 仓库里**当时一个 Release 都没有**：仅有的 tag `v1.0.0-alpha.1`（08-27）当年被旧工作流取消过
+- **补一个静默缺陷**：升级 node / rust 工具链时除了 `rust-toolchain.toml`，还必须同步
+  `ci.yml` 与 `build-macos.yml` 里的工具链字段（**三处一起改**），否则本地绿、CI 红
+
+### ④ 发版 `v1.0.0-alpha.2`
+
+- 三处版本号升到 `1.0.0-alpha.2`（另附 `package-lock.json`、`Cargo.lock`）
+- 本机 `npm run tauri build` 产出 `道生一_1.0.0-alpha.2_x64.dmg`，并把 `.app` 装进 `/Applications`
+  （旧版先移到 `道生一.app.old-*` 备份，可一键回滚）
+- **验证产物的正确姿势**：Tauri 会把前端资源压缩进二进制，直接 `grep` app 包内的 JS **必然找不到中文文案**
+  （我一开始就是这么误判的）→ 要核对的是**同一次构建产生的 `dist/assets/*.js`**（看时间戳是否与 app 一致）
 
 ---
 
@@ -1946,17 +2006,19 @@ Cursor 的 `.cursor/rules` 等）不该让人手工复制粘贴。做成**只读
 
 ## 验证清单（改完必跑）
 
+> **只需要一条命令**：`npm run ci:local`（= `bash scripts/ci-local.sh`，逐项跑完 8 道门禁并给彩色汇总）。
+> 手写清单已废弃——2026-09-18 之前本地只跑 5 项（漏了 ESLint / Prettier / rustfmt），
+> 导致「本地全绿、CI 全红」持续三天。**门禁的唯一权威是 CI，本地脚本只是它的镜像。**
+
 ```bash
-cargo check                     # Rust 编译
-npx vue-tsc --noEmit            # 前端类型
-npx vite build                  # 前端构建（**唯一能抓 SFC 模板配对/编译错误**的关卡）
-npm test                        # 前端测试（11 files / 78 项）
-cargo test --manifest-path src-tauri/Cargo.toml --lib   # Rust 单测（121 passed / 8 ignored）
-cd src-tauri && cargo clippy --all-targets -- -D warnings   # Rust lint
-git push origin main            # 推送
+npm run ci:local   # ① vitest ② ESLint ③ Prettier ④ vue-tsc+vite build
+                   # ⑤ tsc -p tests ⑥ rustfmt ⑦ clippy -D warnings ⑧ cargo test --lib
 ```
+
+> ⚠️ 依赖必须用 `npm ci` 装。用 `npm install` 装出的 `node_modules` 可能缺 `eslint` / `prettier`
+> 可执行文件，脚本会直接报「命令未找到」而不是「代码有问题」。
 
 > ⚠️ **教训（2026-09-16）**：把插件市场改成 `<details>/<summary>` 折叠区时只改了开头标签，
 > `</summary>` 写成了 `</div>` → Vue SFC 报 `Element is missing end tag`，Vite dev server 直接
 > Internal server error、页面打不开，但 **`vue-tsc` 不报此类 HTML 配对错误**。
-> ⇒ 只要改了 `.vue`，**必须跑 `npx vite build`**（或 curl dev server 看该组件能否编译）。
+> ⇒ 只要改了 `.vue`，**必须跑 `npx vite build`**（门禁 ④ 已包含，别跳过它单独跑 `vue-tsc`）。

@@ -180,12 +180,17 @@ npm run tauri build -- --target universal-apple-darwin # 通用包（Intel + App
 
 ```bash
 # 三处版本号同步：package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml
+# （package-lock.json 与 Cargo.lock 会随后自动跟进，一并提交）
 git commit -am "chore(release): 1.0.0-alpha.2" && git push
 git tag v1.0.0-alpha.2 && git push origin v1.0.0-alpha.2   # → 自动打包并发布 Release
 ```
 
 带 `-alpha`/`-beta`/`-rc` 的标签会自动标为 prerelease；产物是**一个 universal dmg**，两种芯片都能装。
 （未配置 Apple 开发者证书，为 ad-hoc 签名，首次打开若被 Gatekeeper 拦截，右键「打开」放行。）
+
+> ⚠️ **手动触发 `Build macOS` 不会发 Release**：`publish` job 带
+> `if: startsWith(github.ref, 'refs/tags/v')`，手动 run 的 ref 是分支不是标签，
+> 所以只会得到一份 artifact。**要 Release 就必须推 `v*` 标签。**
 
 ## 📖 使用指南
 
