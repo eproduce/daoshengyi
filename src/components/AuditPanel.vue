@@ -4,6 +4,12 @@
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Trash2, Download, ChevronRight } from "lucide-vue-next";
+// P0-3 上下文成本审计（Context Doctor）：回答「上下文的钱花在哪」
+import { useChatStore } from "@/stores/chat";
+import { useSkillStore } from "@/stores/skill";
+import { BUILTIN_TOOLS } from "@/data/builtin-tools";
+import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
+import { auditContext, auditToMarkdown, type ContextAudit } from "@/utils/context-audit";
 
 interface AuditRow {
   id: number;
@@ -104,7 +110,61 @@ const toolCounts = computed(() => {
 });
 const okCount = computed(() => rows.value.filter((r) => !r.is_error).length);
 
-onMounted(refresh);
+// --- P0-3 上下文成本审计 ---
+const ctxAudit = ref<ContextAudit | null>(null);
+
+/// 内置工具的**实际发送形状**（name + description + parameters），尽量贴近真实 schema 开销
+function buildToolSchemaText(): { text: string; count: number } {
+  const tools = BUILTIN_TOOLS.map((t) => ({
+    name: t.name,
+    description: t.desc,
+    parameters: BUILTIN_PARAMETERS[t.name] ?? { type: "object", properties: {} },
+  }));
+  return { text: JSON.stringify(tools), count: tools.length };
+}
+
+function refreshAudit() {
+  try {
+    const chat = useChatStore();
+    const skills = useSkillStore().enabledSkills();
+    const tools = buildToolSchemaText();
+    const messages = (chat.activeConversation?.messages ?? []) as {
+      content?: string;
+      reasoning?: string;
+    }[];
+    const historyText = messages
+      .map((m) => `${m.content ?? ""}\n${m.reasoning ?? ""}`)
+      .join("\n");
+    ctxAudit.value = auditContext([
+      { id: "tools", label: "工具定义（schema）", text: tools.text, count: tools.count },
+      {
+        id: "skills",
+        label: "技能指令",
+        text: skills.map((s) => `## ${s.name}\n${s.prompt}`).join("\n\n"),
+        count: skills.length,
+      },
+      {
+        id: "history",
+        label: "历史消息",
+        text: historyText,
+        count: messages.length,
+        growing: true,
+      },
+    ]);
+  } catch {
+    ctxAudit.value = null;
+  }
+}
+
+function exportAudit() {
+  if (!ctxAudit.value) return;
+  download("context-audit.md", auditToMarkdown(ctxAudit.value), "text/markdown");
+}
+
+onMounted(() => {
+  refreshAudit();
+  void refresh();
+});
 </script>
 
 <template>
@@ -114,6 +174,25 @@ onMounted(refresh);
       Agent 每次调用工具（命令/git/测试/内置工具）自动记录，便于回溯「做了什么」。最近
       {{ rows.length }} 条（{{ okCount }} 成功）。
     </p>
+
+    <div v-if="ctxAudit" class="ap-audit">
+      <div class="ap-stats">
+        <span class="ap-stat" :title="'点击下方条数可导出完整报告'"
+          >📊 上下文成本：约 {{ ctxAudit.totalTokens.toLocaleString() }} tokens / {{ ctxAudit.totalChars.toLocaleString() }} 字符</span
+        >
+        <span
+          v-for="r in ctxAudit.rows"
+          :key="r.id"
+          class="ap-stat"
+          >{{ r.label }}：{{ r.tokens.toLocaleString() }} tokens（{{ Math.round(r.share * 100) }}%｜{{ r.count ?? "—" }} 项）</span
+        >
+        <button class="ap-btn" @click="exportAudit">导出报告</button>
+      </div>
+      <ul class="ap-hints">
+        <li v-for="(h, i) in ctxAudit.hints" :key="i">{{ h }}</li>
+        <li v-for="(d, i) in ctxAudit.duplicates" :key="'d' + i">♻️ {{ d }}</li>
+      </ul>
+    </div>
 
     <div class="ap-toolbar">
       <input v-model="filter" class="ap-input" placeholder="按工具名/参数筛选…" />
@@ -181,6 +260,23 @@ onMounted(refresh);
   font-size: 12px;
   color: var(--text-secondary, #777);
   margin: 0;
+}
+/* P0-3 上下文成本审计区块 */
+.ap-audit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-soft, #fafafa);
+}
+.ap-hints {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary, #777);
 }
 .ap-toolbar {
   display: flex;

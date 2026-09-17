@@ -10,7 +10,7 @@
 
 ### 当前状态（origin/main = `6248f73`，工作区干净）
 - **内置工具 77 个**（含 DSH 吸收新增的 10 个确定性工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `17 files / 156 passed`；cargo `129 passed / 8 ignored`
+- **测试**：vitest `19 files / 185 passed`；cargo `129 passed / 8 ignored`
 - **门禁全绿**：`npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
@@ -22,8 +22,8 @@
 | P0-2 工具结果「先脱敏 → 内容感知压缩 → 超预算落盘」 | ✅ | `d7abde2` |
 | P0-4 危险命令分级语义门禁（forbidden / danger / caution） | ✅ | `fb96ed6` |
 | P1-1 工具调用参数自愈（别名 / 类型 / 包裹层） | ✅ | `6248f73` |
-| P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ✅ | 本批 |
-| P0-3 上下文成本审计（Context Doctor） | ⬜ 待做 | — |
+| P0-5 验证凭据（测试/lint/build 断言必须有新鲜凭据） | ✅ | `8524fd9` |
+| P0-3 上下文成本审计（Context Doctor） | ✅ | 本批 |
 | P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ⬜ 待做 | — |
 | P0-4b 删除进回收站（`delete_file` 可恢复） | ⬜ 待做 | — |
 
@@ -34,6 +34,29 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P0-3 上下文成本审计）
+
+### ✅ 上下文窗口的钱花在哪：可视化 + 建议（吸收自 dsh-context-doctor / dsh-context-budget）
+- **问题**：上下文被吃掉时用户只能看到「钱花完了」，看不到**花在哪**。工具 schema、技能指令、历史消息
+  各占多少、有没有重复注入、该关谁 —— 全靠猜，于是只能盲目开新对话。
+- 新增 `src/utils/context-audit.ts`（纯逻辑，零依赖）：
+  - `auditContext(parts, windowTokens?)`：按字节估算 token（CJK ≈ 1 token/字，拉丁 ≈ 4 字符/token，复用 `tokens.ts`），
+    输出**按开销倒序**的分区表（字符 / token / 占比 / 条目数），并支持 `growing` 标记「会随会话持续膨胀」的分区
+  - **重复检测**：分区内重复行（≥ 20 字符重复 ≥ 3 次）+ 跨分区重复行（≥ 40 字符出现在 ≥ 2 个分区）
+    —— 重复注入等于白花钱，是最容易修的一类浪费
+  - **建议生成**：工具 schema 占比 ≥ 35% → 提示用 `tool_search` 渐进披露 / 精简 MCP 服务器；
+    技能指令 ≥ 30% → 提示只 ≤ 2 个直接注入、关掉长期不用的；历史消息 ≥ 60% → 提示 82% 自动压缩与
+    `new_context_window`；占比均衡时给「无需动作」的正向结论（避免制造焦虑）
+  - `auditToMarkdown(audit)`：可复制的完整报告
+- 接入 `src/components/AuditPanel.vue`：面板顶部新增「📊 上下文成本」区块 ——
+  工具定义（**真实发送形状** `name + description + parameters`，共 77 个内置工具）/ 技能指令（`enabledSkills()` 的 prompt）/ 历史消息（当前对话全部 content + reasoning，标记 growing），
+  显示各分区 token 与占比、建议清单、重复项清单，并可「导出报告」为 markdown 存档
+- 验证：`tests/test-context-audit.test.ts` **10 项**（占比排序 / 重复检测 / 各档建议 / 窗口占比 / markdown 导出 / 空输入不崩）
+- 门禁：`npm test` 19 files / 185 passed · `npx vue-tsc --noEmit` 干净 · `npx vite build` 成功
+- 已知边界：MCP 服务器动态工具 schema 未纳入统计（数量随配置变化，面板内已说明）
 
 ---
 
