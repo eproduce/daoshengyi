@@ -8,12 +8,12 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `ae523eb`，工作区干净）
+### 当前状态（origin/main = `6165e66`，工作区干净）
 - **内置工具 80 个**；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `22 files / 241 passed`；cargo `157 passed / 8 ignored`
+- **测试**：vitest `23 files / 259 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
-- **安全/可控**：删除进回收站可恢复 · 行锚点编辑拒绝过期锚点 · 声明式权限规则（allow/deny/ask + dry-run）
+- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则（allow/deny/ask + dry-run）· 生命周期钩子（事件→动作）
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -36,6 +36,33 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-3 生命周期钩子）
+
+### ✅ 不改代码就能扩展行为（吸收自 `dsh-plugin-hooks` / `hookkit`）
+- **能力**：在四个固定事件上挂动作——`turn_start` / `tool_before` / `tool_after` / `turn_end`；
+  动作 = `notify`（系统通知）· `inject`（把文本注回下一轮上下文）· `block`（仅 tool_before）·
+  `shell`（执行配置里的命令）· `http`（发请求）。可按 `tool`（精确名或 `prefix_*`）与
+  `when`（success/error）过滤。
+- 新增 `src/utils/hooks.ts`（纯函数）+ `tests/test-hooks.test.ts` **18 项**。
+- **四条安全边界**（全部有单测兑底，因为这是目前唯一能触发 shell/HTTP 的扩展点）：
+  1. **不接受模型拼接**：只替换白名单占位符（`{{tool}}/{{command}}/{{path}}/{{result}}/{{error}}/{{event}}/{{status}}`），
+     shell 动作的值一律**单引号转义**（`'` 拆成 `'\''`）——tool 名里写 `; rm -rf /` 也只会当成字符串参数。
+  2. **配置期就用危险命令门禁校验**：`forbidden` 级命令**直接拒绝入表**（rm -rf / · mkfs · fork bomb 等）；
+     `danger` 级必须显式写 `"allow_danger": true`（占位符按最坏形态 `/` 替换后评估）。
+  3. **HTTP 只允许 http/https**，内网/环回（localhost · 127.* · 10.* · 192.168.* · 172.16-31.* · 169.254.* · *.local · ::1）
+     默认**拒绝**，需显式 `"allow_private": true`；运行时再走一遍 Rust `fetch_page` 的 SSRF 策略。
+  4. **运行时仍受权限规则约束**：shell 动作执行前用 P1-4 规则求值（`tool: "run_command"`），
+     deny 直接放弃、ask 弹确认。
+- 注入防爆：单事件最多 3 条 / 共 2000 字符，超限写 `[hook]` 日志说明原因。
+- 接线：`tool_before` 在 `callMcpTool`（权限规则之后，可 block）；`tool_after` 在 `callToolStoppable`
+  （agent 四条工具路径的共同出口，含失败分支）；`turn_start` 在用户消息入列之后；
+  `turn_end` 在完成通知处；注入内容在**下一轮开头**回填（与 view_image 同位置）。
+  钩子异常全部只记日志、不影响主流程。
+- 设置新增 `hooks`（Rust 存 JSON）+ 设置面板「权限」页钩子编辑器（保存并校验 + 边界说明）。
+- 门禁：cargo 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 23 files / 259 passed
 
 ---
 

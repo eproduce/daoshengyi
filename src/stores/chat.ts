@@ -140,6 +140,14 @@ import {
   type PermissionRule,
   type ToolCallContext,
 } from "@/utils/permission-rules";
+// P1-3 生命周期钩子（配置驱动；shell/http 动作的边界见 utils/hooks.ts）
+import {
+  parseHooks,
+  planHooks,
+  type HookContext,
+  type HookRule,
+  type PlannedAction,
+} from "@/utils/hooks";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -399,6 +407,87 @@ async function applyPermissionRules(tool: string, args: Record<string, unknown>)
   rememberSessionPermit(tool);
   return true;
 }
+
+// --- P1-3 生命周期钩子运行器 ---
+// 边界：① 命令只来自配置（占位符已在 renderTemplate 里 shell 转义）；
+//       ② 配置期已用危险命令门禁校验（forbidden 拒入表、danger 需显式放行）；
+//       ③ HTTP 走 Rust fetch_page（含 SSRF 策略）；
+//       ④ shell 动作执行前再跑一遍 P1-4 权限规则（deny 放弃 / ask 确认）。
+const hookInjections: string[] = [];
+
+function hookRules(): HookRule[] {
+  return parseHooks(getSettings().hooks ?? []).hooks;
+}
+
+/// 把待注入文本在下一轮开头回填（与 view_image 图片同一位置），并在回填后清空
+function flushHookInjections(msgs: AgentMsg[]): void {
+  if (!hookInjections.length) return;
+  const text = hookInjections.splice(0).join("\n\n");
+  msgs.push({
+    role: "user",
+    content: `【钩子注入】以下是外部钩子在本轮写入的上下文（供参考，不代表用户发言）：\n${text}`,
+  });
+  dbg(`[hook] 注入 ${text.length} 字符`);
+}
+
+/// 执行一条已渲染的动作（block 不在这里处理，它需要即时拦截）
+async function runHookAction(a: PlannedAction): Promise<void> {
+  const label = a.rule.id ?? `#${a.index + 1}`;
+  try {
+    if (a.kind === "notify") {
+      invoke("notify_user", { title: "道生一 · 钩子", body: a.text, onlyWhenUnfocused: true }).catch(
+        () => {},
+      );
+      return;
+    }
+    if (a.kind === "http") {
+      // 复用 fetch_page：内含 SSRF 策略（内网/环回拦截）
+      await invoke("fetch_page", { url: a.url });
+      dbg(`[hook] ${label} http ${a.method} ${a.url} 完成`);
+      return;
+    }
+    if (a.kind === "shell") {
+      // 边界④：钩子的命令同样受权限规则约束
+      const verdict = evaluateRules(permissionRules(), { tool: "run_command", command: a.command }, await userHome());
+      if (verdict.decision === "deny") {
+        dbg(`[hook] ${label} 命令被权限规则拒绝：${verdict.message}`);
+        return;
+      }
+      if (verdict.decision === "ask") {
+        const ok = await askConfirm(`${verdict.message}\n\n钩子「${label}」要执行：\n$ ${a.command}\n\n允许吗？`);
+        if (!ok) {
+          dbg(`[hook] ${label} 用户拒绝了钩子命令`);
+          return;
+        }
+      }
+      const res = await invoke<string>("run_command", {
+        command: a.command,
+        timeoutSecs: a.timeout,
+      }).catch((e: unknown) => `钩子命令失败: ${e instanceof Error ? e.message : String(e)}`);
+      dbg(`[hook] ${label} shell 完成：${String(res).slice(0, 200)}`);
+    }
+  } catch (e) {
+    // 钩子失败不得影响主流程（记日志即可）
+    dbg(`[hook] ${label} 执行异常：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/// 触发一个事件上的全部钩子；返回要即时拦截的文案（仅 tool_before 的 block）
+async function fireHooks(ctx: HookContext): Promise<string | null> {
+  const rules = hookRules();
+  if (!rules.length) return null;
+  const { actions, injections, skipped } = planHooks(rules, ctx);
+  for (const s of skipped) dbg(`[hook] ${s}`);
+  hookInjections.push(...injections);
+  if (!actions.length && !injections.length) return null;
+  // block：第一个命中的先生效（与行动作并发执行）
+  const blockAction = actions.find((a) => a.kind === "block");
+  for (const a of actions) {
+    if (a.kind === "block") continue;
+    void runHookAction(a);
+  }
+  return blockAction ? `⛔ 钩子拦截了本次调用：${blockAction.text}` : null;
+}
 export async function refreshMcpTools() {
   // 单飞（single-flight）：并发调用只执行一次、共享同一结果。并行子代理/主代理
   // 可能同时触发刷新，避免两次 refresh 交错清空 mcpToolsCache 导致读到空缓存。
@@ -509,14 +598,33 @@ async function callToolStoppable(
   tool: string,
   args: Record<string, unknown>,
 ): Promise<string> {
-  const raced = await Promise.race([
-    callMcpTool(server, tool, args).then((r) => ({ kind: "ok" as const, data: r })),
-    waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
-  ]);
+  const hookCtx = {
+    tool,
+    command: typeof args.command === "string" ? args.command : undefined,
+    path: typeof args.path === "string" ? args.path : undefined,
+  };
+  let raced: { kind: "ok" | "stop"; data: string | null };
+  try {
+    raced = await Promise.race([
+      callMcpTool(server, tool, args).then((r) => ({ kind: "ok" as const, data: r })),
+      waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
+    ]);
+  } catch (e) {
+    // P1-3：tool_after 钩子（失败分支）
+    void fireHooks({
+      ...hookCtx,
+      event: "tool_after",
+      status: "error",
+      error: e instanceof Error ? e.message : String(e),
+    });
+    throw e;
+  }
   if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
-  return raced.data;
-}
-/// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
+  const data = raced.data ?? "";
+  // P1-3：tool_after 钩子（成功）——这是 agent 四条工具路径的共同出口
+  void fireHooks({ ...hookCtx, event: "tool_after", status: "success", result: data });
+  return data;
+}/// 任务被用户停止时抛出的错误（子代理/工具循环捕获后优雅收尾）
 class AgentStoppedError extends Error {
   constructor() {
     super("任务已由用户停止");
@@ -941,6 +1049,14 @@ export async function callMcpTool(
   // P1-4 声明式权限规则（deny 硬拦截 / ask 每次确认 / allow 记会话免确认）
   const ruleVerdict = await applyPermissionRules(tool, args);
   if (typeof ruleVerdict === "string") return ruleVerdict;
+  // P1-3：tool_before 钩子（可 block 拦下这次调用；注入/shell/http/notify 也会在这里触发）
+  const hookBlocked = await fireHooks({
+    event: "tool_before",
+    tool,
+    command: typeof args.command === "string" ? args.command : undefined,
+    path: typeof args.path === "string" ? args.path : undefined,
+  });
+  if (hookBlocked) return hookBlocked;
   // §3.11 Agent 多模式：模式工具白名单（如速答模式禁用全部工具）
   const mode = getModeById(activeModeId.value);
   if (!isToolAllowedByMode(mode, tool)) {
@@ -5155,6 +5271,8 @@ export const useChatStore = defineStore("chat", () => {
       convId = createConversation();
     }
     addUserMessage(convId, text, images, attachments);
+    // P1-3：turn_start 钩子（失败不影响主流程；注入内容在下一轮回填）
+    void fireHooks({ event: "turn_start" });
 
     // 用 reactive 创建，保证 push 后对 tokens/cost 等的赋值能触发响应式更新
     const assistantMsg = reactive<ChatMessage>({
@@ -6047,10 +6165,12 @@ export const useChatStore = defineStore("chat", () => {
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
+          if (stopRequested) break; // 用户停止 → 立即退出工具循环
         dbg(
           `[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}，原生=${!!nativeToolsOn}`,
         );
         try {
+          flushHookInjections(rustMsgs); // P1-3：钩子注入在下一轮开头回填
           flushPendingViewImages(rustMsgs); // view_image 图片在下一轮注入
           roundResult = await streamRound(rustMsgs, nativeToolsOn);
         } catch (e) {
@@ -6466,6 +6586,12 @@ export const useChatStore = defineStore("chat", () => {
       // 系统通知：任务完成 / 最终产物就绪（窗口未聚焦时才打扰，避免盯着屏幕被弹窗打断）
       // 注：此处 streamingContent 已是本轮最终正文（finally 才做落库装配）
       notifyTurnFinished(streamingContent.value, toolCards.length);
+      // P1-3：turn_end 钩子（notify/shell/http/inject 都会在这里触发）
+      void fireHooks({
+        event: "turn_end",
+        status: "success",
+        result: streamingContent.value.slice(0, 2000),
+      });
     } catch (err: unknown) {
       if (err instanceof Error) {
         let msg = err.message;

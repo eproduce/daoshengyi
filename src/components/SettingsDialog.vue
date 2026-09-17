@@ -13,6 +13,8 @@ import {
   parseRules,
   validateRules,
 } from "@/utils/permission-rules";
+import { validateHooks } from "@/utils/hooks";
+import type { HookRuleShape } from "@/api/appSettings";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
@@ -264,6 +266,25 @@ void (async () => {
   }
 })();
 
+// P1-3 生命周期钩子：JSON 编辑 + 校验（危险命令/内网地址在 utils/hooks.ts 里拦）
+const hooksText = ref(JSON.stringify(getSettings().hooks ?? [], null, 2));
+const hooksErrors = ref<string[]>([]);
+
+function saveHooks(): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(hooksText.value || "[]");
+  } catch (e) {
+    hooksErrors.value = [`JSON 解析失败：${e instanceof Error ? e.message : String(e)}`];
+    return false;
+  }
+  const errs = validateHooks(parsed);
+  hooksErrors.value = errs;
+  if (errs.length) return false;
+  updateSettings({ hooks: parsed as HookRuleShape[] });
+  return true;
+}
+
 // P1-4 声明式权限规则：JSON 编辑 + 校验 + 用最近真实工具调用试跑（dry-run）
 const rulesText = ref(JSON.stringify(getSettings().permissionRules ?? [], null, 2));
 const rulesErrors = ref<string[]>([]);
@@ -286,8 +307,7 @@ function saveRules(): boolean {
 }
 
 /// 试跑：把规则套到最近的真实工具调用上，**启用前先看清会拦住/放开什么**
-async function dryRunRulesNow() {
-  dryCounts.value = null;
+async function dryRunRulesNow() {  dryCounts.value = null;
   if (!saveRules()) return;
   const { rules } = parseRules(JSON.parse(rulesText.value || "[]"));
   let rows: { tool_name: string; arguments: string }[] = [];
@@ -1187,6 +1207,39 @@ function handleDelete() {
                 </div>
               </div>
             </div>
+            <!-- P1-3 生命周期钩子：事件 → 动作（配置期就拦掉危险命令/内网地址） -->
+            <div class="form-group">
+              <label>生命周期钩子（JSON 数组）</label>
+              <textarea
+                v-model="hooksText"
+                rows="8"
+                spellcheck="false"
+                class="exec-rules-editor"
+                placeholder='[
+  {"event":"turn_end","action":"notify","text":"一轮完成"},
+  {"event":"tool_after","action":"shell","tool":"write_file","command":"npm run build"},
+  {"event":"tool_after","action":"inject","when":"error","text":"上次调用失败了：{{error}}"}
+]'
+              ></textarea>
+              <span class="form-hint" v-pre>
+                event：<code>turn_start</code> / <code>tool_before</code> / <code>tool_after</code> /
+                <code>turn_end</code>。action：<code>notify</code>（系统通知）· <code>inject</code>（把文本注回下一轮上下文）·
+                <code>block</code>（仅 tool_before，拦下这次调用）· <code>shell</code>（执行命令）· <code>http</code>（发请求）。
+                可选过滤：<code>tool</code>（精确名或 <code>prefix_*</code>）、<code>when</code>（success/error）。
+                占位符：<code>{{tool}}</code> <code>{{command}}</code> <code>{{path}}</code> <code>{{result}}</code> <code>{{error}}</code>
+                —— shell 里会自动单引号转义（模型内容无法拼接命令）。
+                <b>安全边界</b>：禁止级命令直接拒绝入表，危险级需显式写 <code>"allow_danger": true</code>；
+                HTTP 只允许 http/https 且默认拒绝内网地址（需 <code>"allow_private": true</code>）；
+                运行时 shell 动作还会再受「声明式权限规则」约束。
+              </span>
+              <div class="exec-rule-actions">
+                <button class="btn-primary" @click="saveHooks">保存并校验</button>
+              </div>
+              <ul v-if="hooksErrors.length" class="rules-errors">
+                <li v-for="(e, i) in hooksErrors" :key="i">{{ e }}</li>
+              </ul>
+            </div>
+
             <div class="form-group">
               <label>路径白名单（每行一个目录）</label>
               <textarea

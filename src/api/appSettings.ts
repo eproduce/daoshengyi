@@ -18,6 +18,24 @@ export interface PermissionRuleShape {
   enabled?: boolean;
 }
 
+/** P1-3 生命周期钩子的结构（与 utils/hooks.ts 的 HookRule 兼容） */
+export interface HookRuleShape {
+  id?: string;
+  event: "turn_start" | "tool_before" | "tool_after" | "turn_end";
+  tool?: string;
+  when?: "any" | "success" | "error";
+  action: "notify" | "inject" | "block" | "shell" | "http";
+  text?: string;
+  command?: string;
+  url?: string;
+  method?: "GET" | "POST";
+  body?: string;
+  timeout?: number;
+  allow_danger?: boolean;
+  allow_private?: boolean;
+  enabled?: boolean;
+}
+
 export interface McpServerPersist {
   id: string;
   name: string;
@@ -77,6 +95,9 @@ export interface AppSettingsPayload {
   /// P1-4 声明式权限规则（有序，第一条命中即生效）：
   /// `[{ "action": "deny", "tool": "run_command", "command": "rm -rf" }]`
   permissionRules?: PermissionRuleShape[];
+  /// P1-3 生命周期钩子（事件 → 动作）：
+  /// `[{ "event": "turn_end", "action": "notify", "text": "完成" }]`
+  hooks?: HookRuleShape[];
   /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
   imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）

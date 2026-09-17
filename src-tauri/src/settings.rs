@@ -142,6 +142,10 @@ pub struct AppSettings {
     /// 与 TS 类型双维护；坏数据在前端 `parseRules` 里会被逐条跳过并提示。
     #[serde(default)]
     pub permission_rules: serde_json::Value,
+    /// P1-3 生命周期钩子（事件 → 动作；配置期已做过危险命令/内网地址校验）：
+    /// `[{"event":"turn_end","action":"notify","text":"完成"}]`
+    #[serde(default)]
+    pub hooks: serde_json::Value,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -214,6 +218,7 @@ impl Default for AppSettings {
             budget_daily: 0.0,
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
+            hooks: serde_json::json!([]),
         }
     }
 }
@@ -476,6 +481,7 @@ mod tests {
             budget_daily: 0.0,
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
+            hooks: serde_json::json!([]),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -537,6 +543,7 @@ mod tests {
             budget_daily: 0.0,
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
+            hooks: serde_json::json!([]),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
