@@ -107,6 +107,32 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["path"],
     additionalProperties: true,
   },
+  image_inspect: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "图片文件路径（png/jpg/gif/webp/bmp）" },
+      region: {
+        type: "object",
+        description: "可选裁剪区域（像素坐标，左上原点）：{left, top, width, height}",
+        properties: {
+          left: { type: "integer" },
+          top: { type: "integer" },
+          width: { type: "integer", description: "必须大于 0" },
+          height: { type: "integer", description: "必须大于 0" },
+        },
+        required: ["left", "top", "width", "height"],
+      },
+      threshold: { type: "integer", description: "可选灰度阈值 0~255；缺省用 Otsu 自动计算" },
+      invert: { type: "boolean", description: "true = 浅色为字（深底浅字）；缺省深色为字" },
+      mode: { type: "string", description: "glyphs（默认，切字符+点阵）| info（只出尺寸与灰度分布）" },
+      ascii_width: { type: "integer", description: "字形点阵宽度，默认 24（4~80）" },
+      max_glyphs: { type: "integer", description: "最多列出多少个字符块，默认 24" },
+      min_glyph_width: { type: "integer", description: "最小字符宽（px），默认 1=不丢弃任何列段" },
+      max_gap: { type: "integer", description: "间隙≤该值视为同一字形；默认 0=不合并相邻字形" },
+    },
+    required: ["path"],
+    additionalProperties: true,
+  },
 
   // ---- 子代理 ----
   subagent_delegate: {

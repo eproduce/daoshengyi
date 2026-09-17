@@ -15,6 +15,7 @@ mod browser;
 mod db;
 mod execpolicy;
 mod im;
+mod img_inspect;
 mod local_runtime;
 mod mcp;
 mod mcp_server;
@@ -1140,6 +1141,43 @@ struct CommandOutput {
     /// 命令重定向生成的文件绝对路径（如 `ls > l.txt` → ["/…/l.txt"]），供前端渲染可点击链接
     #[serde(default)]
     created_files: Vec<String>,
+}
+
+/// 图像核验（确定性像素分析）：字符切分 / 封闭空洞 / 字形点阵。
+/// 用途：编号、票据、序列号这类「等宽数字串」的位数核验 —— OCR 对前导零漏读率高，
+/// 而列投影切分数 + 封闭空洞数是**算出来的**，不依赖模型眼力。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn image_inspect(
+    db: State<Database>,
+    path: String,
+    region: Option<img_inspect::RegionSpec>,
+    threshold: Option<u32>,
+    invert: Option<bool>,
+    mode: Option<String>,
+    ascii_width: Option<u32>,
+    max_glyphs: Option<u32>,
+    min_glyph_width: Option<u32>,
+    max_gap: Option<u32>,
+) -> Result<String, String> {
+    // 只读操作：沿用与 read_file 相同的路径沙箱白名单
+    let allowed = sandbox_allowed_paths(db.inner());
+    if !allowed.is_empty() {
+        let expanded = expand_user_path(&path)?;
+        if !path_within_any(std::path::Path::new(&expanded), &allowed) {
+            return Err(format!("路径不在沙箱白名单内，拒绝读取：{}", path));
+        }
+    }
+    let opts = img_inspect::InspectOptions {
+        threshold: threshold.map(|t| t.min(255) as u8),
+        invert: invert.unwrap_or(false),
+        mode: mode.unwrap_or_else(|| "glyphs".to_string()),
+        ascii_width: ascii_width.unwrap_or(24) as usize,
+        max_glyphs: max_glyphs.unwrap_or(24) as usize,
+        min_glyph_width: min_glyph_width.unwrap_or(2) as usize,
+        max_gap: max_gap.unwrap_or(1) as usize,
+    };
+    img_inspect::inspect_file(&path, region, &opts)
 }
 
 /// 读取文本文件（借鉴 DeepSeek Harness 的文件能力）；传入目录时返回内容列表（ls 风格）
@@ -6961,6 +6999,7 @@ pub fn run() {
             trash_restore,
             trash_empty,
             skill_import::scan_external_skills,
+            image_inspect,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,

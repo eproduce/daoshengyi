@@ -64,7 +64,11 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "ocr_image",
-    desc: '用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。',
+    desc: '用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。**注意**：OCR 对等宽数字串（尤其前导零）漏读率高，凡是要**数位数**（证书编号/票据号/序列号）或区分 0/O、1/l 这类字形，必须再用 image_inspect 交叉验证，不要拿 OCR 文本直接下结论。',
+  },
+  {
+    name: "image_inspect",
+    desc: '对图片做**确定性像素级核验**（不是 OCR，不依赖模型眼力）：列投影切分出字符块 + 每个字形的墨迹量/封闭空洞数/宽高比 + ASCII 点阵。参数 {"path": "图片路径", "region": 可选 {left,top,width,height} 裁剪区域, "threshold": 可选灰度阈值(缺省 Otsu 自动), "invert": 可选 true=浅色为字, "mode": "glyphs"(默认)|"info", "ascii_width": 可选点阵宽(默认 24), "min_glyph_width": 可选, "max_gap": 可选(默认 0=不合并相邻字形)}。**必须用它来核验字符个数与字形**：①数编号/单号有几位（切出几个字符块就是几位，报告会给出宽度分布，宽度一致的即同族字形）②区分带斜杠的零（2 个封闭空洞）与普通零（1 个）/ 2（0 个）③判断某块区域到底有没有字（防「渲染空白却以为成功」）。比手写 Python 可靠且快；报告里的宽度/空洞/点阵都能直接引用为证据。',
   },
   {
     name: "subagent_delegate",
