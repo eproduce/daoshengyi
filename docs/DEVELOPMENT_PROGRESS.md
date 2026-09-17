@@ -41,6 +41,45 @@
 
 ---
 
+## 2026-09-18（CI 首次转绿：门禁清单对齐 + 工具链固定）
+
+> 起因：用户报「GitHub 流水线最近多次打包失败」。查下去发现两件不同的事：
+> CI 从未绿过，而打包工作流的失败是另一回事。
+
+### ① CI 从未成功过（不是回归，是从来就红）
+- 事实：`gh run list` 该范围内 40 次运行**全部 failure**；更早亦未见成功
+- **根因（两层，都是「本地没复现 CI」）**：
+  1. **门禁清单不齐**：CI 有 **7 项**，本地长期只跑 5 项 —— 漏了 **ESLint、Prettier、rustfmt**。
+     而且本地 `node_modules` 不完整（缺 `eslint`/`prettier` 两个二进制），这两项**连尝试执行都不会成功**
+     （对齐环境要用 `npm ci`，不是 `npm install`）。
+  2. **Rust 工具链漂移**：CI 用 `dtolnay/rust-toolchain@stable`（跟当时最新 stable = **1.98.0**），
+     本地是 **1.96.0**。1.98 新增 `clippy::unneeded_wildcard_pattern`，把 `src/lib.rs` 里
+     `Ok(CommandOutput { …, timed_out: _, .. })` 这段**已存在的老代码**判红 —— 本地怎么跑都复现不了。
+- **修**：
+  - ESLint 5 个 error：`decision-log` 的 `prefer-const`；`ocr-advice` 的多余转义
+    （`[\-…]` 中 `-` 在字符类首本就是字面量）；`tool-result-reduce` 的 `no-control-regex`
+    （剥离 ANSI 转义**必须**匹配 `\u001b`，加行内说明 + 定向 disable，不是笔误）
+  - ESLint 5 个 warning：属性顺序、未用导入，以及 `SkillManager` 里 P1-9a 算了却没用的
+    `added`/`updated` —— 顺手改成把**实际写入计数**写进提示（计划里的新增/更新是意图，这里才是结果）
+  - `cargo fmt` 格式化 11 个 rs 文件；`prettier --write .` 格式化其余 ts/vue/json
+  - 新增 **`rust-toolchain.toml`（channel 1.98.0 + rustfmt/clippy + 两个 darwin target）**；
+    `ci.yml` / `build-macos.yml` 显式写 `toolchain: "1.98.0"`（跟 latest 会让上游发版把老代码判红）
+- **结果**：run `35283849518` —— **Frontend 37s ✓ / Rust 4m15s ✓，CI 首次转绿**
+
+### ② 把「跑门禁」变成一条命令
+- 新增 `scripts/ci-local.sh` + `npm run ci:local`：按 CI 权威清单逐项跑 7 项门禁，
+  任一项失败都单独标红并汇总，最后给总退出码。实测 7/7 通过、退出码 0。
+- 之所以要它：门禁清单必须与 CI **同源**，否则漏掉的那几项永远不会在本地暴露。
+
+### ③ 打包工作流的真因：GitHub 退役了 Intel macOS runner
+- 事实：`build-macos.yml` 只跑过 2 次，都是 `cancelled`；其中 aarch64 job **5m46s 成功**，
+  而 x86_64 job **等 runner 等了 24 小时超时**（注释：`exceeded the maximum execution time while awaiting a runner`）
+- 结论：旧的「双 job（各架构一个 job）」方案在 Intel runner 退役后已不可用。现仓库里的版本
+  已改成在 arm64 runner 上 `npm run tauri build -- --target universal-apple-darwin`
+  交叉编译两个目标 + `lipo` 合并，但**改完从未跑过** —— 已手动触发实测（见下）
+
+---
+
 ## 2026-09-17/18（真实使用驱动：3 项修复 + 1 个新工具）
 
 > 来源：用户跑了一次真实任务（核验 NASA 罗马望远镜「认领像素」证书编号位数）并把完整会话
