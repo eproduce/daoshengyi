@@ -14,7 +14,7 @@
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格
-- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app` + `dmg/道生一_1.0.0-alpha.1_x64.dmg`（记录见下方最新一条）。**macOS 系统通知只能在打包版里生效**。
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（**2026-09-17 23:30 重建**，含 P1-7/P1-8）+ `dmg/道生一_1.0.0-alpha.1_x64.dmg`。**macOS 系统通知只能在打包版里生效**。
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
 
