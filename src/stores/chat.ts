@@ -169,6 +169,8 @@ import { applyOutputStyle } from "@/utils/output-styles";
 import { failureHint } from "@/utils/failure-ledger";
 // read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
 import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
+// OCR 读到长数字串时提示用 image_inspect 交叉验证（等宽数字串 OCR 最不可靠）
+import { ocrCrossCheckHint } from "@/utils/ocr-advice";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
 import {
   planAutoContinue,
@@ -2698,7 +2700,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const path = String(args.path || "");
       if (!path) throw new Error("ocr_image 需要 path 参数（本地图片文件路径）");
       const ocr = await invoke<string>("ocr_image_file", { path });
-      return ocr || "（未识别到文字）";
+      if (!ocr) return "（未识别到文字）";
+      // 读到长数字串时顺手要求交叉验证：位数错一位，整份结论就错（真实踩过）
+      const hint = ocrCrossCheckHint(ocr, path);
+      return hint ? `${ocr}\n\n${hint}` : ocr;
     }
     case "image_inspect": {
       // 确定性像素核验：数字符个数 / 字形空洞 / 点阵 —— 补 OCR 在等宽数字串上漏读前导零的短板
