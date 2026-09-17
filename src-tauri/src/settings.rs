@@ -127,6 +127,15 @@ pub struct AppSettings {
     /// - `ollama`：强制 Ollama（保留原一键部署链路）
     #[serde(default = "default_local_vision_runtime")]
     pub local_vision_runtime: String,
+    /// P0-6 预算护栏：本次会话预算（元；0 = 不限）——达到 80% 预警、100% 发送前拦截
+    #[serde(default)]
+    pub budget_session: f64,
+    /// P0-6 预算护栏：今日预算（元，本地时区 00:00 重置；0 = 不限）
+    #[serde(default)]
+    pub budget_daily: f64,
+    /// P0-6 预算护栏：本月预算（元，本地时区 1 号重置；0 = 不限）
+    #[serde(default)]
+    pub budget_monthly: f64,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -195,6 +204,9 @@ impl Default for AppSettings {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            budget_session: 0.0,
+            budget_daily: 0.0,
+            budget_monthly: 0.0,
         }
     }
 }
@@ -453,6 +465,9 @@ mod tests {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            budget_session: 0.0,
+            budget_daily: 0.0,
+            budget_monthly: 0.0,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -510,6 +525,9 @@ mod tests {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            budget_session: 0.0,
+            budget_daily: 0.0,
+            budget_monthly: 0.0,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

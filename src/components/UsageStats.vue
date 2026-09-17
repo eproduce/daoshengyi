@@ -1,9 +1,36 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useChatStore } from "@/stores/chat";
 import { ChartColumn } from "lucide-vue-next";
+import { getSettings, updateSettings } from "@/api/appSettings";
+import { formatBudget } from "@/utils/budget";
 
 const chat = useChatStore();
+
+// P0-6 预算护栏设置（元；0 = 不限）。存 Rust 设置的 settings 缓存，改完立即生效。
+const budgetSession = ref<number>(getSettings().budgetSession ?? 0);
+const budgetDaily = ref<number>(getSettings().budgetDaily ?? 0);
+const budgetMonthly = ref<number>(getSettings().budgetMonthly ?? 0);
+function saveBudget() {
+  const clean = (v: number) => (Number.isFinite(v) && v > 0 ? v : 0);
+  budgetSession.value = clean(budgetSession.value);
+  budgetDaily.value = clean(budgetDaily.value);
+  budgetMonthly.value = clean(budgetMonthly.value);
+  updateSettings({
+    budgetSession: budgetSession.value,
+    budgetDaily: budgetDaily.value,
+    budgetMonthly: budgetMonthly.value,
+  });
+}
+
+/// 各档进度：比例封顶 100%（超支时数字仍显示真实用量）
+const budgetRows = computed(() =>
+  chat.budgetVerdict.items.map((i) => ({
+    ...i,
+    pct: Math.min(100, Math.round(i.ratio * 100)),
+    over: i.ratio >= 1,
+  })),
+);
 
 interface DayStat {
   date: string;
@@ -130,9 +157,68 @@ function fmtSec(n: number): string {
       Token / 费用为历史累计（含已删除会话，永久保留）；会话数与分布基于现存会话
     </p>
 
+    <!-- P0-6 预算护栏：设上限 → 80% 预警、100% 发送前拦截（未设预算则完全不打扰） -->
+    <div class="usage-block">
+      <div class="usage-block__title">
+        预算护栏 <span class="usage-muted">（元；填 0 = 不限）</span>
+      </div>
+      <div class="budget-inputs">
+        <label
+          >本次会话
+          <input
+            v-model.number="budgetSession"
+            type="number"
+            min="0"
+            step="0.5"
+            placeholder="不限"
+            @change="saveBudget"
+        /></label>
+        <label
+          >今日
+          <input
+            v-model.number="budgetDaily"
+            type="number"
+            min="0"
+            step="0.5"
+            placeholder="不限"
+            @change="saveBudget"
+        /></label>
+        <label
+          >本月
+          <input
+            v-model.number="budgetMonthly"
+            type="number"
+            min="0"
+            step="0.5"
+            placeholder="不限"
+            @change="saveBudget"
+        /></label>
+      </div>
+      <template v-if="budgetRows.length">
+        <div v-for="r in budgetRows" :key="r.scope" class="budget-row">
+          <div class="budget-row__head">
+            <span>{{ r.label }}</span>
+            <span :class="{ 'budget-over': r.over }">
+              {{ formatBudget(r.spent) }} / {{ formatBudget(r.limit) }}（{{
+                Math.round(r.ratio * 100)
+              }}%）
+            </span>
+          </div>
+          <div class="budget-track" :class="{ 'budget-track--over': r.over }">
+            <div class="budget-fill" :style="{ width: r.pct + '%' }"></div>
+          </div>
+        </div>
+        <div v-if="chat.budgetVerdict.notice" class="budget-notice">
+          {{ chat.budgetVerdict.notice }}
+        </div>
+      </template>
+      <div v-else class="usage-muted">
+        未设置预算（不限）。设置后：达到 80% 预警一次，达到 100% 发送前拦下并让你确认。
+      </div>
+    </div>
+
     <!-- 概况卡片 -->
-    <div class="usage-cards">
-      <div class="usage-card">
+    <div class="usage-cards">      <div class="usage-card">
         <div class="usage-card__num">{{ totalStats.conversations }}</div>
         <div class="usage-card__label">会话</div>
       </div>
@@ -288,6 +374,65 @@ function fmtSec(n: number): string {
   margin-top: 6px;
   font-size: 12px;
   color: #aaa;
+}
+
+/* P0-6 预算护栏 */
+.budget-inputs {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #aaa;
+}
+.budget-inputs label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.budget-inputs input {
+  width: 92px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid #33334d;
+  background: #12121e;
+  color: #eee;
+  font-size: 12px;
+}
+.budget-row {
+  margin-top: 8px;
+}
+.budget-row__head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #ccc;
+  margin-bottom: 4px;
+}
+.budget-over {
+  color: #f87171;
+  font-weight: 650;
+}
+.budget-track {
+  height: 8px;
+  background: #22223a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.budget-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #60a5fa, #3b82f6);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.budget-track--over .budget-fill {
+  background: linear-gradient(90deg, #fb7185, #ef4444);
+}
+.budget-notice {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #fbbf24;
+  white-space: pre-wrap;
 }
 
 /* 柱状图 */

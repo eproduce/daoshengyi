@@ -118,6 +118,9 @@ import {
   resetVerificationReceipts,
   evaluateVerificationClaims,
 } from "@/utils/verify-receipts";
+// P0-6 预算护栏：与 utils/goals.ts 的「目标 token 预算」互补——
+// 那个是给模型的收尾提示（token），这个是给用户的花钱护栏（元）。
+import { budgetNoticeKey, buildSpend, evaluateBudget } from "@/utils/budget";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -3901,6 +3904,25 @@ export const useChatStore = defineStore("chat", () => {
     () => usageAgg.value?.total?.total_cost ?? conversationStats.value.cost,
   );
 
+  // P0-6 预算护栏：会话档 = 当前对话累计，日/月档 = 后端按天累计表（跨日/跨月自动重置）
+  // 设计：未设置预算的档位不出现在结果里 → 完全不影响「没有设预算」的用户
+  const budgetVerdict = computed(() => {
+    const s = getSettings();
+    const limits = {
+      session: s.budgetSession ?? 0,
+      daily: s.budgetDaily ?? 0,
+      monthly: s.budgetMonthly ?? 0,
+    };
+    const spend = buildSpend({
+      sessionCost: conversationStats.value.cost,
+      daily: usageAgg.value?.daily ?? null,
+    });
+    return evaluateBudget(spend, limits);
+  });
+
+  // 预警去重：同一档位 + 同一等级 + 同一天只提示一次（否则每轮都弹 = 噪音）
+  const budgetWarned = new Set<string>();
+
   // 对话变更时自动保存 + 标记活跃对话
   watch(conversations, scheduleSave, { deep: true });
   watch(activeConversationId, (id) => {
@@ -4937,11 +4959,35 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
 
+    // P0-6 预算护栏（发送前拦截）：
+    // - 100%：默认**拦下**并让用户确认（可继续，但不支持「默默烧完」）
+    // - 80%：预警一次（同档/同级/同天只提示一次，避免变成噪音）
+    // - 未设预算：verdict.level = "ok" 且 notice 为空 → 完全不打扰
+    {
+      const verdict = budgetVerdict.value;
+      if (verdict.level === "blocked") {
+        await refreshUsageAgg(); // 用最新累计值判定，避免拿旧数据拦人
+        const fresh = budgetVerdict.value;
+        if (fresh.level === "blocked") {
+          dbg(`[budget] 超预算：${fresh.notice.replace(/\n/g, " | ")}`);
+          const ok = await askConfirm(
+            `${fresh.notice}\n\n仍要继续这次对话吗？（建议先调高预算或换更便宜的模型）`,
+          );
+          if (!ok) return;
+        }
+      } else if (verdict.level === "warn") {
+        const key = budgetNoticeKey(verdict);
+        if (key && !budgetWarned.has(key)) {
+          budgetWarned.add(key);
+          void notify(verdict.notice, "warning");
+        }
+      }
+    }
+
     let convId = activeConversationId.value;
     if (!convId) {
       convId = createConversation();
     }
-
     addUserMessage(convId, text, images, attachments);
 
     // 用 reactive 创建，保证 push 后对 tokens/cost 等的赋值能触发响应式更新
@@ -6524,6 +6570,7 @@ export const useChatStore = defineStore("chat", () => {
     usageAgg,
     usageAggTotal,
     usageAggCost,
+    budgetVerdict,
     refreshUsageAgg,
     profiles,
     activeProfileId,

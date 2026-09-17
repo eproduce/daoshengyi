@@ -59,6 +59,10 @@ export interface AppSettingsPayload {
   fileEditConfirm: boolean;
   /// 本地视觉运行时（P0-资源）：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
   localVisionRuntime?: "auto" | "llamacpp" | "ollama";
+  /// P0-6 预算护栏（元；0/缺省 = 不限）：达到 80% 预警、100% 发送前拦截
+  budgetSession?: number;
+  budgetDaily?: number;
+  budgetMonthly?: number;
   /// IM 网关配置（钉钉/飞书/企微）：platform/enabled/白名单/触发前缀/凭据等
   imConfig: Record<string, unknown>;
   /// 全局快捷键：显示/隐藏主窗口（Phase 5，默认 CommandOrControl+Shift+Space）
