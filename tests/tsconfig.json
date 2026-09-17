@@ -1,6 +1,6 @@
 {
-  // 测试文件独立 tsconfig：仅供编辑器提供语言服务（不纳入主 vue-tsc 检查，
-  // 测试由 Vitest/esbuild 转译执行，fixture 多为宽松字面量）
+  // 测试文件独立 tsconfig：仅供编辑器与 `npm run typecheck:tests` 使用
+  // （测试由 Vitest/esbuild 转译执行，不做类型擦除以外的检查）
   "compilerOptions": {
     "target": "ES2021",
     "module": "ESNext",
@@ -9,7 +9,13 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": []
+    "types": [],
+    "strict": true,
+    // 与根 tsconfig 保持一致：测试里也会用到 `@/…` 别名，
+    // 不配这条会让编辑器把 `@/types`、`@/utils/…` 全报成「找不到模块」
+    "paths": {
+      "@/*": ["../src/*"]
+    }
   },
   "include": ["./**/*.ts"]
 }

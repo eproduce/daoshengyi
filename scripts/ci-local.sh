@@ -4,7 +4,7 @@
 # （本地 node_modules 还缺 eslint/prettier 二进制，连跑都跑不起来）。
 #
 # 用法：bash scripts/ci-local.sh        （或 npm run ci:local）
-# 前置：npm ci（保证 eslint/prettier 就位）；Rust 版本由 rust-toolchain.toml 固定
+# 前置：npm ci（保证 eslint/prettier 就位）；Rust/Node 版本由 rust-toolchain.toml 与 .nvmrc 固定
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -22,17 +22,18 @@ step() {
   fi
 }
 
-step "1/7 vitest" npm test
-step "2/7 eslint" npm run lint
-step "3/7 prettier" npm run format:check
-step "4/7 vue-tsc + vite build" npm run build
-step "5/7 rustfmt" bash -c 'cd src-tauri && cargo fmt --check'
-step "6/7 clippy (-D warnings)" bash -c 'cd src-tauri && cargo clippy --all-targets -- -D warnings'
-step "7/7 cargo test" bash -c 'cd src-tauri && cargo test --lib'
+step "1/8 vitest" npm test
+step "2/8 eslint" npm run lint
+step "3/8 prettier" npm run format:check
+step "4/8 vue-tsc + vite build" npm run build
+step "5/8 tsc (tests 目录类型检查)" npm run typecheck:tests
+step "6/8 rustfmt" bash -c 'cd src-tauri && cargo fmt --check'
+step "7/8 clippy (-D warnings)" bash -c 'cd src-tauri && cargo clippy --all-targets -- -D warnings'
+step "8/8 cargo test" bash -c 'cd src-tauri && cargo test --lib'
 
 printf '\n'
 if [ ${#FAILED[@]} -eq 0 ]; then
-  printf '\033[32m全部 7 项门禁通过 ✔\033[0m\n'
+  printf '\033[32m全部 8 项门禁通过 ✔\033[0m\n'
   exit 0
 fi
 printf '\033[31m有 %d 项失败：%s\033[0m\n' "${#FAILED[@]}" "${FAILED[*]}"

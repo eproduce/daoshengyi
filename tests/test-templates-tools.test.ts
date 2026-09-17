@@ -40,6 +40,7 @@ import {
   scoreTaskAgainstWorkflow,
 } from "../src/utils/workflow-engine.ts";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "../src/data/workflow-templates.ts";
+import type { WorkflowGraph } from "../src/utils/workflow-engine.ts";
 import { buildEpisodicPrompt, parseEpisodic } from "../src/utils/memory-episodic.ts";
 import { shouldExtractMessages, extractGateReason } from "../src/utils/memory-extract.ts";
 import { shouldSkipAutoSearch } from "../src/utils/search-gate.ts";
@@ -513,7 +514,7 @@ console.log("\n== 记忆 §3 补全（来源标注 / 注入剪裁 / 遗忘候选
 console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行） ==");
 {
   // 拓扑排序：依赖顺序正确 + 环检测
-  const g1 = {
+  const g1: WorkflowGraph = {
     nodes: [{ id: "a" }, { id: "b" }] as never[],
     edges: [{ id: "e1", source: "a", target: "b" }],
   };
@@ -553,7 +554,7 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   assert(renderTemplateEx("数 {{b}}", { b: 42 }) === "数 42", "renderTemplateEx 数字值");
 
   // 执行链：text→llm→tool→end，注入 mock runtime
-  const g = {
+  const g: WorkflowGraph = {
     nodes: [
       { id: "start", type: "text", label: "开始", config: { text: "今天天气如何" }, x: 0, y: 0 },
       {
@@ -601,7 +602,7 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   );
 
   // 外部输入 {{key}} 注入 + 节点失败不中断
-  const g2 = {
+  const g2: WorkflowGraph = {
     nodes: [{ id: "t", type: "text", label: "T", config: { text: "{{user}}" }, x: 0, y: 0 }],
     edges: [],
   };
@@ -613,7 +614,7 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   assert(r2.outputs[0].value === "外部值", "外部输入占位符替换", r2.outputs[0].value);
 
   // ── 字段级引用（Dify 式 {{id.field}}）：LLM 输出 JSON 对象 → 下游按字段引用 ──
-  const g3 = {
+  const g3: WorkflowGraph = {
     nodes: [
       { id: "j", type: "llm", label: "解析", config: { prompt: "输出 JSON" }, x: 0, y: 0 },
       {
@@ -640,7 +641,7 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
     },
   );
   assert(
-    r3.nodeOutputs.j && typeof r3.nodeOutputs.j === "object",
+    typeof r3.nodeOutputs.j === "object" && r3.nodeOutputs.j !== null,
     "LLM 输出 JSON 解析为结构化对象",
     JSON.stringify(r3.nodeOutputs.j),
   );
@@ -651,7 +652,7 @@ console.log("\n== Phase 3 工作流引擎（拓扑排序 / 占位符 / 执行）
   );
 
   // ── onStep 回调：实时节点状态（running/done/error）──
-  const g4 = {
+  const g4: WorkflowGraph = {
     nodes: [
       { id: "a", type: "text", label: "A", config: { text: "hi" }, x: 0, y: 0 },
       { id: "b", type: "llm", label: "B", config: { prompt: "x" }, x: 0, y: 100 },
@@ -737,7 +738,7 @@ console.log("\n== Phase 3 工作流：代码节点 ==");
 console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过 ==");
 {
   // text → condition（true）→ code A；condition（false）→ code B
-  const g = {
+  const g: WorkflowGraph = {
     nodes: [
       { id: "src", type: "text", label: "源", config: { text: "任务执行成功" }, x: 0, y: 0 },
       {
@@ -793,7 +794,7 @@ console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过
   assert(!res.outputs[0].value.includes("NO:"), "未激活分支结果未流入 end");
 
   // 无 label 边始终激活（向后兼容）
-  const g3 = {
+  const g3: WorkflowGraph = {
     nodes: [
       { id: "a", type: "text", label: "A", config: { text: "x" }, x: 0, y: 0 },
       { id: "c", type: "condition", label: "C", config: { expression: "false" }, x: 0, y: 100 },
@@ -812,7 +813,7 @@ console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过
   );
 
   // 分支合流：true/false 两条边都连到 end → end 仍执行且只拿激活分支
-  const g4 = {
+  const g4: WorkflowGraph = {
     nodes: [
       { id: "a", type: "text", label: "A", config: { text: "1" }, x: 0, y: 0 },
       { id: "c", type: "condition", label: "C", config: { expression: 'a == "1"' }, x: 0, y: 100 },
@@ -838,7 +839,7 @@ console.log("\n== Phase 3 工作流：条件分支路由 + 未激活分支跳过
 
 console.log("\n== Phase 3 工作流：validateWorkflowGraph（workflow_create 前置校验） ==");
 {
-  const g = {
+  const g: WorkflowGraph = {
     nodes: [{ id: "t", type: "text", label: "T", config: { text: "hi" }, x: 0, y: 0 }],
     edges: [],
   };
@@ -915,7 +916,7 @@ console.log("\n== Phase 3 工作流：validateWorkflowGraph（workflow_create �
 console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improve 复盘） ==");
 {
   // 正常执行：所有节点进 trace，标记 done + 耗时 + 输出
-  const gOk = {
+  const gOk: WorkflowGraph = {
     nodes: [
       { id: "t", type: "text", label: "T", config: { text: "hi" }, x: 0, y: 0 },
       { id: "e", type: "end", label: "E", config: {}, x: 0, y: 100 },
@@ -930,7 +931,7 @@ console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improv
   );
   assert(rOk.trace.find((x) => x.nodeId === "t")?.output === "hi", "text 节点轨迹带输出");
   // 失败节点标记 error 并带错误说明
-  const gErr = {
+  const gErr: WorkflowGraph = {
     nodes: [{ id: "llm", type: "llm", label: "L", config: { prompt: "boom" }, x: 0, y: 0 }],
     edges: [],
   };
@@ -951,7 +952,7 @@ console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improv
   );
   assert((rErr.trace[0].output || "").includes("执行失败"), "失败节点轨迹带错误说明");
   // 未激活分支 → skipped
-  const gSkip = {
+  const gSkip: WorkflowGraph = {
     nodes: [
       { id: "c", type: "condition", label: "C", config: { expression: "true" }, x: 0, y: 0 },
       { id: "only", type: "text", label: "Only", config: { text: "x" }, x: 0, y: 100 },
@@ -972,7 +973,7 @@ console.log("\n== Phase 3 工作流：运行轨迹（trace，供 workflow_improv
 
 console.log("\n== Phase 3 工作流：任务匹配建议（workflow_suggest 纯函数） ==");
 {
-  const g = {
+  const g: WorkflowGraph = {
     nodes: [
       { id: "t", type: "text", label: "研究课题", config: { text: "研究课题" }, x: 0, y: 0 },
       {

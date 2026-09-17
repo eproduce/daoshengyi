@@ -607,7 +607,12 @@ export async function executeWorkflow(
 
 /** 校验工作流图是否合法（供 workflow_create 对 LLM 生成的图做前置校验）。
  *  返回错误文案；合法返回 null。检查：节点数 / 类型 / label / 缺配置 / 重复或悬空引用 / 边自环 / 环（拓扑）。 */
-export function validateWorkflowGraph(graph: WorkflowGraph): string | null {
+export function validateWorkflowGraph(input: unknown): string | null {
+  // 形参故意用 unknown：**校验入口面对的本来就是不可信输入**（从文件/模板/模型产出读回的对象，
+  // 可能缺字段、类型不对）。写成 WorkflowGraph 会让「残缺图」根本传不进来 ——
+  // 而测试要喂的恰恰是残缺图，此前只能靠类型逃逸绕开，也就等于放弃了这条校验的类型价值。
+  // 下面仍按原逻辑逐项做运行时检查。
+  const graph = input as Partial<WorkflowGraph> | null | undefined;
   if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return "至少需要 1 个节点";
   if (!Array.isArray(graph.edges)) return "edges 必须是数组";
   const ids = new Set<string>();
@@ -633,7 +638,7 @@ export function validateWorkflowGraph(graph: WorkflowGraph): string | null {
     if (!ids.has(e.target)) return `连线 ${e.id} 目标节点 ${e.target} 不存在`;
     if (e.source === e.target) return `连线 ${e.id} 不能自环`;
   }
-  const sorted = topoSort(graph);
+  const sorted = topoSort(graph as WorkflowGraph);
   if ("error" in sorted) return sorted.error;
   return null;
 }

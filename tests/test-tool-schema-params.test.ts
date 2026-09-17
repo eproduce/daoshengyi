@@ -38,7 +38,9 @@ it("MCP 工具描述带上参数名；内置工具保持原描述（不追加）
     mcp: [
       {
         name: "puppeteer_evaluate",
-        desc: "执行页面脚本",
+        // 字段名必须是 description：mcp_connect 返回的就是这个（内置工具才用 desc）——
+        // 写错过一次，导致这条断言变成空转（描述里根本没出现服务端文案）
+        description: "执行页面脚本",
         server: "浏览器自动化",
         kind: "mcp",
         inputSchema: {
@@ -50,7 +52,14 @@ it("MCP 工具描述带上参数名；内置工具保持原描述（不追加）
     ],
   });
   const mcpTool = reg.tools.find((t) => t.function.name === "puppeteer_evaluate")!;
-  expect(mcpTool.function.description).toContain("script(必填)");
+  // 三件事都要成立：原描述在、服务名在、参数名在；并显式盯住 undefined——
+  // 字段名对不上时描述会变成 “undefined（服务名）…”，光看“含参数名”是发现不了的
+  const desc = mcpTool.function.description;
+  expect(desc).toContain("执行页面脚本");
+  expect(desc).toContain("浏览器自动化");
+  expect(desc).toContain("script(必填)");
+  expect(desc).not.toContain("undefined");
   const builtinTool = reg.tools.find((t) => t.function.name === "write_file")!;
+  expect(builtinTool.function.description).toContain("写文件");
   expect(builtinTool.function.description).not.toContain("严格使用这些名字");
 });

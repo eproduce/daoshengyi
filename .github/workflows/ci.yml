@@ -39,6 +39,11 @@ jobs:
       - name: Type check + Build (vue-tsc + vite)
         run: npm run build
 
+      # tests/ 不在根 tsconfig 的 include 里，需单独检查 ——
+      # 否则测试文件里的类型错误（如访问联合类型上不存在的属性）只有编辑器看得见
+      - name: Type check (tests)
+        run: npm run typecheck:tests
+
   rust:
     name: Rust (fmt + clippy + test)
     # Tauri 依赖系统 GUI 库，macOS runner 与本地开发环境一致、无额外系统依赖
