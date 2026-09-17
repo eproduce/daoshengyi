@@ -84,11 +84,11 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "replace_string",
-    desc: '**精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {"path": "文件绝对路径", "old_text": "要替换的原文（须与文件内容完全一致）", "new_text": "新文本（可为空=删除该段）", "occurrence": 可选，第几次出现（默认 1）}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。',
+    desc: '**精确替换文件中一段文本（返回 unified diff 供你确认改动）**。参数 {"path": "文件绝对路径", "old_text": "要替换的原文（须与文件内容完全一致）", "new_text": "新文本（可为空=删除该段）", "occurrence": 可选，第几次出现（默认 1）, "line_anchor": 可选，"42#a7f"}。**修改已有文件的推荐方式**：只替换需要改动的片段，不改动部分保持原样（比整体重写更精确、diff 更小、不易破坏文件）。文件里可能有多处相同文本时用 occurrence 指定第几次出现。**更稳的做法**：先用 read_file 的 `with_anchors` 拿到 `行号#哈希`，改时带上 `"anchor_line": 行号, "anchor_hash": "哈希"`（或简写 `"line_anchor": "行号#哈希"`）——这样能（a）自动算出 old_text 是第几次出现，避免改错同名段落；（b）文件被改动过时**直接拒绝执行**并告知新行号，而不是默默改错位置。注意：old_text 里**不要**拄入锚点前缀。',
   },
   {
     name: "insert_string",
-    desc: '**在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {"path": "文件绝对路径", "anchor": "锚点文本（须唯一且与文件内容完全一致）", "position": "before 之前 | after 之后（默认 before）", "new_text": "要插入的内容"}。适合在函数/代码块末尾、配置项列表中添加新条目。',
+    desc: '**在文件指定锚点文本前/后插入内容（返回 unified diff）**。参数 {"path": "文件绝对路径", "anchor": "锚点文本（须唯一且与文件内容完全一致）", "position": "before 之前 | after 之后（默认 before）", "new_text": "要插入的内容", "line_anchor": 可选 "42#a7f"}。适合在函数/代码块末尾、配置项列表中添加新条目。带 line_anchor 时会先校验文件未被改动，锚点已过期则拒绝执行。',
   },
   {
     name: "create_file",
@@ -104,7 +104,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "read_file",
-    desc: '读取本地文本文件内容。参数 {"path": "文件绝对路径"}。用于精读文件、查看代码/配置/文档的具体内容。（兼容名：read_file 也接受 read_multiple_files 批量读多个）',
+    desc: '读取本地文本文件内容。参数 {"path": "文件绝对路径", "with_anchors": 可选 true}。用于精读文件、查看代码/配置/文档的具体内容。`with_anchors: true` 时每行会带 `行号#哈希| 内容` 锚点（共占约 7 字符/行）——**即将做多处/多处同名的精确编辑时用它拿锚点**，日常阅读不用开（省 token）。',
   },
   {
     name: "git",

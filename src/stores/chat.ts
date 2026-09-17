@@ -121,6 +121,17 @@ import {
 // P0-6 预算护栏：与 utils/goals.ts 的「目标 token 预算」互补——
 // 那个是给模型的收尾提示（token），这个是给用户的花钱护栏（元）。
 import { budgetNoticeKey, buildSpend, evaluateBudget } from "@/utils/budget";
+// P1-2 行锚点（哈希锚定编辑）：拒绝过期锚点 + 用锚点给 old_text 消歧
+import {
+  annotateLines,
+  hasAnchorPrefix,
+  hashLine,
+  occurrenceForAnchor,
+  parseAnchor,
+  stripAnchorPrefix,
+  toLines,
+  verifyAnchor,
+} from "@/utils/line-anchor";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -661,6 +672,7 @@ function getMcpToolsPrompt(): string {
     "\n\n## 文件编辑规范（编程/改文件时）\n" +
     "- **修改已有文件优先用精确编辑**：小改动用 replace_string / insert_string（只改目标片段、返回 unified diff 显示改动）；只有新建文件或整体重写才用 write_file / create_file。\n" +
     "- 编辑前若不确定文件内容，先用 list_dir 确认路径、read_file 读取相关片段，再精确编辑（old_text/anchor 必须与文件内容**逐字一致**，含缩进/标点）。\n" +
+    "- **同一段文本可能出现多次 / 要连改多处 / 文件本轮已被改过时**：先用 `read_file` 带 `with_anchors: true` 拿行锚点，编辑时带 `\"anchor_line\": 行号, \"anchor_hash\": \"哈希\"`——锚点会自动消歧「改第几处」，且**文件已变动时直接拒绝执行**并告知新行号（比默默改错位置安全）。锚点前缀不要抄进 old_text。\n" +
     "- 每次编辑会返回 **unified diff**（@@ 头 + 改动行）：编辑后**必须在最终回复中说明改了什么**（列出新增/修改/删除的关键行），让用户看到确切改动；不要只说『已修改』。\n" +
     "- 修改代码后**必须用 run_tests 验证**（验证循环门禁），不能假设改对了。\n" +
     "- 编辑失败（未找到文本）时，用 read_file 读取实际内容核对后重试，不要盲目重复相同编辑。";
@@ -2785,16 +2797,45 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "replace_string": {
       // 精确编辑：替换文件中一段文本（occurrence 指定第几次出现，默认第 1 次），返回 unified diff
       const path = String(args.path || "");
-      const oldText = String(args.old_text ?? args.old ?? "");
+      // P1-2：模型常把锚点前缀一起抄进 old_text → 先剔除（否则永远匹配不上）
+      const rawOld = String(args.old_text ?? args.old ?? "");
+      const oldText = hasAnchorPrefix(rawOld) ? stripAnchorPrefix(rawOld) : rawOld;
       const newText = String(args.new_text ?? args.new ?? "");
       if (!path) throw new Error("replace_string 需要 path 参数");
       if (!oldText) throw new Error("replace_string 需要 old_text 参数（要替换的原文）");
+      // P1-2 哈希锚定：带锚点时先校验「文件没被改过」，并用锚点给 old_text 消歧
+      let occurrence = args.occurrence ? Number(args.occurrence) : undefined;
+      const anchorStr = args.line_anchor ?? args.anchor_line_only ?? "";
+      const anchor =
+        parseAnchor(anchorStr) ??
+        (Number(args.anchor_line) > 0 && args.anchor_hash
+          ? { line: Number(args.anchor_line), hash: String(args.anchor_hash).toLowerCase() }
+          : null);
+      if (anchor) {
+        const fileText = await invoke<string>("read_file", { path });
+        const lines = toLines(fileText);
+        const verdict = verifyAnchor(lines, anchor);
+        if (!verdict.ok) {
+          // 拒绝执行（不猜、不自动改位置）：把精确原因交回模型重试
+          return `⛔ ${verdict.message}`;
+        }
+        const idx = occurrenceForAnchor(lines, verdict.line - 1, oldText);
+        if (idx && idx !== occurrence) {
+          dbg(`[anchor] 锚点第 ${verdict.line} 行 → old_text 第 ${idx} 次出现（原 occurrence=${occurrence ?? 1}）`);
+          occurrence = idx;
+        } else if (!idx && !occurrence) {
+          return (
+            `⛔ 锚点有效（第 ${verdict.line} 行 #${hashLine(lines[verdict.line - 1])}），但 old_text 在当前文件中不存在——` +
+            "请核对 old_text 是否与文件内容完全一致（含缩进），或用 with_anchors 重新读取后再改。"
+          );
+        }
+      }
       const edits: Record<string, unknown>[] = [
         {
           op: "replace",
           old: oldText,
           new: newText,
-          ...(args.occurrence ? { occurrence: Number(args.occurrence) } : {}),
+          ...(occurrence ? { occurrence } : {}),
         },
       ];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
@@ -2833,6 +2874,14 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("insert_string 需要 path 参数");
       if (!anchor) throw new Error("insert_string 需要 anchor 参数（插入位置的锚点文本）");
       if (!text) throw new Error("insert_string 需要 new_text 参数（要插入的内容）");
+      // P1-2：给文本锚点加一道「行锚点」校验——锚点出现在多处/内容已变时先拦下
+      const lineAnchor = parseAnchor(args.line_anchor ?? "");
+      if (lineAnchor) {
+        const fileText = await invoke<string>("read_file", { path });
+        const lines = toLines(fileText);
+        const verdict = verifyAnchor(lines, lineAnchor);
+        if (!verdict.ok) return `⛔ ${verdict.message}`;
+      }
       const position = String(args.position || "before");
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
@@ -3075,6 +3124,18 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const res = await invoke<string>("read_file", { path });
       if (typeof res !== "string" || res.startsWith("【目录】") || res === "（空目录）") {
         return `（${path} 是目录，请用 list_dir/list_directory 查看目录内容）`;
+      }
+      // P1-2：可选行锚点输出（`行号#哈希| 内容`）——需要精确/多处编辑时先取锚点，
+      // 之后 replace_string 带 anchor_line/anchor_hash 即可拒绝「拿旧内容改新文件」
+      const wantAnchors = args.with_anchors === true || args.anchors === true;
+      if (wantAnchors) {
+        const clipped = res.slice(0, 12000);
+        const lineCount = clipped.split("\n").length;
+        return (
+          `📄 ${path}（带行锚点，共 ${lineCount} 行）\n\n\`\`\`\n${annotateLines(clipped)}\n\`\`\`\n\n` +
+          `锚点格式：\`行号#哈希| 内容\`。改文件时把要改的那一行写成 \`"anchor_line": 行号, "anchor_hash": "哈希"\`（内容不要抄源锚点前缀）——` +
+          `若文件已被改动，replace_string 会**拒绝执行**并告知新行号（比默默改错位置安全）。`
+        );
       }
       return `📄 ${path}\n\n\`\`\`\n${res.slice(0, 12000)}\n\`\`\``;
     }

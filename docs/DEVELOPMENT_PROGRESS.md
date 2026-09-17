@@ -8,12 +8,13 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `4f94713`，工作区干净）
+### 当前状态（origin/main = `1ef45fb`，工作区干净）
 - **内置工具 80 个**（含 DSH 吸收新增的 10 个确定性工具 + 3 个回收站工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `20 files / 203 passed`；cargo `157 passed / 8 ignored`
+- **测试**：vitest `21 files / 222 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
-- **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退（详见下方 2026-09-17 段落）
+- **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
 - **删除可恢复**：`delete_file` 移入回收站（保留 30 天），新增 `trash_list` / `trash_restore` / `trash_empty`
+- **编辑可锚定**：`read_file` 可带 `with_anchors`，`replace_string`/`insert_string` 可带行锚点（过期直接拒绝）
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -36,6 +37,33 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-2 哈希锚定编辑）
+
+### ✅ 改错位置 / 拿旧内容改新文件，都不再靠运气（吸收自 `Rianico/dsh-better-edit`）
+- **问题**：文件编辑最隐蔽的失败不是「找不到」，而是
+  ① `old_text` 在文件里出现多次 → 默认替换第一次，**静默改在错误的同名段落**；
+  ② 模型按「我读到第 42 行是 XXX」去改，但文件本轮已被别的工具改过 → **位置漂移**，
+  万一还能匹配上相似文本，就会产出「语法正确但语义错」的结果。
+- 新增 `src/utils/line-anchor.ts`（纯函数、零依赖）：
+  - `hashLine()`：行内容（trim 后）的 **3 字符哈希**（FNV-1a → 36 进制，46656 种）
+    —— **只看正文**：仅缩进/尾空白变化不让锚点失效，真正的语义改动一定会失效
+  - `annotateLines()` / `formatAnchoredLine()`：`42#a7f| 原行内容`；`parseAnchor()` 同时
+    接受 `42#a7f` 与完整锚点行；`stripAnchorPrefix()` / `hasAnchorPrefix()` 自动剔除
+    「模型把锚点前缀抄进 old_text」这个必踩坑
+  - `verifyAnchor()` 三态：**ok**（行未变）/ **stale**（哈希在附近找到 → 告知新行号，
+    **不自动改**）/ **gone**（整文件找不到 → 要求重读）/ **out_of_range**（文件被截短）
+  - `occurrenceForAnchor()`：用锚点位置推算 `old_text` 是**第几次出现**，专治同名段落错改
+- 接线：
+  - `read_file` 新增可选 `with_anchors: true` → 输出带锚点并说明用法（默认关闭，不白花 token）
+  - `replace_string` / `insert_string` 接受 `anchor_line`+`anchor_hash`（或简写 `line_anchor`）：
+    写盘前先读文件校验，**过期直接拒绝执行并回传精确原因**（哪一行变成了什么、哈希现在在第几行）
+  - 文件编辑规范提示词补一条：多处同名/连改多处/文件本轮被改过时，先取锚点再改
+- 验证：`tests/test-line-anchor.test.ts` **19 项**（哈希只看正文 / 锚点往返解析 / 三态判定 /
+  近远搜索与容差 / 越界 / 多处消歧含多行 old_text / 前缀剔除）
+- 门禁：cargo 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 21 files / 222 passed
 
 ---
 
