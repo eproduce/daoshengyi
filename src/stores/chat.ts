@@ -156,6 +156,11 @@ import {
   type PreparedDigest,
   type StageId,
 } from "@/utils/compaction-ladder";
+// P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
+import {
+  planAutoContinue,
+  type TurnSignals,
+} from "@/utils/auto-continue";
 import {
   addGoalUsage,
   budgetExceeded,
@@ -618,6 +623,9 @@ async function callToolStoppable(
       waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
     ]);
   } catch (e) {
+    // P1-6：本轮工具成败计数（供收尾规则表判断「是不是全军覆没」）
+    turnToolFail++;
+    turnFailedTools.push(tool);
     // P1-3：tool_after 钩子（失败分支）
     void fireHooks({
       ...hookCtx,
@@ -629,6 +637,13 @@ async function callToolStoppable(
   }
   if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
   const data = raced.data ?? "";
+  // P1-6：工具以字符串形式报错（内置工具普遍返回 ⛔/❌ 开头）也要计入失败
+  if (/^(?:\s*)(?:⛔|❌)/.test(data)) {
+    turnToolFail++;
+    turnFailedTools.push(tool);
+  } else {
+    turnToolOk++;
+  }
   // P1-3：tool_after 钩子（成功）——这是 agent 四条工具路径的共同出口
   void fireHooks({ ...hookCtx, event: "tool_after", status: "success", result: data });
   return data;
@@ -638,6 +653,16 @@ class AgentStoppedError extends Error {
     super("任务已由用户停止");
     this.name = "AgentStoppedError";
   }
+}
+
+// --- P1-6 自动续跑：本轮工具成败统计（每轮开始时重置） ---
+let turnToolOk = 0;
+let turnToolFail = 0;
+let turnFailedTools: string[] = [];
+function resetTurnToolStats(): void {
+  turnToolOk = 0;
+  turnToolFail = 0;
+  turnFailedTools = [];
 }
 
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
@@ -6196,7 +6221,10 @@ export const useChatStore = defineStore("chat", () => {
       let round = 0;
       let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
       let didRealWork = false; // 本轮是否真正执行过“实际工作”类工具（非 plan_*）
-      let verifyNudged = false; // P0-5：验证凭据纠偏是否已提示（至多一次）
+      // P1-6 自动续跑规则表状态：各规则本轮已纠偏次数 + 本轮总续跑次数
+      const continueAttempts: Record<string, number> = {};
+      let autoContinues = 0;
+      resetTurnToolStats();
       resetVerificationReceipts(); // P0-5：回合开始清空验证凭据与文件改动计数
       let fakeCompletionWarned = false; // 是否已就“假完成”给出纠正（至多一次）
       let roundResult: {
@@ -6369,19 +6397,41 @@ export const useChatStore = defineStore("chat", () => {
             });
             continue;
           }
-          // P0-5 验证凭据（吸收自 DSH 生态 stalegreen / dsh-verification）：
-          // 正文若声称「测试 / 类型检查 / Lint / 构建 通过」，必须有本回合的**新鲜**凭据
-          // （真实执行过且成功、且在最后一次文件改动之后）；否则纠偏一轮，
-          // 要求真跑一次或删掉该断言。这是「反复提醒模型别忘」换不来的代码门禁。
-          if (!verifyNudged && round + 1 < MAX_TOOL_ROUNDS) {
-            const issue = evaluateVerificationClaims(roundResult.content);
-            if (issue) {
-              verifyNudged = true;
+          // P0-5 验证凭据 + P1-6 自动续跑规则表：
+          // 收尾时按问题类型（工具全失败 / 验证凭据缺失 / 计划未完 / 目标未达成 / 正文为空）
+          // 决定是否再给一轮，并注入针对性的纠偏文本。
+          // 护栏（用户停止 / 预算阻断 / 轮数不足 / 本轮总次数 / 单规则次数）全部在纯函数里判定。
+          if (round + 1 < MAX_TOOL_ROUNDS) {
+            const planNow = useChatStore().taskPlan;
+            const signals: TurnSignals = {
+              content: roundResult.content ?? "",
+              verificationIssue: evaluateVerificationClaims(roundResult.content),
+              plan: planNow ? { steps: planNow.steps.map((s) => ({ status: s.status })) } : null,
+              goal: getGoal(activeConversationId.value || ""),
+              toolSuccesses: turnToolOk,
+              toolFailures: turnToolFail,
+            };
+            const verdict = planAutoContinue(signals, {
+              attempts: continueAttempts,
+              totalContinues: autoContinues,
+              stopped: stopRequested,
+              budgetBlocked: budgetVerdict.value.level === "blocked",
+              remainingRounds: MAX_TOOL_ROUNDS - round - 1,
+              failedTools: turnFailedTools,
+            });
+            if (verdict.action === "continue") {
+              continueAttempts[verdict.reason] = verdict.attempt;
+              autoContinues++;
               round++;
-              await dbg(`[verify] 第 ${round} 轮注入验证凭据纠偏（${issue.kind}/${issue.status}）`);
+              await dbg(
+                `[continue] 第 ${round} 轮注入纠偏（${verdict.ruleId} 第 ${verdict.attempt} 次；命中 ${verdict.reasons.join("+")}）`,
+              );
               rustMsgs.push({ role: "assistant", content: roundResult.content });
-              rustMsgs.push({ role: "user", content: issue.notice });
+              rustMsgs.push({ role: "user", content: verdict.nudge });
               continue;
+            }
+            if (verdict.reasons.length) {
+              await dbg(`[continue] 不再续跑：${verdict.why}`);
             }
           }
           break; // 无工具调用 → 最终答案，退出循环

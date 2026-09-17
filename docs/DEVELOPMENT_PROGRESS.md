@@ -8,13 +8,13 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `55042a3`，工作区干净）
+### 当前状态（origin/main = `d52753a`，工作区干净）
 - **内置工具 80 个**；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `24 files / 277 passed`；cargo `157 passed / 8 ignored`
+- **测试**：vitest `25 files / 301 passed`；cargo `157 passed / 8 ignored`
 - **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
 - **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
-- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则（allow/deny/ask + dry-run）· 生命周期钩子（事件→动作）· 压缩阶梯（30/50/70/82）
-- **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
+- **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表
+- **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（macOS 通知需在打包版实测）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
 
@@ -36,6 +36,32 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（P1-6 自动续跑规则表）
+
+### ✅ 收尾纠偏从「一种」扩到「五种」且有全套护栏（吸收自 DSH 生态的按失败类型路由）
+- **问题**：模型「不该收尾却收尾」的原因有好几种，而之前只有针对「验证凭据」的一次性纠偏，
+  其余情形要么硬编码一句、要么完全不管；反过来「无脑续跑」又会变成绕圈烧钱。
+- 新增 `src/utils/auto-continue.ts`（纯函数）+ `tests/test-auto-continue.test.ts` **24 项**：
+  - **检测**（`detectStopReasons`，按优先级）：`all-tools-failed`（本轮工具零成功）→
+    `verify-gap`（P0-5 验证凭据）→ `plan-incomplete`（计划有 pending/doing）→
+    `goal-unfinished`（目标仍 active/blocked）→ `empty-answer`（正文空白）
+  - **规则表**（`CONTINUE_RULES`）：每种问题 → 处置 + **本轮最多纠偏次数**（默认 1）+ 针对性注入文本
+  - **护栏**（顺序即优先级，逐条有单测）：
+    ① 用户已请求停止 → **永不自动续跑**（否则「停止」按钮形同虚设）
+    ② 预算已阻断（P0-6）→ 不续（不替用户烧钱）
+    ③ 剩余轮数不足 → 不续
+    ④ 本轮总续跑次数达上限（3 次）→ 停
+    ⑤ 单规则次数用尽 → 换下一条规则；都没了 → 停并列出被跳过的规则
+  - 设计原则：**宁可放过，不可死循环**——所有上限都是「同一轮内」的，下一轮重新计数
+- 接线：`chat.ts` 工具循环收尾处由「仅验证凭据一次」改为规则表驱动；
+  新增本轮工具成败统计（`callToolStoppable` 共同出口计数，**字符串形式的 `⛔/❌` 报错也算失败**）；
+  旧变量 `verifyNudged` 退役，`verify-gap` 成为规则之一（行为不变：仍只纠偏一次）。
+- 验证：`tests/test-auto-continue.test.ts` 含「模拟连续收尾」用例——
+  三条规则各触发一次后自动停下（证明不会无限循环）。
+- 门禁：cargo 157 passed · clippy 干净 · vue-tsc 干净 · `vite build` 成功 · vitest 25 files / 301 passed
 
 ---
 
