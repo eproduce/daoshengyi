@@ -2,19 +2,26 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-17**
+> **最后更新：2026-09-18**
 
 ---
 
-## 2026-09-17（进度快照）
+## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `0bf61d1`，工作区干净）
+### 当前状态（origin/main = `23c063e`，工作区干净）
 - **内置工具 82 个**（本轮新增 `log_decision`、`image_inspect`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `31 files / 411 passed`；cargo `190 passed / 9 ignored`（含 1 项真机图像 e2e）
-- **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
-- **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退
+- **测试**：vitest `31 files / 411 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
+- **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
+  `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
+- **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
+- **流水线**：`ci.yml` ✅（首次转绿 09-18）· `build-macos.yml` ✅（universal dmg 实测通过）· 发布走 `v*` 标签
+- **本地运行时**：llama.cpp（识别图 18080 / 嵌入 18081，按需启停 + 空闲 0 常驻），Ollama 作回退；
+  **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入 · 失败台账 · 确定性图像核验
-- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（**2026-09-18 00:03 重建**，含本批三项）+ `dmg/道生一_1.0.0-alpha.1_x64.dmg`；**已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-2359` 可回滚）。**macOS 系统通知只能在打包版里生效**。
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 00:03 重建）；
+  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-2359` 可回滚）。
+  **macOS 系统通知只能在打包版里生效**。
+- **待做**：code-mode（`run_code` 工具桥）· P2 各项 · 云端视觉档（需用户配 Key）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
 
@@ -38,6 +45,51 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-18（嵌入迁到 llama.cpp + Node 24 + 门禁扩到 8 项）
+
+### ① 把「一直关着」的语义检索真正打开（`23c063e`）
+- **先说发现**：查「embedding 迁 llama.cpp」时发现本机**根本没装任何嵌入模型**（只有 `llava-phi3`），
+  所以记忆向量检索 / 知识库分块向量**一直按设计降级到 FTS5 关键词**（代码里本来就写了「未装则明确报错、
+  调用方静默回退」，不是 bug，但等于能力一直没开）。已 `ollama pull nomic-embed-text`（274MB）
+  并**硬链接**进应用模型目录（links=2 → 零额外磁盘）
+- **先实测再动手**：`llama-server -m <ollama blob> --embedding --pooling mean -c 512`
+  → `/health` ok、`/v1/embeddings` 返回 **768 维已归一化**向量（范数 1.0），与 Ollama 侧同模型同维度
+  ⇒ 换运行时**不需要重建任何已存向量**
+- **实现**（`local_runtime.rs`）：`EMBED_PORT(18081)`/`EMBED_CTX(512)`/`EMBED_MAX_BATCH(16)`、
+  `looks_like_embed`、`pick_embed_model`（**只认名字像嵌入模型的，一个都不像就返回 None，不猜**）、
+  `embed_server_args`（`-b/-ub` 与上下文一致，避免服务端 `n_batch > n_ubatch` 告警并自动降级）、
+  `parse_embed_response`（**按 `index` 排序 + 校验维度一致**：顺序错了会张冠李戴，维度混用会让余弦
+  相似度整片算错）、**独立的进程槽与空闲看门狗**（嵌入服务挂了不影响聊天服务）、`embed_texts`（分批 POST）
+- 命令 `local_embed`；`local_runtime_stop` 一并停嵌入；运行时状态新增 `embed` 字段
+- 导入逻辑扩展：多模态 + 嵌入**一次尽量都拿上**，只有一类也能导入（原先缺多模态直接报错）
+- **顺手修一个脆弱点**：`pick_model_pair` 原本是「取最大的非投影器文件」，而嵌入模型与聊天模型
+  **共用一个目录** —— 哪天嵌入模型更大就会被当聊天模型加载并输出垃圾。现已显式排除嵌入模型，
+  并补回归测试（含「只有嵌入模型时返回 None，不许拿它聊天」）
+- 前端：`generateEmbedding` **优先 llama.cpp、失败回退 Ollama**，两条都不行才返回 null
+  （静默降级为关键词检索，**绝不返回假向量**）；设置页运行时卡片新增「语义检索（嵌入）」状态行
+
+### ② Node 升级到 24（`.nvmrc` 作唯一来源）
+- 本机早就是 Node 24（本地所有门禁都在 24 下通过），落后的是 CI 里写死的 `node-version: 20`
+- 新增 `.nvmrc`（24）；`ci.yml` / `build-macos.yml` 改用 `node-version-file: .nvmrc`（升级只改一处）；
+  `package.json` 加 `engines: { node: ">=24" }`
+- 验证：Node 24 下 `npm ci` 无 EBADENGINE（233 包）· 8 项门禁全绿 · sharp 原生模块正常
+
+### ③ tests 目录类型报错（用户反馈「tests 脚本里有报错」）
+- 查清是 **35 个真实类型错误**，从来没人发现：`tests/` 不在根 tsconfig 的 `include` 里，
+  `vue-tsc` 不检查它，vitest 走 esbuild 只转译不做类型检查
+- 修：`tests/tsconfig.json` 补 `paths: { "@/*": ["../src/*"] }`（少了这条，`@/types` 等全报「找不到模块」，
+  并连带让 `AnchorVerdict` 退化成 any，**掩盖了 8 个真实错误**）；`validateWorkflowGraph` 形参由
+  `WorkflowGraph` 改为 **`unknown`**（校验入口面对的本就是不可信输入）；14 处测试夹具补 `WorkflowGraph` 标注
+- **还揪出一条空转的断言**：`test-tool-schema-params` 的 MCP 工具夹具把 `description` 写成了 `desc`，
+  于是描述里其实是 `undefined（服务名）…`，而断言只查「是否含参数名」照样通过 → 改用正确字段 +
+  加「不含 undefined」断言
+- **门禁从 7 项扩到 8 项**：新增 `npm run typecheck:tests`，同步进 `ci.yml` 与 `scripts/ci-local.sh`
+
+### 门禁
+`npm run ci:local` —— 8 项全绿。
 
 ---
 
