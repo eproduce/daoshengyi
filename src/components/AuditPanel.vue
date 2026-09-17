@@ -10,6 +10,14 @@ import { useSkillStore } from "@/stores/skill";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
 import { auditContext, auditToMarkdown, type ContextAudit } from "@/utils/context-audit";
+// P1-9b 失败台账：把「工具老是错」聚合为相似错误分组 + 处置建议（复用同一张 tool_audit 表）
+import {
+  summarizeFailures,
+  failureLedgerToMarkdown,
+  failureLedgerRows,
+  resetFailureLedger,
+  type ToolFailureSummary,
+} from "@/utils/failure-ledger";
 
 interface AuditRow {
   id: number;
@@ -33,6 +41,7 @@ async function refresh() {
   } catch {
     /* 后端暂不可用 */
   }
+  sessionFailures.value = failureLedgerRows();
 }
 async function clearAll() {
   try {
@@ -41,6 +50,9 @@ async function clearAll() {
   } catch {
     /* ignore */
   }
+  // 历史清空时一并清掉本会话的内存台账，避免「面板已清空但还在提醒」的错乱
+  resetFailureLedger();
+  sessionFailures.value = [];
 }
 function toggle(id: number) {
   expandedId.value = expandedId.value === id ? null : id;
@@ -109,6 +121,18 @@ const toolCounts = computed(() => {
   return [...m.entries()].sort((a, b) => b[1] - a[1]);
 });
 const okCount = computed(() => rows.value.filter((r) => !r.is_error).length);
+
+// --- P1-9b 失败台账 ---
+/** 历史台账（按工具聚合，只看有失败的工具） */
+const ledger = computed<ToolFailureSummary[]>(() => summarizeFailures(rows.value));
+/** 本会话内存台账（工具在跑时实时记账，随「刷新」同步过来） */
+const sessionFailures = ref<{ tool: string; signature: string; sample: string; count: number }[]>([]);
+function exportFailureLedger() {
+  download("failure-ledger.md", failureLedgerToMarkdown(ledger.value, rows.value.length), "text/markdown");
+}
+function lastFailTime(ts: number | null): string {
+  return ts ? fmtTime(ts) : "—";
+}
 
 // --- P0-3 上下文成本审计 ---
 const ctxAudit = ref<ContextAudit | null>(null);
@@ -211,6 +235,35 @@ onMounted(() => {
       <span v-for="[t, c] in toolCounts.slice(0, 8)" :key="t" class="ap-stat" @click="filter = t"
         >{{ t }} ×{{ c }}</span
       >
+    </div>
+
+    <!-- P1-9b 失败台账：相似错误先归组，再给处置建议；冲突/失败不再靠记忆积累 -->
+    <div v-if="ledger.length || sessionFailures.length" class="ap-audit">
+      <div class="ap-stats">
+        <span class="ap-stat">❌ 失败台账：{{ ledger.length }} 个工具失败过</span>
+        <button class="ap-btn" @click="exportFailureLedger"><Download :size="13" /> 导出台账</button>
+      </div>
+      <ul class="ap-hints">
+        <li v-for="s in ledger.slice(0, 6)" :key="s.tool">
+          <b>{{ s.tool }}</b>：{{ s.failed }}/{{ s.total }} 失败（{{ Math.round(s.rate * 100) }}%，最近
+          {{ lastFailTime(s.lastFailedAt) }}）——{{ s.advice }}
+          <details v-if="s.groups.length" class="ap-fg">
+            <summary>相似错误 ×{{ s.groups.length }} 类</summary>
+            <ul>
+              <li v-for="(g, i) in s.groups" :key="i">
+                ×{{ g.count }} <code>{{ g.signature }}</code>
+                <div class="ap-fg__sample">样本：{{ g.sample }}</div>
+              </li>
+            </ul>
+          </details>
+        </li>
+      </ul>
+      <div v-if="sessionFailures.length" class="ap-fg__session">
+        🧠 本次会话重复失败（达到阈值会在工具结果里自动提醒）：
+        <span v-for="(f, i) in sessionFailures" :key="i" class="ap-stat">
+          {{ f.tool }} ×{{ f.count }}
+        </span>
+      </div>
     </div>
 
     <div class="ap-list">
@@ -337,6 +390,36 @@ onMounted(() => {
 .ap-stat:hover {
   background: #4c8dff22;
   color: #4c8dff;
+}
+/* P1-9b 失败台账：相似错误分组的折叠区 + 会话内重复失败提示 */
+.ap-fg {
+  margin-top: 2px;
+}
+.ap-fg > summary {
+  cursor: pointer;
+  color: var(--text-secondary, #777);
+}
+.ap-fg ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.ap-fg code {
+  font-size: 10.5px;
+  word-break: break-all;
+  color: #c62828;
+}
+.ap-fg__sample {
+  color: var(--text-secondary, #888);
+  font-size: 10.5px;
+  word-break: break-all;
+}
+.ap-fg__session {
+  font-size: 11px;
+  color: var(--text-secondary, #777);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 .ap-list {
   display: flex;

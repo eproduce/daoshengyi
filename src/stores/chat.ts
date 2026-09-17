@@ -165,6 +165,8 @@ import {
 } from "@/utils/decision-log";
 // P1-8 输出风格（结论先行/详细/教学/审阅）
 import { applyOutputStyle } from "@/utils/output-styles";
+// P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
+import { failureHint } from "@/utils/failure-ledger";
 // P1-6 自动续跑规则表（按问题类型路由；带全套护栏，宁可放过不死循环）
 import {
   planAutoContinue,
@@ -642,6 +644,15 @@ async function callToolStoppable(
       status: "error",
       error: e instanceof Error ? e.message : String(e),
     });
+    // P1-9b：同一工具同一错误重复失败时，把提醒附在错误里（模型看得到错误文本）
+    if (!(e instanceof AgentStoppedError)) {
+      const hint = failureHint(tool, e instanceof Error ? e.message : String(e));
+      if (hint) {
+        const err = new Error(`${e instanceof Error ? e.message : String(e)}\n\n${hint}`);
+        err.name = e instanceof Error ? e.name : "Error";
+        throw err;
+      }
+    }
     throw e;
   }
   if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
@@ -650,9 +661,13 @@ async function callToolStoppable(
   if (/^(?:\s*)(?:⛔|❌)/.test(data)) {
     turnToolFail++;
     turnFailedTools.push(tool);
-  } else {
-    turnToolOk++;
+    // P1-3：tool_after 钩子（字符串报错也算失败，与其他路径一致）
+    void fireHooks({ ...hookCtx, event: "tool_after", status: "error", error: data });
+    // P1-9b：重复失败提醒（附在结果末尾，下一轮模型能读到）
+    const hint = failureHint(tool, data);
+    return hint ? `${data}\n\n${hint}` : data;
   }
+  turnToolOk++;
   // P1-3：tool_after 钩子（成功）——这是 agent 四条工具路径的共同出口
   void fireHooks({ ...hookCtx, event: "tool_after", status: "success", result: data });
   return data;
