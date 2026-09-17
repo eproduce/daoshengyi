@@ -8,10 +8,11 @@
 
 ## 2026-09-17（进度快照）
 
-### 当前状态（origin/main = `6248f73`，工作区干净）
+### 当前状态（origin/main = `e99c208`，工作区干净）
 - **内置工具 77 个**（含 DSH 吸收新增的 10 个确定性工具）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `19 files / 185 passed`；cargo `129 passed / 8 ignored`
-- **门禁全绿**：`npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
+- **测试**：vitest `20 files / 203 passed`；cargo `148 passed / 8 ignored`
+- **门禁全绿**：`cargo check` · `cargo test --lib` · `cargo clippy --all-targets -- -D warnings` · `npx vue-tsc --noEmit` · `npx vite build` · `npm test`（每批改动后均复跑）
+- **本地运行时**：llama.cpp（llama-server）后端已接入，默认 `auto`；Ollama 保留为回退（详见下方 2026-09-17 段落）
 - **打包版可用**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-16 22:37 构建；macOS 通知在打包版实测成功）
 
 ### DSH 生态吸收进度（总计划：`docs/DSH_ABSORPTION_PLAN.md`）
@@ -34,6 +35,54 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-17（本地运行时：llama.cpp 后端 + Ollama 资源阀门）
+
+### ✅ 起因：用户反馈「Ollama 太浪费资源」
+先实测再动手（Intel Mac / llava-phi3 3.8B / 768px 图），避免凭印象优化：
+
+| 运行时 | 模型加载后 | 空闲时 | 单张图耗时 |
+| --- | --- | --- | --- |
+| 裸 llama.cpp（`-c 2048 -np 1`） | **3928 MB** | **0**（进程退出即归还） | 41.5s |
+| Ollama | 20 MB daemon + **4505 MB**（Ollama 自己 spawn 的 llama-server 子进程） | 4.5 GB 滞留到 keep_alive 到期 | 44.6s |
+
+- **结论 1**：Ollama 内部就是 Go daemon + 它自己的 llama-server 子进程 → 换运行时**不提速**，
+  收益在内存与常驻（实测 `keep_alive:0` 后 4.5GB 立刻降到 22MB）。
+- **结论 2**：Ollama 的模型 blob **本身就是 GGUF**（实测两个 blob 魔数均为 `GGUF`），
+  manifest 的 `model`/`projector` 两层正好对应 `llama-server -m … --mmproj …`
+  → 可硬链接迁移，**零下载、零额外磁盘**。
+- **结论 3**：本机 `llama-server` 已在 `/usr/local/bin`（build 10450），无需新装依赖。
+
+### 第一批：拧紧 Ollama 阀门（零风险、立刻见效）
+- `ollama_describe_image` 请求带 `keep_alive: "30s"`：视觉权重 2.3GB 用完即退（原为默认 5 分钟）
+- `ollama_embed` 带 `keep_alive: "2m"`：批量索引期间不反复重建模型
+- 自启 `ollama serve` 注入 `OLLAMA_NUM_PARALLEL=1` + `OLLAMA_MAX_LOADED_MODELS=1`
+  （默认 4 并发槽会多预留几份 KV cache，单用户桌面纯浪费）
+- **刻意不设全局 `OLLAMA_KEEP_ALIVE`**：用户真用本地模型聊天时，短 keep_alive 会导致
+  每条消息重载 2.3GB 权重（约 10 秒），反而更差 → 只对「副作用类」调用按次指定
+
+### 第二批：llama.cpp 后端（additive，默认 auto，Ollama 保留为回退）
+- 新增 `src-tauri/src/local_runtime.rs`：
+  - 二进制发现（应用 runtimes 目录 → `/usr/local/bin` → brew → `which` 兜底）
+  - `server_args()`：`-np 1`（只留一份 KV）+ `-c 2048` + `-t 核数-2` + 只监听 `127.0.0.1:18080`
+  - **按需启动 + 空闲 120s 自动退出 + 应用退出即停** → 空闲 0 常驻（比 keep_alive 更彻底）
+  - `import_from_ollama()`：解析 manifest → 定位 blob → **优先硬链接**（失败才复制），
+    并校验 GGUF 魔数（格式若变更会明确报错，而不是留个坏文件）
+- `lib.rs`：`pick_vision_backend()` 分发 —— `auto`（就绪即用 llama.cpp）/ `llamacpp` / `ollama`；
+  **显式指定 llmacpp 不可用时直接报错，不静默降级**（否则用户以为换了其实没换）
+- 新命令：`local_runtime_status` / `local_runtime_import_ollama` / `local_runtime_stop`
+- 设置新增 `localVisionRuntime`，设置面板「本地模型」页新增运行时卡片：
+  当前生效后端、llama-server 与模型状态、空闲倒计时、导入/停止/刷新
+- 验证：`cargo test --lib` 148 passed（含 `find_ollama_multimodal_on_real_store_if_present`
+  真机验证「manifest → blob → GGUF 魔数」整条链路）· clippy 干净 · vue-tsc 干净 ·
+  `vite build` 成功 · vitest 20 files / 203 passed
+- 已知边界：embedding 仍走 Ollama（llama.cpp 需独立 embed GGUF，本机没有可测样本，
+  故未盲改；迁移点与解析差异已记录在仓库记忆里）
+
+---
+
 
 ---
 
