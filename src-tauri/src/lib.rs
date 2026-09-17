@@ -4366,7 +4366,7 @@ async fn execute_command(
             exit_code,
             stdout,
             stderr,
-            timed_out: _,
+            // `timed_out` 不需要单独绑定：下面的 `..` 已经覆盖它
             ..
         }) => {
             let _ = db.log_tool_call(

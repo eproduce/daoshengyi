@@ -1,0 +1,14 @@
+# 工具链固定（本地与 CI 必须用**同一个** Rust 版本）。
+#
+# 缘由（真实踩坑）：CI 用的是 stable-latest，本地是当时装的旧版。
+# 1.98 发布后新增了 clippy::unneeded_wildcard_pattern，把一批**已存在的老代码**判红 ——
+# 结果 CI 因为「上游发了新版本」而变红，本地怎么跑都复现不了（本地 clippy 是 1.96，没这个 lint）。
+# 类似地，rustfmt 不同版本的格式化结果也可能不同，会出现「本地 fmt 通过、CI fmt 报 Diff」。
+#
+# 升级方式（两步必须同步改）：
+#   1) 改这里的 channel；2) 改 .github/workflows/ci.yml 与 build-macos.yml 里的 toolchain
+# 然后本地 `rustup show` 会自动装好新版本，再跑一遍 clippy/fmt/test 即可。
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

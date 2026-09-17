@@ -32,8 +32,10 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # 与 rust-toolchain.toml / ci.yml 同步（升级时三处一起改）
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.0"
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Rust cache
