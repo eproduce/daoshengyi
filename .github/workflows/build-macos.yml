@@ -61,6 +61,20 @@ jobs:
       - name: Build & bundle (Tauri, universal)
         run: npm run tauri build -- --target universal-apple-darwin
 
+      # ⚠️ 产物名里的非 ASCII 字符会在上传/发布链路上被吃掉：Tauri 打出的是
+      # `道生一_1.0.0-alpha.2_universal.dmg`，但 Release 里实际变成
+      # `_1.0.0-alpha.2_universal.dmg`（用户下载到的就是这么个看不出是什么的名字）。
+      # 统一改成 ASCII 名再上传，名字也更好认。版本号从 package.json 取，避免解析中文前缀。
+      - name: Normalize dmg name (ASCII-safe)
+        run: |
+          cd src-tauri/target/universal-apple-darwin/release/bundle/dmg
+          ver=$(node -p "require('$GITHUB_WORKSPACE/package.json').version")
+          for f in *.dmg; do
+            cp "$f" "daoshengyi-${ver}-universal.dmg"
+            rm -f "$f"
+          done
+          ls -l
+
       - name: Upload artifacts (universal dmg + app)
         uses: actions/upload-artifact@v4
         with:
