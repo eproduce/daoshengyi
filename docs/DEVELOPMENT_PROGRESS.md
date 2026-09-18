@@ -8,11 +8,11 @@
 
 ## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `f726173`，工作区干净）
+### 当前状态（origin/main = `81d16a3`，工作区干净）
 - **版本 `1.0.0-alpha.2`**（三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`；
   `package-lock.json`、`Cargo.lock` 一并跟进）
-- **内置工具 82 个**（本轮新增 `log_decision`、`image_inspect`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `32 files / 422 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
+- **内置工具 83 个**（本轮新增 `log_decision`、`image_inspect`、`run_code`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `33 files / 460 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
@@ -23,10 +23,11 @@
   **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入 · 失败台账 · 确定性图像核验
 - **界面**：主题支持**跟随系统**（实时监听系统外观）· 设置导航按用户意图分 5 组
+- **代码执行**：`run_code` 沙箱（可终止 Worker、无文件/网络/系统能力、能力只经工具桥、**默认关闭**）
 - **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
   **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
-- **待做**：code-mode（`run_code` 工具桥）· P2 各项 · 云端视觉档（需用户配 Key）
+- **待做**：P2 各项 · 云端视觉档（需用户配 Key）
 
 ---
 
@@ -105,6 +106,57 @@
   （旧版先移到 `道生一.app.old-*` 备份，可一键回滚）
 - **验证产物的正确姿势**：Tauri 会把前端资源压缩进二进制，直接 `grep` app 包内的 JS **必然找不到中文文案**
   （我一开始就是这么误判的）→ 要核对的是**同一次构建产生的 `dist/assets/*.js`**（看时间戳是否与 app 一致）
+
+---
+
+## 2026-09-18（code-mode：run_code 沙箱 + 修掉「发布 job 从来没成功过」）
+
+### ① code-mode：让 agent 能自己写脚本（`90e6616`）
+
+需求是「让 agent 像编码助手一样能写脚本做多步处理」。但这是**唯一「执行模型写出的代码」**
+的入口，所以按「默认关闭 + 能力只走既有管线」来做。
+
+**架构决策（每条都有理由，不是默认选择）**：
+
+| 决策 | 为什么 |
+| --- | --- |
+| 沙箱用 **Worker**，不做主线程 eval | ①**可 terminate**——死循环/卡住的 Promise 能真掐断（主线程 eval 跑飞了连超时都救不回来）；②无 DOM；③**拿不到 Tauri IPC**（`invoke` 由主文档注入，Worker 作用域里不存在），模型代码无法绕过工具管线直接调命令 |
+| 能力唯一出路 `tools.xxx()` → 主线程 → `callMcpTool` | 权限矩阵 / 模式白名单 / 危险命令审批 / 审计**照常生效**，不用重写一套 |
+| 仍显式清空 `fetch`/`XMLHttpRequest`/`WebSocket`/`importScripts` | 它们在 Worker 里真实存在，而页面 CSP 的 `connect-src https:` **并不拦 Worker 的请求**——"不让模型代码无声上网"只能自己清 |
+| 纯逻辑抽到 `code-format.ts` 供 Worker 与主线程共用 | 各写一份的分叉只会出现在出错路径上，而那正是最难被测到的地方 |
+| 上限：30s 超时 / 20 次工具调用 / 8000 字符输出 / 50 行日志 | 且**超限一律如实报告**（"另有 N 次调用被拒""另有 N 行日志未显示"），不静默丢 |
+
+**端到端实测（浏览器 + 真实 Worker，11 个场景）打出了两个只有真跑才暴露的缺陷**：
+
+1. **dev 直接崩、build 却正常**：Worker 里引用了共享模块，而 classic worker 不能有 ESM
+   import；Vite 在 dev 下只转译不打平 import → `Cannot use import statement outside a
+   module`。build 因产物是打包好的 IIFE 反而"看起来正常"——**「dev 坏、生产好」是最危险的
+   假象**（单测用假 Worker，完全没发现）。
+   → `vite.config.ts` 加 `worker.format: "es"` + 构造时 `type: "module"`，两侧统一。
+2. **报错不可诊断**：Worker 的 `onerror` 传的是 **ErrorEvent** 而非 Error，原样 `String()`
+   只得到 `[object ErrorEvent]`（真身就是上面那句 import 报错）。
+   → 新增 `describeWorkerError`（取 message/filename/lineno 与内层 error）+ 单测。
+
+**实测结论（真实 Worker）**：`typeof fetch/window/importScripts/XMLHttpRequest` 全是
+`undefined`；`await fetch(...)` 抛 TypeError 被 catch 捕获；Python 代码 → 归类成「只接受 JS，
+要跑环境命令请用 run_command」；`while(true){}` 在 600ms 被强制终止；循环引用返回值渲染成
+`{n: 1, self: [循环引用]}`。生产产物（`dist/assets/run-code.worker-*.js`）同样逐项验证通过。
+
+### ② 修掉「`Publish GitHub Release` 从来没成功过」（`81d16a3`）
+
+v1.0.0-alpha.2 的打包 job **成功**（universal dmg 已产出），但发布 job 报
+`no matches found for release/*.dmg` 后退出码 1。根因：`upload-artifact` 会保留 glob 的
+**公共父目录**结构（上传 `bundle/dmg/*.dmg` + `bundle/macos/*.app`，公共父目录是 `bundle/`），
+所以下载到 `release/` 后其实是 `release/dmg/` 与 `release/macos/`，而 job 写死了
+`release/*.dmg` → 匹配不到 → `create` 与兜底的 `upload` 一起失败。
+
+修复：用 `find` 定位产物（不假设层级）+ 发布前打印文件清单 + 把 `create || upload` 改成
+「先 `gh release view` 判断再分支」（串联写法会把 create 的真实原因掩盖成第二次失败）。
+
+**顺带确认一条易混的边界**：`publish` job 带 `if: startsWith(github.ref, 'refs/tags/v')`
+⇒ **手动 `workflow_dispatch` 永远不发 Release**（只出 artifact）。要发版只有推 `v*` 标签。
+另外重跑失败的 job **不会**用上新的 workflow（GitHub 按 ref 指向的那份定义跑），所以修完要
+**重新打标签**（本次把 `v1.0.0-alpha.2` 重指到修复后的提交；版本号文件未变，故版本仍自洽）。
 
 ---
 

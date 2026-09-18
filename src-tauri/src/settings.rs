@@ -93,6 +93,10 @@ pub struct AppSettings {
     /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
     #[serde(default)]
     pub file_edit_confirm: bool,
+    /// code-mode：允许模型用 `run_code` 在可终止的沙箱 Worker 里执行 JS（能力只经工具桥）。
+    /// **默认关闭**：它是唯一「执行模型写出的代码」的入口，必须由用户显式开启。
+    #[serde(default)]
+    pub code_mode_enabled: bool,
     /// 全局快捷键：显示/隐藏主窗口（Phase 5，可自定义；默认 CommandOrControl+Shift+Space）
     #[serde(default = "default_shortcut_toggle")]
     pub global_shortcut_toggle: String,
@@ -207,6 +211,7 @@ impl Default for AppSettings {
             rag_enabled: false,
             rag_kb: String::new(),
             file_edit_confirm: false,
+            code_mode_enabled: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
@@ -471,6 +476,7 @@ mod tests {
             rag_enabled: false,
             rag_kb: String::new(),
             file_edit_confirm: false,
+            code_mode_enabled: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
@@ -534,6 +540,7 @@ mod tests {
             rag_enabled: false,
             rag_kb: String::new(),
             file_edit_confirm: false,
+            code_mode_enabled: false,
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
