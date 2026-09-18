@@ -194,6 +194,9 @@ git tag v1.0.0-alpha.2 && git push origin v1.0.0-alpha.2   # → 自动打包并
 
 带 `-alpha`/`-beta`/`-rc` 的标签会自动标为 prerelease；产物是**一个 universal dmg**，两种芯片都能装。
 （未配置 Apple 开发者证书，为 ad-hoc 签名，首次打开若被 Gatekeeper 拦截，右键「打开」放行。）
+产物名固定为 `daoshengyi-<版本>-universal.dmg`：Tauri 原本打出的是 `道生一_<版本>_universal.dmg`，
+但**非 ASCII 文件名会在上传链路上被吃掉**（实测变成 `_1.0.0-alpha.2_universal.dmg`），所以流水线
+在上传前会规范成 ASCII 名。
 
 > ⚠️ **手动触发 `Build macOS` 不会发 Release**：`publish` job 带
 > `if: startsWith(github.ref, 'refs/tags/v')`，手动 run 的 ref 是分支不是标签，
