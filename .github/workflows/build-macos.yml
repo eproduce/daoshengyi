@@ -88,13 +88,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -la release/
+          find release -type f | head -n 20
+
+          # ⚠️ 不能假设 dmg 就在 release/ 根目录下：upload-artifact 会保留 glob 的
+          # **公共父目录**结构——上传的是 bundle/dmg/*.dmg + bundle/macos/*.app，
+          # 公共父目录是 bundle/，所以产物里就是 dmg/ 与 macos/ 两个子目录。
+          # 曾写死 `release/*.dmg` → gh 报 `no matches found for release/*.dmg`，
+          # 发布 job 每次必失败（连兜底的 upload 也一起失败）。
+          mapfile -t DMGS < <(find release -type f -name '*.dmg' | sort)
+          if [ "${#DMGS[@]}" -eq 0 ]; then
+            echo "::error::产物中没有 dmg 文件（见上方文件清单）"
+            exit 1
+          fi
+          echo "待发布产物："
+          printf '  %s\n' "${DMGS[@]}"
+
           # alpha/beta/rc 预发布标签 → 标记为 prerelease
           PRERELEASE=""
           case "$GITHUB_REF_NAME" in
             *-alpha*|*-beta*|*-rc*) PRERELEASE="--prerelease" ;;
           esac
-          gh release create "$GITHUB_REF_NAME" release/*.dmg --generate-notes \
-            --repo "$GITHUB_REPOSITORY" $PRERELEASE \
-          || gh release upload "$GITHUB_REF_NAME" release/*.dmg \
-            --repo "$GITHUB_REPOSITORY" --clobber
+
+          # 不用 `create || upload` 串联：create 失败的原因不止「已存在」，
+          # 那种写法会把真实错误掩盖成第二次失败，看不出根因。先判断再分支。
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release 已存在 → 覆盖上传产物"
+            gh release upload "$GITHUB_REF_NAME" "${DMGS[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${DMGS[@]}" \
+              --generate-notes --repo "$GITHUB_REPOSITORY" $PRERELEASE
+          fi
