@@ -16,9 +16,9 @@
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
-- **流水线**：`ci.yml` ✅（首次转绿 09-18）· `build-macos.yml` ✅（universal dmg 实测通过）；
-  **发布唯一入口是推 `v*` 标签**——`workflow_dispatch` 只会出 artifact，`publish` job 有
-  `if: startsWith(github.ref, 'refs/tags/v')`，手动触发永远不建 Release
+- **流水线**：`ci.yml` ✅ · `build-macos.yml` ✅（universal dmg）· **首个 Release `v1.0.0-alpha.2` 已发布**（Pre-release，资产
+  `daoshengyi-1.0.0-alpha.2-universal.dmg`）；**发布唯一入口是推 `v*` 标签**——`workflow_dispatch` 只会出 artifact，
+  `publish` job 有 `if: startsWith(github.ref, 'refs/tags/v')`，手动触发永远不建 Release
 - **本地运行时**：llama.cpp（识别图 18080 / 嵌入 18081，按需启停 + 空闲 0 常驻），Ollama 作回退；
   **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入 · 失败台账 · 确定性图像核验
@@ -157,6 +157,21 @@ v1.0.0-alpha.2 的打包 job **成功**（universal dmg 已产出），但发布
 ⇒ **手动 `workflow_dispatch` 永远不发 Release**（只出 artifact）。要发版只有推 `v*` 标签。
 另外重跑失败的 job **不会**用上新的 workflow（GitHub 按 ref 指向的那份定义跑），所以修完要
 **重新打标签**（本次把 `v1.0.0-alpha.2` 重指到修复后的提交；版本号文件未变，故版本仍自洽）。
+
+### ③ 产物名里的中文会被上传链路吃掉（`d9a977a`）
+
+首个 Release 建出来后一看资产名是 `_1.0.0-alpha.2_universal.dmg`：Tauri 打出的是
+`道生一_1.0.0-alpha.2_universal.dmg`，**中文前缀整个消失了**（用户下载到的就是这么个看不出
+是什么的名字）→ 上传前先 `cp` 一份 ASCII 名 `daoshengyi-<版本>-universal.dmg` 并删掉原名；
+版本号从 `package.json` 取（不解析中文前缀，避免依赖文件名格式）。
+
+重新打标签验证后资产名正确；顺带**验证了「Release 已存在 → 覆盖上传」这条分支**（第二次运行时
+Release 已存在，走的就是它），并手动清掉旧的错名资产。
+
+**最终产物**：`daoshengyi-1.0.0-alpha.2-universal.dmg`（21.5 MB，universal x86_64 + arm64）。
+**本地也已重建并安装到 `/Applications/道生一.app`**（1.0.0-alpha.2，启动无错；旧版留在
+`道生一.app.old-*` 可回滚）。另外用 `strings` 在 app 二进制里比对到嵌入资源的路径表，确认
+`dist/assets/run-code.worker-*.js` 确实进了包（排除「生产环境缺文件」这个隐患）。
 
 ---
 
