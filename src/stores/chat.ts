@@ -36,6 +36,8 @@ import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 // 融合 Codex（openai/codex）的 apply_patch：解析其补丁格式并翻译成既有 apply_edits 操作
 import { parseCodexPatch, hunksToEdits, summarizePatch } from "@/utils/codex-patch";
+// code-mode：run_code 在可终止的沙箱 Worker 里跑模型写的 JS，能力只经 tools.* 工具桥
+import { formatCodeRunResult, runCodeInWorker } from "@/utils/code-runner";
 
 /// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
 interface RoundUsage {
@@ -787,6 +789,7 @@ function getMcpToolsPrompt(): string {
     outputRule +
     toolCallRule +
     "\n\n## 内置工具（server 填 `app`）\n" +
+    '- **run_code** (app): 在**可终止的沙箱 Worker** 里执行你写的 JavaScript（多步数据处理/批量计算/编排工具调用）。参数 {"code": "JavaScript 代码"}。**代码契约**：整段代码是 async 函数体——可直接 `await`、用 `return` 交回结果，日志用 `console.log(...)`；**调用其它工具**用 `tools.工具名(参数对象)`，如 `const r = await tools.calc({ expression: "1+2" });`，返回该工具的结果字符串。**限制**：① 无文件/网络/系统能力（`fetch`/`XMLHttpRequest`/`importScripts` 被禁用，也没有 `window`/`document`），要读写文件或联网必须走 `tools.write_file(...)`/`tools.fetch_page(...)`；② **不是 Python/shell**（写 `def`/`import` 会语法错误），要跑环境命令用 `run_command`；③ 30 秒超时强制终止；④ 工具调用上限 20 次/次执行。**该工具默认关闭**，未启用时会明确提示用户去「设置 → 权限」打开。\n' +
     '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器工具（`browser_navigate` 打开 → `browser_evaluate` 提取 / `browser_screenshot` 截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
     '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
     '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
@@ -1990,6 +1993,37 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       return await runDeterministicTool(tool, args, {
         readTextFile: (p) => invoke<string>("read_file", { path: p }),
       });
+    }
+    // ---- code-mode：在可终止的沙箱 Worker 里跑模型写的 JS ----
+    // 能力只有一条出路：tools.xxx() 经工具桥回到 callMcpTool → 权限矩阵 / 模式白名单 /
+    // 危险命令审批 / 审计全部照常生效（代码本身碰不到文件与网络）。
+    case "run_code": {
+      if (!getSettings().codeModeEnabled) {
+        return (
+          "⛔ 代码执行（code-mode）当前**未启用**。\n" +
+          "- 它是唯一「执行模型写出的代码」的入口，出于安全考虑默认关闭。\n" +
+          "- 请在「设置 → 权限」中打开「代码执行（code-mode）」后重试；在此之前请直接用既有工具（calc / csv_query / json_query / run_command 等）完成任务。"
+        );
+      }
+      const code = typeof args.code === "string" ? args.code : "";
+      if (!code.trim()) {
+        return '❌ run_code 需要 code 参数（要执行的 JavaScript 代码）。用法：{"code": "const r = await tools.calc({ expression: \'1+2\' }); return r;"}';
+      }
+      // 用户点「停止」时立刻终止 Worker，不必等满 30 秒超时
+      const ac = new AbortController();
+      void waitStopSignal().then(() => ac.abort());
+      const result = await runCodeInWorker({
+        code,
+        signal: ac.signal,
+        callTool: (name, toolArgs) => {
+          // 禁止递归：run_code 里再调 run_code 会指数级放大执行
+          if (name === "run_code") {
+            return Promise.resolve("⛔ 不允许在 run_code 内再次调用 run_code（避免递归放大）。");
+          }
+          return callMcpTool("app", name, toolArgs);
+        },
+      });
+      return formatCodeRunResult(result);
     }
     // ---- 内置浏览器（CDP 直连）----
     case "browser_navigate": {

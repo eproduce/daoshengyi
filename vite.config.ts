@@ -12,6 +12,13 @@ export default defineConfig(async () => ({
     },
   },
   clearScreen: false,
+  // code-mode 的沙箱 Worker 引用了共享模块（`src/utils/code-format.ts`），
+  // 因此必须是 **module worker**：classic worker 不能有 import，而 Vite 在 dev 下
+  // 只转译不打平 import → 实测直接报 `Cannot use import statement outside a module`
+  // （build 因产物是打包好的 IIFE 反而正常，形成「dev 坏、生产好」的假象）。
+  worker: {
+    format: "es",
+  },
   server: {
     port: 1420,
     strictPort: true,

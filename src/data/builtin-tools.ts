@@ -11,6 +11,17 @@ export interface BuiltinToolDef {
 
 export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
+    name: "run_code",
+    desc:
+      '在**可终止的沙箱 Worker** 里执行你写的 JavaScript，用来做多步数据处理/批量计算/编排工具调用。参数 {"code": "JavaScript 代码"}。' +
+      "**代码契约**：整段代码就是一个 **async 函数体**——可以直接 `await`、用 `return` 交回结果，日志用 `console.log(...)`。" +
+      '**调用其它工具**用 `tools.工具名(参数对象)`，例如 `const r = await tools.calc({ expression: "1+2" });`，拿到的是该工具的结果字符串。' +
+      "**沙箱限制（必须知道）**：① 没有任何文件/网络/系统能力——`fetch`/`XMLHttpRequest`/`importScripts` 被显式禁用，也没有 `window`/`document`；要读写文件或访问网络必须经 `tools.write_file(...)`/`tools.fetch_page(...)`；" +
+      "② **不是 Python / shell**——写 `def`/`import` 会直接语法错误，要跑环境命令请用 `run_command`；" +
+      "③ 单次执行 **30 秒超时**，超时会被强制终止（死循环不会拖死应用）；④ 工具调用上限 **20 次**/次执行；⑤ 只能返回可序列化的值。" +
+      "**何时用**：需要循环、多步条件判断、或把多个工具结果做聚合计算时，比来回多轮调用省事；简单一步的任务直接用对应工具即可。",
+  },
+  {
     name: "apply_patch",
     desc: '**一次调用完成多文件/多片段编辑**（格式来自 openai/codex 的 apply_patch，模型与用户都已充分验证）。**优先用它而不是多次 replace_string**：改 3 个文件、或同一文件 5 处改动时，一次 apply_patch 即可，显著减少往返。\n格式（严格）：\n*** Begin Patch\n*** Add File: 相对或绝对路径\n+第一行\n+第二行\n*** Update File: 路径\n@@ 可选定位提示（用于报错提示，不参与匹配）\n 上下文行（前缀一个空格，用于定位）\n-被删除的原文行\n+替换后的新行\n*** Delete File: 路径\n*** End Patch\n要点：①片段内每行必须以「空格/ -/+」开头；②Update 的片段**必须包含至少一行上下文**（否则无法定位，会报错）；③上下文行会原样保留，改动后其余内容不动；④Add 的目标已存在会拒绝执行（要改内容请用 Update）；⑤不支持改名/移动（Move to）——请先用本工具改内容，再用 run_command 执行 mv/git mv；⑥代码块式的解释文字不要写进补丁，以 *** End Patch 收尾。\n参数 {"patch": "完整补丁文本"}',
   },

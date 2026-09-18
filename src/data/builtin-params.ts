@@ -7,6 +7,19 @@
 // - additionalProperties:true，允许模型给出示例未覆盖的扩展字段（绝不被 schema 校验拒绝）。
 
 export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
+  // ---- code-mode（沙箱执行，默认关闭）----
+  run_code: {
+    type: "object",
+    properties: {
+      code: {
+        type: "string",
+        description:
+          "要执行的 JavaScript 代码（整体是 async 函数体，可直接 await / return；调用工具用 tools.工具名({...})）",
+      },
+    },
+    required: ["code"],
+    additionalProperties: true,
+  },
   // ---- 融合 Codex 的内置工具 ----
   apply_patch: {
     type: "object",

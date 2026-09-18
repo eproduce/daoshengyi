@@ -86,6 +86,8 @@ export interface AppSettingsPayload {
   ragKb: string;
   /// P-A4 应用内 diff 确认：开启后文件编辑类工具先展示 diff/路径确认，用户确认后才写盘
   fileEditConfirm: boolean;
+  /// code-mode：允许模型用 run_code 在可终止的沙箱 Worker 里执行 JS（能力只经工具桥）
+  codeModeEnabled?: boolean;
   /// 本地视觉运行时（P0-资源）：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
   localVisionRuntime?: "auto" | "llamacpp" | "ollama";
   /// P0-6 预算护栏（元；0/缺省 = 不限）：达到 80% 预警、100% 发送前拦截
@@ -142,6 +144,7 @@ let cache: AppSettingsPayload = {
   ragEnabled: false,
   ragKb: "",
   fileEditConfirm: false,
+  codeModeEnabled: false,
   imConfig: {},
   globalShortcutToggle: "CommandOrControl+Shift+Space",
   globalShortcutNewChat: "CommandOrControl+Shift+K",

@@ -410,6 +410,12 @@ function saveEditConfirm() {
   updateSettings({ fileEditConfirm: fileEditConfirm.value });
 }
 
+// code-mode：run_code 的开关（默认关闭——执行模型写的代码必须用户显式开启）
+const codeModeEnabled = ref(getSettings().codeModeEnabled ?? false);
+function saveCodeMode() {
+  updateSettings({ codeModeEnabled: codeModeEnabled.value });
+}
+
 // P0-资源 本地视觉运行时：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
 // 切换后需重查一次状态：ollama_status 会返回「当前实际会用哪个后端」
 const localVisionRuntime = ref<"auto" | "llamacpp" | "ollama">(
@@ -1195,6 +1201,24 @@ function handleDelete() {
               <span class="form-hint"
                 >开启后，Agent 调用 replace_string / insert_string / delete_file 会先弹出
                 diff/路径确认框，点「应用」才真正写盘；关闭则保持自动应用（可用「禁用工具」白名单保护文件）。</span
+              >
+            </div>
+            <div class="form-group approval-mode">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="codeModeEnabled" type="checkbox" @change="saveCodeMode" />
+                <span>代码执行（code-mode）：允许 Agent 用 run_code 跑它自己写的 JS</span>
+              </label>
+              <span class="form-hint"
+                ><strong>默认关闭</strong>——这是唯一「执行模型写出的代码」的入口。开启后 Agent
+                可在<strong>可终止的沙箱 Worker</strong> 里跑
+                JavaScript：沙箱没有文件/网络/系统能力，也没有
+                <code>window</code>，要读写文件或联网只能经 <code>tools.xxx()</code> 工具桥回到
+                既有管线（仍受上面的禁用工具、路径白名单与危险命令审批约束）；单次 30
+                秒超时强制终止， 工具调用上限 20 次。适合让 Agent
+                做多步数据聚合/批量计算，减少来回轮次。</span
               >
             </div>
             <div class="form-group">
