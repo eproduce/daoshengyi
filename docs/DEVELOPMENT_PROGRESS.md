@@ -8,16 +8,16 @@
 
 ## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `aa57a0e`，工作区干净）
-- **版本 `1.0.0-alpha.2`**（三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`；
-  `package-lock.json`、`Cargo.lock` 一并跟进）
+### 当前状态（origin/main = `1486978`，工作区干净）
+- **版本 `1.0.0-alpha.3`**（五处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`
+  + `package-lock.json` / `Cargo.lock`）
 - **内置工具 83 个**（本轮新增 `log_decision`、`image_inspect`、`run_code`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `33 files / 460 passed`；cargo `211 passed / 13 ignored`（含真机 e2e：图像核验、嵌入全链路、**命令沙箱 3 项**）
+- **测试**：vitest `34 files / 472 passed`；cargo `216 passed / 13 ignored`（含真机 e2e：图像核验、嵌入全链路、**命令沙箱 3 项**）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
-- **流水线**：`ci.yml` ✅ · `build-macos.yml` ✅（universal dmg）· **首个 Release `v1.0.0-alpha.2` 已发布**（Pre-release，资产
-  `daoshengyi-1.0.0-alpha.2-universal.dmg`）；**发布唯一入口是推 `v*` 标签**——`workflow_dispatch` 只会出 artifact，
+- **流水线**：`ci.yml` ✅ · `build-macos.yml` ✅（universal dmg）· **Release `v1.0.0-alpha.2` 已发布**（Pre-release，资产
+  `daoshengyi-1.0.0-alpha.2-universal.dmg`），`v1.0.0-alpha.3` 随后；**发布唯一入口是推 `v*` 标签**——`workflow_dispatch` 只会出 artifact，
   `publish` job 有 `if: startsWith(github.ref, 'refs/tags/v')`，手动触发永远不建 Release
 - **本地运行时**：llama.cpp（识别图 18080 / 嵌入 18081，按需启停 + 空闲 0 常驻），Ollama 作回退；
   **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
@@ -28,6 +28,8 @@
 - **命令沙箱**：`sandbox-exec` 三模式（off / read-only / workspace-write）+ 网络策略三态
   （allow / loopback-only / deny）；覆盖 run_command / exec_command / run_tests / git（**此前后两条能绕过**）；
   真机 e2e 钉住实际拦截行为（`cargo test --lib sandbox:: -- --ignored`）
+- **可诊断性**：定时任务执行写入应用日志（打包版 stderr 不可见）· 会话放行写 `[permit]` 日志
+  （下次再出现「为什么又问」可直接查证）
 - **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
   **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
@@ -60,6 +62,51 @@
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
 
 ---
+
+## 2026-09-20（定时任务静默停摆 + 「本会话内不再询问」勾选无效）
+
+### ① 定时任务的截断写法会 panic 掉整个调度线程（`67488ae`）
+
+排查「定时任务端到端」时发现的**静默且致命**缺陷：
+
+`result[..1000]` 是**按字节**切 `String`，多字节字符跨在边界上会 panic
+（`byte index N is not a char boundary`）。而这段代码跑在**调度线程**里、当时也没有
+`catch_unwind` ⇒ 一个任务输出超过 1000 字节且边界切在汉字中间，就会
+**panic → 调度线程结束 → 之后所有定时任务永久不再执行，且没有任何提示**
+（该调度器当时连一行日志都没有）。中文输出命中概率极高，不是理论风险。
+
+修复：新增 `clip_output`（按**字符边界**截断并注明原长度）· 每任务 `catch_unwind`
+（单个任务出问题不拖垮整条线程）· 执行结果写入应用日志（打包版 stderr 不可见，
+原来等于「跑了也不留痕」）· `next_run_at` 改用**执行完成时刻**计算
+（长任务用执行前时刻会算出仍属过去的下次时间 → 下一轮立刻又跑）。
+
+测试 4 条：`byte_slicing_a_string_can_panic`（`#[should_panic]`，证明裸切片必 panic）、
+`panic_in_scheduler_thread_would_stop_all_later_work`（复现完整危害链：panic 之后的
+调度工作不会执行）、`clip_output_never_splits_a_multibyte_char` 等。
+
+### ② 「本会话内不再询问」勾了像没效果（`1486978`）
+
+读完链路（四处确认点都判了 permit、Promise 结算正常、一轮内多工具**串行**执行无竞态），
+定位到两个真问题：
+
+| # | 问题 | 后果 |
+| --- | --- | --- |
+| ① | 作用域只按**单个工具名** | Agent 混用 `replace_string → insert_string → apply_patch` ⇒ 勾一次后换个工具**又被问**，用户认为「勾选无效」（主因） |
+| ② | 勾选状态**不复位** | 弹窗组件常驻（只有内层 div 有 `v-if`），`apply()` 未置回 false ⇒ 为「编辑」勾过之后，**删除确认默认已勾选**，手一快就放行删除（安全风险） |
+
+修复：抽出 `src/utils/session-permits.ts`（纯逻辑 + **12 条单测**）——**编辑类勾一次放行整类**；
+**删除刻意单独一类**（更具破坏性，不被「改内容」的放行顺带覆盖）；每次确认结束复位勾选；
+文案改成如实写明范围（「这类文件编辑（a / b / c）」），避免两种误解（以为全放行 / 以为勾了没用）。
+另把四处条件收敛为 `needEditConfirm(tool)` 并加 `[permit]` 日志——下次若再出现「为什么又问」，
+日志里能直接看出是没记住、还是被另一个工具名拦了。
+
+### ③ 版本升到 `1.0.0-alpha.3`
+
+五处同步（`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` +
+`package-lock.json` / `Cargo.lock`），推 `v1.0.0-alpha.3` 标签走自动打包与发布。
+
+---
+
 
 ## 2026-09-20（O8 命令沙箱：早已实现却一直没生效——修 4 个真缺陷）
 
