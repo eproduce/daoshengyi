@@ -808,6 +808,23 @@ fn trash_empty(app: tauri::AppHandle) -> Result<usize, String> {
 // --- 定时任务 ---
 
 /// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
+/// 按**字符边界**截断输出（超出上限时追加说明）。
+///
+/// ⚠️ 绝不能写成 `&s[..max]`：那是**按字节**切，多字节字符（中文 1 字 3 字节）跨在边界上时
+/// 会 panic（`byte index N is not a char boundary`）。这段逻辑跑在**调度线程**里，
+/// **panic 会终止该线程** → 之后所有定时任务永久不再执行，而且没有任何提示。
+/// 中文输出超过 1000 字节时命中概率极高，所以这不是理论风险。
+fn clip_output(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...(截断，原 {} 字节)", &s[..end], s.len())
+}
+
 fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
     use chrono::TimeZone;
     if t.schedule_type == "daily" {
@@ -6791,6 +6808,9 @@ pub fn run() {
             // 每次循环用独立数据库连接（SQLite WAL 支持多连接并发）。
             {
                 let sched_dir = app_dir.clone();
+                // 打包版里 stderr 看不到（.app 的 stderr 不落盘）→ 同时写进应用日志文件，
+                // 否则「定时任务到底跑没跑」根本无从查证。
+                let sched_handle = app.handle().clone();
                 std::thread::spawn(move || loop {
                     if let Ok(db) = Database::new(sched_dir.clone()) {
                         let tasks = db.list_scheduled_tasks().unwrap_or_default();
@@ -6799,42 +6819,69 @@ pub fn run() {
                             if !t.enabled || t.next_run_at > now {
                                 continue;
                             }
-                            let started = chrono::Utc::now().timestamp_millis();
-                            let output = std::process::Command::new("/bin/sh")
-                                .arg("-c")
-                                .arg(&t.command)
-                                .output();
-                            let result = match output {
-                                Ok(o) => {
-                                    let mut s =
-                                        String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                    let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                                    if !e.is_empty() {
-                                        s = format!(
-                                            "{}{}{}",
-                                            s,
-                                            if s.is_empty() { "" } else { "\n" },
-                                            e
-                                        );
+                            // 单个任务出问题不能拖垮整个调度线程：**panic 会终止该线程**，
+                            // 之后所有定时任务永久停摆且毫无提示（踩过的真实缺陷，见 clip_output）。
+                            let task_name = t.name.clone();
+                            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let started = chrono::Utc::now().timestamp_millis();
+                                let output = std::process::Command::new("/bin/sh")
+                                    .arg("-c")
+                                    .arg(&t.command)
+                                    .output();
+                                let result = match output {
+                                    Ok(o) => {
+                                        let mut s = String::from_utf8_lossy(&o.stdout)
+                                            .trim()
+                                            .to_string();
+                                        let e = String::from_utf8_lossy(&o.stderr)
+                                            .trim()
+                                            .to_string();
+                                        if !e.is_empty() {
+                                            s = format!(
+                                                "{}{}{}",
+                                                s,
+                                                if s.is_empty() { "" } else { "\n" },
+                                                e
+                                            );
+                                        }
+                                        if s.is_empty() {
+                                            format!("(退出码 {})", o.status.code().unwrap_or(-1))
+                                        } else {
+                                            s
+                                        }
                                     }
-                                    if s.is_empty() {
-                                        format!("(退出码 {})", o.status.code().unwrap_or(-1))
-                                    } else {
-                                        s
-                                    }
+                                    Err(e) => format!("(启动失败: {})", e),
+                                };
+                                let clipped = clip_output(&result, 1000);
+                                // 用**执行完成时刻**算下次运行：长任务（接近 300s 超时）若用
+                                // 执行前的时刻，算出来的下次时间可能仍在过去 → 下一轮立刻又跑一遍。
+                                let finished = chrono::Utc::now().timestamp_millis();
+                                let mut updated = t.clone();
+                                updated.next_run_at = compute_next_run(&t, finished);
+                                updated.last_run_at = Some(started);
+                                updated.last_result = Some(clipped);
+                                let _ = db.save_scheduled_task(&updated);
+                                (started, finished)
+                            }));
+                            match outcome {
+                                Ok((started, finished)) => {
+                                    let msg = format!(
+                                        "[scheduler] 已执行「{}」（{}ms）",
+                                        task_name,
+                                        finished - started
+                                    );
+                                    eprintln!("{}", msg);
+                                    append_log(&sched_handle, &msg);
                                 }
-                                Err(e) => format!("(启动失败: {})", e),
-                            };
-                            let clipped = if result.len() > 1000 {
-                                format!("{}...(截断)", &result[..1000])
-                            } else {
-                                result
-                            };
-                            let mut updated = t.clone();
-                            updated.next_run_at = compute_next_run(&t, now);
-                            updated.last_run_at = Some(started);
-                            updated.last_result = Some(clipped);
-                            let _ = db.save_scheduled_task(&updated);
+                                Err(_) => {
+                                    let msg = format!(
+                                        "[scheduler] 任务「{}」执行时 panic，已跳过本轮（不影响其它任务）",
+                                        task_name
+                                    );
+                                    eprintln!("{}", msg);
+                                    append_log(&sched_handle, &msg);
+                                }
+                            }
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_secs(30));
@@ -7110,12 +7157,78 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_text, compute_edits, delete_file_impl, detect_test_framework, diff_lines,
-        embed_model_installed, extract_redirected_files, format_unified_diff, is_valid_keep_alive,
-        nth_occurrence, ollama_serve_env, parse_allowed_paths, parse_embed_response,
-        path_within_any, pick_vision_backend, run_shell_command_with, validate_git_operation,
-        EditOp, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
+        chunk_text, clip_output, compute_edits, delete_file_impl, detect_test_framework,
+        diff_lines, embed_model_installed, extract_redirected_files, format_unified_diff,
+        is_valid_keep_alive, nth_occurrence, ollama_serve_env, parse_allowed_paths,
+        parse_embed_response, path_within_any, pick_vision_backend, run_shell_command_with,
+        validate_git_operation, EditOp, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
     };
+
+    /// 证明「按字节切」确实会 panic —— 这就是 clip_output 存在的理由。
+    /// （曾经调度器写的是 `&result[..1000]`，中文输出超 1000 字节即触发。）
+    #[test]
+    #[should_panic(expected = "not a char boundary")]
+    fn byte_slicing_a_string_can_panic() {
+        let s = format!("{}{}", "a".repeat(999), "中文");
+        let _ = &s[..1000]; // 字节 1000 落在「中」字中间
+    }
+
+    /// 复现**旧代码的完整危害链**：panic 发生在调度线程里、且当时没有 catch_unwind，
+    /// 于是「这一个任务炸了」= 「整个调度线程结束」= 「之后所有定时任务永久不再执行」，
+    /// 而且没有任何提示（该调度器当时连一行日志都没有）。
+    #[test]
+    fn panic_in_scheduler_thread_would_stop_all_later_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let later_ran = Arc::new(AtomicBool::new(false));
+        let flag = later_ran.clone();
+        let handle = std::thread::spawn(move || {
+            // 旧写法：按字节切（中文输出超 1000 字节）
+            let output = "中文".repeat(400);
+            let _clipped = &output[..1000];
+            // ↓ 这一行代表「同一轮里排在后面的任务」与「之后每一轮」
+            flag.store(true, Ordering::SeqCst);
+        });
+        assert!(handle.join().is_err(), "线程应因 panic 而结束");
+        assert!(
+            !later_ran.load(Ordering::SeqCst),
+            "panic 之后的调度工作不会执行 —— 这就是「所有定时任务静默停摆」的成因"
+        );
+    }
+
+    #[test]
+    fn clip_output_keeps_short_text_untouched() {
+        assert_eq!(clip_output("abc", 1000), "abc");
+        assert_eq!(clip_output("", 1000), "");
+        assert_eq!(clip_output("短", 1000), "短");
+    }
+
+    #[test]
+    fn clip_output_truncates_ascii_with_note() {
+        let out = clip_output(&"x".repeat(1200), 1000);
+        assert!(out.starts_with(&"x".repeat(1000)));
+        assert!(out.contains("截断"));
+        assert!(out.contains("1200"));
+    }
+
+    #[test]
+    fn clip_output_never_splits_a_multibyte_char() {
+        // 999 个 ASCII + 中文：截断点必须回退到合法字符边界，而不是 panic
+        let s = format!("{}{}", "a".repeat(999), "中文测试");
+        let out = clip_output(&s, 1000);
+        assert!(out.starts_with(&"a".repeat(999)));
+        assert!(out.contains("截断"));
+        // 截断部分不得粘出半个汉字（能通过 from_utf8 校验本身就是证据）
+        let head: String = out.chars().take_while(|c| *c == 'a').collect();
+        assert_eq!(head.len(), 999);
+
+        // 纯中文超限同样安全
+        let cn = "中文".repeat(1000);
+        let out2 = clip_output(&cn, 1000);
+        assert!(out2.len() > 1000); // 含说明文本
+        assert!(out2.contains("截断"));
+        assert!(std::str::from_utf8(out2.as_bytes()).is_ok());
+    }
 
     // 本地视觉后端选择（P0-资源）：显式指定不静默降级，auto 才有回落
     #[test]
