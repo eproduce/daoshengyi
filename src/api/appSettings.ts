@@ -7,6 +7,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ApiProfile } from "@/types";
 
+/** 命令沙箱的网络策略（与 Rust `sandbox::NetworkPolicy` 对齐） */
+export type SandboxNetwork = "allow" | "loopback-only" | "deny";
+
 /** P1-4 权限规则的结构（与 utils/permission-rules.ts 的 PermissionRule 兼容） */
 export interface PermissionRuleShape {
   id?: string;
@@ -60,6 +63,8 @@ export interface AppSettingsPayload {
   /// 命令沙箱（吸收自 Codex 的 SandboxMode）：off=不加沙箱（默认）｜read-only=禁写入｜
   /// workspace-write=只允许写入工作区目录（需先设置工作区）。macOS 用 Seatbelt 实现。
   sandboxMode: "off" | "read-only" | "workspace-write";
+  /// 命令沙箱的网络策略（仅在沙箱开启时生效）：allow（默认）/ loopback-only / deny
+  sandboxNetwork?: "allow" | "loopback-only" | "deny";
   /// 辅助任务使用的 Profile（空 = 跟随主模型）：用于 Smart 审批 / 子代理等辅助任务
   auxiliaryProfileId: string;
   /// 飞书群机器人 Webhook（主动推送用）
@@ -131,6 +136,7 @@ let cache: AppSettingsPayload = {
   yoloMode: false,
   approvalMode: "manual",
   sandboxMode: "off",
+  sandboxNetwork: "allow",
   auxiliaryProfileId: "",
   feishuWebhook: "",
   wecomWebhook: "",

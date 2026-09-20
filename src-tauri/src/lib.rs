@@ -301,14 +301,45 @@ fn parse_allowed_paths(list: &[String]) -> Vec<std::path::PathBuf> {
 
 /// 从设置读取路径白名单（P-A7/P-A8 共用配置）；未配置返回空 = 不限制。
 fn sandbox_allowed_paths(db: &Database) -> Vec<std::path::PathBuf> {
-    let raw: Vec<String> = db
-        .get_setting(SETTINGS_KEY)
+    parse_allowed_paths(&settings_plain(db).allowed_paths)
+}
+
+/// 直接解析存盘设置（**不解密**）。
+/// 只有非敏感字段（沙箱模式/工作区/白名单等）能这样读；密钥类字段在这里是密文，
+/// 需要 `load_app_settings(db, cipher)`。
+/// 解析失败（旧格式/未配置）→ 默认值：宁可回到「不加沙箱」，也不要因为读不到配置而 panic。
+fn settings_plain(db: &Database) -> settings::AppSettings {
+    db.get_setting(SETTINGS_KEY)
         .ok()
         .flatten()
         .and_then(|v| serde_json::from_str::<settings::AppSettings>(&v).ok())
-        .map(|s| s.allowed_paths)
-        .unwrap_or_default();
-    parse_allowed_paths(&raw)
+        .unwrap_or_default()
+}
+
+/// 合成命令沙箱配置。
+///
+/// **模式与工作区以调用方传参为优先，缺省回落到设置；网络策略与主目录一律取自设置与本机。**
+/// 这样前端即使漏传参数，也不会让沙箱「悄悄不生效」——设置仍然是权威来源。
+pub(crate) fn sandbox_config_for(
+    db: &Database,
+    mode: Option<&str>,
+    workspace: Option<&str>,
+) -> sandbox::SandboxConfig {
+    let s = settings_plain(db);
+    let mode_owned = mode
+        .filter(|m| !m.trim().is_empty())
+        .map(|m| m.to_string())
+        .unwrap_or(s.sandbox_mode);
+    let ws_owned = workspace
+        .filter(|w| !w.trim().is_empty())
+        .map(|w| w.to_string())
+        .or(s.workspace);
+    sandbox::SandboxConfig::new(
+        &mode_owned,
+        ws_owned.as_deref(),
+        &std::env::var("HOME").unwrap_or_default(),
+        sandbox::NetworkPolicy::parse(&s.sandbox_network),
+    )
 }
 
 /// 文件路径沙箱校验：展开 ~ 后，若配置了白名单则必须位于白名单内。
@@ -4361,14 +4392,9 @@ async fn execute_command(
         format!("{} {}", command, args.join(" "))
     };
     let audit_args = full_cmd.clone();
-    let mut out = run_shell_command_with(
-        &full_cmd,
-        cwd.as_deref(),
-        timeout_secs,
-        sandbox_mode.as_deref(),
-        workspace.as_deref(),
-    )
-    .await;
+    // 沙箱配置：模式/工作区可用调用方参数覆盖，网络策略与主目录取自设置
+    let cfg = sandbox_config_for(&db, sandbox_mode.as_deref(), workspace.as_deref());
+    let mut out = run_shell_command_with(&full_cmd, cwd.as_deref(), timeout_secs, Some(&cfg)).await;
     let duration = start.elapsed().as_millis() as i64;
     match &out {
         Ok(CommandOutput {
@@ -4492,27 +4518,25 @@ fn extract_redirected_files(cmd: &str, cwd: Option<&str>) -> Vec<String> {
 
 /// 通过 /bin/sh -c 执行整条 shell 命令，返回结构化输出。
 /// 独立成函数便于单元测试（不依赖 Tauri State）；进程组保证超时能杀干净子进程。
-/// 同 `run_shell_command`，但可按 sandbox 模式包裹命令（吸收自 Codex 的 SandboxMode）：
-/// `read-only` / `workspace-write` 时用 Seatbelt 限制文件写入；不可用时自动降级为不加沙箱。
+/// `sandbox`: 传给 `sandbox::build_exec` 的沙箱配置；`None` 等同不沙箱（配置的默认值 mode=off）。
+/// 沙箱不可用（非 macOS / 缺 sandbox-exec）时自动降级为不加沙箱，绝不因此让命令失败。
 async fn run_shell_command_with(
     full_cmd: &str,
     cwd: Option<&str>,
     timeout_secs: Option<u64>,
-    sandbox_mode: Option<&str>,
-    workspace: Option<&str>,
+    sandbox: Option<&sandbox::SandboxConfig>,
 ) -> Result<CommandOutput, String> {
     use tokio::io::AsyncReadExt;
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let (prog, args, applied) =
-        sandbox::build_exec(sandbox_mode.unwrap_or("off"), workspace, &home, full_cmd);
+    let cfg = sandbox.cloned().unwrap_or_default();
+    let (prog, args, applied) = sandbox::build_exec(&cfg, full_cmd);
     if applied {
-        let m = format!(
-            "[sandbox] 已加沙箱执行（mode={}，工作区={}）",
-            sandbox_mode.unwrap_or(""),
-            workspace.unwrap_or("-")
+        eprintln!(
+            "[sandbox] 已加沙箱执行（mode={}，工作区={}，网络={:?}）",
+            cfg.mode,
+            cfg.workspace.as_deref().unwrap_or("-"),
+            cfg.network
         );
-        eprintln!("{}", m);
     }
 
     let mut cmd = tokio::process::Command::new(&prog);
@@ -4594,8 +4618,21 @@ async fn git_operation(
     let audit_args = format!("git {} {}", action, args.join(" "));
     validate_git_operation(&action, &args)?;
 
-    let mut cmd = tokio::process::Command::new("git");
-    cmd.arg(&action).args(&args);
+    // ⚠️ 这里原来是直接 `Command::new("git")` —— **完全绕过沙箱**：
+    // 在 `read-only`（禁一切写入）下仍可用 `git clone <url> <任意目录>` 写盘、用
+    // `git config --global` 改家目录里的配置。现在同样走 Seatbelt 包装（argv 形态，
+    // 不拼 shell 字符串，避免参数里的空格改变语义）。
+    let workdir = (!cwd.trim().is_empty()).then_some(cwd.as_str());
+    let sandbox_cfg = sandbox_config_for(&db, None, workdir);
+    let mut argv = vec![action.clone()];
+    argv.extend(args.iter().cloned());
+    let (prog, full_args) = match sandbox::wrap_argv_auto(&sandbox_cfg, "git", &argv) {
+        Some((p, a)) => (p, a),
+        None => ("git".to_string(), argv),
+    };
+
+    let mut cmd = tokio::process::Command::new(&prog);
+    cmd.args(&full_args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
@@ -4709,9 +4746,20 @@ async fn run_tests(
     let start = std::time::Instant::now();
     let audit_args = display_cmd.clone();
 
+    // ⚠️ 与 git_operation 同因：这里原来也是直接起进程。`command` 参数是**模型可控**的，
+    // 于是 `read-only` 下仍可借它执行任意程序往任意路径写（例如 `touch /Users/x/y`），
+    // 沙箱形同虚设。现在统一走 argv 形态的沙箱包装。
+    let workdir = (!cwd.trim().is_empty()).then_some(cwd.as_str());
+    let sandbox_cfg = sandbox_config_for(&db, None, workdir);
+    let (prog, full_args) =
+        match sandbox::wrap_argv_auto(&sandbox_cfg, &cmd_parts[0], &cmd_parts[1..]) {
+            Some((p, a)) => (p, a),
+            None => (cmd_parts[0].clone(), cmd_parts[1..].to_vec()),
+        };
+
     let mut child = {
-        let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
-        cmd.args(&cmd_parts[1..]);
+        let mut cmd = tokio::process::Command::new(&prog);
+        cmd.args(&full_args);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
@@ -7496,7 +7544,7 @@ mod tests {
     #[tokio::test]
     async fn run_shell_supports_tilde_expansion_and_pipe() {
         // ~ 展开为 HOME
-        let out = run_shell_command_with("echo ~", None, Some(10), None, None)
+        let out = run_shell_command_with("echo ~", None, Some(10), None)
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
@@ -7510,13 +7558,13 @@ mod tests {
             );
         }
         // 管道
-        let out2 = run_shell_command_with("echo abc | tr a-z A-Z", None, Some(10), None, None)
+        let out2 = run_shell_command_with("echo abc | tr a-z A-Z", None, Some(10), None)
             .await
             .unwrap();
         assert_eq!(out2.exit_code, 0, "stderr: {}", out2.stderr);
         assert_eq!(out2.stdout.trim(), "ABC", "管道应生效: {}", out2.stdout);
         // shell 内建 + &&
-        let out3 = run_shell_command_with("cd /tmp && pwd", None, Some(10), None, None)
+        let out3 = run_shell_command_with("cd /tmp && pwd", None, Some(10), None)
             .await
             .unwrap();
         assert_eq!(out3.exit_code, 0, "stderr: {}", out3.stderr);
@@ -7530,7 +7578,7 @@ mod tests {
     #[tokio::test]
     async fn run_shell_timeout_kills_process_group() {
         let start = std::time::Instant::now();
-        let out = run_shell_command_with("sleep 30", None, Some(2), None, None)
+        let out = run_shell_command_with("sleep 30", None, Some(2), None)
             .await
             .unwrap();
         assert!(out.timed_out, "应标记超时");
@@ -7584,7 +7632,7 @@ mod tests {
     #[tokio::test]
     async fn run_shell_unknown_command_reports_exit_127() {
         // 非可执行命令（如 list）：走 shell 后是「command not found」（exit 127）而非启动失败
-        let out = run_shell_command_with("list", None, Some(5), None, None)
+        let out = run_shell_command_with("list", None, Some(5), None)
             .await
             .unwrap();
         assert_eq!(

@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use tauri::State;
+
+use crate::db::Database;
+use crate::sandbox::SandboxConfig;
 
 #[derive(serde::Serialize)]
 pub struct PtyInfo {
@@ -47,26 +51,25 @@ fn now_ms() -> i64 {
 /// 启动一个交互式 PTY 进程（`sh -c` 支持整条命令 / 管道 / 重定向）
 #[tauri::command]
 pub fn pty_spawn(command: String, cwd: Option<String>) -> Result<u32, String> {
-    pty_spawn_with(command, cwd, None, None)
+    pty_spawn_with(command, cwd, None)
 }
 
-/// 同 `pty_spawn`，但可按沙箱模式包裹（吸收自 Codex 的 SandboxMode）：
+/// 同 `pty_spawn`，但可按沙箱配置包裹（吸收自 Codex 的 SandboxMode）：
 /// `read-only` / `workspace-write` → 用 `/usr/bin/sandbox-exec -p <profile> sh -c <cmd>` 启动；
 /// 沙箱不可用时自动降级。用户自己开的 PTY 面板（`pty_spawn`）不加沙箱（等同用户手动敲命令）。
 pub fn pty_spawn_with(
     command: String,
     cwd: Option<String>,
-    sandbox_mode: Option<&str>,
-    workspace: Option<&str>,
+    sandbox: Option<&SandboxConfig>,
 ) -> Result<u32, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let (prog, args, applied) =
-        crate::sandbox::build_exec(sandbox_mode.unwrap_or("off"), workspace, &home, &command);
+    let cfg = sandbox.cloned().unwrap_or_default();
+    let (prog, args, applied) = crate::sandbox::build_exec(&cfg, &command);
     if applied {
         eprintln!(
-            "[sandbox] PTY 已加沙箱启动（mode={}，工作区={}）",
-            sandbox_mode.unwrap_or(""),
-            workspace.unwrap_or("-")
+            "[sandbox] PTY 已加沙箱启动（mode={}，工作区={}，网络={:?}）",
+            cfg.mode,
+            cfg.workspace.as_deref().unwrap_or("-"),
+            cfg.network
         );
     }
     let pty_system = native_pty_system();
@@ -286,13 +289,27 @@ async fn collect_output(id: u32, yield_ms: u64) -> Result<ExecResult, String> {
 /// 继续 `write_stdin` 交互/取输出。
 #[tauri::command]
 pub async fn exec_command_agent(
+    db: State<'_, Database>,
     command: String,
     cwd: Option<String>,
     yield_ms: Option<u64>,
     sandbox_mode: Option<String>,
     workspace: Option<String>,
 ) -> Result<ExecResult, String> {
-    let id = pty_spawn_with(command, cwd, sandbox_mode.as_deref(), workspace.as_deref())?;
+    // 沙箱配置由 Rust 从设置合成（前端参数仅作可选覆盖）——不依赖前端记得传，
+    // 否则漏传一处就是一个沙箱绕过口。
+    let cfg = crate::sandbox_config_for(&db, sandbox_mode.as_deref(), workspace.as_deref());
+    exec_command_agent_with(command, cwd, yield_ms, Some(&cfg)).await
+}
+
+/// `exec_command_agent` 的可单测核心（不依赖 Tauri State）。
+pub async fn exec_command_agent_with(
+    command: String,
+    cwd: Option<String>,
+    yield_ms: Option<u64>,
+    sandbox: Option<&SandboxConfig>,
+) -> Result<ExecResult, String> {
+    let id = pty_spawn_with(command, cwd, sandbox)?;
     collect_output(id, yield_ms.unwrap_or(1000)).await
 }
 
@@ -385,7 +402,7 @@ mod tests {
     /// exec_command：一次性命令 —— 拿到输出、进程已结束、退出码 0
     #[tokio::test]
     async fn exec_command_captures_output_and_exit_code() {
-        let r = exec_command_agent("echo hi-exec".into(), None, Some(3000), None, None)
+        let r = exec_command_agent_with("echo hi-exec".into(), None, Some(3000), None)
             .await
             .unwrap();
         assert!(r.output.contains("hi-exec"), "输出: {:?}", r.output);
@@ -398,7 +415,7 @@ mod tests {
     /// write_stdin：驱动**交互式**进程（read 阻塞等输入 → 写入后回显）
     #[tokio::test]
     async fn write_stdin_feeds_interactive_process() {
-        let r = exec_command_agent("read x; echo got:$x".into(), None, Some(300), None, None)
+        let r = exec_command_agent_with("read x; echo got:$x".into(), None, Some(300), None)
             .await
             .unwrap();
         assert!(r.running, "read 应仍在等待输入，实际: {:?}", r.output);
@@ -414,11 +431,10 @@ mod tests {
     /// yield_ms 到期但进程仍在运行：返回 running=true（**不杀进程**），可继续取输出
     #[tokio::test]
     async fn exec_command_keeps_long_running_process_alive() {
-        let r = exec_command_agent(
+        let r = exec_command_agent_with(
             "echo first; sleep 2; echo second".into(),
             None,
             Some(300),
-            None,
             None,
         )
         .await

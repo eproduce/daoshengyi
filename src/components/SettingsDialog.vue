@@ -13,7 +13,7 @@ import { DEFAULT_STYLE_ID, OUTPUT_STYLES, getOutputStyle } from "@/utils/output-
 // 主题偏好（含「跟随系统」）——纯逻辑在 utils/theme.ts，composable 只负责响应式与落地
 import { useTheme } from "@/composables/useTheme";
 import { themePrefHint, themePrefLabel, resolveTheme, type ThemePref } from "@/utils/theme";
-import type { HookRuleShape } from "@/api/appSettings";
+import type { HookRuleShape, SandboxNetwork } from "@/api/appSettings";
 import { notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
@@ -303,6 +303,28 @@ const sandboxMode = ref<"off" | "read-only" | "workspace-write">(
 function onSandboxModeChange(mode: "off" | "read-only" | "workspace-write") {
   sandboxMode.value = mode;
   updateSettings({ sandboxMode: mode });
+}
+
+// 沙箱网络策略：allow（默认）/ loopback-only / deny
+// 说明：`loopback-only` 是「断开外网但放行本机」——既能防「注入后把数据外发」，
+// 又保留「让命令调本机 dev server / 本机 API」这类常用用法（纯 deny 会连回环一起断）。
+const SANDBOX_NETWORKS: { value: SandboxNetwork; label: string; desc: string }[] = [
+  { value: "allow", label: "不限", desc: "默认：沙箱只限制文件写入，不限制网络" },
+  {
+    value: "loopback-only",
+    label: "只通本机",
+    desc: "断开外网，但放行 127.0.0.1（可调本机 dev server / 本机 API）",
+  },
+  {
+    value: "deny",
+    label: "完全断网",
+    desc: "外网与本机回环全断（unix socket / ssh-agent 也不可用）",
+  },
+];
+const sandboxNetwork = ref<SandboxNetwork>(getSettings().sandboxNetwork || "allow");
+function onSandboxNetworkChange(v: SandboxNetwork) {
+  sandboxNetwork.value = v;
+  updateSettings({ sandboxNetwork: v });
 }
 
 // 辅助任务模型（用于 Smart 审批 / 子代理等）：空 = 跟随主模型
@@ -874,10 +896,26 @@ function handleDelete() {
                 </button>
               </div>
               <span class="form-hint">
-                Agent 执行的命令（run_command / exec_command）与快捷键 /run 均受此限制；用户自己开的
-                PTY 面板不受影响。“工作区可写”需先在「快捷键」页设置工作区目录；系统缺少
-                sandbox-exec 时自动降级为不加沙箱（命令不会因此失败）。
+                Agent 执行的命令（run_command / exec_command / run_tests / git）与快捷键 /run
+                均受此限制； 用户自己开的 PTY
+                面板不受影响。“工作区可写”需先在「快捷键」页设置工作区目录；系统缺少 sandbox-exec
+                时自动降级为不加沙箱（命令不会因此失败）。
               </span>
+              <div class="approval-modes" style="margin-top: 8px">
+                <button
+                  v-for="n in SANDBOX_NETWORKS"
+                  :key="n.value"
+                  :class="['approval-mode', { active: sandboxNetwork === n.value }]"
+                  @click="onSandboxNetworkChange(n.value)"
+                >
+                  <span class="approval-mode-name">网络 · {{ n.label }}</span>
+                  <span class="approval-mode-desc">{{ n.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint"
+                >网络策略与上面的模式<b>叠加</b>生效（仅在沙箱开启时才有意义）。「只通本机」适合让
+                Agent 一边处理本地服务一边避免把数据外发。</span
+              >
             </div>
 
             <!-- 辅助任务模型 -->

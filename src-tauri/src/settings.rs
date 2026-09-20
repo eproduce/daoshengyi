@@ -97,6 +97,18 @@ pub struct AppSettings {
     /// **默认关闭**：它是唯一「执行模型写出的代码」的入口，必须由用户显式开启。
     #[serde(default)]
     pub code_mode_enabled: bool,
+    /// 命令沙箱模式：`off` / `read-only` / `workspace-write`（见 sandbox.rs）。
+    ///
+    /// ⚠️ 这个字段曾经**只存在于前端**（`appSettings.ts` 的 `sandboxMode`）：
+    /// `save_app_settings` 会把结构体重新序列化后落盘，serde 会默默丢弃结构体里没有的键
+    /// ——于是用户在 UI 里选的沙箱模式**保存后就丢了**，重启回到 off，
+    /// 「命令沙箱」在真实使用中一直等于没开。补上字段才真正可用。
+    #[serde(default = "default_sandbox_mode")]
+    pub sandbox_mode: String,
+    /// 命令沙箱的网络策略：`allow`（默认，不限）/ `loopback-only`（断外网、放行本机）/
+    /// `deny`（全断，含本机回环）。解析失败一律回退 `allow`（sandbox.rs 里的纯函数负责）。
+    #[serde(default = "default_sandbox_network")]
+    pub sandbox_network: String,
     /// 全局快捷键：显示/隐藏主窗口（Phase 5，可自定义；默认 CommandOrControl+Shift+Space）
     #[serde(default = "default_shortcut_toggle")]
     pub global_shortcut_toggle: String,
@@ -158,6 +170,18 @@ pub struct AppSettings {
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
 pub const DEFAULT_SHORTCUT_NEW_CHAT: &str = "CommandOrControl+Shift+K";
 pub const DEFAULT_BROWSER_ENGINE: &str = "auto";
+/// 命令沙箱的网络策略默认值：`allow`（不限）——保持历史行为，不因升级而忽然断网
+pub const DEFAULT_SANDBOX_NETWORK: &str = "allow";
+/// 命令沙箱模式默认值：`off`（不加沙箱）——保持历史行为
+pub const DEFAULT_SANDBOX_MODE: &str = "off";
+
+fn default_sandbox_mode() -> String {
+    DEFAULT_SANDBOX_MODE.to_string()
+}
+
+fn default_sandbox_network() -> String {
+    DEFAULT_SANDBOX_NETWORK.to_string()
+}
 
 fn default_shortcut_toggle() -> String {
     DEFAULT_SHORTCUT_TOGGLE.to_string()
@@ -212,6 +236,8 @@ impl Default for AppSettings {
             rag_kb: String::new(),
             file_edit_confirm: false,
             code_mode_enabled: false,
+            sandbox_mode: default_sandbox_mode(),
+            sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
@@ -477,6 +503,8 @@ mod tests {
             rag_kb: String::new(),
             file_edit_confirm: false,
             code_mode_enabled: false,
+            sandbox_mode: default_sandbox_mode(),
+            sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
@@ -541,6 +569,8 @@ mod tests {
             rag_kb: String::new(),
             file_edit_confirm: false,
             code_mode_enabled: false,
+            sandbox_mode: default_sandbox_mode(),
+            sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
             im_config: serde_json::json!({}),
@@ -561,5 +591,45 @@ mod tests {
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// 前端用到的设置键，必须能在 Rust 结构体里往返。
+    ///
+    /// 教训（2026-09-20）：`sandboxMode` 曾经**只存在于前端**（`appSettings.ts`），
+    /// 而 `save_app_settings` 会把结构体重新序列化后落盘 → serde 静默丢弃结构体里没有的键
+    /// → 用户在 UI 里选完沙箱模式，**保存后就丢了、重启回到 off**，
+    /// 也就是「命令沙箱」这个安全功能在真实使用中一直等于没开（数据库里查不到该键即为证据）。
+    /// 这类缺陷编译不报错、UI 当场看着也正常，只有重启或查库才暴露——所以用测试钉住。
+    #[test]
+    fn frontend_settings_keys_survive_round_trip() {
+        use serde_json::json;
+        // 以默认设置为基底（前端每次保存发的就是完整对象），再注入前端用的键
+        let mut v = serde_json::to_value(AppSettings::default()).unwrap();
+        v["sandboxMode"] = json!("workspace-write");
+        v["sandboxNetwork"] = json!("loopback-only");
+        v["codeModeEnabled"] = json!(true);
+
+        let s: AppSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.sandbox_mode, "workspace-write");
+        assert_eq!(s.sandbox_network, "loopback-only");
+        assert!(s.code_mode_enabled);
+
+        let back = serde_json::to_value(&s).unwrap();
+        assert_eq!(back["sandboxMode"], "workspace-write");
+        assert_eq!(back["sandboxNetwork"], "loopback-only");
+        assert_eq!(back["codeModeEnabled"], true);
+    }
+
+    #[test]
+    fn sandbox_defaults_keep_old_behavior() {
+        // 旧数据里没有这两个键 → 必须回到「不加沙箱、网络不限」，不能因为升级而忽然改变行为
+        let mut v = serde_json::to_value(AppSettings::default()).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("sandboxMode");
+        obj.remove("sandboxNetwork");
+
+        let s: AppSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.sandbox_mode, DEFAULT_SANDBOX_MODE);
+        assert_eq!(s.sandbox_network, DEFAULT_SANDBOX_NETWORK);
     }
 }
