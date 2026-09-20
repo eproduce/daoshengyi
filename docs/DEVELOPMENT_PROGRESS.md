@@ -23,7 +23,8 @@
   **语义检索已真正可用**（嵌入模型硬链接导入，零额外磁盘）
 - **可扩展/可控**：回收站删除 · 行锚点编辑 · 声明式权限规则 · 生命周期钩子 · 压缩阶梯 · 自动续跑规则表 · 决策日志 · 回复风格 · 技能外部导入 · 失败台账 · 确定性图像核验
 - **界面**：主题支持**跟随系统**（实时监听系统外观）· 设置导航按用户意图分 5 组
-- **代码执行**：`run_code` 沙箱（可终止 Worker、无文件/网络/系统能力、能力只经工具桥、**默认关闭**）
+- **代码执行**：`run_code` 沙箱（可终止 Worker、无文件/网络/系统能力、能力只经工具桥、**默认关闭**）；
+  打包版（WKWebView）实机**验证通过 2026-09-20**（module worker 可用）
 - **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
   **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
@@ -141,6 +142,13 @@
 `undefined`；`await fetch(...)` 抛 TypeError 被 catch 捕获；Python 代码 → 归类成「只接受 JS，
 要跑环境命令请用 run_command」；`while(true){}` 在 600ms 被强制终止；循环引用返回值渲染成
 `{n: 1, self: [循环引用]}`。生产产物（`dist/assets/run-code.worker-*.js`）同样逐项验证通过。
+
+**打包版（WKWebView）实机验证通过（2026-09-20，用户操作）**：这一步专门验证「module worker
+在 Tauri 的 WKWebView 里能否用」——它是本次唯一无法在本地闭环的环节（本机只能用 Chromium
+测，而 `worker.format: "es"` 的产物依赖浏览器支持 module worker）。结论：**可用**。
+背景值得记一笔：这个项目的 WKWebView 已经连着踩过 **lookbehind 正则白屏**、**`.at()` 不兼容**、
+**HTML5 拖放不派发 drop**、**`alert/confirm` 关不掉**、**`<a download>` 无效**——所以这里
+不能想当然，必须实机确认。
 
 ### ② 修掉「`Publish GitHub Release` 从来没成功过」（`81d16a3`）
 
