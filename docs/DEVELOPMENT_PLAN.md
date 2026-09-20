@@ -329,7 +329,7 @@
 | O5 | IM 配对审批 | 「直连 webhook 推送」→「未知发送者配对码审批」 | 中 | 🟡 | ✅ 2026-09-08 |
 | O6 | 安全审计自检 | 「HealthPanel 基础诊断」→「doctor 式配置审计（execpolicy/白名单/密钥/沙箱）」 | 中 | 🟡 | ✅ 2026-09-04 |
 | O7 | 插件化 SDK | 「内置工具 + 外部 MCP」→「应用自身插件注册表/契约」 | 高 | 🔵 | — |
-| O8 | OS 执行沙箱 | 「宿主 sh -c 直跑」→「可选 sandbox-exec 轻量隔离」 | 高 | 🔵 | — |
+| O8 | OS 执行沙箱 | 「宿主 sh -c 直跑」→「可选 sandbox-exec 轻量隔离」 | 高 | 🔵 | ✅ 2026-09-20（**早已实现但一直没生效**，见下） |
 | O9 | 模型 provider 注册表 | 「baseUrl 硬编码」→「provider 声明式注册（auth 向导）」 | 中 | 🔵 | — |
 | O10 | 多渠道/设备节点 | 「3 平台推送」→「渠道插件化 + 配对」 | 低 | 🔵 | — |
 
@@ -359,6 +359,13 @@
 - **第三批（🔵 远期）**：
   - **O7 插件化 SDK（最重）**：设计最小插件契约——manifest（id/name/version/工具列表/入口）+ 外部进程插件（stdio JSON-RPC，复用 mcp.rs 协议，但注册进「应用内置工具表」而非仅外部 MCP 列表）+ 前端插件市场页（对接自定义/本地目录源，不依赖 ClawHub 网络）。思路借鉴 ClawHub 注册表 + 插件 SDK，协议与运行时不照搬。
   - **O8 OS 沙箱**：命令执行加可选 `sandbox-exec`（macOS 轻量 profile：只读系统区 + 可写工作区 + 可选无网络），与 execpolicy 叠加。
+    **✅ 2026-09-20 完成（`aa57a0e`）**——注意：三种模式 + UI 入口**早已存在**（吸收自 Codex 的
+    SandboxMode），但排查发现它在真实使用中「基本等于没开」，另有三处缺口，一并修掉：
+    ① 设置存不下来（`sandboxMode` 只在前端，Rust 结构体没这个字段 → 保存时被 serde 丢弃，
+    重启回 off）；② `git` / `run_tests` 直接起进程、**完全绕过沙箱**；③ 路径不解析符号链接
+    （`$TMPDIR` = `/var/folders/...`）导致「工作区内写入也被拒」，并且漏放行系统临时区。
+    另新增网络策略三态：`allow` / `loopback-only`（断外网、放行本机）/ `deny`；
+    真机 e2e 3 项（`cargo test --lib sandbox:: -- --ignored`）钉住实际拦截行为。
   - **O9 provider 注册表**：模型设置改声明式（name/baseUrl/apiKey 来源/auth 向导/定价表），可导出导入。
   - **O10 渠道/设备节点**：待 O7 落地后以插件形式扩展，本轮不做。
 - 每项实现后回填本节的「✅ 已完成」标注并同步 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`。

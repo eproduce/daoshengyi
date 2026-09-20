@@ -8,11 +8,11 @@
 
 ## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `81d16a3`，工作区干净）
+### 当前状态（origin/main = `aa57a0e`，工作区干净）
 - **版本 `1.0.0-alpha.2`**（三处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`；
   `package-lock.json`、`Cargo.lock` 一并跟进）
 - **内置工具 83 个**（本轮新增 `log_decision`、`image_inspect`、`run_code`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `33 files / 460 passed`；cargo `198 passed / 10 ignored`（含真机 e2e：图像核验、嵌入全链路）
+- **测试**：vitest `33 files / 460 passed`；cargo `211 passed / 13 ignored`（含真机 e2e：图像核验、嵌入全链路、**命令沙箱 3 项**）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
@@ -25,10 +25,14 @@
 - **界面**：主题支持**跟随系统**（实时监听系统外观）· 设置导航按用户意图分 5 组
 - **代码执行**：`run_code` 沙箱（可终止 Worker、无文件/网络/系统能力、能力只经工具桥、**默认关闭**）；
   打包版（WKWebView）实机**验证通过 2026-09-20**（module worker 可用）
+- **命令沙箱**：`sandbox-exec` 三模式（off / read-only / workspace-write）+ 网络策略三态
+  （allow / loopback-only / deny）；覆盖 run_command / exec_command / run_tests / git（**此前后两条能绕过**）；
+  真机 e2e 钉住实际拦截行为（`cargo test --lib sandbox:: -- --ignored`）
 - **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
   **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
-- **待做**：P2 各项 · 云端视觉档（需用户配 Key）
+- **待做**：P2 各项（代码知识图谱 / 数据库只读连接器 / 文档→Markdown·文献引用 / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）·
+  O7 插件化 SDK（后续重点）· O10 渠道/设备节点（依赖 O7）· 云端视觉档（需用户配 Key）· IM 真实凭据实连
 
 ---
 
@@ -54,6 +58,53 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-20（O8 命令沙箱：早已实现却一直没生效——修 4 个真缺陷）
+
+O8 的三种模式（off / read-only / workspace-write）+ UI 入口**其实早就存在**（吸收自 Codex 的
+SandboxMode），计划表里的「未做」是错的。但真机核下去，这个安全功能在真实使用中「基本等于
+没开」，而且沙箱本身还有绕过口——**四类缺陷**（`aa57a0e`）：
+
+| # | 缺陷 | 为什么危险 / 怎么发现的 |
+| --- | --- | --- |
+| ① | **设置存不下来** | `sandboxMode` 只存在于前端 `appSettings.ts`，Rust 的 `AppSettings` 没这个字段；而 `save_app_settings` 会把结构体**重新序列化**后落盘 → serde 静默丢弃未知键 → 用户选完沙箱模式**保存后就丢、重启回到 off**。直接查库拿到证据：37 个键里有 `allowedPaths`/`codeModeEnabled`，**没有 `sandboxMode`** |
+| ② | **git / run_tests 完全绕过沙箱** | 这两条路径原来是直接 `Command::new(...)` 起进程 → `read-only`（禁一切写入）下仍可借 `run_tests(command: "touch /Users/xx/y")` 往区外写、用 `git clone` 写到任意目录。**「沙箱开着但能被绕过」比没沙箱更危险**（会给人虚假的安全感） |
+| ③ | **工作区内写入也被拒** | Seatbelt 按**真实路径**匹配，而 `/var`→`/private/var`。原实现不解析符号链接 → 把 `$TMPDIR`（`/var/folders/...`）当工作区时，「允许写入工作区」根本不生效 = 功能不可用 |
+| ④ | **漏放行系统临时区** | `$TMPDIR` 不在放行列表里，而 cargo/npm/node 都往里写临时文件 → 沙箱「严到不可用」（实测 `echo hi > $TMPDIR/x` 被拒） |
+
+**③ 是被新加的真机 e2e 抓出来的**，不是读代码看出来的——这也是本批最重要的方法论收获：
+此前 `sandbox.rs` 的 7 个单测**只断言 profile 文本**，而 SBPL 语法写错时 `sandbox-exec` 会
+直接失败、**沙箱静默不生效**。「文本正确」根本推不出「真的拦住了」。
+
+**新增：网络策略三态**（与模式叠加，仅在沙箱开启时生效）
+
+| 值 | 行为 | 用途 |
+| --- | --- | --- |
+| `allow`（默认） | 不限 | 保持历史行为，不因升级忽然断网 |
+| `loopback-only` | **断开外网、放行本机** | 既防「注入后把数据外发」，又保留「让命令调本机 dev server / 本机 API」——纯 deny 会把回环一起断掉 |
+| `deny` | 全断（含回环；unix socket / ssh-agent 一并不可用） | 最严 |
+
+> ⚠️ SBPL 的网络过滤器只认 `(remote ip "localhost:*")`；写成 `127.0.0.1:*` 会让**整个 profile
+> 解析失败**（沙箱静默不生效）——这种"看起来更精确"的改法最危险，已用单测钉住。
+
+**真机 e2e 3 项**（`cargo test --lib sandbox:: -- --ignored`）：工作区内可写 / 区外被拒且文件
+不落地、argv 形态命令同样被拦（**带"不加沙箱应成功"的对照组**，防测试空转）、网络三态对本机
+连接的行为。网络那条刻意**只用本机监听**：最初版本连的是 `https://example.com`，结果因实时
+网络波动误报（连不加沙箱的裸 curl 都失败了）——引入外部依赖的测试只会制造假失败。
+
+**结构收敛**：命令执行路径统一由 `sandbox_config_for` 从设置合成配置（前端漏传参数也不会让
+沙箱悄悄失效）；重复的读设置代码收敛到 `settings_plain`；`pty.rs` 抽出 `exec_command_agent_with`
+以便单测（命令层带 `State` 后无法直接构造）。
+
+**回归测试**：`frontend_settings_keys_survive_round_trip`（前端用到的键必须能往返——这类缺陷
+编译不报错、UI 当场看着也正常，只有重启或查库才暴露）、`sandbox_defaults_keep_old_behavior`、
+`network_loopback_only_uses_the_only_filter_syntax_that_parses`、`every_mode_allows_the_real_system_temp_dir`、
+`symlinked_path_is_recorded_in_resolved_form_too` 等。
+
+### 门禁
+`npm run ci:local` —— 8 项全绿（vitest 33 files / 460 项；cargo **211 passed / 13 ignored**）。
 
 ---
 
