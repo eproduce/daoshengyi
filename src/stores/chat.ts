@@ -36,6 +36,8 @@ import { withBrowserLock } from "@/utils/browser-lock";
 import { BUILTIN_TOOLS } from "@/data/builtin-tools";
 // 融合 Codex（openai/codex）的 apply_patch：解析其补丁格式并翻译成既有 apply_edits 操作
 import { parseCodexPatch, hunksToEdits, summarizePatch } from "@/utils/codex-patch";
+// 会话级「不再询问」的作用域规则（纯粹函数：同类互助、编辑与删除分开）
+import { permitLabel, permitsSatisfy, toolGroup } from "@/utils/session-permits";
 // code-mode：run_code 在可终止的沙箱 Worker 里跑模型写的 JS，能力只经 tools.* 工具桥
 import { formatCodeRunResult, runCodeInWorker } from "@/utils/code-runner";
 
@@ -367,14 +369,27 @@ function bumpModeHist(id: AgentModeId) {
 // 用户在某文件操作确认弹窗勾选「本会话内不再询问」后，该工具后续调用自动放行（仅本会话有效）。
 const sessionPermits = reactive<Set<string>>(new Set());
 function hasSessionPermit(tool: string): boolean {
-  return sessionPermits.has(tool);
+  return permitsSatisfy(sessionPermits, tool);
 }
 function rememberSessionPermit(tool: string): boolean {
   sessionPermits.add(tool);
+  dbg(`[permit] 本会话放行 ${tool}（同类：${(toolGroup(tool) ?? [tool]).join(" / ")}）`);
   return true;
 }
 function clearSessionPermits() {
   sessionPermits.clear();
+}
+
+/// 文件编辑类确认是否需要弹窗。
+/// 会话内已放行 → 不再弹，并留一条日志 —— 用户反馈「勾选好像没效果」时，
+/// 日志里能直接看出到底是没记住、还是被另一个工具名又拦了一次。
+function needEditConfirm(tool: string): boolean {
+  if (!getSettings().fileEditConfirm) return false;
+  if (hasSessionPermit(tool)) {
+    dbg(`[permit] ${tool} 本会话已放行 → 跳过确认`);
+    return false;
+  }
+  return true;
 }
 
 // --- P1-4 声明式权限规则：deny（硬拦截）/ ask（每次必须确认）/ allow（本会话免确认） ---
@@ -2825,7 +2840,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         }
         const edits = hunksToEdits(f.hunks);
         // 与 replace_string 相同的人工确认路径（开启「文件编辑需确认」时逐文件预览 diff）
-        if (getSettings().fileEditConfirm && !hasSessionPermit("apply_patch")) {
+        if (needEditConfirm("apply_patch")) {
           const preview = await invoke<{ diff: string; summary: string }>("apply_edits", {
             path: f.path,
             edits,
@@ -2839,7 +2854,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
             edits,
             tool: "apply_patch",
             args: { path: f.path, edits },
-            rememberLabel: "本会话内不再询问 apply_patch",
+            rememberLabel: permitLabel("apply_patch"),
           });
           if (!ok) {
             out.push(`⚠️ 用户拒绝了 ${f.path} 的修改（该文件未改动）`);
@@ -3242,7 +3257,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         },
       ];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
-      if (getSettings().fileEditConfirm && !hasSessionPermit("replace_string")) {
+      if (needEditConfirm("replace_string")) {
         const preview = await invoke<{
           path: string;
           diff: string;
@@ -3257,7 +3272,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
           edits,
           tool: "replace_string",
           args: { ...args },
-          rememberLabel: "本会话内不再询问 replace_string",
+          rememberLabel: permitLabel("replace_string"),
         });
         if (!ok)
           return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
@@ -3288,7 +3303,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const position = String(args.position || "before");
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
-      if (getSettings().fileEditConfirm && !hasSessionPermit("insert_string")) {
+      if (needEditConfirm("insert_string")) {
         const preview = await invoke<{
           path: string;
           diff: string;
@@ -3303,7 +3318,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
           edits,
           tool: "insert_string",
           args: { ...args },
-          rememberLabel: "本会话内不再询问 insert_string",
+          rememberLabel: permitLabel("insert_string"),
         });
         if (!ok)
           return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
@@ -3335,13 +3350,13 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const path = String(args.path || "");
       if (!path) throw new Error("delete_file 需要 path 参数");
       // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除（会话内已允许则直接放行）
-      if (getSettings().fileEditConfirm && !hasSessionPermit("delete_file")) {
+      if (needEditConfirm("delete_file")) {
         const ok = await requestEditConfirm({
           kind: "delete",
           path,
           tool: "delete_file",
           args: { ...args },
-          rememberLabel: "本会话内不再询问 delete_file",
+          rememberLabel: permitLabel("delete_file"),
         });
         if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
       }

@@ -13,7 +13,12 @@ const remember = ref(false);
 function apply() {
   const r = req.value;
   if (!r) return;
-  if (remember.value && r.tool) chatStore.rememberSessionPermit(r.tool);
+  const granted = remember.value && !!r.tool;
+  if (granted) chatStore.rememberSessionPermit(r.tool);
+  // ⚠️ 必须复位：弹窗组件是常驻的（只有内层 div 有 v-if），不复位的话
+  // 「为编辑勾过一次」会让之后弹出的**删除确认**默认已勾选 —— 手一快就顺手放行了删除。
+  // 每次确认都应当是独立的、需要用户重新表达意愿的。
+  remember.value = false;
   chatStore.resolveEditConfirm(true);
 }
 function reject() {
