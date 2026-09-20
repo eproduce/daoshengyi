@@ -2,7 +2,9 @@
 
 > 参考 OpenAI Codex（编程 Agent 标杆产品）的能力模型，结合道生一「本地优先 + 国产模型（DeepSeek）」的产品定位制定。
 >
-> 最后更新：2026-09-02（新增 §3.2 OpenClaw 能力整合对照——借鉴机制不抄袭实现，详见开发计划 §3.13 与 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`）
+> 最后更新：2026-09-20（发版到 `v1.0.0-alpha.3`；落地进度见 `docs/DEVELOPMENT_PROGRESS.md`，逐项状态见 `docs/DEVELOPMENT_PLAN.md`）
+>
+> **发版记录**：`v1.0.0-alpha.2`（2026-09-18，首个成功发布的 Release）→ `v1.0.0-alpha.3`（2026-09-20，定时任务静默停摆修复 + 会话放行作用域修复）。发布入口只有一个：推 `v*` 标签。
 
 ---
 

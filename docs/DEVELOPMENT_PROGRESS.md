@@ -8,9 +8,11 @@
 
 ## 2026-09-18（进度快照）
 
-### 当前状态（origin/main = `1486978`，工作区干净）
+### 当前状态（origin/main = `0b77bd2`，工作区干净）
 - **版本 `1.0.0-alpha.3`**（五处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`
-  + `package-lock.json` / `Cargo.lock`）
+  + `package-lock.json` / `Cargo.lock`）；本地已装到 `/Applications/道生一.app` 并启动正常
+- **本地已知唯一滞后**：`1.0.0-alpha.3` 的 Release 由 CI 产出（推 `v1.0.0-alpha.3` 标签触发），
+  与本地构建同源；若只想要安装包，直接用 CI 资产，不必等本地重编
 - **内置工具 83 个**（本轮新增 `log_decision`、`image_inspect`、`run_code`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
 - **测试**：vitest `34 files / 472 passed`；cargo `216 passed / 13 ignored`（含真机 e2e：图像核验、嵌入全链路、**命令沙箱 3 项**）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
@@ -30,9 +32,20 @@
   真机 e2e 钉住实际拦截行为（`cargo test --lib sandbox:: -- --ignored`）
 - **可诊断性**：定时任务执行写入应用日志（打包版 stderr 不可见）· 会话放行写 `[permit]` 日志
   （下次再出现「为什么又问」可直接查证）
-- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-18 07:51 重建）；
-  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-*` 可回滚）。
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-20 22:10 重建，alpha.3）；
+  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-2211` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
+
+### 下一步（下次开工从这行接着做）
+1. **静默失效巡检 ②：IM 网关可验证部分**（纯函数解密/配置往返/错误分支，无需真实凭据）——
+   与定时任务同一类风险：功能“写了但没跑过”
+2. **定时任务扫尾**（剩余项）：递归推进与「错过补跑」的纯函数单测（今天只修了致命 panic，
+   没来得及补 `compute_next_run` 的边界用例）
+3. **O7 插件化 SDK**：先出**契约设计**给人看，确认后再写代码（用户标注为后续重点）
+4. **P2 第一项：代码知识图谱**（复用 `code_index` / `code_search` + `kb_chunks`）
+5. 需你配合：云端视觉档（API Key）· IM 真实凭据实连
+
+### 已知/未做
 - **待做**：P2 各项（代码知识图谱 / 数据库只读连接器 / 文档→Markdown·文献引用 / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）·
   O7 插件化 SDK（后续重点）· O10 渠道/设备节点（依赖 O7）· 云端视觉档（需用户配 Key）· IM 真实凭据实连
 
