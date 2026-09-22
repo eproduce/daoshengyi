@@ -901,6 +901,45 @@ fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
     }
 }
 
+/// 定时任务单次执行的超时（秒）：到点未结束就杀掉整个进程组。
+/// 调度器是**串行**的，一条挂住的命令会把整条调度线程堵死（其它任务全部不再执行），
+/// 所以超时不是可选项。
+const SCHEDULED_TASK_TIMEOUT_SECS: u64 = 300;
+
+/// 执行一条定时任务命令，返回（给用户看的输出文本，退出码）。
+///
+/// 复用 run_command 同款执行路径 `run_shell_command_with`（并发读取 stdout/stderr、
+/// 超时后 kill 整个进程组、走 shell 语义），而不是另写一份 `Command::new("/bin/sh")`：
+/// 后者没有超时（一个卡住的任务 = 所有定时任务静默停摆），且两处行为会逐渐漂移。
+async fn exec_scheduled_command(cmd_str: &str) -> (String, Option<i64>) {
+    let res = run_shell_command_with(cmd_str, None, Some(SCHEDULED_TASK_TIMEOUT_SECS), None).await;
+    match res {
+        Ok(o) => {
+            let mut s = o.stdout.trim().to_string();
+            let err = o.stderr.trim();
+            if !err.is_empty() {
+                s = format!("{}{}{}", s, if s.is_empty() { "" } else { "\n" }, err);
+            }
+            if o.timed_out {
+                s = format!(
+                    "(超时 {}s 未结束，已终止进程组)\n{}",
+                    SCHEDULED_TASK_TIMEOUT_SECS, s
+                );
+            }
+            if s.is_empty() {
+                s = format!("(退出码 {})", o.exit_code);
+            }
+            (s, Some(o.exit_code as i64))
+        }
+        Err(e) => (format!("(执行失败: {})", e), None),
+    }
+}
+
+/// 同步版：调度线程是 `std::thread`，block_on 到同一个 tokio 运行时
+fn exec_scheduled_command_blocking(cmd_str: &str) -> (String, Option<i64>) {
+    tauri::async_runtime::block_on(exec_scheduled_command(cmd_str))
+}
+
 #[tauri::command]
 fn list_scheduled_tasks(db: State<Database>) -> Result<Vec<db::ScheduledTaskRow>, String> {
     db.list_scheduled_tasks()
@@ -919,6 +958,54 @@ fn delete_scheduled_task(db: State<Database>, id: String) -> Result<(), String> 
 #[tauri::command]
 fn toggle_scheduled_task(db: State<Database>, id: String, enabled: bool) -> Result<(), String> {
     db.set_scheduled_task_enabled(&id, enabled)
+}
+
+/// 「立即运行」返回给前端的结果
+#[derive(serde::Serialize)]
+struct TaskRunReport {
+    exit_code: Option<i64>,
+    duration_ms: i64,
+    result: String,
+}
+
+/// 立即运行一次定时任务（**不改动** next_run_at）：即时验证配置对不对，不必等下次调度。
+#[tauri::command]
+async fn run_scheduled_task_now(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    id: String,
+) -> Result<TaskRunReport, String> {
+    let task = db
+        .list_scheduled_tasks()?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or("任务不存在")?;
+    let started = chrono::Utc::now().timestamp_millis();
+    let (result, exit_code) = exec_scheduled_command(&task.command).await;
+    let finished = chrono::Utc::now().timestamp_millis();
+    let clipped = clip_output(&result, 1000);
+    let mut updated = task.clone();
+    updated.last_run_at = Some(started);
+    updated.last_result = Some(clipped.clone());
+    updated.last_exit_code = exit_code;
+    db.save_scheduled_task(&updated)?;
+    let code_text = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "启动失败".to_string());
+    append_log(
+        &app,
+        &format!(
+            "[scheduler] 手动运行「{}」（{}ms，退出码 {}）",
+            updated.name,
+            finished - started,
+            code_text
+        ),
+    );
+    Ok(TaskRunReport {
+        exit_code,
+        duration_ms: finished - started,
+        result: clipped,
+    })
 }
 
 // --- 长任务防休眠（macOS caffeinate） ---
@@ -6867,34 +6954,8 @@ pub fn run() {
                             let task_name = t.name.clone();
                             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let started = chrono::Utc::now().timestamp_millis();
-                                let output = std::process::Command::new("/bin/sh")
-                                    .arg("-c")
-                                    .arg(&t.command)
-                                    .output();
-                                let result = match output {
-                                    Ok(o) => {
-                                        let mut s = String::from_utf8_lossy(&o.stdout)
-                                            .trim()
-                                            .to_string();
-                                        let e = String::from_utf8_lossy(&o.stderr)
-                                            .trim()
-                                            .to_string();
-                                        if !e.is_empty() {
-                                            s = format!(
-                                                "{}{}{}",
-                                                s,
-                                                if s.is_empty() { "" } else { "\n" },
-                                                e
-                                            );
-                                        }
-                                        if s.is_empty() {
-                                            format!("(退出码 {})", o.status.code().unwrap_or(-1))
-                                        } else {
-                                            s
-                                        }
-                                    }
-                                    Err(e) => format!("(启动失败: {})", e),
-                                };
+                                let (result, exit_code) =
+                                    exec_scheduled_command_blocking(&t.command);
                                 let clipped = clip_output(&result, 1000);
                                 // 用**执行完成时刻**算下次运行：长任务（接近 300s 超时）若用
                                 // 执行前的时刻，算出来的下次时间可能仍在过去 → 下一轮立刻又跑一遍。
@@ -6903,15 +6964,19 @@ pub fn run() {
                                 updated.next_run_at = compute_next_run(&t, finished);
                                 updated.last_run_at = Some(started);
                                 updated.last_result = Some(clipped);
+                                updated.last_exit_code = exit_code;
                                 let _ = db.save_scheduled_task(&updated);
-                                (started, finished)
+                                (started, finished, exit_code)
                             }));
                             match outcome {
-                                Ok((started, finished)) => {
+                                Ok((started, finished, exit_code)) => {
                                     let msg = format!(
-                                        "[scheduler] 已执行「{}」（{}ms）",
+                                        "[scheduler] 已执行「{}」（{}ms，退出码 {}）",
                                         task_name,
-                                        finished - started
+                                        finished - started,
+                                        exit_code
+                                            .map(|c| c.to_string())
+                                            .unwrap_or_else(|| "启动失败".to_string())
                                     );
                                     eprintln!("{}", msg);
                                     append_log(&sched_handle, &msg);
@@ -7095,6 +7160,7 @@ pub fn run() {
             save_scheduled_task,
             delete_scheduled_task,
             toggle_scheduled_task,
+            run_scheduled_task_now,
             set_prevent_sleep,
             debug_log,
             execute_command,
@@ -7840,6 +7906,7 @@ mod tests {
             next_run_at: 0,
             last_run_at: None,
             last_result: None,
+            last_exit_code: None,
             created_at: 0,
         }
     }

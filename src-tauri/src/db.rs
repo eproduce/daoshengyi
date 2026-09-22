@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     next_run_at INTEGER NOT NULL,
     last_run_at INTEGER,
     last_result TEXT,
+    last_exit_code INTEGER,
     created_at INTEGER NOT NULL
 );
 
@@ -258,6 +259,9 @@ pub struct ScheduledTaskRow {
     pub next_run_at: i64,
     pub last_run_at: Option<i64>,
     pub last_result: Option<String>,
+    /// 上次执行的退出码（0 = 成功；负值/None = 启动失败或未跑过；124 语义见超时分支）
+    #[serde(default)]
+    pub last_exit_code: Option<i64>,
     pub created_at: i64,
 }
 
@@ -278,6 +282,11 @@ impl Database {
         let _ = conn.execute("ALTER TABLE memory_facts ADD COLUMN embedding BLOB", []);
         // 旧库迁移：kb_chunks 加 embedding 列（知识库语义向量）
         let _ = conn.execute("ALTER TABLE kb_chunks ADD COLUMN embedding BLOB", []);
+        // 旧库迁移：scheduled_tasks 加「上次退出码」列（UI 用它显示成功/失败徽标）
+        let _ = conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN last_exit_code INTEGER",
+            [],
+        );
         // 旧库迁移：加 cost 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
         // 旧库迁移：加 attachments 列
@@ -723,7 +732,7 @@ impl Database {
     pub fn list_scheduled_tasks(&self) -> Result<Vec<ScheduledTaskRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, created_at FROM scheduled_tasks ORDER BY created_at DESC"
+            "SELECT id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, last_exit_code, created_at FROM scheduled_tasks ORDER BY created_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -738,7 +747,8 @@ impl Database {
                     next_run_at: row.get(7)?,
                     last_run_at: row.get(8)?,
                     last_result: row.get(9)?,
-                    created_at: row.get(10)?,
+                    last_exit_code: row.get(10)?,
+                    created_at: row.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -752,8 +762,8 @@ impl Database {
     pub fn save_scheduled_task(&self, t: &ScheduledTaskRow) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT OR REPLACE INTO scheduled_tasks (id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![t.id, t.name, t.command, t.schedule_type, t.interval_minutes, t.daily_time, t.enabled as i64, t.next_run_at, t.last_run_at, t.last_result, t.created_at],
+            "INSERT OR REPLACE INTO scheduled_tasks (id, name, command, schedule_type, interval_minutes, daily_time, enabled, next_run_at, last_run_at, last_result, last_exit_code, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![t.id, t.name, t.command, t.schedule_type, t.interval_minutes, t.daily_time, t.enabled as i64, t.next_run_at, t.last_run_at, t.last_result, t.last_exit_code, t.created_at],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -2945,6 +2955,99 @@ mod tests {
         // 删除工作流不影响历史（wf_name 快照）
         db.wf_delete(id).unwrap();
         assert_eq!(db.wf_runs(10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    // 定时任务：退出码列的往返（UI 的成功/失败徽标靠它）
+    #[test]
+    fn scheduled_task_exit_code_roundtrip() {
+        let (dir, db) = tmp_db();
+        let mut row = ScheduledTaskRow {
+            id: "t1".into(),
+            name: "巡检".into(),
+            command: "df -h /".into(),
+            schedule_type: "interval".into(),
+            interval_minutes: 30,
+            daily_time: String::new(),
+            enabled: true,
+            next_run_at: 1_700_000_000_000,
+            last_run_at: Some(1_700_000_000_000),
+            last_result: Some("ok".into()),
+            last_exit_code: Some(0),
+            created_at: 1,
+        };
+        db.save_scheduled_task(&row).unwrap();
+        let back = db.list_scheduled_tasks().unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].last_exit_code, Some(0), "退出码要能存能读");
+
+        // 覆盖写回（INSERT OR REPLACE）后是新值，不会变成两条
+        row.last_exit_code = Some(127);
+        row.last_result = Some("command not found".into());
+        db.save_scheduled_task(&row).unwrap();
+        let back2 = db.list_scheduled_tasks().unwrap();
+        assert_eq!(back2.len(), 1);
+        assert_eq!(back2[0].last_exit_code, Some(127));
+
+        // 尚未跑过（NULL）读出来是 None，不是 0 —— 否则 UI 会把「没跑过」显示成「成功」
+        row.id = "t2".into();
+        row.last_run_at = None;
+        row.last_result = None;
+        row.last_exit_code = None;
+        db.save_scheduled_task(&row).unwrap();
+        let t2 = db
+            .list_scheduled_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t2")
+            .unwrap();
+        assert_eq!(t2.last_exit_code, None);
+        cleanup(&dir);
+    }
+
+    /// 旧库（建表时还没有 last_exit_code 列）打开时要自动补列，否则读写直接报错
+    #[test]
+    fn legacy_scheduled_tasks_table_gets_exit_code_column() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds_db_legacy_{}_{}",
+            std::process::id(),
+            TEST_PID.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            // 手工建「旧版」表结构（缺 last_exit_code）并塞一行历史数据
+            let conn = Connection::open(dir.join("daoshengyi.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE scheduled_tasks (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    schedule_type TEXT NOT NULL DEFAULT 'interval',
+                    interval_minutes INTEGER DEFAULT 60,
+                    daily_time TEXT DEFAULT '',
+                    enabled INTEGER DEFAULT 1,
+                    next_run_at INTEGER NOT NULL,
+                    last_run_at INTEGER,
+                    last_result TEXT,
+                    created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scheduled_tasks (id,name,command,schedule_type,interval_minutes,daily_time,enabled,next_run_at,created_at) VALUES ('old','旧任务','echo hi','interval',60,'',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        // 这里会跑幂等迁移：ALTER TABLE ... ADD COLUMN last_exit_code
+        let db = Database::new(dir.clone()).unwrap();
+        let rows = db.list_scheduled_tasks().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "旧任务");
+        assert_eq!(
+            rows[0].last_exit_code, None,
+            "缺失列应读出 NULL → None，而不是查询报错"
+        );
         cleanup(&dir);
     }
 }
