@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, markRaw } from "vue";
+import { ref, computed, watch, onMounted, markRaw, nextTick } from "vue";
 import { VueFlow, useVueFlow } from "@vue-flow/core";
 import WorkflowNodeView from "./WorkflowNodeView.vue";
 import "@vue-flow/core/dist/style.css";
@@ -14,6 +14,7 @@ import {
   type WorkflowNodeType,
 } from "@/utils/workflow-engine";
 import { WORKFLOW_TEMPLATES, materializeTemplate } from "@/data/workflow-templates";
+import { layoutWorkflow } from "@/utils/workflow-layout";
 import { WORKFLOW_NODE_COLORS } from "@/data/workflow-colors";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -31,6 +32,8 @@ import {
   GitBranch,
   Code2,
   Flag,
+  LayoutGrid,
+  Maximize2,
 } from "lucide-vue-next";
 
 const emit = defineEmits<{ close: [] }>();
@@ -101,8 +104,18 @@ const selectedEdgeIsCondition = computed(() => {
   return (src as { data?: { wf?: WorkflowNode } } | undefined)?.data?.wf?.type === "condition";
 });
 
+/// 新节点默认落点：已有节点下方（原来按节点数 x/y 各加 30 会一路斜着叠起来）
+function defaultNewNodePos(): { x: number; y: number } {
+  const list = nodes.value as { position: { x: number; y: number } }[];
+  if (list.length === 0) return { x: 60, y: 60 };
+  const minX = Math.min(...list.map((n) => n.position.x));
+  const maxY = Math.max(...list.map((n) => n.position.y));
+  return { x: minX, y: maxY + 140 };
+}
+
 function addNode(type: WorkflowNodeType, pos?: { x: number; y: number }) {
   const id = uuidv4();
+  const fallback = defaultNewNodePos();
   const wf: WorkflowNode = {
     id,
     type,
@@ -119,8 +132,8 @@ function addNode(type: WorkflowNodeType, pos?: { x: number; y: number }) {
               : type === "code"
                 ? { code: "return input.trim().toUpperCase();" }
                 : {},
-    x: pos?.x ?? 60 + nodes.value.length * 30,
-    y: pos?.y ?? 60 + nodes.value.length * 30,
+    x: pos?.x ?? fallback.x,
+    y: pos?.y ?? fallback.y,
   };
   // 用 vue-flow 的 addNodes 标准 API 而不是直接 push：确保与画布 store 同步、
   // 事件通知与默认属性处理都走正规流程（直接 push 外部 ref 无法保证 store 一致性）
@@ -144,7 +157,7 @@ function addNode(type: WorkflowNodeType, pos?: { x: number; y: number }) {
 // 仍保留 useVueFlow("workflow") 共享 store：screenToFlowCoordinate 依赖真实挂载的
 // viewport 才能把屏幕坐标转成画布坐标（顶层裸调 useVueFlow 会建一个独立的空 store）。
 const canvasRef = ref<HTMLElement | null>(null);
-const { screenToFlowCoordinate, addNodes } = useVueFlow("workflow");
+const { screenToFlowCoordinate, addNodes, setNodes, fitView } = useVueFlow("workflow");
 const dragState = ref<{ type: WorkflowNodeType } | null>(null);
 // 拖拽过程中的视觉反馈：跟随鼠标的半透明节点影像 + 画布是否可放置
 const dragPreview = ref<{ type: WorkflowNodeType; x: number; y: number } | null>(null);
@@ -266,9 +279,16 @@ watch(
 
 function buildGraph(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
   return {
-    // 序列化时剥离运行期状态（runStatus/runOutput），只保留可持久化的定义
+    // 序列化时剥离运行期状态（runStatus/runOutput），只保留可持久化的定义。
+    // 坐标以**画布上的实际位置**为准：手动拖过的节点若不回写，保存/导出后再载入
+    // 会「回到旧位置」，看起来就像「排列没生效」。
     nodes: nodes.value.map((n) => {
-      const wf = { ...(n.data.wf as WorkflowNode), id: n.id };
+      const wf = {
+        ...(n.data.wf as WorkflowNode),
+        id: n.id,
+        x: n.position.x as number,
+        y: n.position.y as number,
+      };
       delete wf.runStatus;
       delete wf.runOutput;
       return wf;
@@ -439,6 +459,7 @@ async function loadWorkflow(id: number) {
     wfName.value = w.name;
     selectedId.value = null;
     selectedEdgeId.value = null;
+    nextTick(() => applyAutoLayout(true)); // 载入后重排（旧存盘里可能有重叠坐标）
     log.value = [`✅ 已载入工作流「${w.name}」：${g.nodes.length} 节点 / ${g.edges.length} 连线`];
   } catch (e) {
     log.value = [`❌ 载入失败：${e instanceof Error ? e.message : String(e)}`];
@@ -492,6 +513,37 @@ function fmtTime(ms: number) {
 }
 onMounted(refreshWorkflows);
 
+/// 自动排列：按拓扑层级把节点重排成整齐的列（纯函数 layoutWorkflow 算坐标），再适应视图。
+/// quiet=true 时不写日志（用于载入模板/导入这类「顺手理一遍」的场景）。
+function applyAutoLayout(quiet = false) {
+  const graph = buildGraph();
+  if (graph.nodes.length === 0) return;
+  const pos = layoutWorkflow(graph.nodes, graph.edges);
+  // 同步回 data.wf：保持与画布位置一致（本地立即生效，便于继续手动微调）
+  for (const n of nodes.value as any[]) {
+    const p = pos[n.id];
+    if (!p) continue;
+    n.position = { x: p.x, y: p.y };
+    const wf = (n.data as { wf?: WorkflowNode }).wf;
+    if (wf) {
+      wf.x = p.x;
+      wf.y = p.y;
+    }
+  }
+  // 用 setNodes 走正规流程（与 addNodes 同理：直接改 ref 无法保证画布 store 同步）
+  setNodes([...(nodes.value as any[])]);
+  if (!quiet) {
+    const cols = new Set(Object.values(pos).map((p) => p.x)).size;
+    log.value = [...log.value, `🔀 已自动排列：${graph.nodes.length} 节点 → ${cols} 列`];
+  }
+  nextTick(() => fitView({ padding: 0.25, duration: 250 }));
+}
+
+/// 缩放到全部节点可见
+function fitAll() {
+  fitView({ padding: 0.25, duration: 250 });
+}
+
 function exportJson() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(
@@ -528,6 +580,7 @@ function importJson(ev: Event) {
           ...(wfEdge.label ? { label: wfEdge.label } : {}),
         };
       });
+      nextTick(() => applyAutoLayout(true)); // 导入后排整齐
     } catch {
       log.value = ["❌ JSON 解析失败"];
     }
@@ -566,6 +619,7 @@ function loadTemplate(ev: Event) {
   });
   selectedId.value = null;
   selectedEdgeId.value = null;
+  nextTick(() => applyAutoLayout(true)); // 载入就排整齐，不用手动点
   log.value = [`✅ 已载入模板「${tpl.name}」：${g.nodes.length} 节点 / ${g.edges.length} 连线`];
 }
 </script>
@@ -640,6 +694,16 @@ function loadTemplate(ev: Event) {
         <button class="wf-btn" @click="deleteCurrentWf"><Trash2 :size="13" /> 删除当前</button>
         <button class="wf-btn" title="刷新我的工作流与运行历史" @click="refreshWorkflows">
           <RotateCw :size="13" />
+        </button>
+        <button
+          class="wf-btn"
+          title="按拓扑层级自动排列节点（整齐的列布局）"
+          @click="applyAutoLayout()"
+        >
+          <LayoutGrid :size="13" /> 自动排列
+        </button>
+        <button class="wf-btn" title="缩放到全部节点可见" @click="fitAll">
+          <Maximize2 :size="13" />
         </button>
         <span v-if="loadedWfName" class="wf-toolbar__loaded">已载入：{{ loadedWfName }}</span>
       </div>
@@ -719,6 +783,8 @@ function loadTemplate(ev: Event) {
           <div class="wf-palette__hint">
             <b>添加节点</b>：拖拽左侧按钮到画布（或直接点击，落在空白处）。<br />
             <b>连线</b>：从节点底部圆点拖到下一个节点顶部。<br />
+            <b>排列</b
+            >：工具栏「自动排列」按层级重排成整齐的列（载入/导入时自动执行一次；手动拖过的位置以画布为准）。<br />
             <b>外部输入</b>：顶部输入框填内容，节点里用
             <code>&#123;&#123;user&#125;&#125;</code> 引用；上游输出用
             <code>&#123;&#123;节点id&#125;&#125;</code>。<br />
@@ -913,11 +979,12 @@ function loadTemplate(ev: Event) {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 10px;
 }
 .wf-dialog {
-  width: min(1180px, 94vw);
-  height: min(780px, 92vh);
+  /* 画布编辑器：尽量吃满屏幕（大屏 1560x1000，小屏按视口 97%/96%） */
+  width: min(1560px, 97vw);
+  height: min(1000px, 96vh);
   background: var(--bg-elevated);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
