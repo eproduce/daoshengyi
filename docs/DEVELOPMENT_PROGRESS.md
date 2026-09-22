@@ -2,7 +2,7 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-18**
+> **最后更新：2026-09-22**
 
 ---
 
@@ -73,6 +73,46 @@
 **P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
+
+---
+
+## 2026-09-22（定时任务扫尾：`compute_next_run` 边界单测 + 抽纯函数 + 3 处修正）
+
+对应 09-18 快照「下一步」第 2 项的剩余部分（**此项已完成**）。
+
+### 起因：这个函数不可测
+
+`compute_next_run`（`lib.rs`）决定「任务下次什么时候跑」，算错的后果很重：算到**过去** → 调度器每 30 秒轮询都命中 → 同一任务**无限连跑**；算错日历 → 夏令时切换后「每天 09:00」漂成 08:00 / 10:00。
+但它内部读 `chrono::Local::now()` 定位「今天」，**与传入的 `now_ms` 不是同一个时间源** ⇒ 无法用固定参考时刻测。
+
+### 改动
+
+| 改动 | 说明 |
+| --- | --- |
+| 抽纯函数 `next_daily_naive(now, h, m)` | 推进逻辑与时区解耦：不读系统时钟，只按传入的本地日期时间推 |
+| 抽纯函数 `parse_daily_time(s)` | `HH:MM` 解析容错：非法/越界（`25:00` / `09:99` / 空串）回退 `(0,0)`，不 panic |
+| `compute_next_run` 参考时刻改用 `now_ms` | 用 `Local.timestamp_millis_opt(now_ms)` 取本地时间，**函数对入参纯化**（调度器传的就是执行完成时刻，行为不变） |
+| daily 推进改**日历天** | `Duration::days(1)` 取代固定 24h 毫秒 ⇒ 跨夏令时后本地时刻不再漂移（旧写法会漂一小时） |
+| 夏令时缺口兜底 | `single() = None`（跳过/重复的时刻）→ 回退「24 小时后」，宁可晚一天也不算出过去时刻 |
+| interval 改饱和运算 | `saturating_mul` / `saturating_add`：极端 `interval_minutes` 不再溢出（debug 下 panic 丢掉本轮、release 下回绕成负数 → 每 30 秒连跑） |
+| 修 doc 注释错位 | `compute_next_run` 的说明被挂在 `clip_output` 上（历史编辑事故），已归位 |
+
+### 新增 6 条单测（cargo `216 → 222 passed`，13 ignored）
+
+- `next_daily_naive_rolls_to_next_calendar_day`：未到点→今天；**已过/恰好等于→次日**；跨午夜（23:59 参考、00:05 目标）；00:00 边界
+- `parse_daily_time_tolerates_dirty_values`：脏数据不 panic、越界回退 `(0,0)`
+- `compute_next_run_daily_always_in_the_future_within_a_day`：7 种输入（含非法）都落在将来且不超过一天多
+- **`overdue_task_runs_once_and_then_reschedules_into_the_future`**：模拟「应用关了 3 天」→ 只补跑一次、重排后必须回到将来（否则 30 秒一轮无限连跑）
+- `compute_next_run_interval_clamps_dirty_values`：0/负值回退 60 分钟；`i64::MAX` 饱和到 `i64::MAX`（等价于不再触发）而不是回绕成负数
+- **`compute_next_run_uses_the_passed_reference_time`（防空洞）**：固定一个过去的参考时间戳，断言结果落在「该时刻之后一天内」——**旧实现读 `Local::now()`，这条会失败**，确保测试不是复述实现
+
+### 验证
+
+`cargo fmt` · `cargo test --lib`（222 passed / 0 failed / 13 ignored）· `cargo clippy --all-targets -- -D warnings`（零告警）
+
+### 顺带发现（未改）
+
+`src/components/ScheduledTasks.vue` 里有一份**前端并行实现** `computeNextRun`（daily 语义与 Rust 侧一致，已核对）——两份实现长期有漂移风险；本次只动 Rust 侧，未合并（合并需前端改调后端计算）。
 
 ---
 

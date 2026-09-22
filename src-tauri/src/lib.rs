@@ -807,7 +807,6 @@ fn trash_empty(app: tauri::AppHandle) -> Result<usize, String> {
 
 // --- 定时任务 ---
 
-/// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
 /// 按**字符边界**截断输出（超出上限时追加说明）。
 ///
 /// ⚠️ 绝不能写成 `&s[..max]`：那是**按字节**切，多字节字符（中文 1 字 3 字节）跨在边界上时
@@ -825,36 +824,80 @@ fn clip_output(s: &str, max_bytes: usize) -> String {
     format!("{}...(截断，原 {} 字节)", &s[..end], s.len())
 }
 
+/// 一天毫秒数（daily 回退路径与单测共用）。
+const DAY_MS: i64 = 24 * 3600 * 1000;
+
+/// 解析 "HH:MM"（前端 `<input type="time">` 保证合法；手工改库/历史脏数据可能非法）。
+/// 非法或越界（`25:00` / `09:99` / 空串 / 非数字）一律回退 `(0, 0)`——宁可跑在 00:00，也不 panic。
+fn parse_daily_time(s: &str) -> (u32, u32) {
+    let mut parts = s.split(':');
+    let h = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let m = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if h > 23 || m > 59 {
+        (0, 0)
+    } else {
+        (h, m)
+    }
+}
+
+/// daily 的推进逻辑（**纯函数**：不读系统时钟、不涉时区，只按传入的本地日期时间推）。
+///
+/// 规则：当天 HH:MM **尚未到达** → 今天；**已过 / 恰好等于** → 次日同刻。
+/// 「恰好等于」也推进到次日是刻意的：调度器每 30 秒轮询一次，若返回同一时刻，
+/// 下一轮（≤30 秒后）就会把它当成到点任务再跑一遍。
+fn next_daily_naive(now: chrono::NaiveDateTime, h: u32, m: u32) -> chrono::NaiveDateTime {
+    use chrono::Timelike;
+    let target = now
+        .with_hour(h)
+        .and_then(|d| d.with_minute(m))
+        .and_then(|d| d.with_second(0))
+        .and_then(|d| d.with_nanosecond(0))
+        // 越界（只有在 parse_daily_time 被绕过时可能）→ 退化为「从此刻起的下一天」
+        .unwrap_or(now);
+    if target > now {
+        target
+    } else {
+        target + chrono::Duration::days(1)
+    }
+}
+
+/// 计算任务下次执行时间（毫秒）。daily：每天 HH:MM（本地时间）；否则按间隔分钟。
 fn compute_next_run(t: &db::ScheduledTaskRow, now_ms: i64) -> i64 {
-    use chrono::TimeZone;
+    use chrono::{LocalResult, TimeZone};
     if t.schedule_type == "daily" {
-        let mut parts = t.daily_time.split(':');
-        let h: u32 = parts
-            .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-        let m: u32 = parts
-            .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-        let now_local = chrono::Local::now();
-        let mut next = now_local
-            .date_naive()
-            .and_hms_opt(h, m, 0)
-            .and_then(|dt| chrono::Local.from_local_datetime(&dt).single())
+        let (h, m) = parse_daily_time(&t.daily_time);
+        // 参考时刻由传入的 now_ms 决定（不再读 Local::now()）：函数对入参纯化、可测；
+        // 也避免「调用方给的参考时间」与「函数内部读到的时间」不是同一时刻。
+        let now_local = match chrono::Local.timestamp_millis_opt(now_ms) {
+            LocalResult::Single(dt) => dt.naive_local(),
+            _ => return now_ms.saturating_add(DAY_MS),
+        };
+        let next = next_daily_naive(now_local, h, m);
+        // 推进用的是**日历天**（Duration::days）而非固定 24 小时毫秒：跨夏令时切换后
+        // 「每天 09:00」仍是本地 09:00（旧写法加固定 24h 会漂移一小时）。
+        // 本地时间 → 时间戳时，夏令时「跳过/重复」的时刻无法唯一确定（single() = None）
+        // → 回退「24 小时后」，宁可晚一天，也不冒算出过去时刻导致连跑的风险。
+        chrono::Local
+            .from_local_datetime(&next)
+            .single()
             .map(|dt| dt.timestamp_millis())
-            .unwrap_or(now_ms);
-        if next <= now_ms {
-            next += 24 * 3600 * 1000;
-        }
-        next
+            .unwrap_or_else(|| now_ms.saturating_add(DAY_MS))
     } else {
         let mins = if t.interval_minutes > 0 {
             t.interval_minutes
         } else {
             60
         };
-        now_ms + mins * 60 * 1000
+        // 饱和运算：interval 被手工改成极端值时不要溢出——debug 下乘法溢出会 panic
+        //（调度线程有 catch_unwind 兜住，但该任务本轮会被整体跳过），release 下会回绕成
+        // 负数 next_run_at → 每 30 秒触发一次，变成无限连跑。
+        now_ms.saturating_add(mins.saturating_mul(60_000))
     }
 }
 
@@ -7157,11 +7200,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_text, clip_output, compute_edits, delete_file_impl, detect_test_framework,
-        diff_lines, embed_model_installed, extract_redirected_files, format_unified_diff,
-        is_valid_keep_alive, nth_occurrence, ollama_serve_env, parse_allowed_paths,
-        parse_embed_response, path_within_any, pick_vision_backend, run_shell_command_with,
-        validate_git_operation, EditOp, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
+        chunk_text, clip_output, compute_edits, compute_next_run, delete_file_impl,
+        detect_test_framework, diff_lines, embed_model_installed, extract_redirected_files,
+        format_unified_diff, is_valid_keep_alive, next_daily_naive, nth_occurrence,
+        ollama_serve_env, parse_allowed_paths, parse_daily_time, parse_embed_response,
+        path_within_any, pick_vision_backend, run_shell_command_with, validate_git_operation,
+        EditOp, DAY_MS, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
     };
 
     /// 证明「按字节切」确实会 panic —— 这就是 clip_output 存在的理由。
@@ -7774,5 +7818,171 @@ mod tests {
         // 删除目录拒绝
         assert!(delete_file_impl(dir.to_str().unwrap().to_string()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ---- 定时任务：下次执行时间（daily 推进 / 错过补跑 / 脏数据边界） ----
+    // 这一组钉住的是「调度器把下次时间算错」这一类缺陷的后果：
+    // 算到过去 → 每 30 秒轮询都命中 → 同一任务无限连跑；算错日历 → 跨夏令时后每天 09:00 漂成 08:00/10:00。
+
+    fn sched_row(
+        schedule_type: &str,
+        interval_minutes: i64,
+        daily_time: &str,
+    ) -> super::db::ScheduledTaskRow {
+        super::db::ScheduledTaskRow {
+            id: "t-test".into(),
+            name: "测试任务".into(),
+            command: "echo ok".into(),
+            schedule_type: schedule_type.into(),
+            interval_minutes,
+            daily_time: daily_time.into(),
+            enabled: true,
+            next_run_at: 0,
+            last_run_at: None,
+            last_result: None,
+            created_at: 0,
+        }
+    }
+
+    /// daily 的纯推进：未到点→今天；恰好等于/已过→次日；含跨午夜与 00:00 边界。
+    #[test]
+    fn next_daily_naive_rolls_to_next_calendar_day() {
+        use chrono::{Duration, NaiveDate};
+        let day = NaiveDate::from_ymd_opt(2026, 9, 22).unwrap();
+        let at = |h: u32, m: u32| day.and_hms_opt(h, m, 0).unwrap();
+
+        // 未到点 → 今天
+        assert_eq!(next_daily_naive(at(8, 0), 9, 30), at(9, 30));
+        // 已过 → 次日
+        assert_eq!(
+            next_daily_naive(at(9, 31), 9, 30),
+            at(9, 30) + Duration::days(1)
+        );
+        // 恰好等于 → 次日（否则下一轮 30 秒后立刻再跑一遍）
+        assert_eq!(
+            next_daily_naive(at(9, 30), 9, 30),
+            at(9, 30) + Duration::days(1)
+        );
+        // 跨午夜：参考时刻 23:59、目标 00:05 → 次日 00:05（不是今天，今天已过）
+        assert_eq!(
+            next_daily_naive(at(23, 59), 0, 5),
+            at(0, 5) + Duration::days(1)
+        );
+        // 目标恰是 00:00 且此刻也是 00:00 → 次日 00:00
+        assert_eq!(
+            next_daily_naive(at(0, 0), 0, 0),
+            at(0, 0) + Duration::days(1)
+        );
+        // 目标 23:59、此刻 00:00 → 今天 23:59
+        assert_eq!(next_daily_naive(at(0, 0), 23, 59), at(23, 59));
+    }
+
+    #[test]
+    fn parse_daily_time_tolerates_dirty_values() {
+        assert_eq!(parse_daily_time("09:30"), (9, 30));
+        assert_eq!(parse_daily_time(" 9:05 "), (9, 5));
+        assert_eq!(parse_daily_time("9"), (9, 0)); // 只有小时部分
+                                                   // 非法 / 越界 → (0,0)，绝不 panic
+        assert_eq!(parse_daily_time(""), (0, 0));
+        assert_eq!(parse_daily_time("abc"), (0, 0));
+        assert_eq!(parse_daily_time("25:00"), (0, 0));
+        assert_eq!(parse_daily_time("09:99"), (0, 0));
+        assert_eq!(parse_daily_time("--"), (0, 0));
+    }
+
+    /// daily：任何输入都必须落在**将来**，且不拖过一天多——否则要么连跑，要么该跑不跑。
+    #[test]
+    fn compute_next_run_daily_always_in_the_future_within_a_day() {
+        let now = chrono::Local::now().timestamp_millis();
+        for hhmm in ["00:00", "03:07", "09:30", "23:59", "25:00", "", "abc"] {
+            let next = compute_next_run(&sched_row("daily", 0, hhmm), now);
+            assert!(
+                next > now,
+                "daily({}) 必须排在将来：next={} now={}",
+                hhmm,
+                next,
+                now
+            );
+            // 留 1 小时余量容忍夏令时缺口（本机/CI 时区无夏令时，实测就是 ≤ 24h）
+            assert!(
+                next <= now + DAY_MS + 3600 * 1000,
+                "daily({}) 不该拖过一天多：距现在 {} 小时",
+                hhmm,
+                (next - now) / (3600 * 1000)
+            );
+        }
+    }
+
+    /// 错过补跑：应用关了几天后任务的 next_run_at 停在过去 —— 只补跑**一次**，重排后必须回到
+    /// 将来（调度器每 30 秒扫一次，若仍算在过去就会无限连跑）。
+    #[test]
+    fn overdue_task_runs_once_and_then_reschedules_into_the_future() {
+        let now = chrono::Local::now().timestamp_millis();
+        let mut overdue = sched_row("daily", 0, "08:00");
+        overdue.next_run_at = now - 3 * DAY_MS; // 3 天前就该跑
+        assert!(
+            overdue.next_run_at <= now,
+            "构造前提：任务确实已到点（这正是调度器会执行它的条件）"
+        );
+        let next = compute_next_run(&overdue, now);
+        assert!(next > now, "重排后必须在将来：next={} now={}", next, now);
+        // 参考时刻再往后推（长任务 / 时钟跳动）也依然在将来
+        let later = now + 6 * 3600 * 1000;
+        assert!(compute_next_run(&overdue, later) > later);
+        // 间隔型：以「完成时刻」为基准，而不是任务原本的到点时刻
+        assert_eq!(
+            compute_next_run(&sched_row("interval", 10, ""), now),
+            now + 10 * 60_000
+        );
+    }
+
+    /// interval：0/负值回退 60 分钟；极端值走饱和运算 —— 不 panic、不回绕成过去时刻。
+    #[test]
+    fn compute_next_run_interval_clamps_dirty_values() {
+        let now = 1_700_000_000_000_i64;
+        assert_eq!(
+            compute_next_run(&sched_row("interval", 15, ""), now),
+            now + 15 * 60_000
+        );
+        assert_eq!(
+            compute_next_run(&sched_row("interval", 1, ""), now),
+            now + 60_000
+        );
+        // 历史脏数据：0 / 负数 → 60 分钟（不是「每轮都跑」）
+        assert_eq!(
+            compute_next_run(&sched_row("interval", 0, ""), now),
+            now + 60 * 60_000
+        );
+        assert_eq!(
+            compute_next_run(&sched_row("interval", -5, ""), now),
+            now + 60 * 60_000
+        );
+        // 极端值：饱和到 i64::MAX（等价于「不再触发」），绝不回绕成负数导致连跑
+        let huge = compute_next_run(&sched_row("interval", i64::MAX, ""), now);
+        assert_eq!(huge, i64::MAX);
+        assert!(huge > now);
+    }
+
+    /// 纯函数契约：参考时刻必须被真正当回事。固定一个（与运行时刻无关的）参考时间戳，
+    /// 结果应落在「该时刻之后一天内」，而不是按系统时钟算出几年后的日期。
+    /// 旧实现读 `Local::now()` 定位「今天」，这条断言会失败——防的是「测试只是复述实现」。
+    #[test]
+    fn compute_next_run_uses_the_passed_reference_time() {
+        let now = 1_700_000_000_000_i64; // 2023-11-14 22:13 UTC
+        for hhmm in ["00:00", "09:30", "23:59"] {
+            let next = compute_next_run(&sched_row("daily", 0, hhmm), now);
+            // 上界留 1 小时容忍夏令时（本机/CI 时区无夏令时，实测 ≤ 24h）
+            assert!(
+                next > now && next <= now + DAY_MS + 3600 * 1000,
+                "daily({}) 应相对「传入的参考时刻」推进：next-now={}ms",
+                hhmm,
+                next - now
+            );
+        }
+        // interval 同样以传入参考时刻为基准
+        assert_eq!(
+            compute_next_run(&sched_row("interval", 30, ""), now),
+            now + 30 * 60_000
+        );
     }
 }
