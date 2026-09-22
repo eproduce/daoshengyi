@@ -19,9 +19,11 @@ import {
   XCircle,
   User,
   GitBranch,
+  Wrench,
 } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
+import { summarizeTools, stripToolCards } from "@/utils/tool-summary";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -193,9 +195,17 @@ marked.use({
   },
 });
 
+/// 正文渲染：**显示层**剥掉机器生成的工具卡片（`### 🔧 调用工具…` + `<details>`）——
+/// 正文原样保留给导出/复制，但界面上工具调用统一走下面可折叠的分组，
+/// 否则同一次调用会在回复里出现两遍（markdown 卡片 + 结构化卡片）。
 function md(s: string) {
-  return s ? (marked.parse(normalizeMath(s)) as string) : "";
+  const body = stripToolCards(s || "");
+  return body ? (marked.parse(normalizeMath(body)) as string) : "";
 }
+
+/// 流式正文（显示层同样剥掉工具卡片）：执行工具期间只留占位提示（如
+/// 「🔧 正在调用工具：web_search…」），真正的调用细节等轮末在可折叠分组里看。
+const streamingText = computed(() => stripToolCards(chatStore.streamingContent || ""));
 
 // 拦截内容区链接点击：
 // - 本地文件链接（local-file-link）→ 用系统默认应用打开（如 Excel/Numbers 打开 CSV）
@@ -310,17 +320,36 @@ async function forkFromThis() {
   await chatStore.forkConversation(convId, props.message.id);
 }
 
-// 工具活动卡片展开状态（按工具名）
-const toolOpen = ref<Set<string>>(new Set());
-function toggleTool(name: string) {
+// 工具调用展开状态：整组一个开关、单卡一个开关。
+// 单卡按**索引**而不是工具名 —— 同一个工具被调用多次时，按名字会「开一个全开」。
+const toolOpen = ref<Set<number>>(new Set());
+function toggleTool(i: number) {
   const s = new Set(toolOpen.value);
-  if (s.has(name)) {
-    s.delete(name);
+  if (s.has(i)) {
+    s.delete(i);
   } else {
-    s.add(name);
+    s.add(i);
   }
   toolOpen.value = s;
 }
+
+const toolsGroupOpen = ref(false);
+/// 用户手动开合过 → 之后不再自动跟随（否则会跟用户抢）
+const toolsTouched = ref(false);
+const toolSummary = computed(() => summarizeTools(props.message.tools ?? []));
+function toggleToolsGroup() {
+  toolsTouched.value = true;
+  toolsGroupOpen.value = !toolsGroupOpen.value;
+}
+// 运行中自动展开（能看见进度），跑完自动收起；用户手动调过就不插手
+watch(
+  () => toolSummary.value.running,
+  (running) => {
+    if (toolsTouched.value) return;
+    toolsGroupOpen.value = running;
+  },
+  { immediate: true },
+);
 
 // 流式结束后高亮 + 首次挂载高亮 + 校验文件链接存在性
 let highlighted = false;
@@ -360,12 +389,8 @@ watch(
             {{ chatStore.streamingReasoning }}
           </div>
         </div>
-        <div
-          v-if="chatStore.streamingContent"
-          class="message__content"
-          style="white-space: pre-wrap"
-        >
-          {{ chatStore.streamingContent }}
+        <div v-if="streamingText" class="message__content" style="white-space: pre-wrap">
+          {{ streamingText }}
         </div>
         <div v-else-if="!chatStore.streamingReasoning" class="message__thinking">
           <span class="thinking-dot">●</span><span class="thinking-dot">●</span
@@ -417,41 +442,59 @@ watch(
           <div v-show="showReasoning" class="reason-body">{{ message.reasoning_content }}</div>
         </div>
 
-        <!-- ReAct 工具活动卡片 -->
+        <!-- 工具调用：整组折叠（默认收起；执行中自动展开方便看进度） -->
         <div v-if="message.tools?.length" class="msg-tools">
           <div
-            v-for="(t, i) in message.tools"
-            :key="i"
-            class="tool-card"
-            :class="`tool-card--${t.status}`"
+            class="msg-tools__head"
+            :class="{ 'msg-tools__head--fail': toolSummary.failed > 0 }"
+            :title="toolsGroupOpen ? '收起工具调用详情' : '展开查看每次调用的参数与结果'"
+            @click="toggleToolsGroup"
           >
-            <div class="tool-card__head" @click="toggleTool(t.name)">
-              <span class="tool-card__icon">
-                <CheckCircle2 v-if="t.status !== 'error' && t.status !== 'running'" :size="14" />
-                <Loader2 v-else-if="t.status === 'running'" :size="14" class="spin" />
-                <XCircle v-else :size="14" />
-              </span>
-              <span class="tool-card__name">{{ t.name }}</span>
-              <span v-if="t.server && t.server !== 'app'" class="tool-card__server">{{
-                t.server
-              }}</span>
-              <span v-if="t.durationMs !== undefined" class="tool-card__dur"
-                >{{ (t.durationMs / 1000).toFixed(1) }}s</span
-              >
-              <span class="tool-card__arrow">{{ toolOpen.has(t.name) ? "▾" : "▸" }}</span>
-            </div>
-            <div v-show="toolOpen.has(t.name)" class="tool-card__body">
-              <div v-if="t.argsPreview" class="tool-card__pre">
-                <div class="tool-card__label">参数</div>
-                <pre>{{ t.argsPreview }}</pre>
+            <span class="msg-tools__arrow">{{ toolsGroupOpen ? "▾" : "▸" }}</span>
+            <Wrench :size="13" />
+            <span class="msg-tools__title">工具调用</span>
+            <span class="msg-tools__names">{{ toolSummary.namesLabel }}</span>
+            <span class="msg-tools__spacer" />
+            <span class="msg-tools__status">{{ toolSummary.statusLabel }}</span>
+            <span v-if="toolSummary.totalMs > 0" class="msg-tools__dur"
+              >{{ (toolSummary.totalMs / 1000).toFixed(1) }}s</span
+            >
+          </div>
+          <div v-show="toolsGroupOpen" class="msg-tools__body">
+            <div
+              v-for="(t, i) in message.tools"
+              :key="i"
+              class="tool-card"
+              :class="`tool-card--${t.status}`"
+            >
+              <div class="tool-card__head" @click="toggleTool(i)">
+                <span class="tool-card__icon">
+                  <CheckCircle2 v-if="t.status !== 'error' && t.status !== 'running'" :size="14" />
+                  <Loader2 v-else-if="t.status === 'running'" :size="14" class="spin" />
+                  <XCircle v-else :size="14" />
+                </span>
+                <span class="tool-card__name">{{ t.name }}</span>
+                <span v-if="t.server && t.server !== 'app'" class="tool-card__server">{{
+                  t.server
+                }}</span>
+                <span v-if="t.durationMs !== undefined" class="tool-card__dur"
+                  >{{ (t.durationMs / 1000).toFixed(1) }}s</span
+                >
+                <span class="tool-card__arrow">{{ toolOpen.has(i) ? "▾" : "▸" }}</span>
               </div>
-              <div v-if="t.resultPreview" class="tool-card__pre">
-                <div class="tool-card__label">结果</div>
-                <pre>{{ t.resultPreview }}</pre>
-              </div>
-              <div v-if="t.error" class="tool-card__pre tool-card__err">
-                <div class="tool-card__label">错误</div>
-                <pre>{{ t.error }}</pre>
+              <div v-show="toolOpen.has(i)" class="tool-card__body">
+                <div v-if="t.argsPreview" class="tool-card__pre">
+                  <div class="tool-card__label">参数</div>
+                  <pre>{{ t.argsPreview }}</pre>
+                </div>
+                <div v-if="t.resultPreview" class="tool-card__pre">
+                  <div class="tool-card__label">结果</div>
+                  <pre>{{ t.resultPreview }}</pre>
+                </div>
+                <div v-if="t.error" class="tool-card__pre tool-card__err">
+                  <div class="tool-card__label">错误</div>
+                  <pre>{{ t.error }}</pre>
+                </div>
               </div>
             </div>
           </div>
@@ -835,6 +878,58 @@ watch(
   flex-direction: column;
   gap: 6px;
   margin-bottom: 8px;
+}
+.msg-tools__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg-tools__head:hover {
+  background: var(--bg-hover);
+}
+.msg-tools__head--fail {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+.msg-tools__arrow {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.msg-tools__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.msg-tools__names {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46%;
+}
+.msg-tools__spacer {
+  flex: 1;
+}
+.msg-tools__status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.msg-tools__dur {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.msg-tools__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 6px;
+  border-left: 2px solid var(--border-color);
 }
 .tool-card {
   border: 1px solid var(--border-color);

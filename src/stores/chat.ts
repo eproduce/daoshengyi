@@ -5593,7 +5593,10 @@ export const useChatStore = defineStore("chat", () => {
     const memory = useMemorySystem();
     // 方案 B：流式工具循环的展示记录（工具卡片逐段累积，最终拼进 assistantMsg.content）
     const toolChain: string[] = [];
-    const toolCards: ChatTool[] = [];
+    // reactive：UI 的「工具调用」折叠分组要能**轮内实时**看到新卡片与 running 状态
+    //（否则要等轮末才挂上，执行中只剩占位提示）
+    const toolCards = reactive<ChatTool[]>([]);
+    assistantMsg.tools = toolCards;
 
     try {
       // 本地图片识别失败/超时：明确报错，避免静默降级成空回复
