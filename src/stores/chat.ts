@@ -5683,16 +5683,24 @@ export const useChatStore = defineStore("chat", () => {
       // §3.11 Agent 多模式：行为约束注入（人格管"我是谁"，模式管"怎么做"）
       const mode = getModeById(activeModeId.value);
       if (mode?.prompt) sp = `${sp}\n\n【当前模式：${mode.name}】\n${mode.prompt}`;
-      // 命令沙箱提示（吸收自 Codex 的 SandboxMode）：开启时告知模型「写哪里会失败」，
-      // 避免它反复试错或误判为工具坏了。
+      // 工作区 + 控制范围提示。
+      // 借鉴 DSH：`SandboxExecutionPolicy` **总是**携带 `workspaceRoot`（哪怕当前模式不消费它），
+      // 调用方才能一次看全「在哪儿干活 + 写到哪儿会被拒」。这里同样把工作区**无条件**告诉模型，
+      // 沙箱限制才按当前档位（控制范围）叠加。
       {
-        const sb = getSettings().sandboxMode;
+        const st = getSettings();
+        const ws = (st.workspace || "").trim();
+        sp += ws
+          ? `\n\n【当前工作区】${ws}\nAgent 执行命令（run_command/exec_command/run_tests/git）与文件读写默认围绕该目录；用户说「这个项目 / 我的代码」而没给路径时，指的就是它。`
+          : "\n\n【当前工作区】未设置。用户说「这个项目 / 我的代码」却没给路径时，先问清目录（或在输入栏「工作区」里设置），不要凭空假定路径。";
+        // 命令沙箱提示（吸收自 Codex 的 SandboxMode / DSH 的 sandbox：read-only / workspace-write /
+        // danger-full-access）：开启时告知模型「写哪里会失败」，避免它反复试错或误判为工具坏了。
+        const sb = st.sandboxMode;
         if (sb && sb !== "off") {
-          const ws = getSettings().workspace || "（未设置工作区）";
           sp +=
             sb === "read-only"
               ? "\n\n【命令沙箱：只读】当前环境下命令**无法写入文件**（仅 /tmp 可写）。需要产出文件时请改用内置文件工具（write_file/apply_patch 等，不受沙箱限制），或先向用户申请关闭沙箱。"
-              : `\n\n【命令沙箱：工作区可写】命令只能写入工作区目录：${ws}（/tmp 除外）。写到其它路径会被系统拒绝（不是权限/工具故障）——需要写到别处请改用内置文件工具，或向用户说明。`;
+              : `\n\n【命令沙箱：工作区可写】命令只能写入工作区目录：${ws || "（未设置工作区——此时后端不会加沙箱，命令其实不受限）"}（/tmp 除外）。写到其它路径会被系统拒绝（不是权限/工具故障）——需要写到别处请改用内置文件工具，或向用户说明。`;
         }
       }
       // 工具发现提示：有未直接声明的工具时，告诉模型可用 tool_search 找（融合 Codex 做法）

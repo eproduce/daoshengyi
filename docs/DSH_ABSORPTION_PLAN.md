@@ -14,6 +14,8 @@
 | 工具 schema 瘦身（巨型 MCP schema 多轮有损压缩） | `src/utils/tool-schema-compact.ts` |
 | 自动压缩 + 交接摘要（compaction / handoff） | `chat.ts` 的 `compressConversation` + `maybeAutoCompact`（≥82%） |
 | 审批模式 / 沙箱模式 | `ApprovalMode(never/on-request/on-failure/untrusted)`、macOS Seatbelt `sandbox.rs` |
+| **权限预设层**（`dsh-permission-presets`：把沙箱 + 审批捆成具名档位，客户端只给一个选择器；`custom` 为保留的派生名） | `src/utils/permission-presets.ts` + 输入栏「工作区 → 控制范围」（2026-09-23 吸收；与 DSH 同名的 `workspace-write` / `danger-full-access` 档位） |
+| 工作区作为**一等概念**（`SandboxExecutionPolicy.workspaceRoot` 总是被携带，即使当前模式不消费它） | `settings.workspace` + 输入栏「工作区」；提示词**无条件**注入【当前工作区】，沙箱限制再按档位叠加 |
 | 目标常驻（goal） | `src/utils/goals.ts` + `get_goal/create_goal/update_goal` |
 | 子代理 / 多代理 | `subagent_delegate` / `subagent_parallel` / `list_agents` / `interrupt_agent` |
 | 会话全文检索、记忆、技能库、定时任务、IM 网关 | `api/search.ts`、`MemoryPanel`、`SkillManager`、`ScheduledTasks`、`ImGatewayPanel` |

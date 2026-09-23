@@ -6,12 +6,29 @@ import { useChatStore } from "@/stores/chat";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
-import { Settings } from "lucide-vue-next";
+import { Settings, Folder } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
 import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
 import { MODES } from "@/data/modes-catalog";
 import { PERSONAS } from "@/data/personas-catalog";
+import { getSettings, updateSettings } from "@/api/appSettings";
+import {
+  normalizeWorkspace,
+  workspaceLabel,
+  workspaceTitle,
+  workspaceInputError,
+} from "@/utils/workspace";
+import {
+  PERMISSION_PRESETS,
+  CUSTOM_PRESET_ID,
+  matchPresetId,
+  presetHint,
+  presetWrites,
+  type PermissionPreset,
+  type SandboxMode,
+  type ApprovalMode,
+} from "@/utils/permission-presets";
 
 const chatStore = useChatStore();
 
@@ -50,6 +67,82 @@ const personaDropdownRef = ref<HTMLDivElement>();
 const currentPersona = computed(() => PERSONAS.find((p) => p.id === chatStore.activePersonaId));
 // 模式记忆（Phase B）：各模式使用频次（下拉显示「常用 ×N」）
 const modeHist = computed(() => chatStore.readModeHist());
+
+// Agent 工作区（原本藏在「设置 → API 配置」里，与 base URL/key 混在一起）：
+// 它跟 API 无关，决定 Agent 执行命令/读文件的默认目录 → 抽到输入框工具栏常驻可见。
+// 仍存在同一份全局设置（settings.workspace），所以沙箱 / AGENTS.md 发现 / log_decision 全部照旧生效。
+const workspaceValue = ref(getSettings().workspace || "");
+const wsDraft = ref(workspaceValue.value);
+const wsError = ref("");
+const showWorkspaceDropdown = ref(false);
+const workspaceDropdownRef = ref<HTMLDivElement>();
+const workspaceBtnRef = ref<HTMLDivElement>();
+
+function toggleWorkspaceDropdown() {
+  showWorkspaceDropdown.value = !showWorkspaceDropdown.value;
+  if (showWorkspaceDropdown.value) {
+    wsDraft.value = workspaceValue.value;
+    wsError.value = "";
+  }
+}
+
+async function saveWorkspace() {
+  const err = workspaceInputError(wsDraft.value);
+  if (err) {
+    wsError.value = err;
+    return;
+  }
+  const v = normalizeWorkspace(wsDraft.value);
+  if (v) {
+    // 存在性校验：路径写错时「工作区可写」沙箱与项目指令（AGENTS.md）发现会**静默失效**，
+    // 与其存下一个用不了的路径，不如当场说清（留空 = 清除设置，无需校验）
+    const ok = await invoke<boolean>("file_exists", { path: v }).catch(() => false);
+    if (!ok) {
+      wsError.value = `目录不存在或不可访问：${v}`;
+      return;
+    }
+  }
+  updateSettings({ workspace: v });
+  workspaceValue.value = v ?? "";
+  wsError.value = "";
+  showWorkspaceDropdown.value = false;
+}
+
+async function pickWorkspaceDir() {
+  try {
+    const picked = await open({ directory: true, multiple: false, title: "选择 Agent 工作区" });
+    if (typeof picked === "string") {
+      wsDraft.value = picked;
+      await saveWorkspace();
+    }
+  } catch (e) {
+    await notify(`选择目录失败：${e}`, "error");
+  }
+}
+
+function clearWorkspace() {
+  updateSettings({ workspace: null });
+  workspaceValue.value = "";
+  wsDraft.value = "";
+  wsError.value = "";
+  showWorkspaceDropdown.value = false;
+}
+
+// 控制范围（借鉴 DSH 的 permission-presets）：把「沙箱模式 + 危险命令审批」两个独立旋钮
+// 捆成具名档位，一个选择器搞定；组合不在表里 → 显示「自定义」（DSH 的保留名）。
+// 注意：预设层**不拥有执行策略**——提示词里那段「命令沙箱」说明仍按 sandboxMode/workspace 现算。
+const sandboxMode = ref<SandboxMode>(getSettings().sandboxMode || "off");
+const approvalMode = ref<ApprovalMode>(getSettings().approvalMode || "manual");
+const activePresetId = computed(() => matchPresetId(sandboxMode.value, approvalMode.value));
+// 需要提醒的情况：这档其实不生效（缺工作区）/ 高风险 / 自定义
+const presetNotice = computed(() => presetHint(activePresetId.value, workspaceValue.value));
+
+function applyPreset(p: PermissionPreset) {
+  const w = presetWrites(p);
+  updateSettings(w);
+  sandboxMode.value = w.sandboxMode;
+  approvalMode.value = w.approvalMode;
+}
 
 defineProps<{ disabled: boolean; placeholder?: string }>();
 
@@ -255,6 +348,15 @@ function onDocClick(e: MouseEvent) {
     !personaDropdownRef.value.contains(t)
   ) {
     showPersonaDropdown.value = false;
+  }
+  if (
+    showWorkspaceDropdown.value &&
+    workspaceDropdownRef.value &&
+    !workspaceDropdownRef.value.contains(t) &&
+    workspaceBtnRef.value &&
+    !workspaceBtnRef.value.contains(t)
+  ) {
+    showWorkspaceDropdown.value = false;
   }
 }
 
@@ -919,6 +1021,84 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           hidden
           @change="handleAttachSelect"
         />
+
+        <!-- Agent 工作区（从「设置 → API 配置」抽到这里：它跟 API 无关，属于「本次对话怎么干活」） -->
+        <div class="ci-tool-group">
+          <button
+            ref="workspaceBtnRef"
+            class="ci-pill"
+            :class="{ active: !!workspaceValue }"
+            :title="workspaceTitle(workspaceValue)"
+            @click.stop="toggleWorkspaceDropdown"
+          >
+            <Folder :size="13" />
+            <span>{{ workspaceValue ? workspaceLabel(workspaceValue) : "工作区" }}</span>
+            <svg
+              class="ci-chev"
+              width="8"
+              height="8"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <div
+            v-if="showWorkspaceDropdown"
+            ref="workspaceDropdownRef"
+            class="ci-drop ci-drop-workspace"
+            @click.stop
+          >
+            <div class="ci-drop-group-title">Agent 工作区</div>
+            <input
+              v-model="wsDraft"
+              class="ci-ws-input"
+              type="text"
+              placeholder="/path/to/project 或 ~/op/project"
+              @keyup.enter="saveWorkspace"
+            />
+            <div v-if="wsError" class="ci-ws-error">{{ wsError }}</div>
+            <div class="ci-ws-actions">
+              <button class="ci-ws-btn" @click="pickWorkspaceDir">浏览…</button>
+              <button class="ci-ws-btn ci-ws-btn--primary" @click="saveWorkspace">保存</button>
+              <button v-if="workspaceValue" class="ci-ws-btn" @click="clearWorkspace">清除</button>
+            </div>
+            <div class="ci-ws-hint">
+              Agent 执行命令、读取文件的默认目录；「工作区可写」沙箱档位也用它。留空 = 不限定目录。
+            </div>
+
+            <!-- 控制范围：一个档位同时写「沙箱模式 + 审批策略」（DSH permission-presets 的形态） -->
+            <div class="ci-ws-divider"></div>
+            <div class="ci-drop-group-title">控制范围</div>
+            <div class="ci-presets">
+              <button
+                v-for="p in PERMISSION_PRESETS"
+                :key="p.id"
+                class="ci-preset"
+                :class="{ on: activePresetId === p.id, risk: p.risky }"
+                @click="applyPreset(p)"
+              >
+                <span class="ci-preset-name">{{ p.label }}</span>
+                <span class="ci-preset-desc">{{ p.description }}</span>
+                <span v-if="activePresetId === p.id" class="ci-preset-check">✓</span>
+              </button>
+              <div
+                v-if="activePresetId === CUSTOM_PRESET_ID"
+                class="ci-preset ci-preset--custom on"
+              >
+                <span class="ci-preset-name">自定义</span>
+                <span class="ci-preset-desc">当前沙箱 / 审批组合不在预设表里</span>
+                <span class="ci-preset-check">✓</span>
+              </div>
+            </div>
+            <div v-if="presetNotice" class="ci-ws-error ci-ws-notice">{{ presetNotice }}</div>
+            <div class="ci-ws-hint">
+              点档位会同时改「沙箱模式」与「危险命令审批」；要逐项微调去设置 → 权限。
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="ci-bar-right">
@@ -1438,6 +1618,120 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 .ci-drop-foot:hover {
   background: #252540;
+}
+
+/* Agent 工作区下拉（从设置里抽到工具栏）：输入框 + 三个动作 + 一句说明 */
+.ci-drop-workspace {
+  min-width: 340px;
+  max-width: min(460px, 92vw);
+}
+.ci-ws-input {
+  width: calc(100% - 24px);
+  margin: 2px 12px 0;
+  padding: 6px 8px;
+  background: #12121f;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: var(--text-color, #e6e6e6);
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  outline: none;
+}
+.ci-ws-input:focus {
+  border-color: var(--accent-color, #6366f1);
+}
+.ci-ws-error {
+  margin: 6px 12px 0;
+  font-size: 11px;
+  color: #ff6b6b;
+}
+.ci-ws-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 4px;
+}
+.ci-ws-btn {
+  padding: 4px 10px;
+  background: #252540;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #ccc;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ci-ws-btn:hover {
+  background: #2f2f52;
+}
+.ci-ws-btn--primary {
+  background: var(--accent-color, #6366f1);
+  border-color: transparent;
+  color: #fff;
+}
+.ci-ws-hint {
+  padding: 4px 12px 10px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted, #888);
+}
+.ci-ws-divider {
+  height: 1px;
+  margin: 8px 0 2px;
+  background: #26263c;
+}
+/* 控制范围档位：名称 + 一句话说明（对应 DSH 的 PresetSpec.description） */
+.ci-presets {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 6px 0;
+}
+.ci-preset {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 1px;
+  padding: 6px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+.ci-preset:hover {
+  background: #252540;
+}
+.ci-preset.on {
+  background: rgba(99, 102, 241, 0.12);
+}
+.ci-preset-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ccc;
+}
+.ci-preset.on .ci-preset-name {
+  color: #a5b4fc;
+}
+.ci-preset-desc {
+  grid-column: 1;
+  grid-row: 2;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted, #888);
+}
+.ci-preset-check {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--accent-color);
+  font-weight: 700;
+  font-size: 11px;
+}
+/* 高风险档位（不加沙箱 + 不询问）用警示色，别让人误点 */
+.ci-preset.risk .ci-preset-name {
+  color: #f5a623;
+}
+.ci-preset--custom {
+  cursor: default;
+}
+.ci-ws-notice {
+  color: #f5a623;
 }
 
 /* 模型分组下拉 */

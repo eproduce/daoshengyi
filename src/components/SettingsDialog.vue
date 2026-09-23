@@ -247,12 +247,9 @@ function onModelBlur() {
   }, 150);
 }
 
-// Agent 工作区（借鉴 DeepSeek Harness 的 workspace 概念）
-const workspace = ref(getSettings().workspace || "");
-function saveWorkspace() {
-  const v = workspace.value.trim();
-  updateSettings({ workspace: v || null });
-}
+// Agent 工作区已抽到**输入框工具栏**（见 `src/utils/workspace.ts` + `ChatInput.vue`）：
+// 它跟 API 配置无关，属于「本次对话怎么干活」，放在对话框里常驻更顺手；
+// 存储位置不变（`settings.workspace`），沙箱 / AGENTS.md 发现 / log_decision 全部照旧生效。
 
 // 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/
 // on-failure（先执行，失败后才升级请求授权，对齐 Codex 的 ApprovalMode::OnFailure）/ yolo（全部自动批准）
@@ -294,7 +291,7 @@ const SANDBOX_MODES = [
   {
     value: "workspace-write" as const,
     label: "工作区可写",
-    desc: "只允许写入工作区目录（需先设置工作区），越界写入会被系统拒绝",
+    desc: "只允许写入工作区目录（在输入栏「工作区」按钮里设置），越界写入会被系统拒绝",
   },
 ];
 const sandboxMode = ref<"off" | "read-only" | "workspace-write">(
@@ -847,17 +844,13 @@ function handleDelete() {
               <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
             </div>
 
-            <!-- Agent 工作区 -->
+            <!-- Agent 工作区（已移到输入框工具栏）：保留一个指路说明，免得用户在设置里找不到 -->
             <div class="form-group">
               <label><Folder :size="14" /> Agent 工作区</label>
-              <input
-                v-model="workspace"
-                type="text"
-                placeholder="/path/to/project"
-                @blur="saveWorkspace"
-                @keyup.enter="saveWorkspace"
-              />
-              <span class="form-hint">Agent 执行命令、读取文件的默认目录（空则不限定）</span>
+              <span class="form-hint">
+                已移到对话框输入栏的「工作区」按钮（消息输入框下方、附件旁边）——在那里改完立即生效，
+                不用进来设置里找。
+              </span>
             </div>
 
             <!-- 危险命令审批模式 -->
@@ -875,7 +868,8 @@ function handleDelete() {
                 </button>
               </div>
               <span class="form-hint"
-                >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。</span
+                >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。输入栏「工作区」里有
+                打包好的一键档位（同时设沙箱 + 审批），日常直接用那个即可。</span
               >
             </div>
 
@@ -898,8 +892,8 @@ function handleDelete() {
               <span class="form-hint">
                 Agent 执行的命令（run_command / exec_command / run_tests / git）与快捷键 /run
                 均受此限制； 用户自己开的 PTY
-                面板不受影响。“工作区可写”需先在「快捷键」页设置工作区目录；系统缺少 sandbox-exec
-                时自动降级为不加沙箱（命令不会因此失败）。
+                面板不受影响。“工作区可写”需先设工作区目录（在输入栏「工作区」按钮里设）； 系统缺少
+                sandbox-exec 时自动降级为不加沙箱（命令不会因此失败）。
               </span>
               <div class="approval-modes" style="margin-top: 8px">
                 <button

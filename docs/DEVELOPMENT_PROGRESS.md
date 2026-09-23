@@ -76,6 +76,54 @@
 
 ---
 
+## 2026-09-23（Agent 工作区：从 API 配置抽到输入栏 + 吸收 DSH 的权限预设「控制范围」）
+
+### 起因
+用户：「把 api 配置里面的 agent 工作区抽离出来，放到对话框配置」→ 接着：「这块可以参考 dsh 的模式，
+工作区，控制范围，等等特性」。
+
+### 一、工作区从「设置 → API 配置」抽到输入栏（位置换对了）
+- 它跟 API 配置无关（不是 base URL/key 的事），而是「**本次对话怎么干活**」→ 挂到输入框下工具栏
+  （`ChatInput.vue` 的 `工作区` pill）：常驻可见，点开就能改，短名显示（`/Users/me/op/daoshengyi` → `daoshengyi`），
+  悬浮看全路径 + 这个设置影响什么。
+- **存储位置不变**（仍是 `settings.workspace`）→ 沙箱 / `AGENTS.md` 项目指令发现 / `log_decision` 全部照旧生效。
+- 设置面板不直接删掉不可见：留一句「已移到输入栏」指路，并把沙箱档位说明里过期的「工作区在【快捷键】页设置」改正。
+- 新增 `src/utils/workspace.ts`（纯函数 + 4 条单测）：清洗（去尾斜杠，`/` 保留）、短名、tooltip、路径校验。
+
+### 二、吸收 DSH `permission-presets`：控制范围档位
+DSH 的做法（`docs/subsystems/permission-presets.zh.md`）：把两个**相互独立**的强制执行旋钮
+（`sandbox/mode` + `approval/policy`）**捆绑成具名预设**，客户端只暴露**一个** Permissions 选择器；
+默认表自带 `workspace-write`（workspace-write + ask）与 `danger-full-access`（danger-full-access + never），
+`custom` 是保留的**派生**名。
+- 新增 `src/utils/permission-presets.ts`（纯函数 + 5 条单测）：4 个档位
+  （只读 / 工作区可写 / 工作区可写+智能审批 / 完全放开）+ `custom` 派生名；
+  名词对应：我们的 `off` = DSH `danger-full-access`，`manual`≈`ask`，`yolo`≈`never`，`smart`≈ Auto review。
+- 与 DSH 一致的两条约定：① 预设层**不拥有执行策略**——提示词里那段说明仍按 `sandboxMode`/`workspace`
+  现算（不是按档位名），所以回放/叙述不会与真实策略脱节；② 档位只做「写穿这两个旋钮」一件事。
+- `yoloMode` 与 `approvalMode` 的耦合写进 `presetWrites()` 并用单测钉死（两处 UI 写同一批字段，
+  不一致就会出现「看着是手动确认、实际全放行」）。
+- 诚实提示（真机行为）：后端在「`workspace-write` 但没设工作区」时**不会加沙箱**（`sandbox.rs` 实测），
+  也就是用户以为受限、实际不受限 → UI 与提示词**两处都显式说出**这一点。
+
+### 三、工作区作为一等概念（DSH 的 `workspaceRoot` 总是被携带）
+`chat.ts` 的系统提示从「只在沙箱开启时才提工作区」改为**无条件注入**【当前工作区】
+（未设置时明确让它先问，不要凭空假定路径），沙箱限制再按档位叠加——对应 DSH
+`SandboxExecutionPolicy` 「root 总是被携带，调用方才能先解析策略再决定执行路径」。
+
+### 验证
+- 浏览器实测（`npm run dev` + 页面操作）：工具栏出现「工作区」pill；下拉含工作区输入 + 4 个档位 + `custom` 态；
+  点「工作区可写」后高亮切换、「自定义」行消失、并弹出「这一档需要工作区…后端不会加沙箱」；
+  输入相对路径 `op/daoshengyi` 点保存 → 拦下并提示「请填绝对路径」。无控制台报错。
+- 门禁 8/8：vitest **39 files / 510 passed**（新增 9 条），cargo **249 passed / 14 ignored**。
+
+### 与 DSH 的差距（没做的）
+- DSH 的预设表是**配置项**且拥有「新会话默认档位」（`defaultPreset`），还能被插件注册（`registerAuto`）；
+  我们是静态表 + 全局设置，**没有会话级档位**（要做需要会话头存字段并让沙箱按会话解析）。
+- DSH 预设在配置加载时就对保留名/错误组合**报错**；我们靠 `matchPresetId` 落到 `custom` 兜底（测试已覆盖）。
+- DSH 有 `workspaceRegistry` + `api/workspace-controller`（**多工作区注册表**，每个工作区一套 controller/文件视图），
+  我们只有单个当前工作区 + 原生目录选择器；「最近工作区」快捷列表是下一步的低成本补齐。
+- DSH 的 cwd 是**会话头字段**（`session.header.cwd`）→ 每个会话可有自己的工作区；我们是全局设置。
+
 ## 2026-09-23（macOS Vision 原生视觉层：`vision_inspect` + `image_similarity`）
 
 ### 起因
