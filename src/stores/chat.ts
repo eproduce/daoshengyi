@@ -6135,6 +6135,10 @@ export const useChatStore = defineStore("chat", () => {
       async function streamRound(
         msgs: AgentMsg[],
         tools?: OpenAIFunctionTool[] | null,
+        // `noThinking`：本轮强制关闭思考模式。收尾轮（写最终汇报）专用——
+        // 思考对「把已完成的结论写成正文」没有增量价值，而 2026-09-23 实测它能把整轮输出预算
+        // 烧光（8192 token 全花在 reasoning，正文为空），回复看起来就像「断了」。
+        opts?: { noThinking?: boolean },
       ): Promise<{
         toolCall: ToolCall | null;
         content: string;
@@ -6325,7 +6329,8 @@ export const useChatStore = defineStore("chat", () => {
         );
         invoke("send_message", {
           requestId,
-          config: rustCfg,
+          // 按轮开关思考：收尾轮强制关掉（见 streamRound 的 noThinking 说明）
+          config: opts?.noThinking ? { ...rustCfg, thinking_enabled: false } : rustCfg,
           messages: msgs,
           ...(tools && tools.length ? { tools } : {}),
         }).catch((e) => {
@@ -6814,14 +6819,12 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       // ── 输出被 max_tokens 截断（finish_reason=length）→ 自动续写 ──
-      // 根因：Profile 的 max_tokens（默认 4096）限制单次输出长度，长报告/多步汇报会写到一半
-      // 被 API 截断；此前**完全不读 finish_reason**，半截话被当作最终答案收尾——现象就是
-      // 「复制出的正文断在半句、任务计划剩余步骤永远停在待办」。这里把已生成部分回填为
-      // assistant 消息，要求模型「紧接其后续写、不要重复」，直到不再截断或达到续写上限；
-      // 用尽后附可见告警，绝不让截断静默发生。
-      if (!stopRequested && roundResult?.finishReason === "length") {
-        const MAX_TRUNCATION_CONTINUES = 2;
-        let rawAcc = roundResult.content;
+      // 抽成嵌套函数：工具循环内与**收尾轮**共用（收尾轮以前没接这条，实测在 2026-09-23
+      // 的 54 次工具调用会话里漏掉了：收尾轮被截断、正文为空，用户看到的是推理碎片）。
+      // 用尽次数仍截断时附可见告警，绝不让截断静默发生。
+      const MAX_TRUNCATION_CONTINUES = 2;
+      async function continueTruncated(rawAcc: string, noThinking = false): Promise<string> {
+        let acc = rawAcc;
         let continues = 0;
         let stillTruncated = true;
         while (
@@ -6831,26 +6834,28 @@ export const useChatStore = defineStore("chat", () => {
         ) {
           continues++;
           round++;
-          const tail = stripToolJson(rawAcc).trim().slice(-160);
+          const tail = stripToolJson(acc).trim().slice(-160);
           dbg(
             `[loop] 输出被 max_tokens 截断（finish_reason=length），第 ${continues}/${MAX_TRUNCATION_CONTINUES} 次自动续写`,
           );
-          rustMsgs.push({ role: "assistant", content: rawAcc });
+          if (tail) rustMsgs.push({ role: "assistant", content: acc });
           rustMsgs.push({
             role: "user",
-            content:
-              "⚠️ 你上一条回复因达到**输出长度上限**而被截断，最后停在：\n…" +
-              tail +
-              "\n\n请**紧接其后续写**剩余内容：不要重复已写过的部分，不要重新开头，不要重新列提纲，直接从断点接着写完整。",
+            content: tail
+              ? "⚠️ 你上一条回复因达到**输出长度上限**而被截断，最后停在：\n…" +
+                tail +
+                "\n\n请**紧接其后续写**剩余内容：不要重复已写过的部分，不要重新开头，不要重新列提纲，直接从断点接着写完整。"
+              : "⚠️ 你上一条回复没有输出任何正文（长度预算被思考过程占满了）。请**直接输出最终交付正文**" +
+                "（做了什么 / 结果 / 结论 / 产物路径），不要输出思考过程或工具调用。",
           });
           try {
-            const fr = await streamRound(rustMsgs, nativeToolsOn);
+            const fr = await streamRound(rustMsgs, nativeToolsOn, { noThinking });
             addUsage(fr.usage); // 续写轮的用量同样计入本轮总量
             const add = stripToolJson(fr.content).trim();
             if (!add) break;
-            rawAcc = `${rawAcc}\n${add}`;
+            acc = acc ? `${acc}\n${add}` : add;
             // 把合并结果回写展示层，避免下一轮流式把前半段覆盖掉
-            streamingContent.value = stripToolJson(rawAcc).trim();
+            streamingContent.value = stripToolJson(acc).trim();
             stillTruncated = fr.finishReason === "length";
             if (!stillTruncated) break;
           } catch (e) {
@@ -6859,10 +6864,16 @@ export const useChatStore = defineStore("chat", () => {
           }
         }
         if (continues > 0 && stillTruncated && !stopRequested) {
+          const body = stripToolJson(acc).trim();
           streamingContent.value =
-            stripToolJson(rawAcc).trim() +
-            `\n\n> ⚠️ 本次回复达到输出上限（max_tokens=${config.maxTokens ?? "?"}）被截断，已自动续写 ${continues} 次仍未写完。可在「设置 → API 配置」把 max_tokens 调大（如 8192/16384）后继续，或直接回复「继续」。`;
+            body +
+            `\n\n> ⚠️ 本次回复达到输出上限（max_tokens=${config.maxTokens ?? "?"}）被截断，已自动续写 ${continues} 次仍未写完。建议在「设置 → API 配置」把 max_tokens 调大（如 8192/16384），或直接回复「继续」。`;
         }
+        return acc;
+      }
+
+      if (!stopRequested && roundResult?.finishReason === "length") {
+        await continueTruncated(roundResult.content);
       }
 
       // 工具循环结束：若执行了工具但正文没有最终答案（streamingContent 仍被工具卡片/占位占用，
@@ -6891,9 +6902,15 @@ export const useChatStore = defineStore("chat", () => {
         });
         try {
           flushPendingViewImages(rustMsgs); // view_image 图片在收尾轮也要注入
-          const fr = await streamRound(rustMsgs);
+          // 收尾轮**关掉思考模式**（noThinking）：这一步只是「把已完成的结论写成正文」，
+          // 思考没有增量价值——而 2026-09-23 实测它能把整轮输出预算烧光，导致正文为空。
+          const fr = await streamRound(rustMsgs, null, { noThinking: true });
           addUsage(fr.usage); // 收尾轮用量计入本轮总量
-          const fc = stripToolJson(fr.content).trim();
+          let fc = stripToolJson(fr.content).trim();
+          // 收尾轮同样受 max_tokens 限制：被截断就走自动续写（关思考，直接把正文写完）
+          if (fr.finishReason === "length" && !stopRequested) {
+            fc = stripToolJson(await continueTruncated(fc, true)).trim();
+          }
           // 收尾轮产出也要防空洞：正文为空、只剩工具标记、或仍是一句"完成"短声明，
           // 都不算最终答案 → 退回思考摘要（剥标记后截尾）作为可见兜底，
           // 避免「空正文却显示计划全部完成」。仍无任何可用内容则给显式失败提示。

@@ -470,6 +470,7 @@ watch(
             <span class="msg-tools__arrow">{{ toolsGroupOpen ? "▾" : "▸" }}</span>
             <Wrench :size="13" />
             <span class="msg-tools__title">工具调用</span>
+            <span class="msg-tools__count">{{ toolSummary.count }} 次</span>
             <span class="msg-tools__names">{{ toolSummary.namesLabel }}</span>
             <span class="msg-tools__spacer" />
             <span class="msg-tools__status">{{ toolSummary.statusLabel }}</span>
@@ -921,6 +922,12 @@ watch(
 .msg-tools__title {
   font-weight: 600;
   color: var(--text-primary);
+}
+/* 总次数：以前只显示各工具名与其出现次数（`×N`），看不出「总共调了多少次」 */
+.msg-tools__count {
+  color: var(--accent-color);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 .msg-tools__names {
   color: var(--text-muted);
