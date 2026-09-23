@@ -28,6 +28,9 @@ mod settings;
 mod skill_import;
 mod ssrf;
 mod trash;
+// 与 `pick_vision_backend`（本地 VLM 后端选择：ollama/llamacpp）无关：
+// 这里是 macOS Vision 框架的原生检测能力（分类/人脸/人体/姿势/动物/条码/显著区域）
+mod vision_native;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -4429,6 +4432,103 @@ async fn pdf_ocr(app: tauri::AppHandle, path: String) -> Result<String, String> 
     run_ocr(&app, &[path]).await
 }
 
+/// 只读路径的沙箱校验（与 `read_file` / `image_inspect` 同一套白名单；未配置白名单时不限制）。
+/// 新增只读命令请用它，别再各写一遍这段判定。
+fn ensure_readable_path(db: &Database, path: &str) -> Result<(), String> {
+    let allowed = sandbox_allowed_paths(db);
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    let expanded = expand_user_path(path)?;
+    if path_within_any(std::path::Path::new(&expanded), &allowed) {
+        Ok(())
+    } else {
+        Err(format!("路径不在沙箱白名单内，拒绝读取：{}", path))
+    }
+}
+
+/// 跑视觉侧车（`ocr_tool` 现在同时是 OCR 与视觉侧车），返回 (stdout, 是否成功)。
+/// 注意：**失败时 stdout 上仍是结构化错误**，原因由调用方用自己的解析器提取。
+async fn run_vision_tool(
+    tool: &std::path::Path,
+    args: &[String],
+) -> Result<(String, bool), String> {
+    let out = tokio::process::Command::new(tool)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("执行视觉侧车失败: {}", e))?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        out.status.success(),
+    ))
+}
+
+/// macOS Vision 原生视觉检查（**离线、零模型下载、毫秒级**）：图像分类 / 人脸 / 人体 /
+/// 人体姿势关键点 / 动物 / 条码二维码 / 视觉显著区域，全部带**像素框**（左上原点）。
+///
+/// 与 `image_inspect` 的分工：那个管**像素细节**（字符切分/空洞/点阵）；这个管
+/// 「图里有什么、在哪」。与 `describe_image` 的分工：那是本地 VLM（本机 30~120 秒且会幻觉）——
+/// 先用本工具定位，需要语义描述时**只裁剪局部**再交给它。
+#[tauri::command]
+async fn vision_inspect(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    path: String,
+    max_labels: Option<u32>,
+) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("视觉检查依赖 macOS Vision 框架，当前系统不支持".to_string());
+    }
+    ensure_readable_path(db.inner(), &path)?;
+    let tool = ocr_tool_path(&app)
+        .ok_or("未找到视觉侧车 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let args = vec![
+        "--vision".to_string(),
+        path.clone(),
+        "--max".to_string(),
+        max_labels.unwrap_or(8).clamp(1, 32).to_string(),
+    ];
+    let (stdout, ok) = run_vision_tool(&tool, &args).await?;
+    if ok {
+        let report = vision_native::parse_vision_report(&stdout)?;
+        return Ok(vision_native::format_vision_report(&report));
+    }
+    // 侧车失败时 stdout 上仍是「哨兵 + 结构化错误」，解析它才能给出真实原因
+    match vision_native::parse_vision_report(&stdout) {
+        Err(e) => Err(e),
+        Ok(_) => Err("视觉侧车以非零退出码结束，但报告内容正常（内部矛盾）".to_string()),
+    }
+}
+
+/// 两张图片的特征指纹距离（0=几乎相同）。用途：视频抽帧后去掉重复帧、只留关键帧。
+/// **阈值尚未用本机素材标定**：这里只返回距离与量级判读，不做「相同/不同」的硬判定。
+#[tauri::command]
+async fn image_similarity(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    path_a: String,
+    path_b: String,
+) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("特征指纹依赖 macOS Vision 框架，当前系统不支持".to_string());
+    }
+    ensure_readable_path(db.inner(), &path_a)?;
+    ensure_readable_path(db.inner(), &path_b)?;
+    let tool = ocr_tool_path(&app)
+        .ok_or("未找到视觉侧车 ocr_tool（需先编译 src-tauri/ocr_tool.swift）")?;
+    let args = vec!["--similarity".to_string(), path_a.clone(), path_b.clone()];
+    let (stdout, ok) = run_vision_tool(&tool, &args).await?;
+    if ok {
+        let distance = vision_native::parse_similarity(&stdout)?;
+        return Ok(vision_native::format_similarity(distance, &path_a, &path_b));
+    }
+    match vision_native::parse_similarity(&stdout) {
+        Err(e) => Err(e),
+        Ok(_) => Err("视觉侧车以非零退出码结束，但结果内容正常（内部矛盾）".to_string()),
+    }
+}
+
 /// 定位 ocr_tool 二进制（dev: <项目根>/src-tauri/ocr_tool；打包: resource 目录）
 fn ocr_tool_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     if let Ok(dir) = app.path().resource_dir() {
@@ -7281,6 +7381,8 @@ pub fn run() {
             trash_empty,
             skill_import::scan_external_skills,
             image_inspect,
+            vision_inspect,
+            image_similarity,
             ocr_extract_image_text,
             save_temp_image,
             ocr_image_file,

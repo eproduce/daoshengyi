@@ -151,6 +151,15 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["path"],
     additionalProperties: true,
   },
+  vision_inspect: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "图片文件路径（png/jpg/heic/gif/webp/bmp）" },
+      max_labels: { type: "integer", description: "返回多少个分类标签，默认 8（1~32）" },
+    },
+    required: ["path"],
+    additionalProperties: true,
+  },
 
   // ---- 子代理 ----
   subagent_delegate: {

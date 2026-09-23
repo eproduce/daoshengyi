@@ -1,5 +1,6 @@
 import { it, expect } from "vitest";
 import { BUILTIN_TOOLS } from "../src/data/builtin-tools.ts";
+import { BUILTIN_PARAMETERS } from "../src/data/builtin-params.ts";
 import {
   buildNativeToolRegistry,
   activateCatalogTool,
@@ -279,4 +280,15 @@ it("parseNativeArguments：合法对象解析、非法/空/非对象一律回退
   expect(parseNativeArguments('["a","b"]')).toEqual({}); // 数组不是对象
   expect(parseNativeArguments('"hello"')).toEqual({}); // 原始值不是对象
   expect(parseNativeArguments("42")).toEqual({});
+});
+
+it("每个内置工具都有显式参数 schema（模型靠它拿准参数名，不靠猜）", () => {
+  // 背景：未收录的工具会走宽松兑底 schema，模型只能从 desc 文本里推测参数名——
+  // 实测出现过把 MCP 工具的 script 写成 expression/function 而整批失败。
+  // 所以「新增内置工具必须写清参数 schema」这条约定用测试钉死（lint/编译都不会报）。
+  const missing = BUILTIN_TOOLS.map((t) => t.name).filter((n) => !BUILTIN_PARAMETERS[n]);
+  expect(missing).toEqual([]);
+  // 反空转：两边都不能是空表，否则这条断言永远是绿的（踩过这个坑）
+  expect(BUILTIN_TOOLS.length).toBeGreaterThan(80);
+  expect(Object.keys(BUILTIN_PARAMETERS).length).toBeGreaterThan(80);
 });

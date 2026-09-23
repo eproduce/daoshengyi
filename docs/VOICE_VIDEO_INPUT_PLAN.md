@@ -43,9 +43,38 @@ DSH 的 `voice-input` 子系统（`docs/subsystems/voice-input.zh.md`）把语�
 | 层 | 能力 | 成本 | 现状 |
 | --- | --- | --- | --- |
 | **① 确定性像素/几何** | 字符切分、封闭空洞、字形点阵（编号/票据位数核验） | 微秒级 | ✅ 已有 `image_inspect` |
-| **② macOS Vision 原生**（零模型下载） | `VNClassifyImageRequest`（Apple 内置图像分类，千级类别）、`VNRecognizeAnimals`、人脸/人体/人体姿势、条码、`VNRecognizeText`（OCR）、`VNGenerateImageFeaturePrint`（帧间相似度） | 毫秒~百毫秒 | 🟡 只有 OCR（`ocr_tool`）——**扩展同一侧车即可** |
+| **② macOS Vision 原生**（零模型下载） | `VNClassifyImageRequest`（Apple 内置图像分类，千级类别）、`VNRecognizeAnimals`、人脸/人体/人体姿势、条码、`VNRecognizeText`（OCR）、`VNGenerateImageFeaturePrint`（帧间相似度） | 毫秒~百毫秒 | ✅ **已落地**（2026-09-23：`vision_inspect` 分类/人脸/人体/姿势/动物/条码/显著区域 + `image_similarity` 特征指纹，见 §二.0） |
 | **③ 本地 VLM**（llava-phi3 / llama.cpp） | 「看图说话」、开放性描述 | **10~40s/帧**、会幻觉 | ✅ 已有（18080 端口按需起停） |
 | **④ YOLO（可选）** | 多目标**检测框 + 计数**（COCO 80 类） | CoreML 推理，快；但需一次性转换 | ❌ 未做 |
+
+### 0. ② 层已落地（2026-09-23）：`vision_inspect` + `image_similarity`
+
+**没引入任何新依赖**：全部走 macOS 系统框架，侧车仍是 `src-tauri/ocr_tool.swift`（`build.rs` 自动编译、
+打包作 resource）。三种模式：默认 OCR（原行为完全不变）/ `--vision <图> [--max N]` / `--similarity <图A> <图B>`。
+
+**实测结果**（本机 Intel Mac，直接用仓库自带素材）：
+
+| 输入 | 结果 |
+| --- | --- |
+| `chat-dark.png`（2560×1640） | 分类 `document 0.941` / `screenshot 0.941`；显著区域 `left=0 top=1 width=1815 height=1147` |
+| 应用图标 `32x32.png` | 分类 `outdoor` / `celestial_body` / `moon`（0.189）——**确实在看内容，不是固定输出** |
+| `--similarity` 同一张图 | `distance = 0` |
+| `--similarity` 深色 vs 浅色两张截图 | `distance = 0.568` |
+
+**踩坑（必须记住）**：macOS 的 ML 运行时会在 **stdout** 上混入
+`E5RT encountered an STL exception. msg = Error building plan: … Weights are not set for given kernel..`
+——直接 `json.load` 会 `Expecting value: line 1 column 1`（第一次实测就是这么挂的）。
+所以侧车 JSON 输出带哨兵 `VISION_JSON`，解析端再兜一层「逐候选位置试解析」，
+并有一条用**真实观测到的噪声串**写的回归测试。
+
+**契约要点**：返回的框是**左上原点像素坐标**（Vision 原生是左下原点归一化，侧车里已换算），
+与 `image_inspect` 的 `region` 参数同一坐标系；报告末尾直接给出可执行的下一步
+（`region={...}` 去像素核验 / 裁局部再交 `describe_image`），并固定带一句「检测不到 ≠ 不存在」。
+
+**刻意没做**：① 不把原始 JSON 直接给模型（先规范化：清越界、按 id 去重、置信度降序、
+丢图外框、截断到 8 条标签 / 3 处显著区域）；② 特征距离**不给「相同/不同」硬判定**——
+阈值未用本机素材标定，只输出距离与量级判读（等视频关键帧去重时再标定）；
+③ 不碰 YOLO（见图表 ④，要先确认真的需要「检测框 + 计数」）。
 
 ### YOLO 与本地视觉模型的正确结合方式（用户的想法是对的）
 
@@ -87,7 +116,7 @@ DSH 的 `voice-input` 子系统（`docs/subsystems/voice-input.zh.md`）把语�
 | 优先级 | 事项 | 成本 | 依赖 |
 | --- | --- | --- | --- |
 | 🟢 1 | 语音阶段 1（按住说话 → 草稿，不自动发送）+ 准备状态机 | 2~3 天 | `sherpa-onnx` crate（官方 osx-x64 预编译，已验证可构建性） |
-| 🟢 2 | Vision 原生视觉层扩展（分类/人脸/人体/条码/特征指纹）到 `ocr_tool` 侧车 + 新命令 `vision_inspect` | 1~2 天 | 无新依赖（系统框架） |
+| ✅ 2 | ~~Vision 原生视觉层扩展（分类/人脸/人体/条码/特征指纹）~~ **已完成 2026-09-23**：`vision_inspect` + `image_similarity`（见 §二.0） | 1~2 天 | 无新依赖（系统框架） |
 | 🟢 3 | 视频抽帧 + 关键帧 + 时间轴汇总（`video_inspect`） | 2~3 天 | 第 2 项 |
 | 🟡 4 | VLM 局部裁剪理解（把 YOLO/Vision 的框喂给 llava-phi3） | 1~2 天 | 第 2 项 |
 | 🔵 5 | YOLO（CoreML 侧车 + 一次性模型转换） | 2~4 天 + Python 环境 | 第 2 项；**先确认真的需要"检测框/计数"** |

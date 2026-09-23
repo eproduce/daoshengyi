@@ -76,6 +76,55 @@
 
 ---
 
+## 2026-09-23（macOS Vision 原生视觉层：`vision_inspect` + `image_similarity`）
+
+### 起因
+用户问「DSH 架构有什么可借鉴 + 还没语音/视频输入，能不能把 YOLO 和本地视觉模型结合起来」。
+调研结论落成两份文档（`DSH_ARCHITECTURE_DEEPDIVE.md` / `VOICE_VIDEO_INPUT_PLAN.md`），
+其中视觉方案是三层栈（确定性像素 → **macOS Vision 原生** → 本地 VLM → 可选 YOLO），
+而 YOLO 在本机只能走 CoreML 侧车。**先把零依赖的第②层做扎实**，比直接上 YOLO 划算得多。
+
+### 改动（零新依赖，全部系统框架）
+- **侧车扩展** `src-tauri/ocr_tool.swift`：新增两个子命令，**原 OCR 行为不变**（首参以 `--` 开头才当子命令）
+  - `--vision <图> [--max N]`：分类 / 人脸 / 人体 / 人体姿势关节 / 动物 / 条码二维码 / 视觉显著区域，
+    全部带**像素框**（Vision 原生是左下原点归一化，侧车里换算成左上原点像素，与 `image_inspect` 的 region 同一坐标系）
+  - `--similarity <图A> <图B>`：`VNGenerateImageFeaturePrint` 特征距离（视频关键帧去重的基础）
+  - 每个 Apple 请求独立 try/catch：某个能力不可用只记 notes，不让整体失败
+- **新模块** `src-tauri/src/vision_native.rs`（纯函数 + 21 条单测）：解析侧车 JSON → 规范化 → 可读报告
+  - 规范化：清洗越界置信度、按 id 去重（保留最高分）、置信度降序、丢完全在图外的框、
+    截断 8 条标签 / 3 处显著区域 / 8 条 notes
+  - 报告末尾直接给**可执行的下一步**（`region={...}` 去 `image_inspect` 核验 / 裁局部再交 `describe_image`）
+    + 固定句「检测不到 ≠ 不存在」（来自 Apple 内置模型，会漏检）
+  - 命名：模块叫 `vision_native`，与既有 `pick_vision_backend`（本地 VLM 后端选择）区分开
+- **lib.rs**：新增命令 `vision_inspect` / `image_similarity`（含沙箱白名单校验）+ 注册；
+  顺手抽出 `ensure_readable_path`（只读命令的沙箱判定，别再各写一遍）
+- **前端 5 处注册**：`builtin-tools.ts` / `builtin-params.ts` / `chat.ts` 主提示词 / `chat.ts` callBuiltinTool 分支
+  / `roles-catalog.ts` 的 researcher 工具集（内置工具 83 → **84 个**）
+
+### 踩坑（重要）
+macOS 的 ML 运行时会在 **stdout** 上混入
+`E5RT encountered an STL exception. msg = Error building plan: … Weights are not set for given kernel..`
+——把它当 JSON 直接解析会 `Expecting value: line 1 column 1`（第一次手测就是这么挂的）。
+→ 侧车 JSON 输出带哨兵 `VISION_JSON`，解析端 `extract_json` 再兜一层「逐候选位置试解析」；
+回归测试用的是**真实观测到的噪声串**，不是编的。
+
+### 验证（都是真机实测，不是推理）
+- 侧车手测：`chat-dark.png`（2560×1640）→ 分类 `document`/`screenshot` 0.941 + 显著区域框；
+  应用图标 `32x32.png` → `outdoor`/`celestial_body`/`moon`（**确实在看内容，不是固定输出**）；
+  同图 `--similarity` = `0`，深色/浅色两张截图 = `0.568`；不存在文件 → 结构化错误 + 退出码 2；
+  多文件 OCR 与 PDF 老行为不变
+- 新增 3 条**真机契约测试**（侧车真实输出 ↔ 解析器，macOS 上随 `cargo test` 一起跑）：
+  报告可解析且标签非空 / 同图距离为 0 / 缺文件能转成可读错误
+- 门禁 8/8：vitest **37 files / 501 passed**（新增 1 条守卫），cargo **249 passed / 14 ignored**（新增 21 条）
+- 顺手加了两条「防注册漂移」核对：① 每个内置工具都必须有显式参数 schema（**带反空转断言**，已进 vitest）；
+  ② 用脚本核对 **84/84 都有 `callBuiltinTool` 执行分支**——第②条**暂未自动化**：测试 tsconfig 是
+  `types: []` 且未装 `@types/node`，读源码需要它，不值得为此加依赖，留作待办
+- 明确没做：给特征距离「相同/不同」硬判定（阈值未标定，只输出距离与量级）、YOLO、视频抽帧
+
+### 下一步
+- 视频：抽帧（AVFoundation）+ 用 `image_similarity` 去重选关键帧 → 每帧走确定性层 → 时间轴汇总（`video_inspect`）
+- 按需把框裁出来喂本地 VLM（第③层），减少幻觉；语音按 `VOICE_VIDEO_INPUT_PLAN.md` §一推进（需先配 cargo 镜像）
+
 ## 2026-09-23（社区插件体系修复：Smithery 全链路不可达 → 改走 npm 镜像索引 + 本地 stdio）
 
 用户反馈「社区插件体系好像不能用」。核查确认：**Smithery 整条链路在国内网络不可达**（实测

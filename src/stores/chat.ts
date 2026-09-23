@@ -810,6 +810,7 @@ function getMcpToolsPrompt(): string {
     '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。**注意**：OCR 对等宽数字串（尤其前导零）漏读率高，数位数/辨字形时要再用 image_inspect 交叉验证。\n' +
     '- **image_inspect** (app): 对图片做**确定性像素核验**（非 OCR）：列投影切出字符块 + 每个字形的墨迹量/封闭空洞数/宽高比 + ASCII 点阵。参数 {"path": "图片路径", "region": 可选 {left,top,width,height} 裁剪区, "threshold": 可选灰度阈值, "invert": 可选 true=浅色为字, "mode": "glyphs"|"info"}。**凡是数位数（证书编号/票据号/序列号/条码下方数字）或区分 0-O、1-l 这类相近字形，必须用它交叉验证**，不要只凭 ocr_image 的文本下结论；报告会给出宽度分布，"切出几块"就是几位。\n' +
+    '- **vision_inspect** (app): 用 **macOS Vision 原生能力**做视觉检查（离线、零模型下载、毫秒级）：图像分类、人脸/人体/人体姿势的**数量与像素位置**、动物、条码二维码内容、**视觉显著区域**。参数 {"path": "图片路径", "max_labels": 可选，默认 8}。**分工**：image_inspect 管像素细节（数位数/辨字形）；本工具管「图里有什么、在哪」；describe_image 是本地小模型（30–120 秒且会幻觉）——**要数量/位置/是否存在优先用本工具**，需要语义描述时先用它定位、**裁出局部**再交 describe_image。返回的像素框与 image_inspect 的 region 同坐标系，可直接核验。**检测不到 ≠ 不存在**（小目标/极端角度会漏检）。\n' +
     '- **subagent_delegate** (app): 委派**单个**子代理独立处理子任务（独立上下文、独立回答），返回其结论。参数 {"goal": "子任务目标", "context": "可选补充上下文", "allow_tools": true, "role": "可选角色 planner/executor/verifier/reviewer/researcher（角色=定位+工具集约束）"}。适合单个子任务研究/独立验证；**有多个相互独立的子任务时用 subagent_parallel 并行委派**。子代理结论会作为工具结果返回。' +
     '\n- **subagent_parallel** (app): **并行委派多个子代理**（多个子代理并发执行、互不等待，可视化面板同时显示各子代理进度）。参数 {"tasks": [{"goal": "子任务1", "context": "可选", "allow_tools": true, "role": "可选角色"}, ...], "concurrency": 可选并发数（默认最多 4）, "synth": 可选，true 时并行完成后用评审角色汇总仲裁}. **使用时机**：任务可拆分为多个**相互独立**的子任务（分头研究多个话题 / 分别验证多处代码 / 多角度调研）时，用本工具并行推进大幅节省时间；结果会按子任务顺序汇总返回。**注意**：①子任务必须真正独立（互不依赖彼此结论），否则不要并行；②浏览器自动化是单一实例，多个子任务同时操作浏览器会被自动串行化——若多个子任务都要操作不同网页，建议由主代理串行处理；③子代理一般不应继续递归并行委派，避免递归失控。' +
     '- **pdf_read** (app): 分段读取 PDF 文件内容（一次读一段，返回纯文本）。参数 {"path": "PDF 路径", "offset": 起始字符偏移, "length": 读取长度}。用于浏览长 PDF 时按需分段读取，避免一次性加载全部内容。' +
@@ -2793,6 +2794,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         max_glyphs: num(args.max_glyphs) ?? null,
         min_glyph_width: num(args.min_glyph_width) ?? null,
         max_gap: num(args.max_gap) ?? null,
+      });
+    }
+    case "vision_inspect": {
+      // macOS Vision 原生检测（分类/人脸/人体/姿势/动物/条码/显著区域）：离线、毫秒级、不幻觉
+      const path = String(args.path || "");
+      if (!path) throw new Error("vision_inspect 需要 path 参数（图片文件路径）");
+      const maxLabels = Number(args.max_labels ?? args.maxLabels);
+      return await invoke<string>("vision_inspect", {
+        path,
+        max_labels: Number.isFinite(maxLabels) ? Math.floor(maxLabels) : null,
       });
     }
     // ---- 融合 Codex 的工具（openai/codex，其工具形态经大量用户检验）----

@@ -94,6 +94,7 @@ export const AGENT_ROLES: AgentRole[] = [
       "fetch_page",
       "describe_image",
       "ocr_image",
+      "vision_inspect",
       "pdf_read",
       "list_dir",
       "read_file",
