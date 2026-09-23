@@ -20,6 +20,12 @@ import {
   workspaceInputError,
 } from "@/utils/workspace";
 import {
+  chooseDropdownAnchor,
+  dropdownMaxHeight,
+  DROPDOWN_MIN_HEIGHT,
+  type DropdownAnchor,
+} from "@/utils/dropdown-anchor";
+import {
   PERMISSION_PRESETS,
   CUSTOM_PRESET_ID,
   matchPresetId,
@@ -77,13 +83,32 @@ const wsError = ref("");
 const showWorkspaceDropdown = ref(false);
 const workspaceDropdownRef = ref<HTMLDivElement>();
 const workspaceBtnRef = ref<HTMLDivElement>();
+// 面板边界（用户实测：靠右/窗口矮时会顶出窗口）——展开方向与高度上限都要算，不能写死
+const workspaceAnchor = ref<DropdownAnchor>("left");
+const workspaceMaxHeight = ref(DROPDOWN_MIN_HEIGHT);
 
-function toggleWorkspaceDropdown() {
+/** 按 pill 与视口的相对位置重算展开方向与高度上限（面板必须已渲染才能量到宽度） */
+function recomputeWorkspacePanelBounds() {
+  const btn = workspaceBtnRef.value;
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  // 面板从 pill 上方展开（bottom: 100%），可用高度 = pill 顶部到视口顶部的距离
+  workspaceMaxHeight.value = dropdownMaxHeight(rect.top);
+  workspaceAnchor.value = chooseDropdownAnchor({
+    pillLeft: rect.left,
+    pillRight: rect.right,
+    viewportWidth: window.innerWidth,
+    panelWidth: workspaceDropdownRef.value?.offsetWidth ?? 0,
+  });
+}
+
+async function toggleWorkspaceDropdown() {
   showWorkspaceDropdown.value = !showWorkspaceDropdown.value;
-  if (showWorkspaceDropdown.value) {
-    wsDraft.value = workspaceValue.value;
-    wsError.value = "";
-  }
+  if (!showWorkspaceDropdown.value) return;
+  wsDraft.value = workspaceValue.value;
+  wsError.value = "";
+  await nextTick();
+  recomputeWorkspacePanelBounds();
 }
 
 async function saveWorkspace() {
@@ -360,6 +385,11 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
+/** 窗口尺寸变化时重算工作区面板边界（面板开着时才会跑） */
+function onWindowResize() {
+  if (showWorkspaceDropdown.value) recomputeWorkspacePanelBounds();
+}
+
 // --- 剪贴板粘贴（图片 / PDF 走统一 Rust 处理） ---
 function handlePaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items;
@@ -581,10 +611,12 @@ function onDrop(e: DragEvent) {
 onMounted(async () => {
   nextTick(() => textareaRef.value?.focus());
   document.addEventListener("click", onDocClick);
+  window.addEventListener("resize", onWindowResize);
   await setupNativeDragDrop();
 });
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
+  window.removeEventListener("resize", onWindowResize);
   unlistenDrag?.();
 });
 
@@ -1049,6 +1081,8 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
             v-if="showWorkspaceDropdown"
             ref="workspaceDropdownRef"
             class="ci-drop ci-drop-workspace"
+            :class="{ 'ci-drop-workspace--right': workspaceAnchor === 'right' }"
+            :style="{ maxHeight: workspaceMaxHeight + 'px' }"
             @click.stop
           >
             <div class="ci-drop-group-title">Agent 工作区</div>
@@ -1519,6 +1553,8 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
   bottom: calc(100% + 6px);
   left: 0;
   min-width: 200px;
+  /* 兜底：任何下拉都不得比视口还宽（窄窗口下各 pill 的下拉共用这条保护） */
+  max-width: calc(100vw - 16px);
   background: #1e1e32;
   border: 1px solid #333;
   border-radius: 10px;
@@ -1624,6 +1660,15 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .ci-drop-workspace {
   min-width: 340px;
   max-width: min(460px, 92vw);
+  /* 高度由 JS 按可用空间内联给（dropdownMaxHeight），超出就内部滚动——
+     不限制的话窗口一矮面板会顶出窗口顶部（用户实测） */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* pill 靠窗口右侧时改为向左展开，否则面板会顶出窗口右边（用户实测） */
+.ci-drop-workspace--right {
+  left: auto;
+  right: 0;
 }
 .ci-ws-input {
   width: calc(100% - 24px);
