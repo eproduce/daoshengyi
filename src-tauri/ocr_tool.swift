@@ -235,19 +235,27 @@ func visionReport(path: String, maxLabels: Int) -> [String: Any] {
 }
 
 /// 特征指纹距离（0=几乎相同）。用于视频抽帧后**去掉重复帧**、只留关键帧。
-func featurePrint(_ cg: CGImage) -> VNFeaturePrintObservation? {
+/// 返回错误原因而不是只返回 nil：在拿不到推理上下文的环境（如无 GPU 的虚拟机）里，
+/// 「图片格式不支持」是错误归因，会把人引到错方向。
+func featurePrint(_ cg: CGImage) -> (VNFeaturePrintObservation?, String?) {
     let req = VNGenerateImageFeaturePrintRequest()
-    guard (try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])) != nil else {
-        return nil
+    do {
+        try VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
+    } catch {
+        return (nil, error.localizedDescription)
     }
-    return req.results?.first
+    guard let obs = req.results?.first else { return (nil, "系统未返回特征指纹") }
+    return (obs, nil)
 }
 
 func similarityReport(_ aPath: String, _ bPath: String) -> [String: Any] {
     guard let a = loadImage(aPath) else { return ["ok": false, "error": "无法读取图片：\(aPath)"] }
     guard let b = loadImage(bPath) else { return ["ok": false, "error": "无法读取图片：\(bPath)"] }
-    guard let fa = featurePrint(a), let fb = featurePrint(b) else {
-        return ["ok": false, "error": "特征指纹提取失败（图片格式可能不支持）"]
+    let (fa, errA) = featurePrint(a)
+    let (fb, errB) = featurePrint(b)
+    guard let fa, let fb else {
+        let reason = errA ?? errB ?? "未知原因"
+        return ["ok": false, "error": "特征指纹提取失败：\(reason)"]
     }
     var distance: Float = 0
     do {

@@ -357,6 +357,23 @@ pub fn format_vision_report(r: &VisionReport) -> String {
         r.salient.len()
     ));
 
+    // 整能力不可用 vs 真的什么都没检测到：这两者必须分开说。
+    // 起因：CI 的 macOS runner 上所有 Vision 请求都报 `Could not create inference context`
+    // （无 GPU/ANE 的虚拟机实测），若不提醒，模型会把「能力不可用」当成「图里什么都没有」下结论。
+    let nothing_detected = r.labels.is_empty()
+        && r.faces.is_empty()
+        && r.humans.is_empty()
+        && r.poses.is_empty()
+        && r.animals.is_empty()
+        && r.barcodes.is_empty()
+        && r.salient.is_empty();
+    if nothing_detected && !r.notes.is_empty() {
+        out.push_str(
+            "【警告】本次所有视觉能力都没给出结果——大概率是运行环境缺少推理上下文/能力受限（原因见下方【说明】），\n\
+             而不是「图里什么都没有」；不要据此下「图中无内容」的结论。\n",
+        );
+    }
+
     if r.labels.is_empty() {
         out.push_str("【分类】无置信度 ≥0.1 的类别\n");
     } else {
@@ -615,8 +632,47 @@ mod tests {
         );
         assert!(text.contains("【条码】未检出"));
         assert!(text.contains("检测不到 ≠ 不存在"), "必须带漏检免责说明");
-        // 没有任何位置信息时不该硬凑「怎么用」
+        // 没有任何位置信息时不该硬凑「怎么用」；没有失败原因时也不该喊「能力不可用」
         assert!(!text.contains("【怎么用】"));
+        assert!(
+            !text.contains("【警告】"),
+            "没有失败原因就是真的没检出：{text}"
+        );
+    }
+
+    #[test]
+    fn format_warns_when_every_capability_failed_with_reasons() {
+        // 真实观测：CI 的 macOS runner 上所有 Vision 请求都报 Could not create inference context
+        let raw = report_json(
+            r#"{"ok":true,"width":2560,"height":1640,"labels":[],"faces":[],"humans":[],
+                "poses":[],"animals":[],"barcodes":[],"salient":[],
+                "notes":["图像分类失败：Could not create inference context",
+                          "人脸检测失败：Could not create inference context"]}"#,
+        );
+        let text = format_vision_report(&parse_vision_report(&raw).unwrap());
+        assert!(
+            text.contains("【警告】"),
+            "能力全不可用必须显式警告：{text}"
+        );
+        assert!(
+            text.contains("不是「图里什么都没有」"),
+            "要说清这不代表图是空的：{text}"
+        );
+        assert!(
+            text.contains("Could not create inference context"),
+            "保留原始原因"
+        );
+    }
+
+    #[test]
+    fn parse_similarity_surfaces_inference_context_failure() {
+        // 侧车在无推理上下文环境下的输出：原因要原样转述，不能只怪「图片格式不支持」
+        let raw = report_json(
+            r#"{"ok":false,"error":"特征指纹提取失败：Could not create inference context"}"#,
+        );
+        let err = parse_similarity(&raw).unwrap_err();
+        assert!(err.contains("特征指纹"), "{err}");
+        assert!(err.contains("inference context"), "原因要原样转述：{err}");
     }
 
     #[test]
