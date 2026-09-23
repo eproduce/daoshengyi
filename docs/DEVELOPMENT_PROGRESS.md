@@ -76,6 +76,36 @@
 
 ---
 
+## 2026-09-23（社区插件体系修复：Smithery 全链路不可达 → 改走 npm 镜像索引 + 本地 stdio）
+
+用户反馈「社区插件体系好像不能用」。核查确认：**Smithery 整条链路在国内网络不可达**（实测
+`registry.smithery.ai` / `smithery.ai` / `api.smithery.ai` 全部 HTTP 000），而它的两步依赖
+（列表 + 托管远程端点 `deploymentUrl`）都靠它 ⇒ 功能长期失效；另外 `registry.npmjs.org` 同样
+000（只有淘宝镜像通）。
+
+### 改法：索引源换 npm（镜像优先），插件从「远程托管」改为「本地 stdio」
+
+| 层 | 改动 |
+| --- | --- |
+| 索引 | `fetch_community_plugins` 改查 npm 搜索 API（`registry.npmmirror.com` 优先 → `registry.npmjs.org` 兜底）；两源都失败时**明确报错**并提示改用内置目录（不再静默） |
+| 过滤 | 新增纯函数 `is_mcp_package`（只看包名/keywords——描述里提 MCP 的包太多）与 `is_placeholder_package`（`-security` 版本、`npx-confusion`/`security holding` 关键词） |
+| 风险提示 | 下载量 < 5000 且非官方 scope → 前端**二次确认**；列表展示 版本 / 发布者 / 下载量 / 官方标记 |
+| 安装 | 改为**本地 stdio**：`npx -y 包名@版本` + `npm_config_registry=淘宝镜像`（否则国内拉不到包）；数据不出本机、不需要 API key，复用现有 MCP 客户端 |
+| 清理 | 删除死代码 `fetch_remote_plugin_endpoint` 及其命令注册 |
+
+> ⚠️ **安全发现（重要）**：`mcp-server-github` 这个包名**已被 npm 安全团队占位**
+> （`0.0.1-security`，keywords `security-research`/`npx-confusion`）。若照搜索结果直接 `npx` 安装，
+> 用户会得到一个空壳却以为装好了 —— 所以占位包必须**在索引层就滤掉**，低使用量的必须让用户确认。
+
+### 验证
+
+- 新增 3 条纯函数单测（MCP 识别 / 占位包过滤 / 解析含下载量与 low-usage 标记 + 脏数据容错）
+- 新增 1 条**真机 live 测试**：`cargo test --lib -- --ignored live_npm_search` —— 实测通过
+  （镜像可达，且能解析出 `@modelcontextprotocol/*` 官方 server 包）
+- `npm run ci:local` 8/8（cargo **228 passed** / vitest 37 files 500 tests / clippy 零告警）
+
+---
+
 ## 2026-09-23（工具调用展示：整组折叠 + 正文去重）
 
 用户反馈「工具调用记录全部直接铺在 agent 回复里，能不能折叠」。参照 DSH 的做法落地

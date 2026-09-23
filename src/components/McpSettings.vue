@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useMcpStore, detectBrowsers, type BrowserInfo } from "@/stores/mcp";
+import { notify, askConfirm } from "@/utils/dialog";
 import { initSettings, getSettings, updateSettings } from "@/api/appSettings";
 import { MCP_CATALOG, MCP_CATEGORIES, type McpCatalogItem } from "@/data/mcp-catalog";
 import {
@@ -147,28 +148,41 @@ function openAdd() {
   error.value = "";
 }
 
-// --- 社区插件（Smithery 远程市场，免安装即用） ---
+// --- 社区插件（npm 上的 MCP server 包，本地 stdio 运行） ---
+// 索引源已从 Smithery 换成 npm（淘宝镜像优先）：Smithery 的 registry 与托管远程端点在
+// 国内网络实测**全部不可达**（HTTP 000），整条链路等于不可用。现在装的是**本地进程**：
+// 无需第三方托管、不需要 API key、数据不出本机，且复用现有 MCP 客户端。
 interface CommunityPlugin {
   id: string;
   name: string;
   description: string;
   source: string;
-  verified: boolean;
-  use_count: number;
+  version: string;
+  publisher: string;
+  downloads: number;
+  official: boolean;
+  /** ""=正常；"low-usage"=下载量低，装之前要用户确认 */
+  risk: string;
 }
 const communityPlugins = ref<CommunityPlugin[]>([]);
 const communitySearch = ref("");
 const communityLoading = ref(false);
 const communityInstalling = ref<string | null>(null);
+/** npx 拉包必须显式指定镜像：官方 npm 源在国内不可达（本机实测 000） */
+const NPM_REGISTRY = "https://registry.npmmirror.com";
 
 async function loadCommunityPlugins() {
   communityLoading.value = true;
   error.value = "";
   try {
     const q = communitySearch.value.trim();
-    const list = await invoke<CommunityPlugin[]>("fetch_community_plugins", { query: q || null });
+    if (!q) {
+      error.value = "先输入关键词（如 github / postgres / notion / browser）再搜索";
+      return;
+    }
+    const list = await invoke<CommunityPlugin[]>("fetch_community_plugins", { query: q });
     communityPlugins.value = list;
-    if (list.length === 0) error.value = "没有找到匹配的社区插件";
+    if (list.length === 0) error.value = `没有找到与「${q}」匹配的 MCP 插件包`;
   } catch (e: unknown) {
     error.value = `加载社区插件失败: ${e}`;
   } finally {
@@ -177,30 +191,41 @@ async function loadCommunityPlugins() {
 }
 
 function communityInstalled(id: string) {
-  // 远程插件 command 是 deploymentUrl（如 https://gmail.run.tools），按 URL 是否含插件 id 判断
   return store.servers.some(
-    (s) => s.command.startsWith("http") && s.command.toLowerCase().includes(id.toLowerCase()),
+    (s) =>
+      // 现在装的是 npx 本地进程：按「命令 + 参数里含包名」判断
+      (s.command === "npx" && s.args.includes(id)) ||
+      // 兼容更早的 Smithery 远程插件（command 存的是 URL）
+      (s.command.startsWith("http") && s.command.toLowerCase().includes(id.toLowerCase())),
   );
 }
 
-/// 安装社区插件：查询其远程 HTTP 端点（deploymentUrl），作为 command=URL 的远程插件添加
+/// 安装社区插件：用 npx 拉包并跑成本地 stdio MCP 进程（注入镜像 registry，否则国内拉不到包）
 async function installCommunity(p: CommunityPlugin) {
   if (communityInstalled(p.id) || communityInstalling.value) return;
+  // 低下载量（且非官方 scope）→ 先让用户确认：npm 上同名抢注/空壳包不少
+  if (p.risk === "low-usage") {
+    const ok = await askConfirm(
+      `「${p.name}」下载量较低（${p.downloads.toLocaleString("zh-CN")} 次）。\n\n` +
+        `版本：${p.version}\n发布者：${p.publisher || "未知"}\n\n` +
+        `npm 上存在同名抢注/空壳包，确认要安装吗？`,
+    );
+    if (!ok) return;
+  }
   communityInstalling.value = p.id;
   error.value = "";
   try {
-    const url = await invoke<string>("fetch_remote_plugin_endpoint", { id: p.id });
-    const existing = store.servers.find((s) => s.command === url);
-    if (existing) {
-      error.value = `「${p.name}」已在安装列表中`;
-      communityInstalling.value = null;
-      return;
-    }
-    store.add({ name: p.name, command: url, args: "", env: {}, enabled: true });
+    store.add({
+      name: p.name,
+      command: "npx",
+      args: `-y ${p.id}@${p.version}`,
+      env: { npm_config_registry: NPM_REGISTRY },
+      enabled: true,
+    });
     activeTab.value = "servers";
-    // agent 自动控制：添加后自动连接（远程插件无进程，连接即建立会话）
+    // 添加后自动连接（首次会下载 npm 包，稍慢）
     store.connectEnabled();
-    error.value = `✅ 已添加「${p.name}」（远程），自动连接中…`;
+    await notify(`已添加「${p.name}」，首次连接会从镜像源下载 npm 包`, "info");
   } catch (e: unknown) {
     error.value = `安装「${p.name}」失败: ${e}`;
   } finally {
@@ -391,19 +416,19 @@ function cancel() {
         </div>
       </div>
 
-      <!-- 社区插件（Smithery 远程市场）——降级为「高级」折叠区：
-           能力主干已内置（55+ 内置工具）+ 技能拓展，社区远程端点属于长尾/账号型补充，
-           且为第三方远程服务（数据要出本机），默认收起、明确提示，避免被当成首选路径 -->
+      <!-- 社区插件（npm 上的 MCP server 包，本地 stdio 运行）——降级为「高级」折叠区：
+           能力主干已内置（55+ 内置工具）+ 技能拓展，社区包属于长尾/账号型补充，
+           默认收起、明确提示，避免被当成首选路径 -->
       <details class="mcp-community">
         <summary class="mcp-community-head">
           <span class="mcp-community-title"
-            ><Globe :size="14" /> 高级：社区远程插件（Smithery）
-            <span class="mcp-community-badge">第三方 · 数据出本机</span></span
+            ><Globe :size="14" /> 高级：社区插件（npm）
+            <span class="mcp-community-badge">第三方包 · 本地进程</span></span
           >
           <span class="mcp-community-acts">
             <input
               v-model="communitySearch"
-              placeholder="搜索社区插件..."
+              placeholder="搜索 npm 上的 MCP 包（如 github）..."
               class="mcp-input mcp-community-search"
               @keyup.enter="loadCommunityPlugins"
             />
@@ -413,7 +438,7 @@ function cancel() {
               @click="loadCommunityPlugins"
             >
               <RefreshCw v-if="!communityLoading" :size="14" />{{
-                communityLoading ? "加载中…" : "加载"
+                communityLoading ? "加载中…" : "搜索"
               }}
             </button>
           </span>
@@ -423,12 +448,16 @@ function cancel() {
             <div class="mcp-card-info">
               <div class="mcp-card-name">
                 {{ p.name }}
-                <span v-if="p.verified" class="mcp-mini-tag mcp-verified">✓ 已验证</span>
-                <span class="mcp-card-cat">smithery</span>
+                <span v-if="p.official" class="mcp-mini-tag mcp-verified">官方</span>
+                <span v-if="p.risk === 'low-usage'" class="mcp-mini-tag">⚠ 低使用量</span>
+                <span class="mcp-card-cat">v{{ p.version }}</span>
               </div>
               <div class="mcp-card-desc">{{ p.description }}</div>
-              <div v-if="p.use_count > 0" class="mcp-card-tags">
-                <span class="mcp-mini-tag">🔥 {{ p.use_count }} 次使用</span>
+              <div class="mcp-card-tags">
+                <span v-if="p.downloads > 0" class="mcp-mini-tag"
+                  >↓ {{ p.downloads.toLocaleString("zh-CN") }}</span
+                >
+                <span v-if="p.publisher" class="mcp-mini-tag">{{ p.publisher }}</span>
               </div>
             </div>
             <button
@@ -449,12 +478,14 @@ function cancel() {
         </div>
         <div v-else-if="!communityLoading" class="mcp-community-hint">
           <p class="mcp-community-warn">
-            ⚠️ 这些是<strong>第三方远程服务</strong>（数据会离开本机）。能力主干优先用
-            <strong>内置工具 + 技能</strong
-            >（已覆盖文件/命令/Git/浏览器/工作流/记忆等）；社区端点只在需要长尾/账号型集成 （如
-            gmail、notion）时使用。
+            ⚠️
+            这些是<strong>第三方包</strong>，安装后以<strong>本地进程</strong>运行（数据不出本机，
+            但仍会访问对应服务的 API）。能力主干优先用<strong>内置工具 + 技能</strong
+            >（已覆盖文件/命令/Git/浏览器/工作流/记忆等）；社区包只在需要长尾/账号型集成 （如
+            github、notion）时使用。
           </p>
-          点击「🔍 加载」从 Smithery 社区市场拉取可用插件，安装即连接远程端点，无需本地进程。
+          输入关键词后点「搜索」，从 npm（淘宝镜像优先）拉取 MCP 包；安装 = 用 npx 拉包并连成本地
+          MCP 进程。同名抢注/空壳包会被自动过滤，低使用量的包会先让你确认。
         </div>
       </details>
 

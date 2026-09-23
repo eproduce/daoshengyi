@@ -5956,14 +5956,24 @@ async fn mcp_disconnect(
 
 // --- 社区插件市场（Smithery） ---
 
+/// 社区插件（来自 npm 的 MCP server 包，本地 stdio 运行）
+///
+/// 索引源为何不再是 Smithery：其 registry（`registry.smithery.ai`）与托管远程端点在
+/// 国内网络**实测全部不可达**（HTTP 000），且托管端点还需 API key —— 整条链路等于不可用。
+/// 改成查 **npm 元数据**（淘宝镜像优先，官方源兜底）并把插件跑成**本地 stdio 进程**：
+/// 无需第三方托管、不需要 key、数据不出本机，且复用现有 MCP 客户端。
 #[derive(serde::Serialize, Clone)]
 struct CommunityPlugin {
-    id: String,   // 唯一标识（如 gmail）
-    name: String, // 显示名
+    id: String,   // 包名（唯一标识，如 @modelcontextprotocol/server-github）
+    name: String, // 显示名（同包名）
     description: String,
-    source: String, // "smithery"
-    verified: bool,
-    use_count: i64,
+    source: String, // "npm"
+    version: String,
+    publisher: String,
+    downloads: i64, // 累计/周下载量（各源字段不一，能拿到就用）
+    official: bool, // @modelcontextprotocol/* 官方 scope
+    /// ""=正常；"low-usage"=下载量低，需用户确认后再装
+    risk: String,
 }
 
 fn urlencode(s: &str) -> String {
@@ -5979,104 +5989,148 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-/// 拉取社区插件列表（当前来源：Smithery registry，开放无鉴权）
-#[tauri::command]
-async fn fetch_community_plugins(query: Option<String>) -> Result<Vec<CommunityPlugin>, String> {
-    let q = query.unwrap_or_default();
-    let url = format!("https://registry.smithery.ai/servers?q={}", urlencode(&q));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("请求插件市场失败: {}", e))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取插件市场响应: {}", e))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("解析插件市场响应: {}", e))?;
-    let servers = v
-        .get("servers")
-        .and_then(|x| x.as_array())
-        .ok_or("插件市场响应缺少 servers 字段")?;
-    let mut out = Vec::new();
-    for s in servers {
-        let id = s
-            .get("qualifiedName")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let name = s
-            .get("displayName")
-            .and_then(|x| x.as_str())
-            .unwrap_or(&id)
-            .to_string();
-        let description = s
-            .get("description")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let verified = s.get("verified").and_then(|x| x.as_bool()).unwrap_or(false);
-        let use_count = s.get("useCount").and_then(|x| x.as_i64()).unwrap_or(0);
-        out.push(CommunityPlugin {
-            id: id.clone(),
-            name,
-            description,
-            source: "smithery".into(),
-            verified,
-            use_count,
-        });
+/// 低下载量阈值：低于它不直接装，先让用户确认（npm 上同名抢注/占位包不少）
+const COMMUNITY_LOW_DOWNLOADS: i64 = 5000;
+
+/// 是否像 MCP server 包：只看**包名与 keywords**（描述里提 MCP 的包太多，噪音大）
+fn is_mcp_package(name: &str, keywords: &[String]) -> bool {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mcp") || n.contains("modelcontextprotocol") {
+        return true;
     }
-    Ok(out)
+    keywords.iter().any(|k| {
+        let k = k.to_ascii_lowercase();
+        k.contains("mcp") || k.contains("modelcontextprotocol")
+    })
 }
 
-/// 查询插件详情，返回远程 HTTP MCP 端点（deploymentUrl）
-#[tauri::command]
-async fn fetch_remote_plugin_endpoint(id: String) -> Result<String, String> {
-    let clean = id.trim_start_matches("smithery:").trim().to_string();
-    if clean.is_empty() {
-        return Err("插件 ID 为空".into());
+/// 占位/抢注包判定：npm 上 `mcp-server-*` 这类好名字往往被安全团队或抢注者占住
+/// （实测 `mcp-server-github` = `0.0.1-security`、keywords 带 `npx-confusion`）。
+/// 装上去是个空壳，还会让用户以为已经装好 —— 命中即**不展示**。
+fn is_placeholder_package(name: &str, version: &str, keywords: &[String]) -> bool {
+    let n = name.to_ascii_lowercase();
+    if n.ends_with("-security") || version.ends_with("-security") {
+        return true;
     }
-    let url = format!("https://registry.smithery.ai/servers/{}", urlencode(&clean));
+    keywords.iter().any(|k| {
+        let k = k.to_ascii_lowercase();
+        k.contains("npx-confusion") || k.contains("security holding")
+    })
+}
+
+/// 按 npm 搜索响应构造条目（纯函数，便于单测）
+fn parse_npm_search(v: &serde_json::Value) -> Vec<CommunityPlugin> {
+    let mut out = Vec::new();
+    let Some(objs) = v.get("objects").and_then(|x| x.as_array()) else {
+        return out;
+    };
+    for o in objs {
+        let Some(p) = o.get("package") else { continue };
+        let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let version = p
+            .get("version")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let keywords: Vec<String> = p
+            .get("keywords")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|k| k.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !is_mcp_package(name, &keywords) || is_placeholder_package(name, &version, &keywords) {
+            continue;
+        }
+        // 下载量字段各家不一（镜像给 all，官方源可能给 weekly/monthly）→ 取第一个能用的
+        let downloads = o
+            .get("downloads")
+            .and_then(|d| {
+                d.get("all")
+                    .or_else(|| d.get("weekly"))
+                    .or_else(|| d.get("monthly"))
+            })
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
+        let official = name.starts_with("@modelcontextprotocol/");
+        out.push(CommunityPlugin {
+            id: name.to_string(),
+            name: name.to_string(),
+            description: p
+                .get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            source: "npm".into(),
+            version,
+            publisher: p
+                .get("publisher")
+                .and_then(|x| x.get("username"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            downloads,
+            official,
+            risk: if official || downloads >= COMMUNITY_LOW_DOWNLOADS {
+                String::new()
+            } else {
+                "low-usage".into()
+            },
+        });
+    }
+    out
+}
+
+/// 查一个源；镜像优先（国内直连），官方源作兜底（海外环境）
+async fn npm_search(query: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("查询插件详情失败: {}", e))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取插件详情: {}", e))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("解析插件详情: {}", e))?;
-    if let Some(u) = v.get("deploymentUrl").and_then(|x| x.as_str()) {
-        if !u.is_empty() {
-            return Ok(u.to_string());
+    let path = format!("/-/v1/search?text={}&size=40", urlencode(query));
+    let sources = [
+        format!("https://registry.npmmirror.com{}", path),
+        format!("https://registry.npmjs.org{}", path),
+    ];
+    let mut last = String::from("未尝试任何源");
+    for url in sources {
+        match client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.text().await {
+                Ok(t) => match serde_json::from_str::<serde_json::Value>(&t) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => last = format!("{} 响应解析失败: {}", url, e),
+                },
+                Err(e) => last = format!("{} 读取失败: {}", url, e),
+            },
+            Err(e) => last = format!("{} 请求失败: {}", url, e),
         }
     }
-    if let Some(conns) = v.get("connections").and_then(|x| x.as_array()) {
-        for c in conns {
-            if let Some(u) = c.get("deploymentUrl").and_then(|x| x.as_str()) {
-                if !u.is_empty() {
-                    return Ok(u.to_string());
-                }
-            }
-        }
+    Err(format!(
+        "社区插件源不可达（{}）。可改用内置插件目录，或检查网络与 npm 镜像设置。",
+        last
+    ))
+}
+
+/// 搜索社区插件（npm 上的 MCP server 包）
+#[tauri::command]
+async fn fetch_community_plugins(query: Option<String>) -> Result<Vec<CommunityPlugin>, String> {
+    let q = query.unwrap_or_default().trim().to_string();
+    if q.is_empty() {
+        return Err("请输入关键词再搜索（如 github / postgres / notion / browser）".into());
     }
-    Err(format!("插件 '{}' 没有可用的远程端点", clean))
+    let v = npm_search(&q).await?;
+    Ok(parse_npm_search(&v))
 }
 
 /// 在已连接客户端中解析 server 名（宽松匹配，容忍 LLM 输出偏差）
@@ -7243,7 +7297,6 @@ pub fn run() {
             list_undo,
             undo_by_id,
             fetch_community_plugins,
-            fetch_remote_plugin_endpoint,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -7268,10 +7321,11 @@ mod tests {
     use super::{
         chunk_text, clip_output, compute_edits, compute_next_run, delete_file_impl,
         detect_test_framework, diff_lines, embed_model_installed, extract_redirected_files,
-        format_unified_diff, is_valid_keep_alive, next_daily_naive, nth_occurrence,
-        ollama_serve_env, parse_allowed_paths, parse_daily_time, parse_embed_response,
-        path_within_any, pick_vision_backend, run_shell_command_with, validate_git_operation,
-        EditOp, DAY_MS, OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
+        format_unified_diff, is_mcp_package, is_placeholder_package, is_valid_keep_alive,
+        next_daily_naive, npm_search, nth_occurrence, ollama_serve_env, parse_allowed_paths,
+        parse_daily_time, parse_embed_response, parse_npm_search, path_within_any,
+        pick_vision_backend, run_shell_command_with, validate_git_operation, EditOp, DAY_MS,
+        OLLAMA_KEEP_ALIVE_EMBED, OLLAMA_KEEP_ALIVE_VISION,
     };
 
     /// 证明「按字节切」确实会 panic —— 这就是 clip_output 存在的理由。
@@ -8050,6 +8104,91 @@ mod tests {
         assert_eq!(
             compute_next_run(&sched_row("interval", 30, ""), now),
             now + 30 * 60_000
+        );
+    }
+
+    // ---- 社区插件（npm 索引）：包识别 / 占位包过滤 / 解析 ----
+
+    #[test]
+    fn community_plugin_identifies_mcp_and_placeholder_packages() {
+        // 名字或 keywords 命中 MCP → 保留
+        assert!(is_mcp_package("@modelcontextprotocol/server-github", &[]));
+        assert!(is_mcp_package("chrome-devtools-mcp", &[]));
+        assert!(is_mcp_package("some-tool", &["mcp".to_string()]));
+        // 两者都不提 MCP → 丢弃（描述里提 MCP 不算，噪音太大）
+        assert!(!is_mcp_package("left-pad", &[]));
+        assert!(!is_mcp_package("express", &["http".to_string()]));
+
+        // 抢注/占位包：实测 mcp-server-github = 0.0.1-security + npx-confusion
+        assert!(is_placeholder_package(
+            "mcp-server-github",
+            "0.0.1-security",
+            &["security-research".to_string(), "npx-confusion".to_string()]
+        ));
+        assert!(is_placeholder_package("foo-security", "1.0.0", &[]));
+        assert!(!is_placeholder_package("mcp-server-fetch", "1.2.3", &[]));
+    }
+
+    #[test]
+    fn community_plugin_parse_marks_low_usage_and_drops_placeholders() {
+        let v = serde_json::json!({
+            "objects": [
+                {"package": {"name": "@modelcontextprotocol/server-filesystem", "version": "2026.8.31",
+                             "description": "MCP server for filesystem access",
+                             "keywords": [], "publisher": {"username": "GitHub Actions"}},
+                 "downloads": {"all": 2753329}},
+                {"package": {"name": "tiny-mcp-thing", "version": "1.0.0", "description": "x",
+                             "keywords": ["mcp"], "publisher": {"username": "someone"}},
+                 "downloads": {"all": 12}},
+                {"package": {"name": "mcp-server-github", "version": "0.0.1-security",
+                             "description": "security holding package",
+                             "keywords": ["npx-confusion"]},
+                 "downloads": {"all": 99999}},
+                {"package": {"name": "express", "version": "5.0.0",
+                             "description": "web framework", "keywords": []}},
+                {"package": {"name": "", "version": "1.0.0"}}
+            ]
+        });
+        let list = parse_npm_search(&v);
+        let ids: Vec<&str> = list.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["@modelcontextprotocol/server-filesystem", "tiny-mcp-thing"],
+            "占位包 / 非 MCP 包 / 无名条目都要被过滤"
+        );
+        let official = &list[0];
+        assert!(official.official);
+        assert_eq!(official.risk, "", "官方 scope 不标低使用量");
+        assert_eq!(official.downloads, 2_753_329);
+        assert_eq!(official.publisher, "GitHub Actions");
+        assert_eq!(official.source, "npm");
+        let tiny = &list[1];
+        assert_eq!(tiny.risk, "low-usage", "下载量低于阈值 → 需用户确认");
+        assert!(!tiny.official);
+    }
+
+    #[test]
+    fn community_plugin_parse_survives_bad_shape() {
+        assert!(parse_npm_search(&serde_json::json!({})).is_empty());
+        assert!(parse_npm_search(&serde_json::json!({"objects": "nope"})).is_empty());
+    }
+
+    /// 真机 live 测试（默认忽略）：验证社区插件的 npm 源真的可达且能解析出包。
+    /// 跑法：`cargo test --lib -- --ignored live_npm_search`
+    #[tokio::test]
+    #[ignore]
+    async fn live_npm_search_returns_mcp_packages() {
+        let v = npm_search("modelcontextprotocol")
+            .await
+            .expect("镜像或官方 npm 源应至少有一个可达");
+        let list = parse_npm_search(&v);
+        assert!(
+            !list.is_empty(),
+            "应至少解析出若干 MCP 包（含官方 server-*）"
+        );
+        assert!(
+            list.iter().any(|p| p.official),
+            "预期包含 @modelcontextprotocol/* 官方包"
         );
     }
 }
