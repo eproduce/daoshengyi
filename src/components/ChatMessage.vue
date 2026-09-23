@@ -23,7 +23,11 @@ import {
 } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
-import { summarizeTools, stripToolCards } from "@/utils/tool-summary";
+import {
+  summarizeTools,
+  splitLeadingToolCards,
+  stripToolCardsForDisplay,
+} from "@/utils/tool-summary";
 
 const chatStore = useChatStore();
 const props = defineProps<{ message: Msg }>();
@@ -198,14 +202,18 @@ marked.use({
 /// 正文渲染：**显示层**剥掉机器生成的工具卡片（`### 🔧 调用工具…` + `<details>`）——
 /// 正文原样保留给导出/复制，但界面上工具调用统一走下面可折叠的分组，
 /// 否则同一次调用会在回复里出现两遍（markdown 卡片 + 结构化卡片）。
+/// 注意 `stripToolCardsForDisplay` 内含保护：**没有结构化记录时不剥**
+/// （老数据没存 `tools`，剥了就把唯一的记录删了 —— 真实回归）。
 function md(s: string) {
-  const body = stripToolCards(s || "");
+  const body = stripToolCardsForDisplay(s, effectiveTools.value);
   return body ? (marked.parse(normalizeMath(body)) as string) : "";
 }
 
-/// 流式正文（显示层同样剥掉工具卡片）：执行工具期间只留占位提示（如
+/// 流式正文（同样只在有结构化记录时剥卡片）：执行工具期间只留占位提示（如
 /// 「🔧 正在调用工具：web_search…」），真正的调用细节等轮末在可折叠分组里看。
-const streamingText = computed(() => stripToolCards(chatStore.streamingContent || ""));
+const streamingText = computed(() =>
+  stripToolCardsForDisplay(chatStore.streamingContent, effectiveTools.value),
+);
 
 // 拦截内容区链接点击：
 // - 本地文件链接（local-file-link）→ 用系统默认应用打开（如 Excel/Numbers 打开 CSV）
@@ -336,7 +344,16 @@ function toggleTool(i: number) {
 const toolsGroupOpen = ref(false);
 /// 用户手动开合过 → 之后不再自动跟随（否则会跟用户抢）
 const toolsTouched = ref(false);
-const toolSummary = computed(() => summarizeTools(props.message.tools ?? []));
+/**
+ * 工具调用记录来源：**优先结构化数据**（存库的那份，带真实耗时），
+ * 老会话没有它（`tools` 列是后加的）→ 从正文卡片里**反解**。
+ * 反解与剥离共用 `splitLeadingToolCards`，所以不会出现「剥掉了却渲染不出来」。
+ */
+const effectiveTools = computed(() => {
+  if (props.message.tools?.length) return props.message.tools;
+  return splitLeadingToolCards(props.message.content).tools;
+});
+const toolSummary = computed(() => summarizeTools(effectiveTools.value));
 function toggleToolsGroup() {
   toolsTouched.value = true;
   toolsGroupOpen.value = !toolsGroupOpen.value;
@@ -443,7 +460,7 @@ watch(
         </div>
 
         <!-- 工具调用：整组折叠（默认收起；执行中自动展开方便看进度） -->
-        <div v-if="message.tools?.length" class="msg-tools">
+        <div v-if="effectiveTools.length" class="msg-tools">
           <div
             class="msg-tools__head"
             :class="{ 'msg-tools__head--fail': toolSummary.failed > 0 }"
@@ -462,7 +479,7 @@ watch(
           </div>
           <div v-show="toolsGroupOpen" class="msg-tools__body">
             <div
-              v-for="(t, i) in message.tools"
+              v-for="(t, i) in effectiveTools"
               :key="i"
               class="tool-card"
               :class="`tool-card--${t.status}`"

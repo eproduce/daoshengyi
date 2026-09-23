@@ -76,6 +76,33 @@
 
 ---
 
+## 2026-09-23（修复：工具调用折叠记录在重载历史后消失 —— `tools` 从未持久化）
+
+用户实测：「工具调用的折叠记录好像没有了……刚刚我发现它不见了」。
+
+**根因**（`e0a0a44` 折叠改动引入的回归；`docs/STRUCTURAL_GAP_ANALYSIS.md:69` 早已分析出但没修）：
+折叠组靠**内存里**的 `message.tools` 渲染，而 `messages` 表**没有 tools 列**（`MsgRow` 11 个字段，
+INSERT/SELECT 都不含它）→ 应用重启/重载历史后 `tools` 为空；显示层又**无条件**
+`stripToolCards(正文卡片)` → 正文里唯一一份记录也被剥掉，整段消失。
+真机证据：库里那条助手消息 `tools IS NULL`，而正文里确实有 **31 张卡片**（对得上日志里的 31 次工具调用）。
+
+**修法（三层，缺任何一层都还会丢）**：
+1. **持久化** `messages.tools`（JSON）：`MsgRow.tools` + 幂等迁移 `ALTER TABLE messages ADD COLUMN tools TEXT`
+   + 三处 INSERT（`save_conversation` / `append_message` / `fork_conversation`）+ `get_messages` 读回；
+   前端保存时 `JSON.stringify(m.tools)`（卡片只存 300 字预览，体积代价很小），三条加载路径都经
+   `parsePersistedTools` 反序列化
+2. **显示层保护**：新增 `stripToolCardsForDisplay(content, tools)`——**没有结构化记录时不剥**，
+   否则「剥离」就等于「删掉唯一一份记录」
+3. **老数据救回**：`splitLeadingToolCards(content)` 从正文**反解**卡片，且与剥离**共用同一个走法**
+   → 结构上保证「剥掉的一定被解析出来了」，老会话（无 `tools` 列）同样以折叠组呈现
+
+**验证**：cargo 新增 2 条（tools 往返回读、旧库打开自动补列）；vitest 新增 10 条（反解 5 条 +
+「剥掉的就是解析出来的」不变量 + 容错解析 4 条）；真机查询确认迁移已建列、老消息的 31 张卡片可被反解。
+门禁 8/8（vitest 40 files / **526 passed**，cargo **253 passed**）。
+
+**踩坑**：批量编辑里又出现**一处静默失败**——第 1 条加载路径（启动加载，最关键的）的映射没改上，
+`grep -c parsePersistedTools` 只数出 3 处（应为 4 处）才发现；逐条核对特征串是必须的（已写进 repo 记忆）。
+
 ## 2026-09-23（修复：工作区下拉会顶出窗口 —— 面板边界改成「算出来」）
 
 用户实测：「工作区的设置列表一部分会跑出去窗口外面去」。

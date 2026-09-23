@@ -5427,6 +5427,7 @@ async fn queue_turn(
             tokens: None,
             duration: None,
             cost: None,
+            tools: None,
         };
         match api::chat_once(config, api_msgs, None).await {
             Ok(r) => {
@@ -5455,6 +5456,7 @@ async fn queue_turn(
                     tokens: None,
                     duration: None,
                     cost: Some(0.0),
+                    tools: None,
                 });
                 let _ = app.emit(
                     "queue-turn-done",

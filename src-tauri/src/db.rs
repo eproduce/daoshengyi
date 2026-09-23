@@ -217,6 +217,11 @@ pub struct MsgRow {
     pub tokens: Option<i64>,
     pub duration: Option<f64>,
     pub cost: Option<f64>,
+    /// 本轮工具调用记录（JSON 数组：name/server/status/durationMs/argsPreview/resultPreview/error）。
+    /// 为什么必须落库：正文里的工具卡片会被显示层剥掉（只留折叠组），若这里不存，
+    /// 重载历史后工具调用记录**整个消失**（真实回归：`tools` 原先只在内存）。
+    #[serde(default)]
+    pub tools: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -291,6 +296,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN cost REAL", []);
         // 旧库迁移：加 attachments 列
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []);
+        // 工具调用记录（结构化卡片）—— 原先只在内存，重载历史后整段记录会丢（见 MsgRow::tools）
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN tools TEXT", []);
         // 旧库迁移：workflow_runs 加 trace 列（运行节点轨迹，供 workflow_improve 自优化）
         let _ = conn.execute("ALTER TABLE workflow_runs ADD COLUMN trace TEXT", []);
         // 用量累计表迁移：首次创建时从现有 messages 一次性聚合历史数据，
@@ -392,8 +399,8 @@ impl Database {
 
         for m in messages {
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost],
+                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost, tools) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost, m.tools],
             ).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -403,8 +410,8 @@ impl Database {
     pub fn append_message(&self, m: &MsgRow) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost],
+            "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost, tools) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![m.id, m.conversation_id, m.role, m.content, m.reasoning_content, m.images, m.attachments, m.timestamp, m.tokens, m.duration, m.cost, m.tools],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -496,7 +503,7 @@ impl Database {
         .map_err(|e| e.to_string())?;
         for (i, m) in keep.iter().enumerate() {
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                "INSERT INTO messages (id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost, tools) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     format!("{}-{}", new_id, i),
                     new_id,
@@ -509,6 +516,7 @@ impl Database {
                     m.tokens,
                     m.duration,
                     m.cost,
+                    m.tools,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -595,7 +603,7 @@ impl Database {
     pub fn get_messages(&self, conv_id: &str) -> Result<Vec<MsgRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost FROM messages WHERE conversation_id=?1 ORDER BY timestamp ASC")
+            .prepare("SELECT id, conversation_id, role, content, reasoning_content, images, attachments, timestamp, tokens, duration, cost, tools FROM messages WHERE conversation_id=?1 ORDER BY timestamp ASC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![conv_id], |row| {
@@ -611,6 +619,7 @@ impl Database {
                     tokens: row.get(8)?,
                     duration: row.get(9)?,
                     cost: row.get(10)?,
+                    tools: row.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2170,6 +2179,7 @@ mod tests {
                 tokens: None,
                 duration: None,
                 cost: None,
+                tools: None,
             },
             MsgRow {
                 id: "m2".into(),
@@ -2183,6 +2193,7 @@ mod tests {
                 tokens: Some(10),
                 duration: Some(1.0),
                 cost: Some(0.001),
+                tools: None,
             },
             MsgRow {
                 id: "m3".into(),
@@ -2196,6 +2207,7 @@ mod tests {
                 tokens: None,
                 duration: None,
                 cost: None,
+                tools: None,
             },
         ];
         db.save_conversation(&conv, &msgs).unwrap();
@@ -2247,6 +2259,7 @@ mod tests {
             tokens: None,
             duration: None,
             cost: None,
+            tools: None,
         }];
         db.save_conversation(&conv, &msgs).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
@@ -2262,6 +2275,7 @@ mod tests {
             tokens: Some(5),
             duration: None,
             cost: None,
+            tools: None,
         })
         .unwrap();
         let all = db.get_messages("c1").unwrap();
@@ -2482,6 +2496,7 @@ mod tests {
                 tokens: None,
                 duration: None,
                 cost: None,
+                tools: None,
             },
             MsgRow {
                 id: "m2".into(),
@@ -2495,6 +2510,7 @@ mod tests {
                 tokens: Some(123),
                 duration: Some(1.5),
                 cost: Some(0.001),
+                tools: None,
             },
         ];
         db.save_conversation(&conv, &msgs).unwrap();
@@ -3047,6 +3063,135 @@ mod tests {
         assert_eq!(
             rows[0].last_exit_code, None,
             "缺失列应读出 NULL → None，而不是查询报错"
+        );
+        cleanup(&dir);
+    }
+
+    /// 工具调用记录（结构化卡片）必须随消息落库并原样读回。
+    /// 真实回归：它原先只在内存 → 重载历史后显示层把正文里的卡片剥掉、又没结构化数据可渲染，
+    /// 整段工具调用记录**消失**。
+    #[test]
+    fn message_tools_roundtrip_keeps_structured_cards() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds_db_tools_{}_{}",
+            std::process::id(),
+            TEST_PID.fetch_add(1, Ordering::SeqCst)
+        ));
+        let db = Database::new(dir.clone()).unwrap();
+        let conv = ConvRow {
+            id: "c1".into(),
+            title: "t".into(),
+            model: "m".into(),
+            created_at: 1,
+            updated_at: 2,
+        };
+        let tools = r#"[{"name":"web_search","server":"app","status":"done","durationMs":1234,"argsPreview":"{\"query\":\"x\"}","resultPreview":"3 条结果"}]"#;
+        let msgs = vec![MsgRow {
+            id: "m1".into(),
+            conversation_id: "c1".into(),
+            role: "assistant".into(),
+            content: "答案".into(),
+            reasoning_content: None,
+            images: None,
+            attachments: None,
+            timestamp: 1,
+            tokens: None,
+            duration: None,
+            cost: None,
+            tools: Some(tools.into()),
+        }];
+        db.save_conversation(&conv, &msgs).unwrap();
+        let back = db.get_messages("c1").unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            back[0].tools.as_deref(),
+            Some(tools),
+            "工具卡必须原样读回（显示层靠它渲染折叠组）"
+        );
+
+        // 没有工具的消息读回 None（不是空串）：前端据此走「保留正文卡片」的分支
+        db.append_message(&MsgRow {
+            id: "m2".into(),
+            conversation_id: "c1".into(),
+            role: "user".into(),
+            content: "hi".into(),
+            reasoning_content: None,
+            images: None,
+            attachments: None,
+            timestamp: 2,
+            tokens: None,
+            duration: None,
+            cost: None,
+            tools: None,
+        })
+        .unwrap();
+        assert_eq!(db.get_messages("c1").unwrap()[1].tools, None);
+        cleanup(&dir);
+    }
+
+    /// 旧库（messages 表建表时还没有 tools 列）打开时自动补列：原消息照常读出、且能写入新数据
+    #[test]
+    fn legacy_messages_table_gets_tools_column() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds_db_legacy_msgs_{}_{}",
+            std::process::id(),
+            TEST_PID.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            // 手工建「旧版」messages 表（11 列，无 tools）+ conversations 表，塞一条历史消息
+            let conn = Connection::open(dir.join("daoshengyi.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE conversations (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL, model TEXT NOT NULL,
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    reasoning_content TEXT,
+                    images TEXT,
+                    attachments TEXT,
+                    timestamp INTEGER NOT NULL,
+                    tokens INTEGER,
+                    duration REAL,
+                    cost REAL
+                );
+                INSERT INTO conversations (id,title,model,created_at,updated_at) VALUES ('c1','旧会话','m',1,2);
+                INSERT INTO messages (id,conversation_id,role,content,timestamp) VALUES ('m1','c1','assistant','旧消息',1);",
+            )
+            .unwrap();
+        }
+        // 这里会跑幂等迁移：ALTER TABLE messages ADD COLUMN tools
+        let db = Database::new(dir.clone()).unwrap();
+        let rows = db.get_messages("c1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "旧消息");
+        assert_eq!(
+            rows[0].tools, None,
+            "缺失列应读出 NULL → None，而不是查询报错"
+        );
+        // 补列后要能正常写入带工具卡的新消息
+        db.append_message(&MsgRow {
+            id: "m2".into(),
+            conversation_id: "c1".into(),
+            role: "assistant".into(),
+            content: "新消息".into(),
+            reasoning_content: None,
+            images: None,
+            attachments: None,
+            timestamp: 2,
+            tokens: None,
+            duration: None,
+            cost: None,
+            tools: Some("[]".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            db.get_messages("c1").unwrap()[1].tools.as_deref(),
+            Some("[]")
         );
         cleanup(&dir);
     }

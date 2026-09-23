@@ -72,6 +72,7 @@ function flushPendingViewImages(msgs: AgentMsg[]): void {
   });
 }
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
+import { parsePersistedTools } from "@/utils/tool-summary";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
@@ -4232,6 +4233,7 @@ export const useChatStore = defineStore("chat", () => {
             tokens?: number;
             duration?: number;
             cost?: number;
+            tools?: string | null;
           }[]
         >("get_messages", { conversationId: c.id });
         conversations.value.push({
@@ -4253,6 +4255,7 @@ export const useChatStore = defineStore("chat", () => {
             tokens: m.tokens,
             duration: m.duration,
             cost: m.cost,
+            tools: parsePersistedTools(m.tools),
           })),
         });
       }
@@ -4296,6 +4299,9 @@ export const useChatStore = defineStore("chat", () => {
             conversation_id: conv.id,
             role: m.role,
             content: m.content,
+            // 工具调用记录必须落库：正文里的卡片会被显示层剥掉（只留折叠组），
+            // 不存这份结构化数据的话，重载历史后整段工具记录会消失（真实回归）
+            tools: m.tools && m.tools.length > 0 ? JSON.stringify(m.tools) : null,
             reasoning_content: m.reasoning_content || null,
             images: m.images ? JSON.stringify(m.images) : null,
             attachments: m.attachments ? JSON.stringify(m.attachments) : null,
@@ -4785,6 +4791,7 @@ export const useChatStore = defineStore("chat", () => {
           tokens?: number;
           duration?: number;
           cost?: number;
+          tools?: string | null;
         }[]
       >("get_messages", { conversationId: newId });
       conversations.value.push({
@@ -4804,6 +4811,7 @@ export const useChatStore = defineStore("chat", () => {
           tokens: m.tokens,
           duration: m.duration,
           cost: m.cost,
+          tools: parsePersistedTools(m.tools),
         })),
       });
       activeConversationId.value = newId;
@@ -4842,6 +4850,7 @@ export const useChatStore = defineStore("chat", () => {
           tokens?: number;
           duration?: number;
           cost?: number;
+          tools?: string | null;
         }[]
       >("get_messages", { conversationId: convId });
       const conv = conversations.value.find((c) => c.id === convId);
@@ -4857,6 +4866,7 @@ export const useChatStore = defineStore("chat", () => {
           tokens: m.tokens,
           duration: m.duration,
           cost: m.cost,
+          tools: parsePersistedTools(m.tools),
         }));
         conv.updatedAt = Date.now();
       }
