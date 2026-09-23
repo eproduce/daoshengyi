@@ -76,6 +76,38 @@
 
 ---
 
+## 2026-09-23（会话级工作区：会话头 cwd 才是真源，全局只是新会话默认）
+
+承接「参考 DSH 的工作区 / 控制范围」：DSH 的工作区是**会话级**的——`SessionHeader.cwd` 不可变、
+由创建者赋予并复验，`SandboxExecutionPolicy.workspaceRoot` **从会话 cwd 派生**，部署配置只是无 agent 时的回退。
+我们把输入栏「工作区」从「改全局设置」升级为**会话级覆盖**（全局值退化为新会话的默认）。
+
+**三态语义**（纯函数 `resolveWorkspace` 定义 + 单测钉死）：
+
+| 会话值 | 含义 |
+| --- | --- |
+| `undefined` / `null` | 未覆盖 → **跟随全局默认** |
+| `""`（空串） | 本会话**明确不限定**（覆盖掉全局默认，例如只想问个通用问题、不希望 Agent 默认在项目目录里动手） |
+| 路径 | 本会话用这个目录 |
+
+**改动**：
+- **Rust**：`conversations` 加 `workspace` 列（幂等迁移）+ `ConvRow` 读写 + 分支（fork）**继承**源会话工作区；
+  新增 1 条测试（三态往返 + fork 继承）
+- **store**：`effectiveWorkspace()` = 会话覆盖 ?? 全局；**9 处使用点**全部改用它（`run_command` ×2、
+  `exec_command_agent`、`log_decision` 目标目录、提示词【当前工作区】、AGENTS.md 项目指令发现）；
+  会话保存 / 加载 / 分支都带上 `workspace`
+- **新增动作**：`setSessionWorkspace` / `clearSessionWorkspace` / `setGlobalWorkspace`
+- **输入栏面板**：保存到本会话（留空 = 本会话不限定）/ 跟随全局 / 把当前值设为全局默认 + 「跟随全局 · 本会话」
+  状态行；有会话覆盖时 pill 上显示「会话」徽标
+
+**踩坑**：`callBuiltinTool` 是**模块级**函数（在 store 之外），直接调 store 内 helper 会 `Cannot find name
+'effectiveWorkspace'` → 得经 `useChatStore()` 取；另有一处提示词改造漏删 `const st = ...` 导致
+`Cannot find name 'st'`。两处都是门禁（`vue-tsc`）当场拦下的——**改完必须先跑完 8 项再打包**。
+
+**验证**：门禁 8/8（vitest 40 files / **528 passed**，cargo **254 passed**）；打完包安装到
+`/Applications`（新包内嵌前端 `index-CWq2iNNI.js`、Resources 带 `ocr_tool` 视觉侧车），
+启动后确认 `conversations.workspace` 列已建；旧包备份为 `道生一.app.old-2255`。
+
 ## 2026-09-23（修复：工具调用折叠记录在重载历史后消失 —— `tools` 从未持久化）
 
 用户实测：「工具调用的折叠记录好像没有了……刚刚我发现它不见了」。
