@@ -1,7 +1,9 @@
 // P-A6 本地语义 embedding：判断 embedding 提供方（纯函数，可测试）。
-// - "ollama"：baseUrl 指向本地 Ollama（/v1 兼容端点）→ 用 ollama_embed 命令（nomic-embed-text）
-// - "deepseek 主模型"：DeepSeek 无 embeddings 端点 → 也归为 ollama，尝试本地 Ollama 补语义
-//   （Ollama 未运行 / nomic-embed-text 未装时 ollama_embed 返回错误 → 上层返回 null 静默跳过）
+// - "ollama"：baseUrl 指向本地端点（/v1 兼容）→ 用 `ollama_embed` 命令生成向量。
+//   注：该命令**已是统一入口**（优先 llama.cpp 的嵌入 GGUF，Ollama 兑底），名字里的
+//   `ollama` 是历史遗留——本枚举值/函数名同理，判定的是「用户的 baseUrl 是不是本地端点」。
+// - "deepseek 主模型"：DeepSeek 无 embeddings 端点 → 也归为本地补语义
+//   （本地嵌入不可用时命令返回错误 → 上层返回 null 静默跳过）
 // - 其它（OpenAI 兼容 /embeddings 端点）→ 走通用 embeddings 请求
 export type EmbedSource = "ollama" | "openai" | "none";
 

@@ -2,7 +2,36 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-23**
+> **最后更新：2026-09-24**
+
+---
+
+## 2026-09-24（本地运行时：嵌入切 llama.cpp 优先，Ollama 退出推理路径）
+
+### 背景
+用户提问「是不是可以移除 Ollama 了，完全使用 llama.cpp」→ 评估结论：**推理可全切，分发不能**
+（llama.cpp 没有模型仓库）。完整评估与迁移计划见 **`docs/OLLAMA_EXIT_PLAN.md`**。
+
+### 已落地
+- 新增统一入口 `embed_prefer_local`（`lib.rs`）：**llama.cpp 优先**（`local_runtime::embed_texts`，
+  按需启动 + 空闲 30s 回收）→ 失败回退 Ollama（兼容只装了 Ollama 的环境）→ 都失败时返回**合并错误**
+  （同时给出两个原因，便于区分「缺二进制」与「缺模型」）
+- `kb_index` / `kb_search` / `kb_add` / `code_index` / `code_search` 全部改走该入口
+  （新增 `app: tauri::AppHandle` 参数，Tauri 自动注入，**前端调用无需改动**）；
+  原先这两个 code_* 命令依赖 Ollama 会直接报错，现在不再绑死
+- `ollama_embed` 命令语义变为统一入口（名字里的 `ollama` 是历史遗留，待更名 `embed_texts`）；
+  `src/stores/memory.ts` 从「先 `local_embed` 再 `ollama_embed`」两步试错简化为单次调用
+- 文案同步（不再要求 Ollama）：`src/data/builtin-tools.ts` / `src/stores/chat.ts` /
+  设置面板「本地模型」页 / `src/utils/embed-provider.ts` 注释
+
+### 待办（M2~M4，详见文档）
+- M2 「选择本地 GGUF 文件导入」（零依赖，解决「移除后新模型从哪来」）
+- M3 本地聊天 profile 从 `localhost:11434/v1` 迁到 llama-server（需补「发送前确保服务就绪」+ 模型指定 + 空闲策略）
+- M4 删除 `ollama_setup` 部署链路与一键部署 UI
+
+### 验证
+cargo `254 passed / 14 ignored` · clippy 0 告警 · rustfmt ✅ · vitest `528 passed` ·
+ESLint / Prettier / `tsc -p tests` / `vue-tsc`+vite build 全绿
 
 ---
 

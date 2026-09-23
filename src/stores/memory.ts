@@ -57,19 +57,14 @@ export function useMemorySystem() {
     config: { baseUrl: string; apiKey: string; model: string },
   ): Promise<number[] | null> {
     const src = embeddingSource(config.baseUrl);
-    // P-A6 本地语义 embedding：baseUrl 是本地 Ollama，或主模型 DeepSeek（无 embeddings 端点）时，
-    // 用本地模型生成向量补语义检索。
+    // P-A6 本地语义 embedding：baseUrl 是本地端点（Ollama /v1），或主模型 DeepSeek
+    // （无 embeddings 端点）时，用本地模型生成向量补语义检索。
     //
-    // 2026-09-18 改：**优先走 llama.cpp**（按需启动 + 空闲退出 = 0 常驻），失败再回退 Ollama。
+    // 2026-09-24 改：后端 `ollama_embed` 已是**统一入口**——优先 llama.cpp（本应用托管的
+    // 嵌入 GGUF，按需启动 + 空闲回收），不可用才回退 Ollama；名字里的 `ollama` 是历史遗留。
     // 两条都不可用时返回 null（语义检索静默跳过，FTS5 关键词检索不受影响）——
     // 「静默跳过」是刻意保留的：检索质量降级不该打断对话，但**绝不能返回假向量**。
     if (src === "ollama") {
-      try {
-        const emb = await invoke<number[][]>("local_embed", { texts: [text.slice(0, 8000)] });
-        if (emb?.[0]?.length) return emb[0];
-      } catch {
-        /* llama.cpp 未装模型/未找到二进制 → 回退 Ollama */
-      }
       try {
         const emb = await invoke<number[][]>("ollama_embed", { texts: [text.slice(0, 8000)] });
         return emb?.[0] ?? null;

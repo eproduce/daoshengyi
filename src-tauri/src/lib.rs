@@ -1908,6 +1908,7 @@ fn chunk_text(text: &str, size: usize) -> Vec<String> {
 /// 支持 P-A8 沙箱：配置了路径白名单时只能索引白名单内目录。
 #[tauri::command]
 async fn kb_index(
+    app: tauri::AppHandle,
     db: State<'_, Database>,
     kb_name: String,
     path: String,
@@ -2009,11 +2010,11 @@ async fn kb_index(
         }
     }
 
-    // 语义向量：探测一次 Ollama embedding 是否可用；可用则批量嵌入（每批 20）存储，否则回退纯关键词
+    // 语义向量：探测一次本地嵌入是否可用（llama.cpp 优先、Ollama 回退）；可用则批量嵌入（每批 20）存储，否则回退纯关键词
     let mut semantic = false;
     let mut sem_note = String::new();
     if !collected.is_empty() {
-        match ollama_embed_impl(vec![collected[0].1.clone()]).await {
+        match embed_prefer_local(&app, vec![collected[0].1.clone()]).await {
             Ok(_) => semantic = true,
             Err(e) => sem_note = format!("，语义向量未启用：{}", e),
         }
@@ -2026,7 +2027,7 @@ async fn kb_index(
             batch.push(item.1.clone());
             meta.push(item);
             if batch.len() >= 20 {
-                match ollama_embed_impl(batch.clone()).await {
+                match embed_prefer_local(&app, batch.clone()).await {
                     Ok(vecs) => {
                         for (m, v) in meta.iter().zip(vecs) {
                             db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
@@ -2045,7 +2046,7 @@ async fn kb_index(
             }
         }
         if !batch.is_empty() {
-            if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
+            if let Ok(vecs) = embed_prefer_local(&app, batch.clone()).await {
                 for (m, v) in meta.iter().zip(vecs) {
                     db.kb_add_chunk(&kb_name, &m.0, &m.1, m.2, Some(&v))?;
                     chunks += 1;
@@ -2078,17 +2079,18 @@ async fn kb_index(
     ))
 }
 
-/// 知识库检索（混合：FTS5 关键词 + 语义向量，Ollama embedding 可用时）
+/// 知识库检索（混合：FTS5 关键词 + 语义向量，本地嵌入可用时）
 #[tauri::command]
 async fn kb_search(
+    app: tauri::AppHandle,
     db: State<'_, Database>,
     kb_name: String,
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<db::KbChunk>, String> {
     let lim = limit.unwrap_or(6).clamp(1, 20);
-    // 尝试语义：Ollama 在跑且模型已装时给查询生成向量 → 混合检索；否则纯 FTS5
-    let qvec = ollama_embed_impl(vec![query.clone()])
+    // 尝试语义：本地嵌入可用（llama.cpp 优先）时给查询生成向量 → 混合检索；否则纯 FTS5
+    let qvec = embed_prefer_local(&app, vec![query.clone()])
         .await
         .ok()
         .and_then(|v| v.into_iter().next());
@@ -2109,9 +2111,10 @@ fn kb_create(db: State<Database>, kb_name: String) -> Result<String, String> {
     ))
 }
 
-/// 向知识库录入一段文本/文档（自动分块 + FTS 索引；本地 Ollama embedding 可用时叠加语义向量）
+/// 向知识库录入一段文本/文档（自动分块 + FTS 索引；本地嵌入可用时叠加语义向量）
 #[tauri::command]
 async fn kb_add(
+    app: tauri::AppHandle,
     db: State<'_, Database>,
     kb_name: String,
     source: String,
@@ -2137,7 +2140,10 @@ async fn kb_add(
     }
     let mut added = 0usize;
     let mut semantic = false;
-    if ollama_embed_impl(vec![chunks[0].clone()]).await.is_ok() {
+    if embed_prefer_local(&app, vec![chunks[0].clone()])
+        .await
+        .is_ok()
+    {
         semantic = true;
     }
     if semantic {
@@ -2147,7 +2153,7 @@ async fn kb_add(
             batch.push(c.clone());
             meta.push((src.clone(), i));
             if batch.len() >= 20 {
-                match ollama_embed_impl(batch.clone()).await {
+                match embed_prefer_local(&app, batch.clone()).await {
                     Ok(vecs) => {
                         for ((s, idx), v) in meta.iter().zip(vecs) {
                             db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
@@ -2166,7 +2172,7 @@ async fn kb_add(
             }
         }
         if !batch.is_empty() {
-            if let Ok(vecs) = ollama_embed_impl(batch.clone()).await {
+            if let Ok(vecs) = embed_prefer_local(&app, batch.clone()).await {
                 for ((s, idx), v) in meta.iter().zip(vecs) {
                     db.kb_add_chunk(&name, s, &chunks[*idx], *idx as i64, Some(&v))?;
                     added += 1;
@@ -2603,10 +2609,15 @@ fn security_check(
 
 // --- 项目语义索引（P-A3 补全：自然语言找代码） ---
 
-/// 项目语义索引：扫描项目代码文件分块 + Ollama embedding 向量化（自然语言找代码用）。
-/// 需要本地 Ollama 且已装 nomic-embed-text（语义检索无向量无法工作，直接报错引导部署）。
+/// 项目语义索引：扫描项目代码文件分块 + 本地嵌入向量化（自然语言找代码用）。
+/// 需要本地嵌入模型：llama.cpp（把 nomic-embed-text 的 GGUF 放进模型目录）优先，
+/// Ollama 兑底；两者都没有时**直接报错引导**（语义检索无向量无法工作）。
 #[tauri::command]
-async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String, String> {
+async fn code_index(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    root_path: String,
+) -> Result<String, String> {
     let allowed = sandbox_allowed_paths(db.inner());
     let expanded = expand_user_path(&root_path)?;
     if !allowed.is_empty() && !path_within_any(std::path::Path::new(&expanded), &allowed) {
@@ -2705,11 +2716,11 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         return Ok(format!("未扫描到代码文件：{}", root.display()));
     }
     // 语义向量必须可用（否则索引无意义）
-    ollama_embed_impl(vec![collected[0].1.clone()])
+    embed_prefer_local(&app, vec![collected[0].1.clone()])
         .await
         .map_err(|e| {
             format!(
-                "语义向量不可用（需要本地 Ollama 已运行且安装 nomic-embed-text）：{}",
+                "语义向量不可用（需要本地嵌入模型：llama.cpp + nomic-embed-text GGUF，或用 Ollama 兑底）：{}",
                 e
             )
         })?;
@@ -2722,7 +2733,7 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         batch.push(item.1.clone());
         meta.push(item);
         if batch.len() >= 20 {
-            let vecs = ollama_embed_impl(batch.clone())
+            let vecs = embed_prefer_local(&app, batch.clone())
                 .await
                 .map_err(|e| format!("生成向量失败: {}", e))?;
             for (m, v) in meta.iter().zip(vecs) {
@@ -2734,7 +2745,7 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
         }
     }
     if !batch.is_empty() {
-        let vecs = ollama_embed_impl(batch.clone())
+        let vecs = embed_prefer_local(&app, batch.clone())
             .await
             .map_err(|e| format!("生成向量失败: {}", e))?;
         for (m, v) in meta.iter().zip(vecs) {
@@ -2753,6 +2764,7 @@ async fn code_index(db: State<'_, Database>, root_path: String) -> Result<String
 /// 自然语言找代码：查询嵌入 → 余弦召回相关代码分块
 #[tauri::command]
 async fn code_search(
+    app: tauri::AppHandle,
     db: State<'_, Database>,
     root_path: String,
     query: String,
@@ -2760,9 +2772,9 @@ async fn code_search(
 ) -> Result<Vec<db::CodeChunkRow>, String> {
     let lim = limit.unwrap_or(6).clamp(1, 20);
     let expanded = expand_user_path(&root_path)?;
-    let qvec = ollama_embed_impl(vec![query]).await.map_err(|e| {
+    let qvec = embed_prefer_local(&app, vec![query]).await.map_err(|e| {
         format!(
-            "语义向量不可用（需要本地 Ollama + nomic-embed-text）：{}",
+            "语义向量不可用（需要本地嵌入模型：llama.cpp + nomic-embed-text GGUF，或用 Ollama 兑底）：{}",
             e
         )
     })?;
@@ -3308,8 +3320,10 @@ fn parse_embed_response(json: &serde_json::Value) -> Result<Vec<Vec<f32>>, Strin
     Ok(out)
 }
 
-/// 本地语义 embedding 核心（P-A6）：用 Ollama 的 nomic-embed-text 生成向量，补 DeepSeek
+/// Ollama 专项嵌入实现（P-A6）：用 Ollama 的 nomic-embed-text 生成向量，补 DeepSeek
 /// 无 embeddings 端点的语义检索短板（记忆向量检索 + 知识库分块向量共用）。
+/// **不是首选路径**：统一入口是 `embed_prefer_local`（llama.cpp 优先），这里只在
+/// llama.cpp 不可用时兑底。
 /// 设计要点：**不自动拉模型**（避免静默下载大文件）——服务未运行或模型未安装时
 /// 返回明确错误，调用方静默回退（语义检索暂不可用，FTS5 关键词检索不受影响）。
 async fn ollama_embed_impl(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
@@ -3353,10 +3367,32 @@ async fn ollama_embed_impl(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> 
     parse_embed_response(&json)
 }
 
-/// 本地语义 embedding（P-A6）：tauri 命令入口，复用 ollama_embed_impl。
+/// 本地嵌入向量**统一入口**：优先 llama.cpp（本应用托管的嵌入 GGUF，按需启动 + 空闲回收），
+/// 不可用时回退 Ollama（兼容只装了 Ollama、没装 llama-server 的环境）。
+///
+/// 为什么优先 llama.cpp：Ollama 会把嵌入模型常驻到 `keep_alive` 到期（默认 5 分钟），
+/// 而 llama.cpp 走本应用自己的空闲看门狗（30 秒），批量索引跑完立刻归还内存。
+/// 两条都失败时返回**合并后的错误**（把两个原因都告诉调用方，便于区分「缺二进制」与「缺模型」）。
+async fn embed_prefer_local(
+    app: &tauri::AppHandle,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    match local_runtime::embed_texts(app, texts.clone()).await {
+        Ok(v) => Ok(v),
+        Err(llama_err) => ollama_embed_impl(texts).await.map_err(|ollama_err| {
+            format!(
+                "llama.cpp 不可用（{}）；Ollama 回退也不可用（{}）",
+                llama_err, ollama_err
+            )
+        }),
+    }
+}
+
+/// 本地语义 embedding（P-A6）：tauri 命令入口。**已是统一入口**
+/// （`llama.cpp` 优先、Ollama 回退），名字里的 `ollama` 是历史遗留（待更名 `embed_texts`）。
 #[tauri::command]
-async fn ollama_embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
-    ollama_embed_impl(texts).await
+async fn ollama_embed(app: tauri::AppHandle, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+    embed_prefer_local(&app, texts).await
 }
 
 /// 检测 Ollama 安装状态、服务状态与已部署模型

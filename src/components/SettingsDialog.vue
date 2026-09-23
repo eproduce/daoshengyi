@@ -923,7 +923,7 @@ function handleDelete() {
                   }}{{
                     ollamaStore.runtime.embed.model_found
                       ? `（${ollamaStore.runtime.embed.model}，端口 ${ollamaStore.runtime.embed.port}）`
-                      : "（需先 ollama pull nomic-embed-text 再点上方导入；未装时自动降级为关键词检索）"
+                      : "（需先导入 nomic-embed-text 的 GGUF：可点上方「从 Ollama 导入」，或自行放 GGUF 到模型目录；未装时自动降级为关键词检索）"
                   }}{{ ollamaStore.runtime.embed.serving ? " · 嵌入服务运行中" : "" }}
                 </div>
                 <div class="runtime-card__path">目录：{{ ollamaStore.runtime.models_dir }}</div>

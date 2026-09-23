@@ -147,7 +147,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "kb_search",
-    desc: '在已索引的**知识库**中检索（关键词 + 中文分词；若本地 Ollama 的 nomic-embed-text 可用则叠加**语义向量**补充召回，返回命中的文件与片段）。参数 {"kb_name": "知识库名", "query": "检索词", "limit": 可选条数（默认 6）}。**使用时机**：用户问题涉及已索引知识库的内容时，先检索再基于命中片段作答；检索不到可换关键词或提示用户先 kb_index。',
+    desc: '在已索引的**知识库**中检索（关键词 + 中文分词；若本地嵌入模型（llama.cpp 的 nomic-embed-text；Ollama 可兑底）可用则叠加**语义向量**补充召回，返回命中的文件与片段）。参数 {"kb_name": "知识库名", "query": "检索词", "limit": 可选条数（默认 6）}。**使用时机**：用户问题涉及已索引知识库的内容时，先检索再基于命中片段作答；检索不到可换关键词或提示用户先 kb_index。',
   },
   {
     name: "kb_list",
@@ -159,11 +159,11 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "kb_add",
-    desc: '向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地 Ollama embedding 可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户把一段文字/笔记/文档内容给你要求「存进 XX 知识库」时调用；内容在文件里可先 read_file/list_dir 读取再录入。',
+    desc: '向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地嵌入模型可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户把一段文字/笔记/文档内容给你要求「存进 XX 知识库」时调用；内容在文件里可先 read_file/list_dir 读取再录入。',
   },
   {
     name: "code_index",
-    desc: '把项目代码目录**向量化索引**（P-A3 自然语言找代码，重建式；需本地 Ollama + nomic-embed-text）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目，再用 code_search 检索。',
+    desc: '把项目代码目录**向量化索引**（P-A3 自然语言找代码，重建式；需本地嵌入模型：llama.cpp + nomic-embed-text GGUF，Ollama 可兑底）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目，再用 code_search 检索。',
   },
   {
     name: "code_search",

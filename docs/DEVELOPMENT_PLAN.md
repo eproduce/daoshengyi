@@ -135,13 +135,13 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| 4.1 | 本地语义检索 | ✅ | 已接入 Ollama 本地 embedding（`nomic-embed-text`，P-A6）：`ollama_embed` 命令 + `embed-provider` 判定 + 记忆向量余弦检索；未部署时静默回退 FTS5 |
+| 4.1 | 本地语义检索 | ✅ | 已接入本地 embedding（`nomic-embed-text`，P-A6）：`ollama_embed` 命令 + `embed-provider` 判定 + 记忆向量余弦检索；未部署时静默回退 FTS5。**2026-09-24 改**：统一入口 `embed_prefer_local` 已改为 **llama.cpp 优先**（`local_runtime::embed_texts`），Ollama 仅作回退（见 `docs/OLLAMA_EXIT_PLAN.md`） |
 | 4.2 | 记忆复习 | ✅ | 已实现（P-A9）：`reviewMemories` + 记忆面板「智能复习」按钮，LLM 合并过时/矛盾/重复事实 |
 | 4.3 | 跨设备同步 | ⬜ | 远期（需云端账号/服务器） |
 
 ### 3.6 关键技术点 / 坑
 
-- **DeepSeek 无 embeddings**：语义检索不依赖它——已接入本地 Ollama `nomic-embed-text`（P-A6）补齐；未部署时静默回退 FTS5；记忆检索已有 15s 超时兜底（`Promise.race`），不阻塞主对话
+- **DeepSeek 无 embeddings**：语义检索不依赖它——已接入本地 `nomic-embed-text`（P-A6：**llama.cpp 优先**，Ollama 回退）补齐；未部署时静默回退 FTS5；记忆检索已有 15s 超时兜底（`Promise.race`），不阻塞主对话
 - **FTS5 中文分词**：SQLite 内置 `unicode61` 对中文按整串切词，需自定义 unigram tokenizer（建表时 `tokenize=...` 指定）
 - **去重成本**：LLM 逐条去重贵 → 先文本相似度低阈值合并，LLM 复核仅用于高歧义
 - **注入约束**：保持短（≤N 条 / ≤X token），避免污染上下文
