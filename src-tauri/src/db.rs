@@ -202,6 +202,10 @@ pub struct ConvRow {
     pub model: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 会话级工作区（借鉴 DSH：`SessionHeader.cwd` 才是执行策略的真源，全局设置只是新会话默认）。
+    /// `None` = 本会话没覆盖（跟随全局）；`Some("")` = 本会话**明确不限定**；`Some(path)` = 用这个目录。
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -298,6 +302,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []);
         // 工具调用记录（结构化卡片）—— 原先只在内存，重载历史后整段记录会丢（见 MsgRow::tools）
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN tools TEXT", []);
+        // 会话级工作区（DSH 的 `SessionHeader.cwd` 对应物）：NULL = 跟随全局默认
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT", []);
         // 旧库迁移：workflow_runs 加 trace 列（运行节点轨迹，供 workflow_improve 自优化）
         let _ = conn.execute("ALTER TABLE workflow_runs ADD COLUMN trace TEXT", []);
         // 用量累计表迁移：首次创建时从现有 messages 一次性聚合历史数据，
@@ -363,7 +369,7 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<ConvRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, title, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC")
+            .prepare("SELECT id, title, model, created_at, updated_at, workspace FROM conversations ORDER BY updated_at DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -373,6 +379,7 @@ impl Database {
                     model: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
+                    workspace: row.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -386,8 +393,8 @@ impl Database {
     pub fn save_conversation(&self, conv: &ConvRow, messages: &[MsgRow]) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at) VALUES (?1,?2,?3,?4,?5)",
-            params![conv.id, conv.title, conv.model, conv.created_at, conv.updated_at],
+            "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at, workspace) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![conv.id, conv.title, conv.model, conv.created_at, conv.updated_at, conv.workspace],
         ).map_err(|e| e.to_string())?;
 
         // 删除旧消息再插入
@@ -455,6 +462,7 @@ impl Database {
     /// 会话分支（S4，Codex 能力整合）：把源会话复制为新会话。
     /// `at_message_id` 指定则只保留到该消息（含）为止（「从此处分支」）；None = 全量复制。
     /// 新消息 id 用 `{new_id}-{idx}` 避免与源会话消息 id 冲突（messages.id 全局唯一）。
+    /// 会话级工作区也**一并继承**（分支出去继续在同目录干活）。
     pub fn fork_conversation(
         &self,
         source_id: &str,
@@ -463,15 +471,15 @@ impl Database {
         new_title: &str,
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let src: Option<(String, i64, i64)> = conn
+        let src: Option<(String, i64, i64, Option<String>)> = conn
             .query_row(
-                "SELECT model, created_at, updated_at FROM conversations WHERE id=?1",
+                "SELECT model, created_at, updated_at, workspace FROM conversations WHERE id=?1",
                 params![source_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some((model, _created, _updated)) = src else {
+        let Some((model, _created, _updated, src_workspace)) = src else {
             return Err(format!("会话不存在: {}", source_id));
         };
         let msgs = {
@@ -497,8 +505,8 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp_millis();
         conn.execute(
-            "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?1,?2,?3,?4,?5)",
-            params![new_id, new_title, model, now, now],
+            "INSERT INTO conversations (id, title, model, created_at, updated_at, workspace) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![new_id, new_title, model, now, now, src_workspace],
         )
         .map_err(|e| e.to_string())?;
         for (i, m) in keep.iter().enumerate() {
@@ -670,7 +678,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let conv: ConvRow = conn
             .query_row(
-                "SELECT id, title, model, created_at, updated_at FROM conversations WHERE id=?1",
+                "SELECT id, title, model, created_at, updated_at, workspace FROM conversations WHERE id=?1",
                 params![conv_id],
                 |row| {
                     Ok(ConvRow {
@@ -679,6 +687,7 @@ impl Database {
                         model: row.get(2)?,
                         created_at: row.get(3)?,
                         updated_at: row.get(4)?,
+                        workspace: row.get(5)?,
                     })
                 },
             )
@@ -2165,6 +2174,7 @@ mod tests {
             model: "deepseek".into(),
             created_at: 1,
             updated_at: 1,
+            workspace: None,
         };
         let msgs = vec![
             MsgRow {
@@ -2246,6 +2256,7 @@ mod tests {
             model: "m".into(),
             created_at: 1,
             updated_at: 1,
+            workspace: None,
         };
         let msgs = vec![MsgRow {
             id: "m1".into(),
@@ -2482,6 +2493,7 @@ mod tests {
             model: "m".into(),
             created_at: 1,
             updated_at: 2,
+            workspace: None,
         };
         let msgs = vec![
             MsgRow {
@@ -3084,6 +3096,7 @@ mod tests {
             model: "m".into(),
             created_at: 1,
             updated_at: 2,
+            workspace: None,
         };
         let tools = r#"[{"name":"web_search","server":"app","status":"done","durationMs":1234,"argsPreview":"{\"query\":\"x\"}","resultPreview":"3 条结果"}]"#;
         let msgs = vec![MsgRow {
@@ -3193,6 +3206,48 @@ mod tests {
             db.get_messages("c1").unwrap()[1].tools.as_deref(),
             Some("[]")
         );
+        cleanup(&dir);
+    }
+
+    /// 会话级工作区（DSH 的 `SessionHeader.cwd` 对应物）：三态都要能原样往返、分支时继承
+    #[test]
+    fn conversation_workspace_roundtrip_distinguishes_three_states_and_fork_inherits() {
+        let (dir, db) = tmp_db();
+        let base = |id: &str, ws: Option<String>| ConvRow {
+            id: id.into(),
+            title: "t".into(),
+            model: "m".into(),
+            created_at: 1,
+            updated_at: 2,
+            workspace: ws,
+        };
+        db.save_conversation(&base("c1", Some("/tmp/proj".into())), &[])
+            .unwrap();
+        db.save_conversation(&base("c2", None), &[]).unwrap();
+        db.save_conversation(&base("c3", Some(String::new())), &[])
+            .unwrap();
+
+        let list = db.list_conversations().unwrap();
+        let ws = |id: &str| {
+            list.iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("找不到会话 {id}"))
+                .workspace
+                .clone()
+        };
+        assert_eq!(ws("c1").as_deref(), Some("/tmp/proj"));
+        assert_eq!(ws("c2"), None, "未覆盖 = None（跟随全局）");
+        assert_eq!(
+            ws("c3"),
+            Some(String::new()),
+            "空串 = 本会话明确不限定，必须与「未覆盖」区分开"
+        );
+
+        // 分支继承源会话的工作区（继续在同目录干活）
+        db.fork_conversation("c1", None, "c4", "分支").unwrap();
+        let list = db.list_conversations().unwrap();
+        let forked = list.iter().find(|c| c.id == "c4").unwrap();
+        assert_eq!(forked.workspace.as_deref(), Some("/tmp/proj"));
         cleanup(&dir);
     }
 }

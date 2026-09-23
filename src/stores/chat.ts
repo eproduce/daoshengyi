@@ -73,6 +73,7 @@ function flushPendingViewImages(msgs: AgentMsg[]): void {
 }
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { parsePersistedTools } from "@/utils/tool-summary";
+import { resolveWorkspace } from "@/utils/workspace";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
@@ -3195,9 +3196,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!decision) throw new Error("log_decision 需要 decision 参数（决定了什么）");
       if (!rationale)
         throw new Error("log_decision 需要 rationale 参数（为什么）——没有理由的决策不值得记录");
-      // 目标目录：显式 dir → 工作区目录；都没有则落到产物目录，避免污染主目录根
+      // 目标目录：显式 dir → **本会话生效的工作区**；都没有则落到产物目录，避免污染主目录根
+      // 注：本函数是模块级（在 store 之外），会话级工作区要经 store 取。
       const explicitDir = String(args.dir ?? "").trim();
-      const workspaceDir = String(getSettings().workspace ?? "").trim();
+      const workspaceDir = String(useChatStore().effectiveWorkspace() ?? "").trim();
       const targetDir = explicitDir || workspaceDir || "~/Documents/道生一产物";
       const path = decisionPath(targetDir);
       let existing = "";
@@ -4215,10 +4217,16 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
     try {
-      const convs =
-        await invoke<
-          { id: string; title: string; model: string; created_at: number; updated_at: number }[]
-        >("load_conversations");
+      const convs = await invoke<
+        {
+          id: string;
+          title: string;
+          model: string;
+          created_at: number;
+          updated_at: number;
+          workspace?: string | null;
+        }[]
+      >("load_conversations");
       for (const c of convs) {
         const msgs = await invoke<
           {
@@ -4242,6 +4250,7 @@ export const useChatStore = defineStore("chat", () => {
           model: c.model,
           createdAt: c.created_at,
           updatedAt: c.updated_at,
+          workspace: c.workspace ?? null,
           messages: msgs.map((m) => ({
             id: m.id,
             role: m.role as MessageRole,
@@ -4293,6 +4302,8 @@ export const useChatStore = defineStore("chat", () => {
             model: conv.model,
             created_at: conv.createdAt,
             updated_at: conv.updatedAt,
+            // 会话级工作区：null = 跟随全局，"" = 本会话明确不限定
+            workspace: conv.workspace ?? null,
           },
           messages: conv.messages.map((m) => ({
             id: m.id,
@@ -4324,6 +4335,36 @@ export const useChatStore = defineStore("chat", () => {
 
   // --- 状态 ---
   const conversations = ref<Conversation[]>([]);
+
+  /// 本会话生效的工作区：**会话覆盖优先，未覆盖才回落全局默认**。
+  /// 对应 DSH 的 `SandboxExecutionPolicy.workspaceRoot`（由会话 cwd 派生）。
+  /// 每次用时现算，而不是缓存：会话切换与全局设置变化都要立刻生效。
+  function effectiveWorkspace(): string | null {
+    return resolveWorkspace(activeConversation.value?.workspace, getSettings().workspace);
+  }
+
+  /// 设置本会话的工作区覆盖（`""` = 本会话明确不限定），并立即落盘
+  function setSessionWorkspace(dir: string | null) {
+    const conv = activeConversation.value;
+    if (!conv) return;
+    conv.workspace = dir;
+    conv.updatedAt = Date.now();
+    scheduleSave();
+  }
+
+  /// 清除本会话覆盖 → 回到「跟随全局默认」（区别于「本会话不限定」）
+  function clearSessionWorkspace() {
+    const conv = activeConversation.value;
+    if (!conv) return;
+    conv.workspace = undefined;
+    conv.updatedAt = Date.now();
+    scheduleSave();
+  }
+
+  /// 把目录设为**全局默认**（新会话与未覆盖的会话用它）
+  function setGlobalWorkspace(dir: string | null) {
+    updateSettings({ workspace: dir });
+  }
   const activeConversationId = ref<string | null>(null);
   // 已归档会话 ID 集合（localStorage 持久化；归档仅从主列表隐藏，数据仍在 SQLite）
   const ARCHIVE_KEY = "daoshengyi_archived_convs";
@@ -4800,6 +4841,8 @@ export const useChatStore = defineStore("chat", () => {
         model: src.model,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        // 分支继承源会话的工作区（后端 fork 也已继承，这里保持一致）
+        workspace: src.workspace ?? null,
         messages: msgs.map((m) => ({
           id: m.id,
           role: m.role as MessageRole,
@@ -5156,10 +5199,10 @@ export const useChatStore = defineStore("chat", () => {
       }>("execute_command", {
         command: cmdStr,
         args: [] as string[],
-        cwd: getSettings().workspace || null,
+        cwd: effectiveWorkspace(),
         timeoutSecs: 30,
         sandboxMode: getSettings().sandboxMode || "off",
-        workspace: getSettings().workspace || null,
+        workspace: effectiveWorkspace(),
       });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
@@ -5280,10 +5323,10 @@ export const useChatStore = defineStore("chat", () => {
       }>("execute_command", {
         command: cmdStr,
         args: [] as string[],
-        cwd: getSettings().workspace || null,
+        cwd: effectiveWorkspace(),
         timeoutSecs: 60,
         sandboxMode: getSettings().sandboxMode || "off",
-        workspace: getSettings().workspace || null,
+        workspace: effectiveWorkspace(),
       });
       const out = result.stdout.trimEnd();
       const err = result.stderr.trimEnd();
@@ -5354,10 +5397,10 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const r = await invoke<AgentExecResult>("exec_command_agent", {
         command: cmdStr,
-        cwd: cwd || getSettings().workspace || null,
+        cwd: cwd || effectiveWorkspace(),
         yieldMs: wait,
         sandboxMode: getSettings().sandboxMode || "off",
-        workspace: getSettings().workspace || null,
+        workspace: effectiveWorkspace(),
       });
       const rendered = formatExecResult(r, `$ ${cmdStr}`);
       // P0-5 验证凭据：进程已结束时记录真实退出码
@@ -5696,16 +5739,15 @@ export const useChatStore = defineStore("chat", () => {
       // 工作区 + 控制范围提示。
       // 借鉴 DSH：`SandboxExecutionPolicy` **总是**携带 `workspaceRoot`（哪怕当前模式不消费它），
       // 调用方才能一次看全「在哪儿干活 + 写到哪儿会被拒」。这里同样把工作区**无条件**告诉模型，
-      // 沙箱限制才按当前档位（控制范围）叠加。
+      // 沙箱限制才按当前档位（控制范围）叠加。工作区取**本会话生效值**（会话覆盖 > 全局默认）。
       {
-        const st = getSettings();
-        const ws = (st.workspace || "").trim();
+        const ws = (effectiveWorkspace() || "").trim();
         sp += ws
           ? `\n\n【当前工作区】${ws}\nAgent 执行命令（run_command/exec_command/run_tests/git）与文件读写默认围绕该目录；用户说「这个项目 / 我的代码」而没给路径时，指的就是它。`
           : "\n\n【当前工作区】未设置。用户说「这个项目 / 我的代码」却没给路径时，先问清目录（或在输入栏「工作区」里设置），不要凭空假定路径。";
         // 命令沙箱提示（吸收自 Codex 的 SandboxMode / DSH 的 sandbox：read-only / workspace-write /
         // danger-full-access）：开启时告知模型「写哪里会失败」，避免它反复试错或误判为工具坏了。
-        const sb = st.sandboxMode;
+        const sb = getSettings().sandboxMode;
         if (sb && sb !== "off") {
           sp +=
             sb === "read-only"
@@ -5917,7 +5959,8 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
       // S2 项目指令发现：会话内每个工作区目录只注入一次 AGENTS.md/道生一.md 内容（4 秒超时兜底）
-      const projCwd = getSettings().workspace;
+      // 用本会话生效的工作区：同一个会话换了工作区就会重新发现一遍（缓存 key 就是目录）
+      const projCwd = effectiveWorkspace();
       if (projCwd && !projInjectedCwd.has(projCwd)) {
         projInjectedCwd.add(projCwd);
         const projInstr = await Promise.race([
@@ -7227,6 +7270,10 @@ export const useChatStore = defineStore("chat", () => {
     taskPlan,
     setTaskPlan,
     ensureActiveConversation,
+    effectiveWorkspace,
+    setSessionWorkspace,
+    clearSessionWorkspace,
+    setGlobalWorkspace,
     agentRunCommand,
     agentExecCommand,
     agentWriteStdin,

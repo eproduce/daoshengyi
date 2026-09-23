@@ -16,8 +16,9 @@ import { getSettings, updateSettings } from "@/api/appSettings";
 import {
   normalizeWorkspace,
   workspaceLabel,
-  workspaceTitle,
   workspaceInputError,
+  resolveWorkspace,
+  workspaceSource,
 } from "@/utils/workspace";
 import {
   chooseDropdownAnchor,
@@ -74,11 +75,12 @@ const currentPersona = computed(() => PERSONAS.find((p) => p.id === chatStore.ac
 // 模式记忆（Phase B）：各模式使用频次（下拉显示「常用 ×N」）
 const modeHist = computed(() => chatStore.readModeHist());
 
-// Agent 工作区（原本藏在「设置 → API 配置」里，与 base URL/key 混在一起）：
-// 它跟 API 无关，决定 Agent 执行命令/读文件的默认目录 → 抽到输入框工具栏常驻可见。
-// 仍存在同一份全局设置（settings.workspace），所以沙箱 / AGENTS.md 发现 / log_decision 全部照旧生效。
-const workspaceValue = ref(getSettings().workspace || "");
-const wsDraft = ref(workspaceValue.value);
+// Agent 工作区：
+// - 原来是「设置 → API 配置」里的一个全局输入框（跟 API 无关，位置就不对），后来抽到工具栏；
+// - 现在按 DSH 的语义改成**会话级**：会话自带工作区（对应 `SessionHeader.cwd`），
+//   全局设置只是新会话的默认值。三态由 `resolveWorkspace` 定义，UI 必须能表达全部三态。
+const globalWorkspace = ref(getSettings().workspace || "");
+const wsDraft = ref("");
 const wsError = ref("");
 const showWorkspaceDropdown = ref(false);
 const workspaceDropdownRef = ref<HTMLDivElement>();
@@ -86,6 +88,22 @@ const workspaceBtnRef = ref<HTMLDivElement>();
 // 面板边界（用户实测：靠右/窗口矮时会顶出窗口）——展开方向与高度上限都要算，不能写死
 const workspaceAnchor = ref<DropdownAnchor>("left");
 const workspaceMaxHeight = ref(DROPDOWN_MIN_HEIGHT);
+
+/** 本会话的覆盖值：undefined/null = 跟随全局；"" = 本会话明确不限定；其他 = 目录 */
+const sessionOverride = computed(() => chatStore.activeConversation?.workspace);
+/** 本会话生效的工作区（会话覆盖 > 全局默认） */
+const effectiveWorkspace = computed(() =>
+  resolveWorkspace(sessionOverride.value, globalWorkspace.value),
+);
+const usingGlobal = computed(() => workspaceSource(sessionOverride.value) === "global");
+const hasOverride = computed(() => !usingGlobal.value);
+/** pill 悬浮提示：说清「在哪个目录」+ 这个值是哪儿来的 */
+const workspacePillTitle = computed(() => {
+  const src = usingGlobal.value ? "跟随全局默认" : "本会话指定";
+  return effectiveWorkspace.value
+    ? `本会话工作区：${effectiveWorkspace.value}（${src}）\nAgent 执行命令、读取文件的默认目录；「工作区可写」沙箱档位也用它。点击修改`
+    : `本会话未限定工作区（${src}）\n空 = 不限定目录：命令与文件工具可用任意路径。点击设置`;
+});
 
 /** 按 pill 与视口的相对位置重算展开方向与高度上限（面板必须已渲染才能量到宽度） */
 function recomputeWorkspacePanelBounds() {
@@ -105,30 +123,31 @@ function recomputeWorkspacePanelBounds() {
 async function toggleWorkspaceDropdown() {
   showWorkspaceDropdown.value = !showWorkspaceDropdown.value;
   if (!showWorkspaceDropdown.value) return;
-  wsDraft.value = workspaceValue.value;
+  // 草稿填生效值：用户多半是在现有基础上改，而不是从零输
+  wsDraft.value = effectiveWorkspace.value || "";
   wsError.value = "";
   await nextTick();
   recomputeWorkspacePanelBounds();
 }
 
+/** 保存为**本会话**的工作区（留空 = 本会话不限定；不碰全局默认） */
 async function saveWorkspace() {
   const err = workspaceInputError(wsDraft.value);
   if (err) {
     wsError.value = err;
     return;
   }
-  const v = normalizeWorkspace(wsDraft.value);
+  const v = normalizeWorkspace(wsDraft.value) ?? "";
   if (v) {
     // 存在性校验：路径写错时「工作区可写」沙箱与项目指令（AGENTS.md）发现会**静默失效**，
-    // 与其存下一个用不了的路径，不如当场说清（留空 = 清除设置，无需校验）
+    // 与其存下一个用不了的路径，不如当场说清（留空 = 本会话不限定，无需校验）
     const ok = await invoke<boolean>("file_exists", { path: v }).catch(() => false);
     if (!ok) {
       wsError.value = `目录不存在或不可访问：${v}`;
       return;
     }
   }
-  updateSettings({ workspace: v });
-  workspaceValue.value = v ?? "";
+  chatStore.setSessionWorkspace(v);
   wsError.value = "";
   showWorkspaceDropdown.value = false;
 }
@@ -145,12 +164,19 @@ async function pickWorkspaceDir() {
   }
 }
 
-function clearWorkspace() {
-  updateSettings({ workspace: null });
-  workspaceValue.value = "";
-  wsDraft.value = "";
+/** 清除本会话覆盖 → 回到「跟随全局默认」 */
+function followGlobalWorkspace() {
+  chatStore.clearSessionWorkspace();
+  wsDraft.value = globalWorkspace.value;
   wsError.value = "";
   showWorkspaceDropdown.value = false;
+}
+
+/** 把当前生效的目录存为**全局默认**（新会话与未覆盖的会话都用它） */
+function setAsGlobalDefault() {
+  const v = effectiveWorkspace.value;
+  chatStore.setGlobalWorkspace(v);
+  globalWorkspace.value = v || "";
 }
 
 // 控制范围（借鉴 DSH 的 permission-presets）：把「沙箱模式 + 危险命令审批」两个独立旋钮
@@ -160,7 +186,7 @@ const sandboxMode = ref<SandboxMode>(getSettings().sandboxMode || "off");
 const approvalMode = ref<ApprovalMode>(getSettings().approvalMode || "manual");
 const activePresetId = computed(() => matchPresetId(sandboxMode.value, approvalMode.value));
 // 需要提醒的情况：这档其实不生效（缺工作区）/ 高风险 / 自定义
-const presetNotice = computed(() => presetHint(activePresetId.value, workspaceValue.value));
+const presetNotice = computed(() => presetHint(activePresetId.value, effectiveWorkspace.value));
 
 function applyPreset(p: PermissionPreset) {
   const w = presetWrites(p);
@@ -1054,17 +1080,18 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           @change="handleAttachSelect"
         />
 
-        <!-- Agent 工作区（从「设置 → API 配置」抽到这里：它跟 API 无关，属于「本次对话怎么干活」） -->
+        <!-- Agent 工作区（会话级：DSH 的 SessionHeader.cwd 语义——会话自带工作区，全局只是默认） -->
         <div class="ci-tool-group">
           <button
             ref="workspaceBtnRef"
             class="ci-pill"
-            :class="{ active: !!workspaceValue }"
-            :title="workspaceTitle(workspaceValue)"
+            :class="{ active: !!effectiveWorkspace }"
+            :title="workspacePillTitle"
             @click.stop="toggleWorkspaceDropdown"
           >
             <Folder :size="13" />
-            <span>{{ workspaceValue ? workspaceLabel(workspaceValue) : "工作区" }}</span>
+            <span>{{ effectiveWorkspace ? workspaceLabel(effectiveWorkspace) : "工作区" }}</span>
+            <span v-if="hasOverride" class="ci-pill-scope">会话</span>
             <svg
               class="ci-chev"
               width="8"
@@ -1090,17 +1117,34 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
               v-model="wsDraft"
               class="ci-ws-input"
               type="text"
-              placeholder="/path/to/project 或 ~/op/project"
+              placeholder="/path/to/project 或 ~/op/project（留空 = 本会话不限定）"
               @keyup.enter="saveWorkspace"
             />
             <div v-if="wsError" class="ci-ws-error">{{ wsError }}</div>
             <div class="ci-ws-actions">
               <button class="ci-ws-btn" @click="pickWorkspaceDir">浏览…</button>
-              <button class="ci-ws-btn ci-ws-btn--primary" @click="saveWorkspace">保存</button>
-              <button v-if="workspaceValue" class="ci-ws-btn" @click="clearWorkspace">清除</button>
+              <button class="ci-ws-btn ci-ws-btn--primary" @click="saveWorkspace">
+                保存到本会话
+              </button>
+              <button v-if="hasOverride" class="ci-ws-btn" @click="followGlobalWorkspace">
+                跟随全局
+              </button>
+            </div>
+            <div class="ci-ws-state">
+              <span class="ci-ws-badge">{{ usingGlobal ? "跟随全局" : "本会话" }}</span>
+              <span class="ci-ws-state-text">{{ effectiveWorkspace || "不限定目录" }}</span>
             </div>
             <div class="ci-ws-hint">
-              Agent 执行命令、读取文件的默认目录；「工作区可写」沙箱档位也用它。留空 = 不限定目录。
+              本会话生效的工作区：会话指定优先，没指定才用全局默认（当前全局：{{
+                globalWorkspace || "未设置"
+              }}）。
+              <button v-if="hasOverride" class="ci-ws-link" @click="setAsGlobalDefault">
+                把当前值设为全局默认
+              </button>
+            </div>
+            <div class="ci-ws-hint">
+              Agent 执行命令、读取文件的默认目录；「工作区可写」沙箱档位与 AGENTS.md
+              项目指令发现都用这个值。
             </div>
 
             <!-- 控制范围：一个档位同时写「沙箱模式 + 审批策略」（DSH permission-presets 的形态） -->
@@ -1777,6 +1821,47 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 .ci-ws-notice {
   color: #f5a623;
+}
+/* 会话级覆盖标记：pill 上的小徽标 + 面板里的「跟随全局 / 本会话」状态行 */
+.ci-pill-scope {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.25);
+  color: #c7d2fe;
+  font-size: 9px;
+}
+.ci-ws-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 4px;
+}
+.ci-ws-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #252540;
+  color: #a5b4fc;
+  font-size: 10px;
+}
+.ci-ws-state-text {
+  font-size: 11px;
+  color: #ddd;
+  font-family: "SF Mono", "Fira Code", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ci-ws-link {
+  margin-left: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent-color, #6366f1);
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 /* 模型分组下拉 */

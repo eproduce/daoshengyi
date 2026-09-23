@@ -4,6 +4,8 @@ import {
   workspaceLabel,
   workspaceTitle,
   workspaceInputError,
+  resolveWorkspace,
+  workspaceSource,
 } from "../src/utils/workspace.ts";
 
 // 场景：Agent 工作区从「设置 → API 配置」抽到输入框工具栏后，工具栏要显示短名、
@@ -47,4 +49,25 @@ it("workspaceInputError：相对路径被拦下，绝对路径与 ~ 通过，空
   expect(workspaceInputError("/")).toBe("");
   expect(workspaceInputError("")).toBe(""); // 清空是合法操作
   expect(workspaceInputError(null)).toBe("");
+});
+
+// 会话级工作区（DSH：会话头 cwd 是真源，全局设置只是新会话默认）——三态语义易错，钉死
+it("resolveWorkspace：未覆盖→跟随全局；空串→本会话明确不限定；有值→用会话值", () => {
+  // 未设置覆盖 → 跟随全局（含全局也空的情况）
+  expect(resolveWorkspace(undefined, "/Users/me/op")).toBe("/Users/me/op");
+  expect(resolveWorkspace(null, "/Users/me/op")).toBe("/Users/me/op");
+  expect(resolveWorkspace(undefined, null)).toBeNull();
+  expect(resolveWorkspace(null, "   ")).toBeNull();
+  // 空串 = 明确不限定 → 覆盖掉全局默认（不是「回落到全局」）
+  expect(resolveWorkspace("", "/Users/me/op")).toBeNull();
+  // 会话值优先，并做同样的清洗
+  expect(resolveWorkspace("/tmp/proj", "/Users/me/op")).toBe("/tmp/proj");
+  expect(resolveWorkspace("/tmp/proj/", "/Users/me/op")).toBe("/tmp/proj");
+});
+
+it("workspaceSource：UI 据此显示「跟随全局」还是「本会话」", () => {
+  expect(workspaceSource(undefined)).toBe("global");
+  expect(workspaceSource(null)).toBe("global");
+  expect(workspaceSource("")).toBe("session"); // 「本会话不限定」也是覆盖
+  expect(workspaceSource("/tmp/x")).toBe("session");
 });

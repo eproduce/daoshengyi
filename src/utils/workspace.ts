@@ -46,3 +46,27 @@ export function workspaceInputError(input: string | null | undefined): string {
   }
   return "";
 }
+
+/**
+ * 会话级工作区解析（借鉴 DSH：**会话头的 cwd 才是执行策略的真源**，全局设置只是新会话的默认）。
+ *
+ * 三态语义（这是本功能的全部复杂度所在）：
+ * - `undefined` / `null`：本会话没有覆盖 → **跟随全局**
+ * - `""`（空串）：本会话**明确不限定** → 覆盖掉全局默认（例如全局默认是项目目录，
+ *   但这次只想问个通用问题，不希望 Agent 默认在那个项目里动手）
+ * - 其他：本会话用这个目录
+ */
+export function resolveWorkspace(
+  sessionWorkspace: string | null | undefined,
+  globalWorkspace: string | null | undefined,
+): string | null {
+  if (sessionWorkspace === undefined || sessionWorkspace === null) {
+    return normalizeWorkspace(globalWorkspace);
+  }
+  return normalizeWorkspace(sessionWorkspace);
+}
+
+/** 当前是「跟随全局」还是「本会话覆盖」（UI 用它决定显示哪个标签、显示哪些按钮） */
+export function workspaceSource(sessionWorkspace: string | null | undefined): "global" | "session" {
+  return sessionWorkspace === undefined || sessionWorkspace === null ? "global" : "session";
+}

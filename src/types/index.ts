@@ -93,6 +93,9 @@ export interface Conversation {
   /// 改注入 compactSummary 摘要。**界面仍展示全部消息**，只影响模型可见上下文。
   compactBefore?: number;
   compactSummary?: string;
+  /// 会话级工作区（借鉴 DSH：**会话头 cwd 才是执行策略真源**，全局设置只是新会话默认）。
+  /// `undefined/null` = 跟随全局；`""` = 本会话明确不限定；其他 = 本会话用这个目录。
+  workspace?: string | null;
 }
 
 /// API 请求体（兼容格式）
