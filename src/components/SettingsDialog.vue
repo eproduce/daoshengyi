@@ -33,8 +33,6 @@ import {
   ChartColumn,
   Stethoscope,
   AlarmClock,
-  Globe,
-  Folder,
   ShieldAlert,
   Cpu,
   Monitor,
@@ -253,6 +251,8 @@ function onModelBlur() {
 
 // 危险命令审批模式：manual（手动确认，默认）/ smart（智能审批，辅助模型判断）/
 // on-failure（先执行，失败后才升级请求授权，对齐 Codex 的 ApprovalMode::OnFailure）/ yolo（全部自动批准）
+// UI 位置：【安全与恢复 → 权限】页（原先在 API 配置页，但它是执行策略、与 API 无关）。
+// 日常用输入栏「工作区 → 控制范围」的预设档位，这里提供逐项微调。
 const APPROVAL_MODES = [
   { value: "manual" as const, label: "手动确认", desc: "危险命令先弹窗询问，确认后执行" },
   {
@@ -792,30 +792,8 @@ function handleDelete() {
               </div>
             </div>
 
-            <!-- 思考模式 (DeepSeek) -->
-            <div class="form-group">
-              <label class="toggle-row">
-                <span>思考模式 (DeepSeek R1/V4)</span>
-                <input
-                  v-model="editingProfile.thinkingEnabled"
-                  type="checkbox"
-                  class="toggle-input"
-                />
-              </label>
-              <span class="form-hint">开启后模型先深度思考再回答，响应更慢但质量更高</span>
-            </div>
-
-            <div class="form-group">
-              <label class="toggle-row">
-                <span><Globe :size="14" /> 联网搜索</span>
-                <input
-                  v-model="editingProfile.enableWebSearch"
-                  type="checkbox"
-                  class="toggle-input"
-                />
-              </label>
-              <span class="form-hint">允许模型搜索互联网获取最新信息</span>
-            </div>
+            <!-- 思考模式 / 联网搜索：两个开关都已常驻在对话框输入栏工具栏（「快速 / 思考·强度」
+                 与「联网 / 离线」pill），这里不再重复——同一个开关两处可改容易让人以为没生效。 -->
 
             <div class="form-group">
               <label>系统提示词</label>
@@ -844,73 +822,9 @@ function handleDelete() {
               <span class="form-hint">应用后会自动填充上方系统提示词，可直接修改</span>
             </div>
 
-            <!-- Agent 工作区（已移到输入框工具栏）：保留一个指路说明，免得用户在设置里找不到 -->
-            <div class="form-group">
-              <label><Folder :size="14" /> Agent 工作区</label>
-              <span class="form-hint">
-                已移到对话框输入栏的「工作区」按钮（消息输入框下方、附件旁边）——在那里改完立即生效，
-                不用进来设置里找。
-              </span>
-            </div>
-
-            <!-- 危险命令审批模式 -->
-            <div class="form-group">
-              <label class="form-label"><ShieldAlert :size="14" /> 危险命令审批模式</label>
-              <div class="approval-modes">
-                <button
-                  v-for="m in APPROVAL_MODES"
-                  :key="m.value"
-                  :class="['approval-mode', { active: approvalMode === m.value }]"
-                  @click="onApprovalModeChange(m.value)"
-                >
-                  <span class="approval-mode-name">{{ m.label }}</span>
-                  <span class="approval-mode-desc">{{ m.desc }}</span>
-                </button>
-              </div>
-              <span class="form-hint"
-                >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。输入栏「工作区」里有
-                打包好的一键档位（同时设沙箱 + 审批），日常直接用那个即可。</span
-              >
-            </div>
-
-            <!-- 命令沙箱 -->
-            <div class="form-group">
-              <label class="form-label"
-                ><ShieldAlert :size="14" /> 命令沙箱（macOS Seatbelt）</label
-              >
-              <div class="approval-modes">
-                <button
-                  v-for="m in SANDBOX_MODES"
-                  :key="m.value"
-                  :class="['approval-mode', { active: sandboxMode === m.value }]"
-                  @click="onSandboxModeChange(m.value)"
-                >
-                  <span class="approval-mode-name">{{ m.label }}</span>
-                  <span class="approval-mode-desc">{{ m.desc }}</span>
-                </button>
-              </div>
-              <span class="form-hint">
-                Agent 执行的命令（run_command / exec_command / run_tests / git）与快捷键 /run
-                均受此限制； 用户自己开的 PTY
-                面板不受影响。“工作区可写”需先设工作区目录（在输入栏「工作区」按钮里设）； 系统缺少
-                sandbox-exec 时自动降级为不加沙箱（命令不会因此失败）。
-              </span>
-              <div class="approval-modes" style="margin-top: 8px">
-                <button
-                  v-for="n in SANDBOX_NETWORKS"
-                  :key="n.value"
-                  :class="['approval-mode', { active: sandboxNetwork === n.value }]"
-                  @click="onSandboxNetworkChange(n.value)"
-                >
-                  <span class="approval-mode-name">网络 · {{ n.label }}</span>
-                  <span class="approval-mode-desc">{{ n.desc }}</span>
-                </button>
-              </div>
-              <span class="form-hint"
-                >网络策略与上面的模式<b>叠加</b>生效（仅在沙箱开启时才有意义）。「只通本机」适合让
-                Agent 一边处理本地服务一边避免把数据外发。</span
-              >
-            </div>
+            <!-- Agent 工作区 / 危险命令审批 / 命令沙箱都已不在本页：
+                 工作区在对话框输入栏的「工作区」按钮（会话级），改完立即生效；
+                 审批与沙箱在「安全与恢复 → 权限」页（它们约束 Agent 怎么执行命令，跟 API 无关）。 -->
 
             <!-- 辅助任务模型 -->
             <div class="form-group">
@@ -1395,6 +1309,66 @@ function handleDelete() {
                 >
                 不再确认、<code>deny rm -rf</code>
                 直接拦截。未命中规则时按默认三档审批（manual/smart/yolo）。</span
+              >
+            </div>
+
+            <!-- 危险命令审批模式（从 API 配置页挪来：它约束的是 Agent 怎么执行命令，与接哪家模型无关）
+                 输入栏「工作区 → 控制范围」的档位会同时写这两组值，这里用于逐项微调。 -->
+            <div class="form-group">
+              <label class="form-label"><ShieldAlert :size="14" /> 危险命令审批模式</label>
+              <div class="approval-modes">
+                <button
+                  v-for="m in APPROVAL_MODES"
+                  :key="m.value"
+                  :class="['approval-mode', { active: approvalMode === m.value }]"
+                  @click="onApprovalModeChange(m.value)"
+                >
+                  <span class="approval-mode-name">{{ m.label }}</span>
+                  <span class="approval-mode-desc">{{ m.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint"
+                >检测到危险命令（rm -rf / sudo / mkfs / dd 等）时的处理方式。输入栏「工作区」→
+                「控制范围」里有打包好的一键档位（同时设沙箱 + 审批），日常直接用那个即可。</span
+              >
+            </div>
+
+            <!-- 命令沙箱 -->
+            <div class="form-group">
+              <label class="form-label"
+                ><ShieldAlert :size="14" /> 命令沙箱（macOS Seatbelt）</label
+              >
+              <div class="approval-modes">
+                <button
+                  v-for="m in SANDBOX_MODES"
+                  :key="m.value"
+                  :class="['approval-mode', { active: sandboxMode === m.value }]"
+                  @click="onSandboxModeChange(m.value)"
+                >
+                  <span class="approval-mode-name">{{ m.label }}</span>
+                  <span class="approval-mode-desc">{{ m.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint">
+                Agent 执行的命令（run_command / exec_command / run_tests / git）与快捷键 /run
+                均受此限制； 用户自己开的 PTY
+                面板不受影响。“工作区可写”需先设工作区目录（在输入栏「工作区」按钮里设）； 系统缺少
+                sandbox-exec 时自动降级为不加沙箱（命令不会因此失败）。
+              </span>
+              <div class="approval-modes" style="margin-top: 8px">
+                <button
+                  v-for="n in SANDBOX_NETWORKS"
+                  :key="n.value"
+                  :class="['approval-mode', { active: sandboxNetwork === n.value }]"
+                  @click="onSandboxNetworkChange(n.value)"
+                >
+                  <span class="approval-mode-name">网络 · {{ n.label }}</span>
+                  <span class="approval-mode-desc">{{ n.desc }}</span>
+                </button>
+              </div>
+              <span class="form-hint"
+                >网络策略与上面的模式<b>叠加</b>生效（仅在沙箱开启时才有意义）。「只通本机」适合让
+                Agent 一边处理本地服务一边避免把数据外发。</span
               >
             </div>
           </div>
@@ -1991,41 +1965,6 @@ function handleDelete() {
   border-radius: 4px;
   font-family: ui-monospace, Menlo, monospace;
   font-size: 12px;
-}
-
-.toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-}
-.toggle-input {
-  width: 40px;
-  height: 22px;
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--border-color);
-  border-radius: 12px;
-  position: relative;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.toggle-input::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 0.2s;
-}
-.toggle-input:checked {
-  background: var(--accent-color);
-}
-.toggle-input:checked::after {
-  transform: translateX(18px);
 }
 
 .settings-dialog__footer {
