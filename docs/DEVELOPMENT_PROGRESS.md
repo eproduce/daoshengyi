@@ -8,7 +8,7 @@
 
 ## 2026-09-23（进度快照）
 
-### 当前状态（origin/main = `3bc4596`，工作区干净 · CI 绿）
+### 当前状态（origin/main 已含 2026-09-23 全部改动：`89c0f50` 会话级工作区 · `01e5d83` 工具记录持久化 · CI 绿）
 - **版本 `1.0.0-alpha.3`**（五处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`
   + `package-lock.json` / `Cargo.lock`）；本地已装到 `/Applications/道生一.app` 并启动正常
 - **本地已知唯一滞后**：`1.0.0-alpha.3` 的 Release 由 CI 产出（推 `v1.0.0-alpha.3` 标签触发），
@@ -61,6 +61,8 @@
 ### 已知/未做
 - **语音 / 视频输入**：只有调研与设计（`docs/VOICE_VIDEO_INPUT_PLAN.md`），尚未开工
 - **多工作区注册表**、**YOLO（CoreML 侧车）**：设计与前置条件已备，未开工
+- **IM 网关可验证部分**（纯函数解密 / 配置往返 / 错误分支的单测，无需真实凭据）——
+  与定时任务同一类「写了但没跑过」风险，仍挂着
 - **待做**：P2 各项（代码知识图谱 / 数据库只读连接器 / 文档→Markdown·文献引用 / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）·
   O7 插件化 SDK（后续重点）· O10 渠道/设备节点（依赖 O7）· 云端视觉档（需用户配 Key）· IM 真实凭据实连
 
