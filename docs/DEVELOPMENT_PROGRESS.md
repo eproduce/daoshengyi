@@ -6,15 +6,16 @@
 
 ---
 
-## 2026-09-18（进度快照）
+## 2026-09-23（进度快照）
 
-### 当前状态（origin/main = `0b77bd2`，工作区干净）
+### 当前状态（origin/main = `3bc4596`，工作区干净 · CI 绿）
 - **版本 `1.0.0-alpha.3`**（五处同步：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`
   + `package-lock.json` / `Cargo.lock`）；本地已装到 `/Applications/道生一.app` 并启动正常
 - **本地已知唯一滞后**：`1.0.0-alpha.3` 的 Release 由 CI 产出（推 `v1.0.0-alpha.3` 标签触发），
   与本地构建同源；若只想要安装包，直接用 CI 资产，不必等本地重编
-- **内置工具 83 个**（本轮新增 `log_decision`、`image_inspect`、`run_code`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
-- **测试**：vitest `34 files / 472 passed`；cargo `216 passed / 13 ignored`（含真机 e2e：图像核验、嵌入全链路、**命令沙箱 3 项**）
+- **内置工具 84 个**（最近新增 `vision_inspect`）；原生 function calling + `tool_search` 渐进披露 + 巨型 schema 瘦身
+- **测试**：vitest `40 files / 528 passed`；cargo `254 passed / 14 ignored`
+  （含真机契约测试：vision 侧车↔解析器 3 项、图像核验、嵌入全链路、**命令沙箱 3 项**）
 - **门禁 8 项全绿**（**以 CI 为准，用 `npm run ci:local` 一次跑齐**）：vitest · ESLint · Prettier ·
   `vue-tsc`+`vite build` · `tsc -p tests` · rustfmt · clippy(`-D warnings`) · `cargo test --lib`
 - **工具链固定**：Node **24**（`.nvmrc`）、Rust **1.98.0**（`rust-toolchain.toml`），升级时三处同步改
@@ -32,20 +33,34 @@
   真机 e2e 钉住实际拦截行为（`cargo test --lib sandbox:: -- --ignored`）
 - **可诊断性**：定时任务执行写入应用日志（打包版 stderr 不可见）· 会话放行写 `[permit]` 日志
   （下次再出现「为什么又问」可直接查证）
-- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（2026-09-20 22:10 重建，alpha.3）；
-  **已安装到 `/Applications/道生一.app`**（上一版留在 `/Applications/道生一.app.old-2211` 可回滚）。
+- **打包版**：`src-tauri/target/release/bundle/macos/道生一.app`（+ `dmg/道生一_1.0.0-alpha.3_x64.dmg`）；
+  **已安装到 `/Applications/道生一.app`**（2026-09-23 22:55 构建，旧包留在 `/Applications/道生一.app.old-2255` 可回滚）。
   **macOS 系统通知只能在打包版里生效**。
 
+#### 2026-09-23 本轮落地
+
+- **社区插件体系修复**：Smithery 全链路不可达 → 改走 npm 镜像索引 + 本地 stdio 安装（`e259afb`）
+- **macOS Vision 原生视觉层**（零下载、毫秒级）：`vision_inspect`（分类 / 人脸 / 人体 / 姿势 / 动物 / 条码 / 显著区域，
+  带像素框）+ `image_similarity`（特征指纹，视频关键帧去重的基础）—— `9691387`（CI 修复 `b4de9a0`）
+- **工具调用记录持久化**：`messages.tools` 列 + 显示层「有结构化才剥正文卡片」保护 + 老数据从正文**反解**（`01e5d83`）
+- **工作区（三轮递进）**：从「设置 → API 配置」抽到输入栏工具栏（`a83c6fb` 前半）→ 按 DSH `permission-presets`
+  加**控制范围档位**（沙箱 + 审批捆成一个选择器，含 `custom` 派生名）→ 升级为**会话级覆盖**
+  （三态：跟随全局 / 本会话指定 / 本会话不限定）（`89c0f50`）
+- 下拉面板越界修复（窄窗口 / 靠右时不再顶出窗口）（`c3fb003`）
+
 ### 下一步（下次开工从这行接着做）
-1. **静默失效巡检 ②：IM 网关可验证部分**（纯函数解密/配置往返/错误分支，无需真实凭据）——
-   与定时任务同一类风险：功能“写了但没跑过”
-2. **定时任务扫尾**（剩余项）：递归推进与「错过补跑」的纯函数单测（今天只修了致命 panic，
-   没来得及补 `compute_next_run` 的边界用例）
-3. **O7 插件化 SDK**：先出**契约设计**给人看，确认后再写代码（用户标注为后续重点）
-4. **P2 第一项：代码知识图谱**（复用 `code_index` / `code_search` + `kb_chunks`）
-5. 需你配合：云端视觉档（API Key）· IM 真实凭据实连
+1. **语音输入阶段 1**（按住说话 → 只落草稿、不自动发送；准备状态机；本地推理串行 + 空闲回收）——
+   前置：**先配 cargo 镜像**（官方 index 不可达，rsproxy / tuna / ustc 实测可用）再引入 `sherpa-onnx`
+2. **视频输入**：AVFoundation 抽帧 + 用已就绪的 `image_similarity` 去重选关键帧 → 每帧走确定性层 → 时间轴汇总（`video_inspect`）
+3. **工作区注册表**（DSH `workspaceRegistry`）：多工作区 + 侧栏按工作区分组 + 会话归属校验（会话级工作区已完成，这是下一步）
+4. **三段拦截点收敛**（DSH 瀑布式 `pre-step` / `pre-tool` / `post-tool`）：把散落在主循环里的判定搬进去、行为不变
+5. **O7 插件化 SDK**：先出**契约设计**给人看，确认后再写代码（用户标注为后续重点）
+6. **P2 其余各项**（代码知识图谱 / 数据库只读连接器 / 文档→Markdown / 生成式 UI / OTLP / IM 渠道补齐）
+7. 需你配合：云端视觉档（API Key）· IM 真实凭据实连 · **YOLO 是否要做**（要「检测框 + 计数」才值得上 CoreML 侧车）
 
 ### 已知/未做
+- **语音 / 视频输入**：只有调研与设计（`docs/VOICE_VIDEO_INPUT_PLAN.md`），尚未开工
+- **多工作区注册表**、**YOLO（CoreML 侧车）**：设计与前置条件已备，未开工
 - **待做**：P2 各项（代码知识图谱 / 数据库只读连接器 / 文档→Markdown·文献引用 / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）·
   O7 插件化 SDK（后续重点）· O10 渠道/设备节点（依赖 O7）· 云端视觉档（需用户配 Key）· IM 真实凭据实连
 
@@ -63,6 +78,10 @@
 | P0-3 上下文成本审计（Context Doctor） | ✅ | `3db1275` |
 | P0-6 预算护栏（会话/日/月 + 80% 预警 + 100% 阻断） | ✅ | `4f94713` |
 | P0-4b 删除进回收站（`delete_file` 可恢复） | ✅ | 本批 |
+| 权限预设层（`permission-presets`：沙箱 + 审批捆成具名档位，`custom` 为派生名） | ✅ | `a83c6fb` |
+| 工作区一等概念（提示词**无条件**携带 workspaceRoot） | ✅ | `a83c6fb` |
+| 会话级工作区（`SessionHeader.cwd` 语义：`conversations.workspace` 三态 + fork 继承） | ✅ | `89c0f50` |
+| 视觉层（macOS Vision 原生：分类/人脸/人体/姿势/动物/条码/显著区域 + 特征指纹） | ✅ | `9691387` |
 
 **P1 已补齐**：哈希锚定编辑（`ae523eb`）· 生命周期钩子（`55042a3`）· 声明式权限规则（`6165e66`）·
 压缩阶梯（`d52753a`）· 自动续跑规则表（`c56db46`）· 决策日志（`7315d8c`）· 输出风格（`d8982b1`）·
@@ -70,7 +89,9 @@
 
 **P1 已完成 9/9**。
 
-**P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · 多模态扩展 · IM 渠道补齐。
+**P2 待做**：代码知识图谱 · 数据库只读连接器 · 文档→Markdown/文献引用 · 生成式 UI · OTLP 观测导出 · IM 渠道补齐。
+**P2 部分完成**：多模态扩展——**视觉检测层已落地**（macOS Vision 原生 `vision_inspect`，2026-09-23）；
+语音 / 视频抽帧 / YOLO 仍待做（见 `docs/VOICE_VIDEO_INPUT_PLAN.md`）。
 
 **明确不做**：皮肤/主题/壁纸/桌面宠物/桌面壳/启动器/MCP apps/hosted 工具（理由见计划文档「不吸收」节）。
 

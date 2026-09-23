@@ -117,7 +117,7 @@
 | 安全审计 + Doctor | ⚠️ HealthPanel 基础诊断 | security_check 配置审计并入 HealthPanel | 🟡 |
 | SSRF 防护 | ❌ 直连 | hostname allowlist + 内网 IP 阻断 | 🟢 |
 | 结构化不可信内容边界 | ⚠️ 提示词层防注入 | 外部内容包裹标记 + 严格模式开关 | 🟡 |
-| 语音 / 图像 / 视频生成 | ❌ 仅 OCR/视觉描述 | 远期按需 | 🔵 |
+| 语音 / 图像 / 视频生成 | 🟡 视觉检测已完成（macOS Vision 原生）；语音/视频抽帧/生图未做 | 计划：`docs/VOICE_VIDEO_INPUT_PLAN.md` | 🔵 逐步推进 |
 
 详见开发计划 §3.13 的实现要点与落地顺序。
 
@@ -310,6 +310,8 @@
 > 决策日志 · 输出风格 · 技能外部导入 · 失败台账。
 > **code-mode（`run_code` 沙箱）✅ 已完成 2026-09-18**（可终止 Worker + 工具桥 + 默认关闭）。
 > 下一步：**P2**（代码知识图谱 / 数据库只读连接器 / 文档→Markdown / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）。
+> **更新 2026-09-23**：P2 的多模态已部分落地（macOS Vision 原生 `vision_inspect`）；
+> 语音 / 视频 / YOLO 见 `docs/VOICE_VIDEO_INPUT_PLAN.md`；工作区已做到**会话级**（DSH 语义）。
 > 明确不做：皮肤主题、桌面壳/启动器、MCP apps、hosted 工具（产品定位不符）。
 
 | 优先级 | 功能 | 理由 |

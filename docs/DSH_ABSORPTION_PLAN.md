@@ -23,9 +23,9 @@
 
 结论：**架构层面已吸收**。剩下的高价值缺口集中在「**确定性能力下沉**」「**可靠性门禁**」「**上下文经济学**」三类。
 
-## P0（本轮开始，纯前端可验证、零依赖、低风险）
+## P0（本轮开始，纯前端可验证、零依赖、低风险）— ✅ 全部已完成（2026-09）
 
-### P0-1 确定性工具集（10 个）
+### P0-1 确定性工具集（10 个）✅ 已完成（`d7abde2`）
 - 来源：`omdsh-dev/dsh-toolkit`（time/encoding/json/calculator/csv/regex/markdown/diff/stat/schema）、
   `dsh-unitverse`/`dsh-units`（单位换算）、`dsh-tool-*` 系列、`jean3690/dsh-devtoolbox`（35 个纯客户端工具）。
 - 动机：模型口算/口述换算/手写正则**容易算错和编造**，这类任务必须下沉到代码，结果可复现。
@@ -35,7 +35,7 @@
   `hash_encode`、`stats_describe`、`diff_text`、`schema_validate`。
 - 验收：单元测试覆盖每个工具的边界（含除零、非法正则、单位歧义、时区/DST、CSV 引号转义）。
 
-### P0-2 工具结果「内容感知压缩」+ 密钥脱敏
+### P0-2 工具结果「内容感知压缩」+ 密钥脱敏 ✅ 已完成（`d7abde2`）
 - 来源：`YuanyuanMa03/dsh-funnel`（保错误行 + 首尾 + 落盘定位）、`toolshrink`、`giter00/dsh-headroom`、
   `dsh-secret-redactor` / `secret-guard` / `dsh-mask`（PII/密钥掩码）。
 - 动机：现有 `foldToolResult` 只做「首 4000 + 尾 1200 + 落盘」，中段信息（错误、失败用例）会被埋掉；
@@ -44,13 +44,13 @@
   为「脱敏 → 内容感知压缩 → 超预算才落盘（落盘存脱敏后完整原文）」。
 - 验收：单测证明①错误行永不丢失 ②重复行/栈帧/通过用例被折叠并计数 ③密钥形态被掩码 ④原文不落明文密钥。
 
-### P0-3 上下文成本审计（Context Doctor）
+### P0-3 上下文成本审计（Context Doctor）✅ 已完成（`3db1275`）
 - 来源：`Zhenyu98/dsh-context-doctor`（指令链/技能目录/工具 schema 的 token 成本、重复与冲突检测）。
 - 动机：我们已有 `tokens.ts` 与 schema 压缩，但**没有地方回答「上下文的钱花在哪」**，导致「加 skill/加 MCP → 悄悄吃掉窗口」。
 - 落点：`src/utils/context-audit.ts` + `SettingsDialog`/`AuditPanel` 一个分区（系统提示、技能、工具 schema、记忆、历史各自的 token 与占比 + 重复项提示）。
 - 验收：单测（比例计算、重复检测、空态）+ 面板可见。
 
-### P0-4 危险命令语义门禁 + 删除进回收站
+### P0-4 危险命令语义门禁 + 删除进回收站 ✅ 已完成（`fb96ed6` + 回收站本批）
 - 来源：`JohnXu22786/safety-net`、`azazo1/dsh-write-protect`、`x2802490130-prog/dsh-shield`、`LWLAymh/dsh-edit-guardian`。
 - 动机：现在靠「命令策略 + 用户点确认」，但**没有语义级高危识别**（`rm -rf /`、`git reset --hard`、
   `git push --force`、`dd of=/dev/`、`mkfs`、`chmod -R 777 /`、`curl|bash`、`shutdown`）。
@@ -59,7 +59,7 @@
   接入 `chat.ts::gateAgentCommand` 与 `delete_file`；删除改写为移动到 `<app_data>/trash/`（可恢复）。
 - 验收：单测覆盖每条规则与「误报抑制」（`rm -rf node_modules` 只警告不拒绝）。
 
-### P0-5 验证凭据（Verification Receipts）
+### P0-5 验证凭据（Verification Receipts）✅ 已完成（`8524fd9`）
 - 来源：`pavangupta352/stalegreen`（测试/类型检查/lint/构建的声明必须由「新鲜凭据」支撑）、
   `bpc-oss/dsh-verification`（完成门禁需真实工具证据）、`PerryLink/dsh-doublecheck`。
 - 动机：模型常声称「测试通过」，但实际未运行或运行后又改了文件 —— 这是最伤信任的失败模式。
@@ -67,13 +67,13 @@
   回合收尾检查：若回复文本含「测试/typecheck/lint/build 通过」类断言而凭据缺失或**早于最后一次写文件** → 插一条纠偏提示。
 - 验收：单测（凭据新鲜度、失效判定、无断言不打扰）+ 真实回合观察。
 
-### P0-6 预算护栏（Budget Guard）
+### P0-6 预算护栏（Budget Guard）✅ 已完成（`4f94713`）
 - 来源：`PerryLink/dsh-budget`、`hugo`/`dsh-save-money`、`dsh-rate-limiter`（预警/阻断/排队）。
 - 动机：`UsageStats` 只能看不能拦；长任务可能一次烧掉整周额度。
 - 落点：`src/utils/budget.ts`（会话/日/月预算 + 80% 预警 + 100% 阻断或降级提示），接入 `UsageStats` 与发送前检查。
 - 验收：单测（阈值、跨日重置、无预算不打扰）。
 
-## P1（P0 合并后启动）
+## P1（P0 合并后启动）— ✅ 已完成 9/9（`ae523eb`…`d63c322`，详见 `docs/DEVELOPMENT_PROGRESS.md` 快照）
 
 | # | 能力 | 来源 | 要点 |
 | --- | --- | --- | --- |
@@ -95,7 +95,10 @@
 18. 文档 → Markdown（`markitdown`、`dsh-pdf`、`dsh-uni-doc`、`MinerU`）与文献引用（`dsh-cite`，GB/T 7714）。
 19. 生成式 UI（`dsh-genui`、`dsh-visualize`、`dsh-artifacts`）：沙箱 iframe 内渲染图表/表单/HTML 卡片。
 20. 观测导出（`loongsuite/dsh-plugin` OTLP、`PerryLink/dsh-fast` 缓存诊断）：token/时延/缓存命中率导出与看板。
-21. 多模态扩展（`dsh-vision-analysis` 8 种分析模式、`dsh-tool-imagegen` 生图 + 审批门禁）。
+21. 多模态扩展（`dsh-vision-analysis` 8 种分析模式、`dsh-tool-imagegen` 生图 + 审批门禁）：
+    🟡 **视觉检测层已落地 2026-09-23**（macOS Vision 原生 `vision_inspect`：分类/人脸/人体/姿势/动物/条码/显著区域 +
+    `image_similarity` 特征指纹）；**待做**：语音输入 · 视频抽帧关键帧 · YOLO（CoreML 侧车）· 生图+审批门禁
+    —— 计划与前置条件见 `docs/VOICE_VIDEO_INPUT_PLAN.md`（语音需先配 cargo 镜像）
 22. IM 渠道扩展（对照 `534119219/dsh-messaging` 的 27 平台清单补齐网关）。
 
 ## 不吸收
