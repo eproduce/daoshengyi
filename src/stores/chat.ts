@@ -120,6 +120,8 @@ import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/dange
 // 工具调用参数自愈（吸收自 DSH 生态 dsh-tool-normalizer：别名/类型/包裹层）
 import { normalizeToolArgs } from "@/utils/tool-arg-normalize";
 import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
+// write_stdin 输入解码：模型常把 Ctrl-C 写成字面量 "\u0003"，不解码就永远中断不了进程
+import { decodeTerminalInput, hasControlChar } from "@/utils/pty-input";
 // 验证凭据（吸收自 DSH 生态 stalegreen / dsh-verification：声称「通过」必须有新鲜凭据）
 import {
   MUTATION_TOOLS,
@@ -2752,7 +2754,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!Number.isFinite(id) || id <= 0) {
         throw new Error("write_stdin 需要 session_id 参数（exec_command 返回的会话号）");
       }
-      const input = String(args.input ?? args.chars ?? "");
+      // 模型把中断写成字面量转义（"\u0003" / "\x03" / "^C"）是常态：这里还原成真控制码，
+      // 否则 PTY 收到的是 6 个字符的文本，卡住的进程永远停不下来（详见 utils/pty-input.ts）
+      const input = decodeTerminalInput(args.input ?? args.chars ?? "");
       const yieldMs = Number(args.yield_time_ms ?? args.yieldTimeMs ?? 1000);
       const { useChatStore } = await import("./chat");
       return useChatStore().agentWriteStdin(id, input, yieldMs);
@@ -5375,15 +5379,26 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /// 统一渲染 exec/write_stdin 结果：新增输出 + 运行/退出状态 + 下一步指引
-  function formatExecResult(r: AgentExecResult, header?: string): string {
+  function formatExecResult(
+    r: AgentExecResult,
+    header?: string,
+    opts?: { interrupted?: boolean },
+  ): string {
     let out = header ? `${header}\n` : "";
     out += (r.output || "").trimEnd() || "（本次没有新输出）";
     if (r.truncated) {
       out += "\n\n…（输出过长已截断；需要完整日志请把命令重定向到文件，再用 read_file 分段读）";
     }
-    out += r.running
-      ? `\n\n⏳ 进程仍在运行（session_id=${r.session_id}）。继续交互用 write_stdin（session_id=${r.session_id}；只取新输出可省略 input；输入需以 \\n 结尾；中断用 input="\\u0003" 即 Ctrl-C）。`
-      : `\n\n✅ 进程已结束（session_id=${r.session_id}，退出码 ${r.exit_code ?? "未知"}）`;
+    if (r.running) {
+      // 刚发过中断信号却还在跑：别再劝它「发 Ctrl-C」，直接给可行路径。
+      // 这类进程常常是忽略了 SIGINT（不处理 KeyboardInterrupt 的脚本），空发只会白烧轮次。
+      out += opts?.interrupted
+        ? `\n\n⏳ 进程仍在运行（session_id=${r.session_id}）。你刚发的是**中断信号**：若仍不退，可再发一次；` +
+          "再无效说明它忽略了 SIGINT，请改用 run_command 主动杀（如 `kill <PID>` / `pkill -f <关键字>`，先 `run_command` 查 PID），不要反复空发 Ctrl-C。"
+        : `\n\n⏳ 进程仍在运行（session_id=${r.session_id}）。继续交互用 write_stdin（session_id=${r.session_id}；只取新输出可省略 input；输入需以 \\n 结尾；中断用 input="\\u0003" 或 "^C" 即 Ctrl-C）。`;
+    } else {
+      out += `\n\n✅ 进程已结束（session_id=${r.session_id}，退出码 ${r.exit_code ?? "未知"}）`;
+    }
     return out;
   }
 
@@ -5438,7 +5453,8 @@ export const useChatStore = defineStore("chat", () => {
         input: input || null,
         yieldMs: wait,
       });
-      return formatExecResult(r);
+      // 中断类写入（Ctrl-C/ESC）却仍在运行 → 给「杀进程」的可行路径，而不是再劝发一次 Ctrl-C
+      return formatExecResult(r, undefined, { interrupted: hasControlChar(input) });
     } catch (e: unknown) {
       return `❌ 会话操作失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {

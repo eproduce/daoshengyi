@@ -426,7 +426,8 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       session_id: { type: "number", description: "exec_command 返回的 session_id" },
       input: {
         type: "string",
-        description: "要写入的字符（回车写 \\n；Ctrl-C 写 \\u0003）；省略=只等待取输出",
+        description:
+          "要写入的字符（回车写 \\n；中断写 \\u0003 或 ^C）；省略=只等待取输出。注：\\u0003 / \\x03 / ^C 会被还原成真正的 Ctrl-C 控制码",
       },
       yield_time_ms: { type: "number", description: "等待毫秒数（默认 1000）" },
     },

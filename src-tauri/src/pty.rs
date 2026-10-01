@@ -458,4 +458,24 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("会话不存在"), "错误信息: {err}");
     }
+
+    /// 端到端：向交互式进程发 Ctrl-C（0x03）应当真的中断它。
+    /// 这条覆盖的是「write_stdin 发 \u0003 到底能不能停下卡住的进程」——
+    /// TS 侧解码成真 ETX 后走到这里，PTY 在 ISIG 下会把它转成前台进程组的 SIGINT。
+    #[tokio::test]
+    async fn write_stdin_control_c_interrupts_interactive_process() {
+        let r = exec_command_agent_with("cat".into(), None, Some(300), None)
+            .await
+            .unwrap();
+        assert!(r.running, "cat 无输入时应仍在运行，实际: {:?}", r.output);
+        let r2 = write_stdin_agent(r.session_id, Some("\u{3}".into()), Some(3000))
+            .await
+            .unwrap();
+        assert!(
+            !r2.running,
+            "Ctrl-C 应中断 cat，实际仍在运行: {:?}",
+            r2.output
+        );
+        pty_kill(r.session_id).ok();
+    }
 }
