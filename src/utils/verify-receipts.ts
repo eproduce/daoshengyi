@@ -127,9 +127,25 @@ const CLAIM_RULES: ClaimRule[] = [
 const NEGATION_RE =
   /(?:尚未|还未|还没|没有|未曾|未)\s*(?:运行|执行|跑|做|进行)?\s*(?:过)?\s*(?:测试|类型检查|lint|构建|验证)|(?:未|不|没有)通过|测试失败|构建失败|lint\s*(?:报错|失败)|\b(?:failed|failing|failure|fails)\b|如果|若|假设|预计|应当会|应该会|将会|\?|？/i;
 
+/**
+ * 英文句末「. + 空白」：仅当句点前一位是小写字母/数字/%/)/] 时才算句末（避免 Mr. Smith、v1.2 被误切）。
+ *
+ * ⚠️ 这里**刻意不用 lookbehind**（`(?<=[a-z0-9%)\]])\.\s`）——WKWebView 的 JavaScriptCore
+ * （macOS 12/13 用的是随系统版本的那个 JSC）不支持 ES2018 lookbehind，而 JSC 对正则字面量是
+ * **懒编译**：模块能正常加载，直到**首次执行到该正则**才抛
+ * `SyntaxError: Invalid regular expression: invalid group specifier name`。
+ * 本函数恰好跑在「回合收尾的断言门禁」里 → 整轮回复中断、最终答案被清空丢弃（2026-10-02 实测踩到）。
+ * 改用「捕获组 + 替换为换行」的等价写法（与 utils/local-file-re.ts 同一套路，那里也有同样注释）。
+ *
+ * 注：Node/V8 **支持** lookbehind，所以任何单测都测不出来——只在生产 WebView 里炸。
+ * 回归防线见 tests/test-no-lookbehind.test.ts（源码扫描）。
+ */
+const SENT_END_DOT_RE = /([a-z0-9%)\]])\.\s/g;
+
 function splitSentences(text: string): string[] {
   return String(text ?? "")
-    .split(/[。！!；;\n]+|(?<=[a-z0-9%)\]])\.\s/)
+    .replace(SENT_END_DOT_RE, "$1\n")
+    .split(/[。！!；;\n]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }

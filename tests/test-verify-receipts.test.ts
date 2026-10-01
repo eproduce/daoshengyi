@@ -80,6 +80,15 @@ describe("detectVerificationClaims：正文断言识别", () => {
       detectVerificationClaims("已按你的要求把文件写到 ~/Documents/道生一产物/报告.md。"),
     ).toEqual([]);
   });
+
+  // 回归：切句曾用 lookbehind（`(?<=[a-z0-9%)\]])\.\s`）——Node/CI 全绿，
+  // 但在 WKWebView 的 JSC 上抛 "invalid group specifier name"，把整轮回复打断。
+  // 现改为「捕获组 + replace 成换行」，这里锁住等价行为。
+  it("英文句末「. 」也要能切句（lookbehind 的替代写法回归）", () => {
+    expect(detectVerificationClaims("All 17 tests passed. 然后我提交了代码。")).toEqual(["test"]);
+    expect(detectVerificationClaims("Ran npm test. It passed.")).toEqual([]); // 无同句断言 → 不误报
+    expect(detectVerificationClaims("测试全部通过。构建成功。")).toEqual(["test", "build"]);
+  });
 });
 
 describe("findVerificationIssue：三态判定（纯函数）", () => {

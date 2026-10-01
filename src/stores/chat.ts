@@ -6669,36 +6669,47 @@ export const useChatStore = defineStore("chat", () => {
           // 决定是否再给一轮，并注入针对性的纠偏文本。
           // 护栏（用户停止 / 预算阻断 / 轮数不足 / 本轮总次数 / 单规则次数）全部在纯函数里判定。
           if (round + 1 < MAX_TOOL_ROUNDS) {
-            const planNow = useChatStore().taskPlan;
-            const signals: TurnSignals = {
-              content: roundResult.content ?? "",
-              verificationIssue: evaluateVerificationClaims(roundResult.content),
-              plan: planNow ? { steps: planNow.steps.map((s) => ({ status: s.status })) } : null,
-              goal: getGoal(activeConversationId.value || ""),
-              toolSuccesses: turnToolOk,
-              toolFailures: turnToolFail,
-            };
-            const verdict = planAutoContinue(signals, {
-              attempts: continueAttempts,
-              totalContinues: autoContinues,
-              stopped: stopRequested,
-              budgetBlocked: budgetVerdict.value.level === "blocked",
-              remainingRounds: MAX_TOOL_ROUNDS - round - 1,
-              failedTools: turnFailedTools,
-            });
-            if (verdict.action === "continue") {
-              continueAttempts[verdict.reason] = verdict.attempt;
-              autoContinues++;
-              round++;
+            // ⚠️ 这一段是**护栏**，不是主流程：护栏自身出错绝不能吃掉用户的最终答案。
+            // 2026-10-02 实战教训：收尾门禁里一个正则异常（lookbehind 在 WKWebView 不可用）
+            // 让整个 try 块抛错 → 外层 catch 把 streamingContent 清空 → 27 轮工作、2429 字
+            // 的最终汇报全部丢失，用户只看到「回复生成中断」。
+            // 因此整段 try/catch 包住：异常只记日志，随即按「不续跑」继续走收尾/落库。
+            try {
+              const planNow = useChatStore().taskPlan;
+              const signals: TurnSignals = {
+                content: roundResult.content ?? "",
+                verificationIssue: evaluateVerificationClaims(roundResult.content),
+                plan: planNow ? { steps: planNow.steps.map((s) => ({ status: s.status })) } : null,
+                goal: getGoal(activeConversationId.value || ""),
+                toolSuccesses: turnToolOk,
+                toolFailures: turnToolFail,
+              };
+              const verdict = planAutoContinue(signals, {
+                attempts: continueAttempts,
+                totalContinues: autoContinues,
+                stopped: stopRequested,
+                budgetBlocked: budgetVerdict.value.level === "blocked",
+                remainingRounds: MAX_TOOL_ROUNDS - round - 1,
+                failedTools: turnFailedTools,
+              });
+              if (verdict.action === "continue") {
+                continueAttempts[verdict.reason] = verdict.attempt;
+                autoContinues++;
+                round++;
+                await dbg(
+                  `[continue] 第 ${round} 轮注入纠偏（${verdict.ruleId} 第 ${verdict.attempt} 次；命中 ${verdict.reasons.join("+")}）`,
+                );
+                rustMsgs.push({ role: "assistant", content: roundResult.content });
+                rustMsgs.push({ role: "user", content: verdict.nudge });
+                continue;
+              }
+              if (verdict.reasons.length) {
+                await dbg(`[continue] 不再续跑：${verdict.why}`);
+              }
+            } catch (e) {
               await dbg(
-                `[continue] 第 ${round} 轮注入纠偏（${verdict.ruleId} 第 ${verdict.attempt} 次；命中 ${verdict.reasons.join("+")}）`,
+                `[continue] 收尾门禁异常（已忽略，不影响最终答案）: ${e instanceof Error ? e.message : String(e)}`,
               );
-              rustMsgs.push({ role: "assistant", content: roundResult.content });
-              rustMsgs.push({ role: "user", content: verdict.nudge });
-              continue;
-            }
-            if (verdict.reasons.length) {
-              await dbg(`[continue] 不再续跑：${verdict.why}`);
             }
           }
           break; // 无工具调用 → 最终答案，退出循环
