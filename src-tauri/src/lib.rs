@@ -7029,8 +7029,12 @@ async fn browser_navigate(app: tauri::AppHandle, url: String) -> Result<String, 
 }
 
 #[tauri::command]
-async fn browser_evaluate(app: tauri::AppHandle, script: String) -> Result<String, String> {
-    browser::evaluate(browser_app_dir(&app)?, &script).await
+async fn browser_evaluate(
+    app: tauri::AppHandle,
+    script: String,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    browser::evaluate(browser_app_dir(&app)?, &script, timeout_ms).await
 }
 
 #[tauri::command]

@@ -43,7 +43,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "browser_evaluate",
-    desc: '在**当前已打开的页面**里执行 JavaScript 并返回结果（表达式或 IIFE，返回值会被转成字符串）。用于取 DOM 数据、判断元素是否存在、读取 canvas/ECharts 实例状态、检查渲染是否成功等。参数 {"script": "JS 代码"}。注意：必须先 browser_navigate 打开页面。',
+    desc: '在**当前已打开的页面**里执行 JavaScript 并返回结果（表达式或 IIFE，返回值会被转成字符串）。用于取 DOM 数据、判断元素是否存在、读取 canvas/ECharts 实例状态、检查渲染是否成功等。参数 {"script": "JS 代码", "timeout_ms": 可选，执行超时毫秒（1000~180000，缺省 30000）}。**批量 fetch / 轮询等待**类脚本耗时可达几十秒，请显式调大 timeout_ms（如 60000）；若仍被超时打断，脚本通常还在页面里继续跑完，可再用一个短脚本把结果取回，不要原样重发。注意：必须先 browser_navigate 打开页面。',
   },
   {
     name: "browser_screenshot",

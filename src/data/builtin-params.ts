@@ -61,7 +61,14 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
   },
   browser_evaluate: {
     type: "object",
-    properties: { script: { type: "string", description: "要执行的 JS 表达式或 IIFE" } },
+    properties: {
+      script: { type: "string", description: "要执行的 JS 表达式或 IIFE" },
+      timeout_ms: {
+        type: "number",
+        description:
+          "可选：脚本执行超时（毫秒，1000~180000，缺省 30000）。**批量 fetch / 轮询等待**类脚本耗时可能几十秒，请显式调大（如 60000），否则会被判超时，结果也会被丢掉",
+      },
+    },
     required: ["script"],
     additionalProperties: true,
   },

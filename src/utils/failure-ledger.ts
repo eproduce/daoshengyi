@@ -74,7 +74,8 @@ const ADVICE_RULES: { re: RegExp; advice: string }[] = [
   },
   {
     re: /timed? ?out|timeout|etimedout|超时/i,
-    advice: "超时：加长超时参数、或改为后台/分步执行，而不是原样重发",
+    advice:
+      "超时：先加大超时参数（browser_evaluate 支持 timeout_ms，1000~180000 毫秒）；否则改成后台/分步执行（如先发起、再用短脚本把 window 上的结果取回），而不是原样重发",
   },
   {
     re: /invalid (?:arguments|params|input)|missing (?:required|field)|schema|参数(?:不合法|错误|缺失)/i,

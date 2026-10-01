@@ -2052,7 +2052,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "browser_evaluate": {
       const script = String(args.script || args.expression || "");
       if (!script) throw new Error("browser_evaluate 需要 script 参数");
-      return await invoke<string>("browser_evaluate", { script });
+      // 长脚本（批量 fetch / 轮询等待）可显式调大超时；Rust 侧会夹到 1~180 秒
+      const rawTimeout = args.timeout_ms ?? args.timeoutMs;
+      const timeoutMs =
+        Number.isFinite(Number(rawTimeout)) && Number(rawTimeout) > 0 ? Number(rawTimeout) : null;
+      return await invoke<string>("browser_evaluate", { script, timeoutMs });
     }
     case "browser_screenshot": {
       const path = args.path ? String(args.path) : null;

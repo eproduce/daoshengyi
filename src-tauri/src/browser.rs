@@ -26,6 +26,28 @@ const CDP_TIMEOUT: Duration = Duration::from_secs(30);
 /// 浏览器启动就绪等待上限
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
+// ── browser_evaluate 的脚本超时 ──────────────────────────────────────────────
+// 页面里跑「批量 fetch / 轮询等待」的脚本动辄几十秒（2026-10-02 实测：一次抓 8~12 个接口
+// 用了 17~26 秒）。一律按 30 秒 CDP_TIMEOUT 判死有两个坏处：
+//   1) 明明能跑完的脚本被判「无响应」；2) **结果被丢掉**（脚本其实还在页面里跑完），
+//      模型只能改成「先发脚本、再轮询 window 上的变量」这种绕路写法，白烧好几轮。
+// 因此 evaluate 单独支持 timeout_ms（缺省仍是 30 秒，仅允许显式调大/调小到合理区间）。
+const EVAL_TIMEOUT_DEFAULT_MS: u64 = 30_000;
+/// 下限：再短几乎必然误判
+const EVAL_TIMEOUT_MIN_MS: u64 = 1_000;
+/// 上限：更长的脚本应当拆开写，而不是占着会话干等
+const EVAL_TIMEOUT_MAX_MS: u64 = 180_000;
+
+/// 解析 browser_evaluate 的 `timeout_ms`：缺省/0 → 默认；越界 → 夹到区间内（纯函数，可单测）
+fn resolve_eval_timeout(timeout_ms: Option<u64>) -> Duration {
+    match timeout_ms {
+        Some(ms) if ms > 0 => {
+            Duration::from_millis(ms.clamp(EVAL_TIMEOUT_MIN_MS, EVAL_TIMEOUT_MAX_MS))
+        }
+        _ => Duration::from_millis(EVAL_TIMEOUT_DEFAULT_MS),
+    }
+}
+
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -220,6 +242,16 @@ async fn page_ws_url(port: u16) -> Result<String, String> {
 
 /// 发送一条 CDP 命令并等待同 id 响应
 async fn cdp(session: &mut Session, method: &str, params: Value) -> Result<Value, String> {
+    cdp_with_timeout(session, method, params, CDP_TIMEOUT).await
+}
+
+/// 同 `cdp`，但允许指定超时（长跑的 `Runtime.evaluate` 用，见 EVAL_TIMEOUT_* 注释）
+async fn cdp_with_timeout(
+    session: &mut Session,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, String> {
     let id = session.next_id;
     session.next_id += 1;
     session
@@ -227,14 +259,14 @@ async fn cdp(session: &mut Session, method: &str, params: Value) -> Result<Value
         .send(Message::Text(cdp_request(id, method, &params)))
         .await
         .map_err(|e| format!("发送 CDP 命令失败: {e}"))?;
-    let deadline = tokio::time::Instant::now() + CDP_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remain.is_zero() {
-            return Err(format!("CDP 命令 {method} 超时（{:?}）", CDP_TIMEOUT));
+            return Err(format!("CDP 命令 {method} 超时（{:?}）", timeout));
         }
         let msg = match tokio::time::timeout(remain, session.ws.next()).await {
-            Err(_) => return Err(format!("CDP 命令 {method} 超时无响应")),
+            Err(_) => return Err(format!("CDP 命令 {method} 超时（{:?}），无响应", timeout)),
             Ok(None) => return Err("浏览器连接已断开".to_string()),
             Ok(Some(Err(e))) => return Err(format!("浏览器连接错误: {e}")),
             Ok(Some(Ok(m))) => m,
@@ -323,7 +355,16 @@ where
 }
 
 async fn eval_js(session: &mut Session, expression: &str) -> Result<String, String> {
-    let res = cdp(
+    eval_js_with_timeout(session, expression, CDP_TIMEOUT).await
+}
+
+/// 同 `eval_js`，但可指定超时（browser_evaluate 的长脚本用）
+async fn eval_js_with_timeout(
+    session: &mut Session,
+    expression: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let res = cdp_with_timeout(
         session,
         "Runtime.evaluate",
         json!({
@@ -331,6 +372,7 @@ async fn eval_js(session: &mut Session, expression: &str) -> Result<String, Stri
             "returnByValue": true,
             "awaitPromise": true,
         }),
+        timeout,
     )
     .await?;
     Ok(evaluate_value_to_text(&res))
@@ -387,11 +429,18 @@ pub async fn navigate(app_dir: PathBuf, url: &str) -> Result<String, String> {
 }
 
 /// 在页面里执行 JS（返回表达式结果）
-pub async fn evaluate(app_dir: PathBuf, script: &str) -> Result<String, String> {
+///
+/// `timeout_ms`：可选，脚本执行超时（毫秒）。缺省 30 秒；越界夹到 1~180 秒。
+pub async fn evaluate(
+    app_dir: PathBuf,
+    script: &str,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
     if script.trim().is_empty() {
         return Err("script 不能为空".to_string());
     }
     let script = script.to_string();
+    let timeout = resolve_eval_timeout(timeout_ms);
     with_session(app_dir, move |s| {
         Box::pin(async move {
             // 用 async IIFE + awaitPromise 包裹：既支持同步表达式，也支持返回 Promise
@@ -400,7 +449,20 @@ pub async fn evaluate(app_dir: PathBuf, script: &str) -> Result<String, String> 
                 "(async () => {{ try {{ const __v = await (0, eval)({}); return (typeof __v === 'string') ? __v : JSON.stringify(__v); }} catch (e) {{ return 'ERR:' + (e && e.message ? e.message : String(e)); }} }})()",
                 js_string_literal(&script)
             );
-            eval_js(s, &expr).await
+            eval_js_with_timeout(s, &expr, timeout).await.map_err(|e| {
+                // 超时是「可自救」的失败，光说「超时」模型只会原样重发（失败台账也会这么建议，
+                // 但以前没有可调的参数、等于建议不可执行）。这里给出两条真实可行的路。
+                if e.contains("超时") {
+                    format!(
+                        "{e}。提示：超时**不代表脚本失败**——页面里的脚本通常仍在继续跑（结果可能已写进 window 上的变量）。\n\
+                         ① 可先用一个**短脚本**把已产出的中间结果取回来（例如读上次脚本写的 window.__xxx）；\n\
+                         ② 也可以显式加大 timeout_ms（{}~{} 毫秒，缺省 {}）后重试；批量抓取建议拆成每批 5~8 个请求。",
+                        EVAL_TIMEOUT_MIN_MS, EVAL_TIMEOUT_MAX_MS, EVAL_TIMEOUT_DEFAULT_MS
+                    )
+                } else {
+                    e
+                }
+            })
         })
     })
     .await
@@ -574,6 +636,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_eval_timeout_defaults_and_clamps() {
+        // 缺省 / 0 → 默认 30 秒（0 视为「没给」，而不是「立刻超时」）
+        assert_eq!(resolve_eval_timeout(None), Duration::from_millis(30_000));
+        assert_eq!(resolve_eval_timeout(Some(0)), Duration::from_millis(30_000));
+        // 区间内原样保留：批量抓取类长脚本可显式调大
+        assert_eq!(
+            resolve_eval_timeout(Some(60_000)),
+            Duration::from_millis(60_000)
+        );
+        // 越界夹紧（1 毫秒必然误判；10 分钟会占着会话干等）
+        assert_eq!(resolve_eval_timeout(Some(1)), Duration::from_millis(1_000));
+        assert_eq!(
+            resolve_eval_timeout(Some(10_000_000)),
+            Duration::from_millis(180_000)
+        );
+    }
+
+    #[test]
     fn free_port_returns_bindable_port() {
         let p = free_port().expect("应能分配端口");
         assert!(p > 1024);
@@ -619,10 +699,20 @@ mod tests {
         assert!(out.contains("hello-cdp"), "页面正文应被抓到: {out}");
         assert!(out.contains("CDP-T"), "标题应被抓到: {out}");
 
-        let v = evaluate(dir.clone(), "document.getElementById('x').textContent")
-            .await
-            .expect("evaluate 应成功");
+        let v = evaluate(
+            dir.clone(),
+            "document.getElementById('x').textContent",
+            None,
+        )
+        .await
+        .expect("evaluate 应成功");
         assert_eq!(v, "hello-cdp");
+
+        // 显式给足超时同样能跑（长脚本路径；顺带覆盖 timeout_ms 参数接线）
+        let v2 = evaluate(dir.clone(), "1 + 1", Some(60_000))
+            .await
+            .expect("带 timeout_ms 的 evaluate 应成功");
+        assert_eq!(v2, "2");
 
         let shot_path = dir.join("t.png").display().to_string();
         let shot = screenshot(dir.clone(), Some(shot_path.clone()))
