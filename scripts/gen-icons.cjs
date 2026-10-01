@@ -4,24 +4,47 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const ICONS_DIR = path.join(ROOT, "src-tauri", "icons");
 
-// 道生一：点上横下，意境图标
-async function generateIcon(size, filename) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 64 64">
+// ── macOS 图标网格（Apple HIG）──────────────────────────────────────────────
+// 官方网格：1024×1024 画布里，图形本体是 824×824 的圆角方块（占 80.47%），
+// 四周留 ~10% 透明边距，圆角半径 185.4（≈ 本体的 22.37%）。
+// 不按这个网格画（直接把圆角方块铺满整张画布）→ 图标在 Dock / 启动台 / 访达里
+// 会比别的 App 明显「胖一圈」，圆角也显得更方，一眼看出不是原生 App（2026-10-02 修）。
+const MAC_BODY = 824 / 1024; // 本体占画布比例
+const MAC_RADIUS = 185.4 / 824; // 圆角 / 本体
+// 非 macOS（Windows / Linux / 运行时 PNG）沿用原来的满布构图，避免影响那两个平台
+const FULL_RADIUS = 14 / 64;
+
+/**
+ * 道生一图标：点上横下，意境图标。
+ * @param {number} size 边长（像素）
+ * @param {string} filename 输出文件名（相对 icons 目录）
+ * @param {{macGrid?: boolean}} [opts] macGrid=true 时按 macOS 网格留白
+ */
+async function generateIcon(size, filename, opts = {}) {
+  const { macGrid = false } = opts;
+  const body = macGrid ? size * MAC_BODY : size;
+  const off = (size - body) / 2;
+  const rx = body * (macGrid ? MAC_RADIUS : FULL_RADIUS);
+
+  // 图形本体用 64 单位坐标系描述，再整体缩放到 body（满布时 scale = size/64，与旧构图完全一致）
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
     <defs>
       <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="#0f0f1a"/>
         <stop offset="100%" stop-color="#1a1a30"/>
       </linearGradient>
     </defs>
-    <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-    <!-- 点 — 道 -->
-    <circle cx="32" cy="18" r="3.5" fill="#f0f0ff" opacity="0.9"/>
-    <!-- 一 — 生一 -->
-    <rect x="16" y="34" width="32" height="5" rx="2.5" fill="#f0f0ff" opacity="0.85"/>
+    <rect x="${off}" y="${off}" width="${body}" height="${body}" rx="${rx.toFixed(3)}" fill="url(#bg)"/>
+    <g transform="translate(${off} ${off}) scale(${body / 64})">
+      <!-- 点 — 道 -->
+      <circle cx="32" cy="18" r="3.5" fill="#f0f0ff" opacity="0.9"/>
+      <!-- 一 — 生一 -->
+      <rect x="16" y="34" width="32" height="5" rx="2.5" fill="#f0f0ff" opacity="0.85"/>
+    </g>
   </svg>`;
 
-  await sharp(Buffer.from(svg)).resize(size, size).png().toFile(path.join(ICONS_DIR, filename));
-  console.log(`  ${filename} (${size}x${size})`);
+  await sharp(Buffer.from(svg)).png().toFile(path.join(ICONS_DIR, filename));
+  console.log(`  ${filename} (${size}x${size}${macGrid ? "，macOS 网格" : ""})`);
 }
 
 async function main() {
@@ -43,16 +66,17 @@ async function main() {
   await generateIcon(284, "Square284x284Logo.png");
   await generateIcon(50, "StoreLogo.png");
 
-  console.log("\n生成 .icns (macOS app icon)...");
+  console.log("\n生成 .icns (macOS app icon，按 macOS 图标网格留白)...");
   const { execSync } = require("child_process");
   const iconset = path.join(ICONS_DIR, "icon.iconset");
   execSync(`rm -rf "${iconset}" && mkdir -p "${iconset}"`);
 
-  const macSizes = [16, 32, 64, 128, 256, 512];
+  // 标准 iconset 槽位：16/32/128/256/512 + 各自 @2x（512@2x = 1024，即 Apple 的母版尺寸）。
+  // 旧代码里的 64 不是标准槽位，iconutil 会丢弃 → 去掉，避免生成无用文件。
+  const macSizes = [16, 32, 128, 256, 512];
   for (const s of macSizes) {
-    const s2x = s * 2;
-    await generateIcon(s, `icon.iconset/icon_${s}x${s}.png`);
-    await generateIcon(s * 2, `icon.iconset/icon_${s}x${s}@2x.png`);
+    await generateIcon(s, `icon.iconset/icon_${s}x${s}.png`, { macGrid: true });
+    await generateIcon(s * 2, `icon.iconset/icon_${s}x${s}@2x.png`, { macGrid: true });
     console.log(`  icon_${s}x${s}.png / @2x`);
   }
 
