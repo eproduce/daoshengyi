@@ -52,6 +52,34 @@ describe("tool-arg-normalize：参数名自愈", () => {
     const keep = normalizeToolArgs({ arguments: { a: 1 }, mode: "x" });
     expect(keep.args.arguments).toEqual({ a: 1 });
   });
+
+  // 回归：模型常照抄 OpenAI function-call 的形状，把工具名与参数平铺在一起。
+  // 以前只在「只有包裹键」时展开 → 这种调用直接报「run_command 需要 command 参数」
+  // （2026-10-02 实战日志里 run_command / write_file 各踩一次）。
+  it("包裹键 + 工具身份元数据（name/tool/server）也要展开", () => {
+    const r = normalizeToolArgs(
+      { name: "run_command", arguments: { command: "ls -la" } },
+      schemaOf("run_command"),
+    );
+    expect(r.args.command).toBe("ls -la");
+    expect(r.args.name).toBeUndefined();
+    expect(r.notes.join()).toContain("包裹参数");
+
+    const withServer = normalizeToolArgs({
+      server: "app",
+      tool: "write_file",
+      arguments: { path: "/tmp/a.txt", content: "x" },
+    });
+    expect(withServer.args.path).toBe("/tmp/a.txt");
+
+    // 语义不够强的包裹键（input/params/args 可能就是某个工具的正常参数名）不因元数据放宽
+    const keepInput = normalizeToolArgs({ input: { a: 1 }, name: "x" });
+    expect(keepInput.args.input).toEqual({ a: 1 });
+
+    // 同级出现非元数据键 → 视为正常嵌套，绝不展开
+    const keepMode = normalizeToolArgs({ arguments: { a: 1 }, mode: "x" });
+    expect(keepMode.args.arguments).toEqual({ a: 1 });
+  });
 });
 
 describe("tool-arg-normalize：类型自愈", () => {

@@ -60,20 +60,41 @@ const ALIASES: Record<string, string[]> = {
 /** 包裹层：模型有时把参数整体塞进一层 */
 const WRAPPER_KEYS = ["arguments", "params", "parameters", "input", "tool_input", "args"];
 
+/** 允许与包裹键**同级**出现的「工具身份」元数据键。
+ *  模型很常写成 `{"name":"run_command","arguments":{…}}` / `{"tool":"…","arguments":{…}}`
+ *  （照抄 OpenAI function-call 的形状），这种带元数据的包裹以前不会展开 →
+ *  直接报「run_command 需要 command 参数」（2026-10-02 实战日志里踩到两次）。 */
+const WRAPPER_META_KEYS = new Set([
+  "name",
+  "tool",
+  "tool_name",
+  "toolName",
+  "server",
+  "function",
+  "tool_call_id",
+  "toolCallId",
+]);
+
+/** 只有这几个包裹键语义足够强，才容忍同级元数据：
+ *  `input` / `params` / `args` 本身可能就是某个工具的正常参数名，不能放宽（避免误伤）。 */
+const WRAPPER_KEYS_TOLERATING_META = new Set(["arguments", "parameters", "tool_input"]);
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** 展开包裹层（只在最外层只含包裹键 + 少量元数据时展开，避免误伤正常嵌套） */
+/** 展开包裹层（最外层只含包裹键，或包裹键 + 少量工具身份元数据时展开，避免误伤正常嵌套） */
 function unwrap(args: Record<string, unknown>): {
   args: Record<string, unknown>;
   wrapped: boolean;
 } {
   for (const key of WRAPPER_KEYS) {
     const inner = args[key];
-    if (isPlainObject(inner)) {
-      const rest = Object.keys(args).filter((k) => k !== key);
-      if (rest.length === 0) return { args: inner, wrapped: true };
+    if (!isPlainObject(inner)) continue;
+    const rest = Object.keys(args).filter((k) => k !== key);
+    if (rest.length === 0) return { args: inner, wrapped: true };
+    if (WRAPPER_KEYS_TOLERATING_META.has(key) && rest.every((k) => WRAPPER_META_KEYS.has(k))) {
+      return { args: inner, wrapped: true };
     }
   }
   return { args, wrapped: false };
