@@ -174,7 +174,7 @@ import { countDecisions, decisionPath, mergeDecision, oneLine } from "@/utils/de
 // P1-8 输出风格（结论先行/详细/教学/审阅）
 import { applyOutputStyle } from "@/utils/output-styles";
 // P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
-import { failureHint } from "@/utils/failure-ledger";
+import { bumpFailureStreak, failureHint, stuckNotice } from "@/utils/failure-ledger";
 // read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
 import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
 // OCR 读到长数字串时提示用 image_inspect 交叉验证（等宽数字串 OCR 最不可靠）
@@ -679,9 +679,11 @@ async function callToolStoppable(
     });
     // P1-9b：同一工具同一错误重复失败时，把提醒附在错误里（模型看得到错误文本）
     if (!(e instanceof AgentStoppedError)) {
-      const hint = failureHint(tool, e instanceof Error ? e.message : String(e));
+      const emsg = e instanceof Error ? e.message : String(e);
+      bumpStuckStreak(tool, emsg); // P1-9c：同因失败计数（达阈值 → 主循环主动中止）
+      const hint = failureHint(tool, emsg);
       if (hint) {
-        const err = new Error(`${e instanceof Error ? e.message : String(e)}\n\n${hint}`);
+        const err = new Error(`${emsg}\n\n${hint}`);
         err.name = e instanceof Error ? e.name : "Error";
         throw err;
       }
@@ -697,6 +699,7 @@ async function callToolStoppable(
     // P1-3：tool_after 钩子（字符串报错也算失败，与其他路径一致）
     void fireHooks({ ...hookCtx, event: "tool_after", status: "error", error: data });
     // P1-9b：重复失败提醒（附在结果末尾，下一轮模型能读到）
+    bumpStuckStreak(tool, data); // P1-9c：同因失败计数（达阈值 → 主循环主动中止）
     const hint = failureHint(tool, data);
     return hint ? `${data}\n\n${hint}` : data;
   }
@@ -716,10 +719,35 @@ class AgentStoppedError extends Error {
 let turnToolOk = 0;
 let turnToolFail = 0;
 let turnFailedTools: string[] = [];
+// --- P1-9c 停滞中止：同一「工具+同一错误」在本轮内反复失败 —— 提醒压不住就主动停 ---
+// 2026-10-02 实战：run_command 围绕同一个网络下载任务同因失败 45 次仍在重写脚本，
+// 提醒文案被无视、轮次预算烧光、任务没做完却看上去像做完了。
+let turnFailStreak = new Map<string, number>();
+let turnStuck: { tool: string; signature: string; count: number } | null = null;
+/** 记一笔失败并在达到停滞阈值时打标记（主循环随即收尾，不再空转） */
+function bumpStuckStreak(tool: string, errorText: unknown): void {
+  try {
+    const hit = bumpFailureStreak(turnFailStreak, tool, errorText);
+    if (hit.stuck && !turnStuck) {
+      turnStuck = { tool, signature: hit.signature, count: hit.count };
+      void dbg(
+        `[loop] 停滞：\`${tool}\` 同因失败 ${hit.count} 次（${hit.signature.slice(0, 120)}）→ 本轮将主动中止`,
+      );
+    }
+  } catch {
+    // 停滞统计只是护栏：自己出错绝不能让主流程挂掉
+  }
+}
+/** 本轮是否已陷入停滞（非空 → 收尾时必须如实告知“被卡住了”） */
+function stuckStopInfo(): { tool: string; signature: string; count: number } | null {
+  return turnStuck;
+}
 function resetTurnToolStats(): void {
   turnToolOk = 0;
   turnToolFail = 0;
   turnFailedTools = [];
+  turnFailStreak = new Map<string, number>();
+  turnStuck = null;
 }
 
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
@@ -6516,6 +6544,11 @@ export const useChatStore = defineStore("chat", () => {
       let round = 0;
       let planNudged = false; // 任务模式是否已强制提示创建任务计划（至多一次）
       let didRealWork = false; // 本轮是否真正执行过“实际工作”类工具（非 plan_*）
+      // 是否因**轮次预算耗尽**而中断：结束时必须如实告知用户，不能静默收尾
+      //（2026-10-02 用户反馈「任务都没处理完 agent 就结束了」）
+      let roundBudgetExhausted = false;
+      // 停滞中止用的固定快照（循环顶部检查 turnStuck 时拍下，收尾文案用它）
+      let stuckStop: { tool: string; signature: string; count: number } | null = null;
       // P1-6 自动续跑规则表状态：各规则本轮已纠偏次数 + 本轮总续跑次数
       const continueAttempts: Record<string, number> = {};
       let autoContinues = 0;
@@ -6532,7 +6565,16 @@ export const useChatStore = defineStore("chat", () => {
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < MAX_TOOL_ROUNDS) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
-        if (stopRequested) break; // 用户停止 → 立即退出工具循环
+        // P1-9c 停滞中止：上一轮工具又出现「同因失败」（已达阈值）→ 不再浪费轮次，
+        // 立刻走收尾流程，并在正文如实告知“被卡住了”而不是“做完了”。
+        const stuckNow = stuckStopInfo();
+        if (stuckNow) {
+          stuckStop = stuckNow;
+          dbg(
+            `[loop] 第 ${round} 轮前检测到停滞（${stuckNow.tool} 同因失败 ${stuckNow.count} 次）→ 中止工具循环`,
+          );
+          break;
+        }
         dbg(
           `[loop] 第 ${round} 轮开始 streamRound，messages=${rustMsgs.length}，原生=${!!nativeToolsOn}`,
         );
@@ -6606,7 +6648,10 @@ export const useChatStore = defineStore("chat", () => {
           dbg(`[loop] 第 ${round} 轮返回原生 tool_calls ${nativeCalls.length} 个`);
           await handleNativeRound(nativeCalls, roundResult.content);
           round++;
-          if (round >= MAX_TOOL_ROUNDS) break; // 达到轮次上限，停止循环
+          if (round >= MAX_TOOL_ROUNDS) {
+            roundBudgetExhausted = true; // 记账：收尾时要说清楚这是「被打断」而不是「做完了」
+            break; // 达到轮次上限，停止循环
+          }
           if (totalMsgChars(rustMsgs) > MAX_CONTEXT_CHARS) break; // 上下文总长保护
           continue;
         }
@@ -6792,6 +6837,7 @@ export const useChatStore = defineStore("chat", () => {
         if (round >= MAX_TOOL_ROUNDS) {
           // 达到上限：直接停止工具循环（避免模型反复调工具造成死循环），
           // 以已执行的工具卡片收尾；streamingContent 若有残留工具 JSON 由 finally 剥离
+          roundBudgetExhausted = true; // 记账：收尾时必须如实告知（不再静默结束）
           break;
         }
         // 上下文总长保护：工具结果持续回填会让 messages 逼近模型上限，
@@ -6843,7 +6889,8 @@ export const useChatStore = defineStore("chat", () => {
           const closingHint = planDoneAll
             ? "\n\n✅ 任务计划已全部完成。请**立即停止继续调用工具**，直接在正文给出**完整、详细的最终交付汇报**（做了什么、各步骤结果、最终结论）；不要再新增或重复任何步骤。"
             : round >= MAX_TOOL_ROUNDS - 3
-              ? "\n\n⚠️ 已接近工具调用次数上限（剩余次数有限）。请基于**当前已获取的全部目录/文件结果**直接给出完整、详细的最终分析总结，**不要再调用更多工具**。"
+              ? "\n\n⚠️ 已接近工具轮次上限（剩余轮次有限）。请**先把进度落盘**：把已完成产物、剩余步骤、下一轮从哪里接着做写进文件（或 plan_update 备注），然后在正文**如实说明**——已完成什么、还剩什么没做完、如何接着做。\n" +
+                "**绝对不要谎报完成**（例如把没做完的步骤写成“已完成”）；也不要在预算将尽时再开新的大任务。若任务体量明显超过本轮预算，请在正文给出分批交付方案。"
               : "";
           rustMsgs.push({
             role: "user",
@@ -6976,7 +7023,14 @@ export const useChatStore = defineStore("chat", () => {
             "（做了什么 / 各步骤结果 / 最终结论 / 产物保存位置）。\n" +
             "⚠️ 本轮**不会执行任何工具调用**（包括 plan_update/plan_task——写了也不会执行，任务计划收尾由系统自动完成）。" +
             "请不要输出 <tool_call> 标记，也不要只写「已完成 / 全部完成 / 正在收尾」这类无实质内容的短句；" +
-            "请给出**实实在在的交付内容**（结论、要点、数据、路径等）。",
+            "请给出**实实在在的交付内容**（结论、要点、数据、路径等）。" +
+            // P1-9c：被系统主动中止的回合，收尾轮必须**如实**汇报进度，不得把没做完写成做完了
+            (stuckStop
+              ? `\n\n⛔ **注意：本轮是因反复以同一方式失败而被系统主动中止的**（\`${stuckStop.tool}\` 同因失败 ${stuckStop.count} 次：${stuckStop.signature.slice(0, 160)}）。` +
+                "请**如实**说明：已完成什么、卡在哪一步、需要用户提供什么（网络/凭据/路径/参数）才能继续；**绝对不要声称任务已完成**。"
+              : roundBudgetExhausted
+                ? "\n\n⚠️ **注意：本轮是因工具轮次预算用尽而中断的**，任务可能尚未全部完成。请**如实**说明已完成部分与剩余部分，不要声称全部完成。"
+                : ""),
         });
         try {
           flushPendingViewImages(rustMsgs); // view_image 图片在收尾轮也要注入
@@ -7015,12 +7069,35 @@ export const useChatStore = defineStore("chat", () => {
           }
         }
       }
+      // 轮次预算耗尽且计划仍有未完成步骤 → **必须如实告知**：这轮不是「做完了」，是「被打断了」。
+      // 2026-10-02 用户反馈「任务都没处理完 agent 就结束了」：此前 break 出循环后直接跑收尾轮，
+      // 正文看上去像一份完成汇报，用户既不知道原因、也无从接着做。
+      const pendingSteps = (useChatStore().taskPlan?.steps ?? []).filter(
+        (s) => s.status !== "done",
+      );
+      // P1-9c 停滞中止 → 说明「不是做完了，是被卡住了」+ 怎么接着做
+      if (stuckStop && streamingContent.value.trim()) {
+        streamingContent.value += stuckNotice(stuckStop.tool, stuckStop.signature, stuckStop.count);
+        dbg(`[loop] 停滞中止已在正文告知：${stuckStop.tool} 同因失败 ${stuckStop.count} 次`);
+      } else if (roundBudgetExhausted && pendingSteps.length > 0 && streamingContent.value.trim()) {
+        const list = pendingSteps
+          .slice(0, 8)
+          .map((s) => `> - ${s.text}`)
+          .join("\n");
+        streamingContent.value +=
+          `\n\n> ⚠️ **本轮因工具轮次预算用尽（上限 ${MAX_TOOL_ROUNDS} 轮）而中断**，` +
+          `任务计划还有 ${pendingSteps.length} 步未完成：\n${list}` +
+          `\n>\n> 回复「**继续**」我会从断点接着做（不会从头重来）；也可以把任务拆成几批分轮完成。`;
+        dbg(`[loop] 轮次预算耗尽：仍有 ${pendingSteps.length} 步未完成 → 已在正文追加说明`);
+      }
       // 任务收尾：若存在未完成的任务计划，把剩余 待办/进行中 步骤统一标记为 done
       //（确定性兜底，避免“实际做完但进度卡差一步没标 done”；failed 保留）。
       // 2026-09-10 守卫：仅当本轮确实产出了**实质正文交付**（非空洞）才做兜底标 done。
       // 若模型既没真正执行内容、正文仍空洞（收尾轮也失败等），保留 doing 状态而非
       // 标 done —— 避免「啥都没输出却把计划显示成全部完成」的假象。
-      if (!isVagueBody(streamingContent.value)) {
+      // 2026-10-02 追加守卫：**因轮次预算被打断 / 因停滞被中止**时不做这个兜底 —— 把 doing 留着，
+      // 用户看到的就是「这步还没做完」，与正文的说明一致（也便于「继续」时续做）。
+      if (!roundBudgetExhausted && !stuckStop && !isVagueBody(streamingContent.value)) {
         markTaskPlanDoneIfPending();
       }
       // Phase 3 收尾：本轮工具序列若成功且有复用价值 → 异步抽象成可复用工作流并沉淀。

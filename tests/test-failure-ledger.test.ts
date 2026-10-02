@@ -15,6 +15,9 @@ import {
   resetFailureLedger,
   SAME_SIGNATURE_HINT_AT,
   SAME_TOOL_HINT_AT,
+  bumpFailureStreak,
+  stuckNotice,
+  STUCK_GIVEUP_AT,
   type FailureRow,
 } from "../src/utils/failure-ledger";
 
@@ -123,6 +126,63 @@ describe("adviceForError", () => {
     expect(a[0]).toContain("list_dir");
     expect(adviceForError("完全无关的文本")).toEqual([]);
     expect(adviceForError("")).toEqual([]);
+  });
+
+  // P1-9c 2026-10-02：用户真实环境里本机代理 fake-IP 劫持 DNS，直连 wikimedia 随机超时，
+  // agent 当时不懂查 DNS，同一下载任务烧了 45 轮 —— 建议必须能指向这个自查动作。
+  it("网络类错误先引导查 DNS/代理（fake-IP）", () => {
+    for (const e of [
+      "TypeError: fetch failed",
+      "curl: (28) Operation timed out — proxy connect aborted",
+      "getaddrinfo ENOTFOUND upload.wikimedia.org",
+    ]) {
+      const a = adviceForError(e).join();
+      expect(a, e).toContain("dig +short A");
+      expect(a, e).toContain("198.18.0.0/15");
+    }
+  });
+
+  it("4xx 引导“别猜参数/URL，用官方 API 取规范地址”", () => {
+    const a = adviceForError("HTTP 400 Bad Request: Use thumbnail sizes listed").join();
+    expect(a).toContain("thumburl");
+  });
+});
+
+describe("停滞中止（P1-9c）", () => {
+  it("同一签名累计到阈值才判定停滞（阈值前不误伤）", () => {
+    const store = new Map<string, number>();
+    for (let i = 1; i < STUCK_GIVEUP_AT; i++) {
+      expect(bumpFailureStreak(store, "run_command", "超时").stuck, `第 ${i} 次`).toBe(false);
+    }
+    const hit = bumpFailureStreak(store, "run_command", "超时");
+    expect(hit.stuck).toBe(true);
+    expect(hit.count).toBe(STUCK_GIVEUP_AT);
+  });
+
+  it("路径/时间戳变化但同因 → 归为同一签名（能累计）", () => {
+    const store = new Map<string, number>();
+    bumpFailureStreak(store, "read_file", "ENOENT: no such file, open '/a/x.md'");
+    const hit = bumpFailureStreak(store, "read_file", "ENOENT: no such file, open '/b/y.md'");
+    expect(hit.count).toBe(2);
+    expect(store.size).toBe(1);
+  });
+
+  it("错误原因不同 → 各自计数（不误判停滞）", () => {
+    const store = new Map<string, number>();
+    bumpFailureStreak(store, "run_command", "超时");
+    bumpFailureStreak(store, "run_command", "command not found: rg");
+    bumpFailureStreak(store, "read_file", "超时");
+    expect(store.size).toBe(3);
+    expect(bumpFailureStreak(store, "run_command", "超时").stuck).toBe(false);
+  });
+
+  it("stuckNotice 如实说明“不是做完了，是被卡住了”", () => {
+    const s = stuckNotice("run_command", "超时", STUCK_GIVEUP_AT);
+    expect(s).toContain("主动中止");
+    expect(s).toContain("run_command");
+    expect(s).toContain(String(STUCK_GIVEUP_AT));
+    expect(s).toContain("前置条件");
+    expect(s).toContain("不代表「任务完成」");
   });
 });
 

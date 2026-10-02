@@ -61,6 +61,15 @@ const LEADING_MARKERS =
 /** 错误特征里「导致同因异文」的模式 → 建议。顺序即优先级，命中即用。 */
 const ADVICE_RULES: { re: RegExp; advice: string }[] = [
   {
+    // P1-9c 2026-10-02 实测（用户真实环境）：本机代理用 fake-IP 劫持 DNS —— `dig +short A` 返回
+    // 198.18.0.89（RFC 2544 基准网段）这类假地址，直连该域名会**随机超时/连接被重置**，而走
+    // 代理（127.0.0.1:7897）或内置浏览器就正常。上一轮 agent 不懂这个，围着同一下载任务
+    // 连续 45 次 run_command 重写脚本，把整轮轮次预算烧光 —— 因此把「怎么自查」写进建议里。
+    re: /fetch failed|failed to fetch|enotfound|eai_again|getaddrinfo|无法解析|域名|econnreset|connection reset|socket hang up|network is unreachable|could not connect|dial tcp|连接被(?:重置|拒|拒绝)|代理|proxy/i,
+    advice:
+      "网络路径问题：先用 `dig +short A <host>` 自查——若 IPv4 落在 198.18.0.0/15（或 IPv6 2001:2::/48），说明本机代理在用 fake-IP 劫持 DNS，直连会随机超时/被重置：改走代理（如 `curl -x http://127.0.0.1:7897 …`）或改用内置浏览器；**别反复直连重试**，2 次不通就换路径或如实告知用户",
+  },
+  {
     re: /no such file|not found|enoent|does not exist|不存在/i,
     advice: "路径可能不对或文件已改名：先用 list_dir / glob 确认现状，别照抄旧路径重试",
   },
@@ -75,7 +84,7 @@ const ADVICE_RULES: { re: RegExp; advice: string }[] = [
   {
     re: /timed? ?out|timeout|etimedout|超时/i,
     advice:
-      "超时：先加大超时参数（browser_evaluate 支持 timeout_ms，1000~180000 毫秒）；否则改成后台/分步执行（如先发起、再用短脚本把 window 上的结果取回），而不是原样重发",
+      "超时：涉及网络时先按上面的 DNS/代理自查（别原样重发）；若是页面/脚本本身慢，加大超时参数（browser_evaluate 支持 timeout_ms，1000~180000 毫秒），或改成后台/分步执行（如先发起、再用短脚本把 window 上的结果取回）",
   },
   {
     re: /invalid (?:arguments|params|input)|missing (?:required|field)|schema|参数(?:不合法|错误|缺失)/i,
@@ -86,8 +95,9 @@ const ADVICE_RULES: { re: RegExp; advice: string }[] = [
     advice: "依赖的服务没起：先确认端口/进程是否在跑（必要时用 status 类工具查）",
   },
   {
-    re: /\b(?:401|403)\b|unauthorized|forbidden|invalid api key|api key/i,
-    advice: "凭据或授权有问题：检查设置里的 Key/权限，别反复重试同一个请求",
+    re: /\b(?:400|401|403)\b|unauthorized|forbidden|invalid api key|api key|bad request/i,
+    advice:
+      "服务端明确拒绝（4xx）：多为**参数/URL 不合法**——别猜构造资源路径（例如 Wikimedia 缩略图只接受白名单宽度 `NNNpx-`，猜错就 400 或直接丢连接），先用官方 API 取规范 URL（如 `prop=imageinfo&iiurlwidth=` 返回的 thumburl）；凭据类（401/403）则检查设置里的 Key/权限",
   },
   {
     re: /\b429\b|rate limit|too many requests|限流/i,
@@ -431,4 +441,52 @@ export function failureLedgerRows(): {
 /** 清空（新会话 / 用户手动重置） */
 export function resetFailureLedger(): void {
   ledger.clear();
+}
+
+// ---------------------------------------------------------------------------
+// 停滞中止（P1-9c）：同一「工具 + 同一错误」在本轮内反复失败
+// ---------------------------------------------------------------------------
+//
+// 背景（2026-10-02 用户反馈「为什么任务都没有处理完 agent 就结束了」）：
+// 上一轮实战里 `run_command` 围绕同一个网络下载任务**同因失败 45 次**仍在重写脚本。
+// 现有 `failureHint` 只在结果末尾附一段提醒文字 —— 提醒压不住模型，提示照旧重试。
+// 因此增加「停滞判定」：同一签名在本轮内累计到 STUCK_GIVEUP_AT 次，就把本轮**主动中止**，
+// 用 stuckNotice 如实说明「不是做完了，是卡住了」，把决定权交回用户，而不是烧光轮次。
+
+/** 同一签名在本轮内累计到该次数 → 判定停滞（4 次同因失败基本可确定是方法/前提有问题） */
+export const STUCK_GIVEUP_AT = 4;
+
+export interface StreakHit {
+  /** 计数键：工具｜错误签名 */
+  key: string;
+  signature: string;
+  /** 本轮内该签名的累计次数（含本次） */
+  count: number;
+  /** 是否已达停滞阈值 */
+  stuck: boolean;
+}
+
+/**
+ * 累加「工具｜错误签名」在本轮的失败次数。
+ * `store` 由调用方持有（按轮重置），因此这里是纯函数、可直接单测。
+ */
+export function bumpFailureStreak(
+  store: Map<string, number>,
+  tool: string,
+  errorText: unknown,
+): StreakHit {
+  const sig = normalizeErrorText(errorText);
+  const key = `${String(tool ?? "").trim()}｜${sig}`;
+  const count = (store.get(key) ?? 0) + 1;
+  store.set(key, count);
+  return { key, signature: sig, count, stuck: count >= STUCK_GIVEUP_AT };
+}
+
+/** 停滞中止时追加到正文的如实告知（「不是做完了，是被卡住了」） */
+export function stuckNotice(tool: string, signature: string, count: number): string {
+  return (
+    `\n\n> ⛔ **本轮因反复以同一方式失败而主动中止**（\`${tool}\` 同因失败 ${count} 次）：${signature.slice(0, 160)}\n` +
+    `>\n> 这不代表「任务完成」，而是**前置条件没打通**（网络 / 路径 / 权限 / 参数 / 凭据之一）——继续原样重试只会空转烧轮次，所以先停下来。\n` +
+    `> 接下来可以：按上面的建议先解决前置问题；或直接告诉我可用的替代路径（例如代理地址、正确的文件路径、换个数据源），我接着做。`
+  );
 }
