@@ -16,6 +16,11 @@ export interface OllamaStatus {
   local_runtime_ready?: boolean;
   /** 当前实际会用的视觉后端：llamacpp | ollama */
   vision_backend?: string;
+  /**
+   * Ollama 视觉是否就绪：已安装 + 视觉模型在盘上（**不要求服务在跑**，识图时会按需自启）。
+   * 引导横幅据此判定，别再于前端重算「是否就绪」。
+   */
+  ollama_vision_ready?: boolean;
 }
 
 /** 嵌入（语义检索）子系统状态 */

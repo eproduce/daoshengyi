@@ -471,6 +471,34 @@ fn label_from_manifest(path: &Path) -> String {
     format!("{}:{}", family, tag)
 }
 
+/// 离线列出 Ollama 已安装的模型（label 形如 `llava-phi3:latest`）——**不需要服务在跑**。
+///
+/// 为什么要离线版：`/api/tags` 只有服务运行时才问得到，而「视觉模型在不在盘上」恰恰是
+/// 判断本地视觉是否就绪的关键信息。2026-10-02 实测踩到：Ollama 已装、llava-phi3 就在磁盘上，
+/// 但服务没运行 → 状态里 models 为空 → 前端判定「未就绪」，一直弹「去配置本地视觉」横幅
+/// 催用户重新下载 2GB 模型（而其实早就装好了）。
+pub fn list_ollama_models_in(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_manifests(&root.join("manifests"), 5, &mut files);
+    files.sort(); // 确定性：不依赖 readdir 顺序
+    let mut out: Vec<String> = Vec::new();
+    for p in &files {
+        let label = label_from_manifest(p);
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    out
+}
+
+/// 同 `list_ollama_models_in`，用 Ollama 模型库根目录（支持 `OLLAMA_MODELS` 覆盖）
+pub fn list_ollama_models_offline() -> Vec<String> {
+    match ollama_models_root() {
+        Some(root) => list_ollama_models_in(&root),
+        None => Vec::new(),
+    }
+}
+
 /// Ollama 模型库根目录（支持 `OLLAMA_MODELS` 覆盖）
 pub fn ollama_models_root() -> Option<PathBuf> {
     if let Some(v) = std::env::var_os("OLLAMA_MODELS") {
@@ -1470,6 +1498,26 @@ mod tests {
 
         stop_embed_server();
         assert!(!embed_serving(), "停止后应回到 0 常驻");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 离线列模型：服务没跑时也要能判断「视觉模型在不在盘上」
+    /// （否则会把「已装好但服务未启动」误判成没配置，一直弹引导横幅）
+    #[test]
+    fn list_ollama_models_in_reads_manifests_without_service() {
+        let dir = std::env::temp_dir().join(format!("dsy-ollama-models-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("manifests/registry.ollama.ai/library");
+        std::fs::create_dir_all(lib.join("llava-phi3")).unwrap();
+        std::fs::write(lib.join("llava-phi3/latest"), b"{}").unwrap();
+        std::fs::create_dir_all(lib.join("nomic-embed-text")).unwrap();
+        std::fs::write(lib.join("nomic-embed-text/latest"), b"{}").unwrap();
+
+        let got = list_ollama_models_in(&dir);
+        assert_eq!(got, vec!["llava-phi3:latest", "nomic-embed-text:latest"]);
+
+        // 目录不存在 → 空表，不能 panic
+        assert!(list_ollama_models_in(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

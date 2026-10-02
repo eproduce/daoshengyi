@@ -88,19 +88,44 @@ describe("localVisionHint：本地视觉引导横幅判定", () => {
     expect(localVisionHint(make({ status: null }))).toBe("none");
   });
 
-  it("Ollama 装了但服务没跑 / 没 llava 模型 → 不算就绪", () => {
+  // 回归（2026-10-02 用户实测）：Ollama 已装、llava-phi3 就在磁盘上，只是**服务没开着**，
+  // 就被判「未配置」并一直弹引导横幅催着重新下载 2GB 模型。服务其实会在识图时按需自启。
+  it("Ollama 装了 + 视觉模型在盘上 → 就绪（服务没跑也算）", () => {
     expect(
       localVisionHint(
         make({
           status: { installed: true, running: false, installing: false, models: ["llava-phi3"] },
         }),
       ),
-    ).toBe("deploy");
+    ).toBe("none");
+    // Rust 侧给权威标志位（离线读到 manifests）时同样判就绪
+    expect(
+      localVisionHint(
+        make({
+          status: {
+            installed: true,
+            running: false,
+            installing: false,
+            models: [],
+            ollama_vision_ready: true,
+          },
+        }),
+      ),
+    ).toBe("none");
+  });
+
+  it("Ollama 装了但没有视觉模型 → 仍需引导", () => {
     expect(
       localVisionHint(
         make({
           status: { installed: true, running: true, installing: false, models: ["qwen2.5:7b"] },
         }),
+      ),
+    ).toBe("deploy");
+    // 没装 Ollama
+    expect(
+      localVisionHint(
+        make({ status: { installed: false, running: false, installing: false, models: [] } }),
       ),
     ).toBe("deploy");
   });
@@ -115,10 +140,24 @@ describe("两个就绪判定各自独立可用", () => {
     expect(llamaVisionReady({ ...llamaReady, active_model: "" })).toBe(false);
   });
 
-  it("ollamaVisionReady 要求已安装 + 服务运行 + 有 llava 系模型", () => {
+  it("ollamaVisionReady 要求已安装 + 有视觉模型（不要求服务在跑）", () => {
     expect(ollamaVisionReady(null)).toBe(false);
     expect(ollamaVisionReady(ollamaReady)).toBe(true);
-    expect(ollamaVisionReady({ ...ollamaReady, running: false })).toBe(false);
+    // 服务没开也算就绪：识图时会按需自启（ensure_ollama_server）
+    expect(ollamaVisionReady({ ...ollamaReady, running: false })).toBe(true);
+    // 没有视觉模型 → 未就绪
     expect(ollamaVisionReady({ ...ollamaReady, models: [] })).toBe(false);
+    // 没装 Ollama → 未就绪（即便标志位为真也不认，避免脏状态）
+    expect(ollamaVisionReady({ ...ollamaReady, installed: false })).toBe(false);
+    // Rust 侧权威标志位优先
+    expect(
+      ollamaVisionReady({
+        installed: true,
+        running: false,
+        installing: false,
+        models: [],
+        ollama_vision_ready: true,
+      }),
+    ).toBe(true);
   });
 });

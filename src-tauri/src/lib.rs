@@ -2827,6 +2827,9 @@ fn save_temp_attachment(data: String, name: String) -> Result<String, String> {
 
 // --- Ollama 本地视觉模型管理（自动部署 llava-phi3） ---
 
+/// 本地视觉用的 Ollama 模型（各处一致；改模型只改这里）
+const OLLAMA_VISION_MODEL: &str = "llava-phi3";
+
 #[derive(serde::Serialize)]
 struct OllamaStatus {
     installed: bool,
@@ -2838,6 +2841,10 @@ struct OllamaStatus {
     local_runtime_ready: bool,
     /// 当前实际会用的视觉后端："llamacpp" | "ollama"（按设置与就绪情况算出）
     vision_backend: String,
+    /// Ollama 视觉是否就绪：已安装 + 视觉模型在盘上（**不要求服务正在运行**——
+    /// 服务会在识图时按需自启，见 `ensure_ollama_server`）。
+    /// 前端据此决定要不要弹「去配置本地视觉」引导横幅。
+    ollama_vision_ready: bool,
 }
 
 /// Homebrew 是否可用（决定一键部署走 brew 还是官方 zip 直装）
@@ -3407,12 +3414,19 @@ async fn ollama_status(app: tauri::AppHandle) -> Result<OllamaStatus, String> {
         if running {
             models = ollama_models().await.unwrap_or_default();
         }
+        // 服务没跑时用磁盘上的 manifests 兜底：模型在不在盘上决定本地视觉是否就绪，
+        // 不能因为服务没启动就报「没配置」（否则前端会一直弹引导横幅催用户重复下载）
+        if models.is_empty() {
+            models = local_runtime::list_ollama_models_offline();
+        }
     }
+    let ollama_vision_ready = installed && models.iter().any(|m| m.contains(OLLAMA_VISION_MODEL));
     Ok(OllamaStatus {
         installed,
         running,
         installing,
         models,
+        ollama_vision_ready,
         local_runtime_ready: local_runtime::ready(app.path().app_data_dir().ok().as_deref()),
         vision_backend: pick_vision_backend(
             &local_vision_runtime_pref(&app),
@@ -3555,6 +3569,48 @@ async fn check_hardware() -> HardwareInfo {
     }
 }
 
+/// 确保 Ollama 服务在跑：没跑就拉起来（记录 PID，退出应用时自动停止）。
+///
+/// 与 `local_runtime::ensure_server`（llama.cpp 侧）对称 —— **视觉后端必须能按需自启**。
+/// 之前只有「一键部署」会启动服务，识图路径不会：于是「Ollama 已装 + llava-phi3 在盘上 +
+/// 服务没启动」既会被误判成「未配置」（前端一直弹引导横幅），真去识图也会连不上
+/// （`localhost:11434` 拒绝连接）。2026-10-02 实测踩到。
+///
+/// `quiet=true` 时不发 `ollama-progress` 事件（识图这类后台调用不该在界面上刷进度）。
+async fn ensure_ollama_server(app: &tauri::AppHandle, quiet: bool) -> Result<(), String> {
+    let emit = |msg: &str| {
+        if !quiet {
+            let _ = app.emit("ollama-progress", msg);
+        }
+    };
+    if ollama_running().await {
+        emit("✅ Ollama 服务运行中");
+        return Ok(());
+    }
+    emit("正在启动 Ollama 服务...");
+    let bin = ollama_bin().ok_or("未找到 ollama 可执行文件")?;
+    let child = tokio::process::Command::new(&bin)
+        .arg("serve")
+        // 资源阀门：单并发 + 只加载一个模型（默认 4 并发槽会多预留几份 KV cache）
+        .envs(ollama_serve_env())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动 ollama serve 失败: {}", e))?;
+    if let Some(pid) = child.id() {
+        OLLAMA_SERVER_PID.store(pid, Ordering::SeqCst);
+    }
+    // 等待服务就绪（最多 30 秒）
+    for _ in 0..60 {
+        if ollama_running().await {
+            emit("✅ Ollama 服务已启动");
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err("Ollama 服务启动超时".into())
+}
+
 /// 一键部署本地视觉模型：安装 Ollama → 启动服务 → 拉取 llava-phi3
 /// 进度通过 "ollama-progress" 事件推送
 #[tauri::command]
@@ -3647,38 +3703,11 @@ async fn ollama_setup(
     }
 
     // 2. 启动服务（记录 PID，退出应用时自动停止）
-    if !ollama_running().await {
-        let _ = app.emit("ollama-progress", "正在启动 Ollama 服务...");
-        let bin = ollama_bin().ok_or("未找到 ollama 可执行文件")?;
-        let child = tokio::process::Command::new(&bin)
-            .arg("serve")
-            // 资源阀门：单并发 + 只加载一个模型（默认 4 并发槽会多预留几份 KV cache）
-            .envs(ollama_serve_env())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("启动 ollama serve 失败: {}", e))?;
-        if let Some(pid) = child.id() {
-            OLLAMA_SERVER_PID.store(pid, Ordering::SeqCst);
-        }
-        // 等待服务就绪（最多 30 秒）
-        for _ in 0..60 {
-            if ollama_running().await {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        if !ollama_running().await {
-            return Err("Ollama 服务启动超时".into());
-        }
-        let _ = app.emit("ollama-progress", "✅ Ollama 服务已启动");
-    } else {
-        let _ = app.emit("ollama-progress", "✅ Ollama 服务运行中");
-    }
+    ensure_ollama_server(&app, false).await?;
 
     // 3. 检查并拉取视觉模型
     let models = ollama_models().await.unwrap_or_default();
-    if !models.iter().any(|m| m.contains("llava-phi3")) {
+    if !models.iter().any(|m| m.contains(OLLAMA_VISION_MODEL)) {
         let _ = app.emit(
             "ollama-progress",
             serde_json::json!({
@@ -3686,7 +3715,7 @@ async fn ollama_setup(
                 "percent": 0.0,
             }),
         );
-        ollama_pull_with_progress(&app, "llava-phi3")
+        ollama_pull_with_progress(&app, OLLAMA_VISION_MODEL)
             .await
             .map_err(|e| {
                 let _ = app.emit("ollama-progress", format!("❌ 模型拉取失败：{}", e));
@@ -3906,7 +3935,7 @@ async fn ensure_ollama_profile(
     let models = ollama_models().await.unwrap_or_default();
     let model = models
         .iter()
-        .find(|m| m.contains("llava-phi3"))
+        .find(|m| m.contains(OLLAMA_VISION_MODEL))
         .cloned()
         .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
 
@@ -4077,10 +4106,13 @@ async fn ollama_describe_image(
             "本地视觉模型（llama.cpp）",
         )
     } else {
+        // 服务没跑就按需拉起（与 llama.cpp 侧 ensure_server 对称）：否则识图会直接
+        // 「连接被拒绝」，用户看到的是「本地视觉模型无法识别」而不是真正的自愈。
+        ensure_ollama_server(&app, true).await?;
         let models = ollama_models().await.unwrap_or_default();
         let m = models
             .iter()
-            .find(|m| m.contains("llava-phi3"))
+            .find(|m| m.contains(OLLAMA_VISION_MODEL))
             .cloned()
             .unwrap_or_else(|| "llava-phi3:3.8b".to_string());
         (
