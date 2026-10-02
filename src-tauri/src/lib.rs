@@ -20,6 +20,7 @@ mod local_runtime;
 mod mcp;
 mod mcp_server;
 mod middleware;
+mod proxy;
 mod pty;
 mod sandbox;
 mod search;
@@ -3741,45 +3742,12 @@ async fn ollama_setup(
     Ok("ok".into())
 }
 
-/// 解析 macOS 系统 HTTP/HTTPS 代理（scutil --proxy），返回 curl -x 需要的地址。
-/// 用户开启 Clash/Surge 等代理软件后（系统代理模式），自动走代理下载。
+/// 本机可用代理（环境变量 → 系统代理 → 本机常见端口自动探测；实现在 `proxy.rs`）。
+///
+/// 2026-10-02：原来只会读 `scutil --proxy`，用户没开「系统代理」时全为 0 → 拿不到代理，
+/// 而实际代理跑在 127.0.0.1:7897（fake-IP 模式下直连随机超时）。现改为三级解析 + 缓存。
 fn system_proxy() -> Option<String> {
-    let out = std::process::Command::new("scutil")
-        .arg("--proxy")
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut enabled = false;
-    let mut host: Option<String> = None;
-    let mut port: Option<String> = None;
-    for line in text.lines() {
-        let t = line.trim();
-        if let Some(v) = t.strip_prefix("HTTPSEnable") {
-            enabled = enabled || v.contains('1');
-        } else if let Some(v) = t.strip_prefix("HTTPSProxy") {
-            host = Some(v.trim().trim_start_matches(':').trim().to_string());
-        } else if let Some(v) = t.strip_prefix("HTTPSPort") {
-            port = Some(v.trim().trim_start_matches(':').trim().to_string());
-        } else if let Some(v) = t.strip_prefix("HTTPEnable") {
-            enabled = enabled || v.contains('1');
-        } else if let Some(v) = t.strip_prefix("HTTPProxy") {
-            if host.is_none() {
-                host = Some(v.trim().trim_start_matches(':').trim().to_string());
-            }
-        } else if let Some(v) = t.strip_prefix("HTTPPort") {
-            if port.is_none() {
-                port = Some(v.trim().trim_start_matches(':').trim().to_string());
-            }
-        }
-    }
-    if enabled {
-        if let (Some(h), Some(p)) = (host, port) {
-            if !h.is_empty() && !p.is_empty() {
-                return Some(format!("http://{}:{}", h, p));
-            }
-        }
-    }
-    None
+    proxy::effective_proxy()
 }
 
 /// 预检 URL 是否可访问（带可选代理），用于部署前快速判断下载源连通性，
@@ -3835,7 +3803,7 @@ async fn ollama_install_from_zip(app: &tauri::AppHandle) -> Result<(), String> {
     if !url_reachable(url, proxy.as_deref()).await {
         let _ = app.emit(
             "ollama-progress",
-            "❌ 无法连接下载源 ollama.com（网络被阻断或需要代理）。\n请配置代理后重试：\n  ① 打开你的代理软件（Clash/Surge 等）并开启系统代理；\n  ② 或重启应用时在启动终端设置：export https_proxy=http://127.0.0.1:端口\n  ③ 配置后再次点击「一键部署」即可自动走代理下载。\n也可在能访问外网的机器上手动执行 `curl -fsSL https://ollama.com/install.sh | sh`。",
+            "❌ 无法连接下载源 ollama.com（网络被阻断或需要代理）。\n已自动尝试：环境变量 → 系统代理 → 本机常见代理端口（7897/7890/1087…）——均未找到可用代理。\n请任选一种方式后重试「一键部署」：\n  ① 打开你的代理软件（Clash/Surge 等）并开启系统代理；\n  ② 或让代理监听常见端口（如 7897/7890），应用会自动识别；\n  ③ 或重启应用时在启动终端设置：export https_proxy=http://127.0.0.1:端口\n也可在能访问外网的机器上手动执行 `curl -fsSL https://ollama.com/install.sh | sh`。",
         );
         return Err("无法连接 Ollama 下载源（需要网络或代理）".into());
     }
@@ -4867,6 +4835,11 @@ async fn run_shell_command_with(
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
+    // 网络代理注入（见 proxy.rs）：fake-IP 劫持 DNS 的机器上直连必然随机超时，
+    // 这里让 curl/wget/pip/npm/git 自动走本机代理；无可用代理时为空循环，不改变行为。
+    for (k, v) in proxy::env_pairs_for_commands() {
+        cmd.env(k, v);
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("启动命令失败: {}", e))?;
     let pid = child.id().unwrap_or(0) as i32; // process_group(0) 后 pgid == pid，可 kill(-pid) 杀整个组
@@ -4953,6 +4926,11 @@ async fn git_operation(
     cmd.kill_on_drop(true);
     if !cwd.trim().is_empty() {
         cmd.current_dir(&cwd);
+    }
+    // 网络代理注入（见 proxy.rs）：push/pull/fetch/clone 走 https 远端，
+    // 在「DNS 被 fake-IP 劫持」的机器上直连会随机超时。
+    for (k, v) in proxy::env_pairs_for_commands() {
+        cmd.env(k, v);
     }
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 git 失败: {}", e))?;

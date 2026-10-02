@@ -90,6 +90,11 @@ pub fn pty_spawn_with(
             cmd.cwd(cwd);
         }
     }
+    // 网络代理注入（见 crate::proxy）：exec_command 里的 curl/pip/git 也要能走通，
+    // 否则在 fake-IP 劫持 DNS 的机器上会一直超时（agent 只能反复重试）。
+    for (k, v) in crate::proxy::env_pairs_for_commands() {
+        cmd.env(k, v);
+    }
     let child = pair
         .slave
         .spawn_command(cmd)
