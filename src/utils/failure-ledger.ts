@@ -467,7 +467,38 @@ export interface StreakHit {
 }
 
 /**
- * 累加「工具｜错误签名」在本轮的失败次数。
+ * 从工具**结果文本**里抽出「病因」片段：剔除被回显的命令、无关输出，只留错误/状态行。
+ *
+ * 为什么需要它（2026-10-02 实测）：`run_command` 的结果以 `$ 命令` 回显开头，直接用整段文本
+ * 当签名，则「同一原因、每次不同命令」会被拆成互不相同的签名 —— 审计库里明明有 **14 次
+ * 同一句「命令执行超时（60s），已终止」**，却一次都累计不到停滞阈值。
+ * 优先级：stderr 前几行（脚本报错最可靠）> 末尾几行（无 stderr 时兜底）> 整段。
+ * 末尾状态行（如 `⏰ 执行超时，已终止` / `❌ 执行失败（退出码 1…）`）总是拼进去。
+ */
+export function errorCause(text: unknown): string {
+  const s = text == null ? "" : String(text);
+  if (!s.trim()) return "";
+  const lines = s
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // 第一行的命令回显（`$ ...`）必须剔除，否则同因不同命令永远聚不到一起
+  const body = lines[0]?.startsWith("$ ") ? lines.slice(1) : lines;
+  const errIdx = body.findIndex((l) => l.startsWith("[stderr]"));
+  const parts: string[] = [];
+  const errLines = errIdx >= 0 ? body.slice(errIdx + 1) : [];
+  if (errLines.length > 0) parts.push(...errLines.slice(0, 3));
+  else parts.push(...body.slice(-3));
+  const last = body[body.length - 1];
+  if (last) parts.push(last);
+  const uniq: string[] = [];
+  for (const p of parts) if (!uniq.includes(p)) uniq.push(p);
+  return uniq.join(" ¦ ");
+}
+
+/**
+ * 累加「工具｜病因」在本轮的失败次数。
  * `store` 由调用方持有（按轮重置），因此这里是纯函数、可直接单测。
  */
 export function bumpFailureStreak(
@@ -475,7 +506,7 @@ export function bumpFailureStreak(
   tool: string,
   errorText: unknown,
 ): StreakHit {
-  const sig = normalizeErrorText(errorText);
+  const sig = normalizeErrorText(errorCause(errorText) || errorText);
   const key = `${String(tool ?? "").trim()}｜${sig}`;
   const count = (store.get(key) ?? 0) + 1;
   store.set(key, count);

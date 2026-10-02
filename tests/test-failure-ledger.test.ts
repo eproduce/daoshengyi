@@ -16,6 +16,7 @@ import {
   SAME_SIGNATURE_HINT_AT,
   SAME_TOOL_HINT_AT,
   bumpFailureStreak,
+  errorCause,
   stuckNotice,
   STUCK_GIVEUP_AT,
   type FailureRow,
@@ -183,6 +184,48 @@ describe("停滞中止（P1-9c）", () => {
     expect(s).toContain(String(STUCK_GIVEUP_AT));
     expect(s).toContain("前置条件");
     expect(s).toContain("不代表「任务完成」");
+  });
+});
+
+// 2026-10-02 审计库实证：同一任务在一轮里有 **14 次**完全相同结果
+//（`⏰ 执行超时，已终止` + stderr `命令执行超时（60s），已终止`），但命令回显每次都不同。
+describe("病因抽取（errorCause）", () => {
+  const timedOut = (cmd: string) =>
+    `⛔ 命令执行超时，已终止\n\n$ ${cmd}\n\n[stderr]\n命令执行超时（60s），已终止\n\n⏰ 执行超时，已终止`;
+
+  it("剔除命令回显：同因不同命令 → 同一病因", () => {
+    const a = errorCause(timedOut("python3 dl1.py --out a"));
+    const b = errorCause(timedOut("node fetch-imgs.mjs --n 20"));
+    expect(a).toBe(b);
+    expect(a).toContain("命令执行超时（60s），已终止");
+    expect(a).not.toContain("python3");
+  });
+
+  it("同因不同命令确实能累计到停滞（这是本轮修复的核心）", () => {
+    const store = new Map<string, number>();
+    for (let i = 1; i <= STUCK_GIVEUP_AT; i++) {
+      const hit = bumpFailureStreak(store, "run_command", timedOut(`python3 dl${i}.py`));
+      if (i < STUCK_GIVEUP_AT) expect(hit.stuck, `第 ${i} 次不该判停滞`).toBe(false);
+      else expect(hit.stuck).toBe(true);
+    }
+    expect(store.size).toBe(1);
+  });
+
+  it("病因不同（迭代修错场景）→ 不误判停滞", () => {
+    const store = new Map<string, number>();
+    const fail = (msg: string) =>
+      `⛔ 命令以退出码 1 结束\n\n$ npm test\n\n${msg}\n\n[stderr]\nAssertionError: ${msg}\n\n❌ 执行失败（退出码 1：一般错误）`;
+    const hits = ["expected 1 to be 2", "expected 3 to be 4", "timeout of 5000ms exceeded"].map(
+      (m) => bumpFailureStreak(store, "run_command", fail(m)),
+    );
+    expect(hits.every((h) => !h.stuck)).toBe(true);
+    expect(store.size).toBe(3);
+  });
+
+  it("无 stderr 时用末尾几行兜底；空文本不报错", () => {
+    expect(errorCause("$ echo hi\n\nhello\n\n✅ 执行成功")).toContain("hello");
+    expect(errorCause("")).toBe("");
+    expect(errorCause(null)).toBe("");
   });
 });
 

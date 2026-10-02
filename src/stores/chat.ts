@@ -5391,6 +5391,15 @@ export const useChatStore = defineStore("chat", () => {
           result.timed_out ? "命令超时被终止" : `退出码 ${result.exit_code}`,
         )}`;
       }
+      // ⚠️ 非零退出/超时必须在**字符串开头**带失败标记：上游（callToolStoppable）只按
+      // `^⛔/❌` 判成败，而本结果以 `$ 命令` 回显开头 → 失败会被算成成功，失败台账与
+      // 停滞检测全部失灵。2026-10-02 实测代价：同一任务 14 次同因超时，全程记成 0 失败，
+      // 于是「同因反复失败就停下来」的护栏永远不触发。
+      if (result.timed_out || result.exit_code !== 0) {
+        content =
+          `⛔ ${result.timed_out ? "命令执行超时，已终止" : `命令以退出码 ${result.exit_code} 结束`}\n\n` +
+          content;
+      }
       return content;
     } catch (e: unknown) {
       return `❌ 命令执行失败: ${e instanceof Error ? e.message : String(e)}`;
