@@ -107,6 +107,26 @@ export function parseNativeArguments(jsonStr?: string | null): Record<string, un
   }
 }
 
+/**
+ * 原生 tool_call 的 `arguments` 是否**因为输出被截断而不完整**（空串 / JSON 没闭合）。
+ *
+ * 背景（2026-10-02 实测）：内容大的调用（write_file 塞整份脚本）会撞上模型 max_tokens，
+ * 只发出半截 `arguments`；`parseNativeArguments` 会（正确地）兜底成 `{}`，但调用方若照常
+ * 派发，就报出「write_file 需要 path 参数」这种毫无信息量的错误 —— 模型只会原样重试
+ * （日志里连续 4 次），一路把轮次耗光。**必须在派发前识别出来**，并改注入
+ * 「改用分段写入」的指令（与文本路径 isBigWriteFile 的处理对齐）。
+ */
+export function argsLookTruncated(jsonStr?: string | null): boolean {
+  const t = (jsonStr ?? "").trim();
+  if (!t) return true; // 没收到任何参数
+  try {
+    JSON.parse(t);
+    return false; // 合法 JSON → 参数是完整的
+  } catch {
+    return true; // 半截 JSON（未闭合）
+  }
+}
+
 /** 候选名唯一化：保证最终名 ≤64 且 ASCII 合法。
  * 超长（>60）先截断基名（函数名上限 64、留 "_N" 后缀空间）；被占用则追加 _2/_3/...。 */
 function ensureUnique(base: string, used: Set<string>): string {

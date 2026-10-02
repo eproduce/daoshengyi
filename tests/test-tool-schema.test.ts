@@ -8,6 +8,7 @@ import {
   isValidNativeName,
   sanitizeNamePart,
   parseNativeArguments,
+  argsLookTruncated,
   GENERIC_PARAMETERS,
   MAX_NATIVE_TOOLS,
 } from "../src/utils/tool-schema.ts";
@@ -291,4 +292,22 @@ it("每个内置工具都有显式参数 schema（模型靠它拿准参数名，
   // 反空转：两边都不能是空表，否则这条断言永远是绿的（踩过这个坑）
   expect(BUILTIN_TOOLS.length).toBeGreaterThan(80);
   expect(Object.keys(BUILTIN_PARAMETERS).length).toBeGreaterThan(80);
+});
+
+/** 回归（2026-10-02）：原生 tool_call 的 arguments 被 max_tokens 截断时会兜底成 {}，
+ *  但调用方若照常派发就报「write_file 需要 path 参数」——模型只会原样重试烧光轮次。
+ *  这个判定就是派发前的闸门。 */
+it("argsLookTruncated：识别半截/空的 arguments", () => {
+  // 完整参数 → 不算截断
+  expect(argsLookTruncated('{"path":"/tmp/a","content":"x"}')).toBe(false);
+  expect(argsLookTruncated("{}")).toBe(false); // 无参工具的正常写法
+  expect(argsLookTruncated("  [1,2]  ")).toBe(false);
+
+  // 半截 / 空 → 判为截断
+  expect(argsLookTruncated('{"path":"/tmp/a","content":"半个字符串')).toBe(true);
+  expect(argsLookTruncated('{"content":')).toBe(true);
+  expect(argsLookTruncated("")).toBe(true);
+  expect(argsLookTruncated("   ")).toBe(true);
+  expect(argsLookTruncated(undefined)).toBe(true);
+  expect(argsLookTruncated(null)).toBe(true);
 });

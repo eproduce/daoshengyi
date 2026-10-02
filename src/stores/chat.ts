@@ -105,6 +105,7 @@ import {
   activateCatalogTool,
   supportsNativeTools,
   parseNativeArguments,
+  argsLookTruncated,
   type OpenAIFunctionTool,
   type NativeToolRegistry,
 } from "@/utils/tool-schema";
@@ -6147,6 +6148,16 @@ export const useChatStore = defineStore("chat", () => {
       // 上限放大到 48 让收尾动作有足够轮次；MAX_CONTEXT_CHARS 仍会兜底防上下文失控。
       const MAX_TOOL_ROUNDS = 48;
 
+      // 「大内容被截断」时的统一指令：文本路径（isBigWriteFile）与原生路径
+      //（tool_call.arguments 被截断）共用一份，避免两处说法不一致。
+      const BIG_WRITE_SPLIT_HINT =
+        "⚠️ 你上一次的工具调用/文件内容**因输出长度上限被截断**，内容只发了一半，**文件没有写入**；再一次性输出仍会被截断。\n" +
+        "**改用分段写入（禁止一次塞整份文件）**：\n" +
+        "① 先 `write_file` 写文件**开头部分**，末尾放唯一占位标记 `<!--MORE-->`（HTML 根标签 `<html>`/`</html>` 在本段内闭合，保证文件合法）；\n" +
+        '② 用 `insert_string` 逐段追加：`{"path": 同一路径, "anchor": "<!--MORE-->", "position": "before", "new_text": "<下一段>\\n<!--MORE-->"}`；\n' +
+        "③ 重复 ② 直到写完，最后一次 `new_text` 不要留 `<!--MORE-->`，让文件完整收尾。\n" +
+        "每次工具调用的内容 ≤ 2500 字符。不要重试一次性大输出；生成大文件也可以改用 `run_command` 的 heredoc 落盘。";
+
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
       // - 传入 tools（原生 function calling）时：模型以结构化 tool_calls 返回工具调用，
       //   经 sse-tool-calls 事件捕获；文本 <tool_call> 检测仅作兜底（延迟到轮末解析）。
@@ -6547,6 +6558,30 @@ export const useChatStore = defineStore("chat", () => {
         const nativeCalls = roundResult.nativeCalls ?? null;
         // 原生工具调用（可多个）→ 结构化执行并把结果（role:tool）回填后继续下一轮
         if (nativeCalls && nativeCalls.length > 0) {
+          // ⚠️ 截断保护：输出撞上 max_tokens 时，原生 tool_calls 的 `arguments` 只发出一半 →
+          // parseNativeArguments 兜底成 `{}`，若照常派发就报「write_file 需要 path 参数」这种
+          // 毫无信息量的错，模型只会原样重试（2026-10-02 实测连续 4 次），一路把轮次耗光。
+          // 与文本路径的 isBigWriteFile 处理对齐：拦下来并改注入「分段写入」指令。
+          const truncatedCalls = nativeCalls.filter((c) => {
+            if (!argsLookTruncated(c.function?.arguments)) return false;
+            const ref = c.function?.name ? nativeRegistry?.byName.get(c.function.name) : null;
+            const req =
+              ref?.kind === "builtin" ? BUILTIN_PARAMETERS[ref.tool]?.required : undefined;
+            // 无参工具（required 声明为空）传空参数是正常写法，不算被截断
+            return Array.isArray(req) ? req.length > 0 : true;
+          });
+          if (roundResult.finishReason === "length" && truncatedCalls.length > 0) {
+            round++;
+            dbg(
+              `[loop] 原生工具调用参数被 max_tokens 截断（${truncatedCalls
+                .map((c) => c.function?.name)
+                .join(", ")}）→ 不派发空参数调用，第 ${round} 轮注入分段写入指令`,
+            );
+            rustMsgs.push({ role: "assistant", content: roundResult.content });
+            rustMsgs.push({ role: "user", content: BIG_WRITE_SPLIT_HINT });
+            if (round >= MAX_TOOL_ROUNDS) break;
+            continue;
+          }
           // 任务模式护栏（原生路径）：目标须先建计划再干活。模型若直接原生调用了实际工具
           // （如 analyze_project）而计划还没建 → 丢弃本轮调用，强制先 plan_task，
           // 让下一轮以原生 plan_task 开头重建计划（保证任务进度卡片出现）。
@@ -6632,12 +6667,7 @@ export const useChatStore = defineStore("chat", () => {
             rustMsgs.push({
               role: "user",
               content: isBigWriteFile
-                ? "⚠️ 你上一条 **write_file 调用因 content 过长被截断**，`</tool_call>` 未闭合，文件没有写入；再一次性输出仍会被截断。\n" +
-                  "**改用分段写入（禁止一次塞整份文件）**：\n" +
-                  "① 先 `write_file` 写文件**开头部分**，末尾放唯一占位标记 `<!--MORE-->`（HTML 根标签 `<html>`/`</html>` 在本段内闭合，保证文件合法）；\n" +
-                  '② 用 `insert_string` 逐段追加：`{"path": 同一路径, "anchor": "<!--MORE-->", "position": "before", "new_text": "<下一段>\\n<!--MORE-->"}`；\n' +
-                  "③ 重复 ② 直到写完，最后一次 `new_text` 不要留 `<!--MORE-->`，让文件完整收尾。\n" +
-                  "每次工具调用的内容 ≤ 2500 字符。不要重试一次性大输出。"
+                ? BIG_WRITE_SPLIT_HINT
                 : "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
                   "请重新输出**完整合法**的工具调用：\n" +
                   '<tool_call>\n{"server":"app","tool":"工具名","arguments":{...}}\n</tool_call>\n' +
@@ -6855,14 +6885,22 @@ export const useChatStore = defineStore("chat", () => {
       // 的 54 次工具调用会话里漏掉了：收尾轮被截断、正文为空，用户看到的是推理碎片）。
       // 用尽次数仍截断时附可见告警，绝不让截断静默发生。
       const MAX_TRUNCATION_CONTINUES = 2;
-      async function continueTruncated(rawAcc: string, noThinking = false): Promise<string> {
+      /// `opts.ignoreRoundBudget`：**收尾轮专用**。收尾轮已经不再调用工具，续写它是写正文、
+      /// 不挤占工具轮次，不该被 `round + 1 < MAX_TOOL_ROUNDS` 挡住。
+      /// （2026-10-02 用户报「断了」：收尾轮正好卡在第 48/48 轮 → 一次续写都没做、连提示都没有，
+      /// 正文就断在半句。）
+      async function continueTruncated(
+        rawAcc: string,
+        noThinking = false,
+        opts?: { ignoreRoundBudget?: boolean },
+      ): Promise<string> {
         let acc = rawAcc;
         let continues = 0;
         let stillTruncated = true;
         while (
           continues < MAX_TRUNCATION_CONTINUES &&
           !stopRequested &&
-          round + 1 < MAX_TOOL_ROUNDS
+          (opts?.ignoreRoundBudget || round + 1 < MAX_TOOL_ROUNDS)
         ) {
           continues++;
           round++;
@@ -6895,11 +6933,19 @@ export const useChatStore = defineStore("chat", () => {
             break;
           }
         }
-        if (continues > 0 && stillTruncated && !stopRequested) {
+        if (stillTruncated && !stopRequested) {
+          // 关键：**一次都没能续写**（轮次预算已用尽）也要告知用户。以前只在「续写过但还没写完」
+          // 时提示，于是「正文断在半句、毫无解释」—— 用户只会说「断了」，无从判断原因。
           const body = stripToolJson(acc).trim();
-          streamingContent.value =
-            body +
-            `\n\n> ⚠️ 本次回复达到输出上限（max_tokens=${config.maxTokens ?? "?"}）被截断，已自动续写 ${continues} 次仍未写完。建议在「设置 → API 配置」把 max_tokens 调大（如 8192/16384），或直接回复「继续」。`;
+          const why =
+            continues > 0
+              ? `已自动续写 ${continues} 次仍未写完`
+              : `已无剩余轮次可自动续写（轮次预算 ${MAX_TOOL_ROUNDS} 已用尽）`;
+          if (body) {
+            streamingContent.value =
+              body +
+              `\n\n> ⚠️ 本次回复达到输出上限（max_tokens=${config.maxTokens ?? "?"}）被截断，${why}。建议在「设置 → API 配置」把 max_tokens 调大（如 8192/16384），或直接回复「继续」让我接着写。`;
+          }
         }
         return acc;
       }
@@ -6941,7 +6987,10 @@ export const useChatStore = defineStore("chat", () => {
           let fc = stripToolJson(fr.content).trim();
           // 收尾轮同样受 max_tokens 限制：被截断就走自动续写（关思考，直接把正文写完）
           if (fr.finishReason === "length" && !stopRequested) {
-            fc = stripToolJson(await continueTruncated(fc, true)).trim();
+            // 收尾轮不调工具，续写不受轮次预算限制（否则正好卡在第 48 轮时会「断了」）
+            fc = stripToolJson(
+              await continueTruncated(fc, true, { ignoreRoundBudget: true }),
+            ).trim();
           }
           // 收尾轮产出也要防空洞：正文为空、只剩工具标记、或仍是一句"完成"短声明，
           // 都不算最终答案 → 退回思考摘要（剥标记后截尾）作为可见兜底，
