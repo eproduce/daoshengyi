@@ -17,9 +17,46 @@ describe("tool-arg-normalize：参数名自愈", () => {
     const cmd = normalizeToolArgs({ cmd: "ls -la" }, schemaOf("run_command"));
     expect(cmd.args.command).toBe("ls -la");
 
-    const edit = normalizeToolArgs({ path: "a.ts", old_string: "x", new_string: "y" });
+    // 改名只在「schema 声明了该规范名」时发生（见下方「无 schema 不改名」用例）
+    const edit = normalizeToolArgs(
+      { path: "a.ts", old_string: "x", new_string: "y" },
+      schemaOf("replace_string"),
+    );
     expect(edit.args.old_text).toBe("x");
     expect(edit.args.new_text).toBe("y");
+  });
+
+  // 回归（2026-10-02）：ALIASES 里混着别的工具的**规范参数名**（script→command、
+  // value→input、text→data…）。无 schema 时（历史上 list_directory / read_multiple_files
+  // 就是这样）全量改名会把模型给对的参数改名甚至删掉 → 静默改坏调用。
+  it("没有 schema 时只做包裹展开，绝不改名 / 不做类型纠正", () => {
+    const a = normalizeToolArgs({ selector: "#x", value: "hi" });
+    expect(a.args.value).toBe("hi");
+    expect(a.args.input).toBeUndefined();
+
+    const b = normalizeToolArgs({ script: "1 + 1" });
+    expect(b.args.script).toBe("1 + 1");
+    expect(b.args.command).toBeUndefined();
+
+    const c = normalizeToolArgs({ path: "/tmp/a", old_string: "x" });
+    expect(c.args.path).toBe("/tmp/a");
+    expect(c.args.old_text).toBeUndefined();
+
+    // 类型纠正同样需要 schema 才做（"5" 保持字符串）
+    const d = normalizeToolArgs({ seconds: "5" });
+    expect(d.args.seconds).toBe("5");
+
+    // 但包裹展开与 schema 无关，仍然照做
+    const e = normalizeToolArgs({ arguments: { path: "/tmp/x" } });
+    expect(e.args.path).toBe("/tmp/x");
+    expect(e.notes.join()).toContain("包裹参数");
+
+    // 给了 schema 就按 schema 改名（这是设计意图，别被上一条规则误伤）
+    const f = normalizeToolArgs(
+      { value: "hi" },
+      { type: "object", properties: { input: { type: "string" } } },
+    );
+    expect(f.args.input).toBe("hi");
   });
 
   it("绝不覆盖模型已经给对的规范参数", () => {

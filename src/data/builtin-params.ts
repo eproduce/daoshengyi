@@ -300,6 +300,28 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["path"],
     additionalProperties: true,
   },
+  // filesystem MCP 风格名的**兼容别名**（模型凭训练先验可能直接这么调；不对外宣传）。
+  // 必须补 schema：此前这两个工具没有 schema → 参数归一化会走「无 schema 的全局别名映射」，
+  // 而别名表里混着别的工具的规范参数名（如 script→command、value→input），
+  // 会把模型给对的参数**改名甚至删掉**（契约测试不变量 G 就是拦这个）。
+  list_directory: {
+    type: "object",
+    properties: { path: { type: "string", description: "目录绝对路径" } },
+    required: ["path"],
+    additionalProperties: true,
+  },
+  read_multiple_files: {
+    type: "object",
+    properties: {
+      paths: {
+        type: "array",
+        items: { type: "string" },
+        description: "要读取的文件绝对路径数组",
+      },
+    },
+    required: ["paths"],
+    additionalProperties: true,
+  },
 
   // ---- 命令 / 代码 ----
   list_mcp_resources: {
@@ -486,13 +508,21 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     additionalProperties: true,
   },
   code_stats: {
+    // 补上 root：此前 properties 为空 → 模型只能从 desc 猜参数名，而且
+    // normalizeToolArgs 因为「schema 里没有可映射的规范名」会跳过全部别名映射
     type: "object",
-    properties: {},
+    properties: {
+      root: { type: "string", description: "项目目录绝对路径（需已 code_index 索引过）" },
+    },
+    required: ["root"],
     additionalProperties: true,
   },
   code_delete: {
     type: "object",
-    properties: {},
+    properties: {
+      root: { type: "string", description: "项目目录绝对路径（删除该项目的语义索引）" },
+    },
+    required: ["root"],
     additionalProperties: true,
   },
 

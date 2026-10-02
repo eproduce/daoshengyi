@@ -171,9 +171,17 @@ export function normalizeToolArgs(
     : undefined;
   const allowed = props ? new Set(Object.keys(props)) : undefined;
 
-  // 1) 别名映射：仅当规范名缺失时生效
+  // ⚠️ 没有 schema 时**只保留包裹展开，绝不做改名/类型纠正**：
+  // 我们不知道这个工具真正的参数契约，任何「别名 → 规范名」都是猜测；而 ALIASES 里混着
+  // 别的工具的**规范参数名**（script→command、value→input、text→data 等），会把模型给对
+  // 的参数改名甚至删掉。历史触发点：filesystem MCP 风格的两个兼容别名工具
+  // （list_directory / read_multiple_files）没有 schema（已补上）。
+  // 这条规则是纵深防御：以后新加工具漏了 schema，也不会静默改坏参数。
+  if (!allowed) return { args: current, notes };
+
+  // 1) 别名映射：仅当 schema 里确实声明了该规范名、且规范名缺失时生效
   for (const [canonical, aliases] of Object.entries(ALIASES)) {
-    if (allowed && !allowed.has(canonical)) continue;
+    if (!allowed.has(canonical)) continue;
     if (current[canonical] !== undefined && current[canonical] !== null) continue;
     for (const alias of aliases) {
       const v = current[alias];
