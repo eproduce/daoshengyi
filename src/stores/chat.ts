@@ -175,6 +175,15 @@ import { countDecisions, decisionPath, mergeDecision, oneLine } from "@/utils/de
 import { applyOutputStyle } from "@/utils/output-styles";
 // P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
 import { bumpFailureStreak, failureHint, stuckNotice } from "@/utils/failure-ledger";
+// 断点续跑：用户只说「继续」时注入确定性指令，避免模型从头重来
+import { isBareContinue, resumePrompt } from "@/utils/resume-hint";
+// 任务模式自主续跑：任务没做完时自动开下一轮，而不是等用户敲「继续」
+import {
+  allowResumeAfterStall,
+  AUTO_RESUME_MAX,
+  AUTO_RESUME_TEXT,
+  planAutoResume,
+} from "@/utils/auto-resume";
 // read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
 import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
 // OCR 读到长数字串时提示用 image_inspect 交叉验证（等宽数字串 OCR 最不可靠）
@@ -724,6 +733,12 @@ let turnFailedTools: string[] = [];
 // 提醒文案被无视、轮次预算烧光、任务没做完却看上去像做完了。
 let turnFailStreak = new Map<string, number>();
 let turnStuck: { tool: string; signature: string; count: number } | null = null;
+/** 本轮是否真正执行过「实际工作」类工具（判「有没有实质进展」用） */
+let turnRealWork = false;
+/** 本轮是否调过 plan_task/plan_update（判「确实在推进这个计划」） */
+let turnPlanTouched = false;
+/** 本轮是否被系统中断（轮次预算耗尽 / 停滞中止）—— 自动续航的前提之一 */
+let turnInterrupted = false;
 /** 记一笔失败并在达到停滞阈值时打标记（主循环随即收尾，不再空转） */
 function bumpStuckStreak(tool: string, errorText: unknown): void {
   try {
@@ -748,7 +763,14 @@ function resetTurnToolStats(): void {
   turnFailedTools = [];
   turnFailStreak = new Map<string, number>();
   turnStuck = null;
+  turnRealWork = false;
+  turnPlanTouched = false;
+  turnInterrupted = false;
 }
+
+// --- P1-10 任务模式自主续跑状态 ---
+// 用户主动发消息时归零；自动续跑每开一轮 +1（上限 AUTO_RESUME_MAX）。
+let autoResumeCount = 0;
 
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
 // 开启「文件编辑需确认」设置后，replace_string/insert_string/delete_file 会先
@@ -951,7 +973,8 @@ function getMcpToolsPrompt(): string {
     "- **全部步骤 done 后**，在正文给出完整、结构化、可执行的最终回答（结论 / 具体改动 / 结果 / 下一步建议）。\n" +
     "- **收尾前**：当实际工作全部完成、即将给出最终回答时，把计划中还处于 **待办/进行中** 的步骤**逐一** plan_update 标记为 done（不要遗漏最后几步）；确有关键步骤失败的保留 failed 并说明原因。\n" +
     "- 简单任务（1-2 步）不要使用 plan 工具，避免冗余，**但【任务模式】除外**：任务模式下用户给出的目标是需交付的任务，即使看似简单，也先 plan_task 建计划再执行。\n" +
-    "- **【任务模式】硬性要求**：把用户请求视为目标；需多步/多工具/有交付物就必须先 plan_task，再逐步执行（plan_update 标记进度），并**自主连续执行到全部完成**，不要中途停下征求确认（应用层权限确认除外）。";
+    "- **【任务模式】硬性要求**：把用户请求视为目标；需多步/多工具/有交付物就必须先 plan_task，再逐步执行（plan_update 标记进度），并**自主连续执行到全部完成**，不要中途停下征求确认（应用层权限确认除外）。\n" +
+    "- **【任务模式】你有跨回合预算，不要把「做一半」当成交付**：单回合工具轮次约 48 轮；若这轮没做完，系统会**自动从断点继续下一回合**（保留任务计划、已落盘产物与上下文），无需用户回复「继续」。因此：① 早点把中间产物落盘（文件/清单），让断点可续；② 接近轮次上限时不要谎报完成，如实写清剩余步骤，系统会自动接续；③ 任务体量极大时（上百项）在计划里写明分批边界，按批交付。\n";
   // P-M4：多子代理结果冲突时必须仲裁而非任取其一
   const orchestrateRule =
     "\n\n## 多子代理结果仲裁规范\n" +
@@ -3470,6 +3493,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       planRealWork = false; // 新计划刚建立，尚未执行任何实际操作
       resetPlanHealth(); // 新计划：清空上一计划的步骤健康状态
       chat.setTaskPlan(plan);
+      turnPlanTouched = true; // P1-10：本轮确实在推进任务计划
       return (
         "✅ 已创建任务计划「" +
         title +
@@ -3525,6 +3549,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       }
       plan.steps[stepIdx].status = status as PlanStepStatus;
       chat.setTaskPlan({ ...plan }); // 触发响应式更新
+      turnPlanTouched = true; // P1-10：本轮确实在推进任务计划
       const done = plan.steps.filter((s) => s.status === "done").length;
       const label: Record<string, string> = {
         pending: "待办",
@@ -5546,6 +5571,8 @@ export const useChatStore = defineStore("chat", () => {
     images?: ImageAttachment[],
     attachments?: FileAttachment[],
     fromQueue = false,
+    /** 是否是系统自动续跑发起（用户主动发消息时归零续跑计数） */
+    autoResume = false,
   ) {
     // 忙时（上一轮仍在生成/执行）用户发来的新消息：入队，等当前轮结束后自动发送
     if (isStreaming.value && !fromQueue) {
@@ -5560,6 +5587,8 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 新消息：重置浏览器「已打开页面」标记（上一任务的浏览器已断开，需重新导航）
     browserNavigated = false;
+    // P1-10：用户自己发起的消息 → 自动续跑计数归零（新一轮任务的预算重新开始）
+    if (!autoResume && !fromQueue) autoResumeCount = 0;
     // 命令执行指令：/run <命令>
     if (text.trim().startsWith("/run ")) {
       await runCommand(text.trim().slice(5).trim());
@@ -5637,6 +5666,10 @@ export const useChatStore = defineStore("chat", () => {
       convId = createConversation();
     }
     addUserMessage(convId, text, images, attachments);
+    // P1-10：记录回合开始时的已完成步骤数，用于判「本轮有没有实质进展」
+    const planDoneAtStart = (useChatStore().taskPlan?.steps ?? []).filter(
+      (s) => s.status === "done",
+    ).length;
     // P1-3：turn_start 钩子（失败不影响主流程；注入内容在下一轮回填）
     void fireHooks({ event: "turn_start" });
 
@@ -6050,6 +6083,15 @@ export const useChatStore = defineStore("chat", () => {
         }
       } catch {
         /* 忽略 */
+      }
+      // 断点续跑（2026-10-02）：用户只回一句「继续」时，模型很容易从头重来
+      //（重新规划/重新采集）。这里注入确定性指令 + 未完成步骤清单，让它接着做。
+      try {
+        if (isBareContinue(text) || autoResume) {
+          volatileCtx.push(resumePrompt(useChatStore().taskPlan?.steps ?? []));
+        }
+      } catch {
+        /* 护栏：续跑提示失败不能影响发送 */
       }
       // 自动压缩（吸收自 Codex 的自动 compaction）：占用达阈值时先把较早历史压成交接摘要，
       // 再装配历史 —— 不依赖模型自己想起来调 new_context_window。
@@ -6492,7 +6534,10 @@ export const useChatStore = defineStore("chat", () => {
             continue;
           }
           const { server, tool } = ref;
-          if (isRealWorkTool(tool)) didRealWork = true;
+          if (isRealWorkTool(tool)) {
+            didRealWork = true;
+            turnRealWork = true; // P1-10：判「本轮有没有实质进展」
+          }
           const serverName = server !== "app" ? `（${server}）` : "";
           streamingContent.value = `🔧 正在调用工具：${tool}${serverName}...`;
           dbg(`[tool-native] 开始执行 ${server}/${tool}，args=${argsStr.slice(0, 120)}`);
@@ -6579,6 +6624,7 @@ export const useChatStore = defineStore("chat", () => {
         const stuckNow = stuckStopInfo();
         if (stuckNow) {
           stuckStop = stuckNow;
+          turnInterrupted = true; // P1-10：停滞中止 → 也属于「被系统中断」
           dbg(
             `[loop] 第 ${round} 轮前检测到停滞（${stuckNow.tool} 同因失败 ${stuckNow.count} 次）→ 中止工具循环`,
           );
@@ -6659,6 +6705,7 @@ export const useChatStore = defineStore("chat", () => {
           round++;
           if (round >= MAX_TOOL_ROUNDS) {
             roundBudgetExhausted = true; // 记账：收尾时要说清楚这是「被打断」而不是「做完了」
+            turnInterrupted = true; // P1-10：被系统中断 → 自动续航的前提成立
             break; // 达到轮次上限，停止循环
           }
           if (totalMsgChars(rustMsgs) > MAX_CONTEXT_CHARS) break; // 上下文总长保护
@@ -6847,6 +6894,7 @@ export const useChatStore = defineStore("chat", () => {
           // 达到上限：直接停止工具循环（避免模型反复调工具造成死循环），
           // 以已执行的工具卡片收尾；streamingContent 若有残留工具 JSON 由 finally 剥离
           roundBudgetExhausted = true; // 记账：收尾时必须如实告知（不再静默结束）
+          turnInterrupted = true; // P1-10：被系统中断 → 自动续航的前提成立
           break;
         }
         // 上下文总长保护：工具结果持续回填会让 messages 逼近模型上限，
@@ -6861,7 +6909,10 @@ export const useChatStore = defineStore("chat", () => {
         // 报「Tool xxx not found」；反之，MCP/浏览器工具（puppeteer_*）若被写成
         // app/builtin，则由 resolveToolServer 路由回真实服务器，避免误报「未知内置工具」。
         const toolServer = resolveToolServer(tc.server, tc.tool);
-        if (isRealWorkTool(tc.tool)) didRealWork = true; // 记录确实执行了实际工作
+        if (isRealWorkTool(tc.tool)) {
+          didRealWork = true; // 记录确实执行了实际工作
+          turnRealWork = true; // P1-10：判「本轮有没有实质进展」
+        }
         // 实时显示"正在调用工具"
         const serverName = toolServer !== "app" ? `（${toolServer}）` : "";
         streamingContent.value = `🔧 正在调用工具：${tc.tool}${serverName}...`;
@@ -7096,7 +7147,8 @@ export const useChatStore = defineStore("chat", () => {
         streamingContent.value +=
           `\n\n> ⚠️ **本轮因工具轮次预算用尽（上限 ${MAX_TOOL_ROUNDS} 轮）而中断**，` +
           `任务计划还有 ${pendingSteps.length} 步未完成：\n${list}` +
-          `\n>\n> 回复「**继续**」我会从断点接着做（不会从头重来）；也可以把任务拆成几批分轮完成。`;
+          `\n>\n> 系统会**自动从断点接着做**（连续自动续航上限 ${AUTO_RESUME_MAX} 次，不会从头重来）；` +
+          `不想继续请点「停止」，也可手动回复「继续」。`;
         dbg(`[loop] 轮次预算耗尽：仍有 ${pendingSteps.length} 步未完成 → 已在正文追加说明`);
       }
       // 任务收尾：若存在未完成的任务计划，把剩余 待办/进行中 步骤统一标记为 done
@@ -7242,6 +7294,59 @@ export const useChatStore = defineStore("chat", () => {
       isStreaming.value = false;
       conv.updatedAt = Date.now();
       scheduleSave();
+      // --- P1-10 任务模式自主续跑：任务没做完就自动开下一轮，不再等用户敲「继续」---
+      // 用户反馈「每次都做一半，留着我让它继续，太不可靠」→ 把「继续」变成系统行为；
+      // 同时用护栏（无进展 / 停滞 / 预算 / 次数上限 / 用户停止）防止它变成自动烧钱。
+      try {
+        const steps = useChatStore().taskPlan?.steps ?? [];
+        const pending = steps.filter((s) => s.status !== "done");
+        const doneNow = steps.filter((s) => s.status === "done").length;
+        const stalled = !!turnStuck;
+        const verdict = planAutoResume({
+          stoppedByUser: stopRequested,
+          planTerminated: pending.some((s) => s.status === "terminated"),
+          hasQueuedUserMessage: pendingTurns.value.length > 0,
+          errorAborted: /^\[错误\]|回复生成中断/.test(assistantMsg.content),
+          budgetBlocked: budgetVerdict.value.level === "blocked",
+          pendingSteps: pending.length,
+          autoAttempts: autoResumeCount,
+          maxAttempts: AUTO_RESUME_MAX,
+          // 停滞只给一次自动换方案的机会（第二次仍卡住才交回用户）
+          repeatedFailure: stalled && !allowResumeAfterStall(autoResumeCount),
+          madeProgress: turnRealWork || doneNow > planDoneAtStart,
+          // 推进过计划、或本轮本被系统中断（两者其一即可，避免拿旧计划误续航）
+          planTouchedThisTurn: turnPlanTouched || turnInterrupted,
+        });
+        if (verdict.resume) {
+          autoResumeCount++;
+          await dbg(
+            `[auto-resume] 第 ${autoResumeCount}/${AUTO_RESUME_MAX} 次自动续跑：${verdict.why}` +
+              `（新完成 ${doneNow - planDoneAtStart} 步，实际工作=${turnRealWork}，停滞=${stalled}）`,
+          );
+          assistantMsg.content += `\n\n> ${verdict.note}${
+            stalled
+              ? "\n> ⚠️ 上一轮因**同一失败原因反复出现**被中止：本轮必须**换方案**，不要原样重发上次的调用。"
+              : ""
+          }`;
+          scheduleSave();
+          // 延迟一拍再开新回合：等本轮 finally 收尾完；期间若用户切了会话/点了停止则放弃
+          const resumeConvId = activeConversationId.value;
+          setTimeout(() => {
+            if (stopRequested || activeConversationId.value !== resumeConvId) {
+              void dbg(
+                `[auto-resume] 放弃自动续跑（用户已停止或已切换会话：${resumeConvId} → ${activeConversationId.value}）`,
+              );
+              return;
+            }
+            void sendMessage(AUTO_RESUME_TEXT, undefined, undefined, false, true);
+          }, 50);
+        } else if (pending.length > 0) {
+          await dbg(`[auto-resume] 不续跑：${verdict.why}（剩 ${pending.length} 步）`);
+        }
+      } catch (e) {
+        // 护栏自身出错绝不能让本轮回复丢内容
+        void dbg(`[auto-resume] 判定异常（已忽略）：${e instanceof Error ? e.message : String(e)}`);
+      }
       // 本轮彻底结束：若队列有待发消息则自动续跑（放在 isStreaming=false 之后）
       drainQueue();
 
