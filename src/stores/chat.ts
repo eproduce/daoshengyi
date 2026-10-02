@@ -811,7 +811,7 @@ function getMcpToolsPrompt(): string {
     '- **run_code** (app): 在**可终止的沙箱 Worker** 里执行你写的 JavaScript（多步数据处理/批量计算/编排工具调用）。参数 {"code": "JavaScript 代码"}。**代码契约**：整段代码是 async 函数体——可直接 `await`、用 `return` 交回结果，日志用 `console.log(...)`；**调用其它工具**用 `tools.工具名(参数对象)`，如 `const r = await tools.calc({ expression: "1+2" });`，返回该工具的结果字符串。**限制**：① 无文件/网络/系统能力（`fetch`/`XMLHttpRequest`/`importScripts` 被禁用，也没有 `window`/`document`），要读写文件或联网必须走 `tools.write_file(...)`/`tools.fetch_page(...)`；② **不是 Python/shell**（写 `def`/`import` 会语法错误），要跑环境命令用 `run_command`；③ 30 秒超时强制终止；④ 工具调用上限 20 次/次执行。**该工具默认关闭**，未启用时会明确提示用户去「设置 → 权限」打开。\n' +
     '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器工具（`browser_navigate` 打开 → `browser_evaluate` 提取 / `browser_screenshot` 截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
     '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
-    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。\n' +
+    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。需要本地视觉后端就绪（llama.cpp 优先、Ollama 回退）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。**注意**：OCR 对等宽数字串（尤其前导零）漏读率高，数位数/辨字形时要再用 image_inspect 交叉验证。\n' +
     '- **image_inspect** (app): 对图片做**确定性像素核验**（非 OCR）：列投影切出字符块 + 每个字形的墨迹量/封闭空洞数/宽高比 + ASCII 点阵。参数 {"path": "图片路径", "region": 可选 {left,top,width,height} 裁剪区, "threshold": 可选灰度阈值, "invert": 可选 true=浅色为字, "mode": "glyphs"|"info"}。**凡是数位数（证书编号/票据号/序列号/条码下方数字）或区分 0-O、1-l 这类相近字形，必须用它交叉验证**，不要只凭 ocr_image 的文本下结论；报告会给出宽度分布，"切出几块"就是几位。\n' +
     '- **vision_inspect** (app): 用 **macOS Vision 原生能力**做视觉检查（离线、零模型下载、毫秒级）：图像分类、人脸/人体/人体姿势的**数量与像素位置**、动物、条码二维码内容、**视觉显著区域**。参数 {"path": "图片路径", "max_labels": 可选，默认 8}。**分工**：image_inspect 管像素细节（数位数/辨字形）；本工具管「图里有什么、在哪」；describe_image 是本地小模型（30–120 秒且会幻觉）——**要数量/位置/是否存在优先用本工具**，需要语义描述时先用它定位、**裁出局部**再交 describe_image。返回的像素框与 image_inspect 的 region 同坐标系，可直接核验。**检测不到 ≠ 不存在**（小目标/极端角度会漏检）。\n' +
@@ -841,7 +841,7 @@ function getMcpToolsPrompt(): string {
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
-    '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地嵌入模型：llama.cpp 的 nomic-embed-text，Ollama 兑底，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
+    '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地嵌入模型：llama.cpp 的 nomic-embed-text，Ollama 兜底，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
     '\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {"root": "项目目录绝对路径", "query": "自然语言描述要查的代码，如「处理用户登录」「解析配置文件」", "limit": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。' +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
     '\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {"kb_name": "知识库名，如「个人」"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。' +
@@ -2981,6 +2981,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `1. ocr_image（path=${path}）：macOS 原生 OCR，秒级返回，读截图里的文字最可靠；\n` +
         `2. browser_evaluate：读 document.body.innerText，核验页面文本内容；\n` +
         `3. describe_image（path=${path}）：本地视觉模型，**实测 30–120 秒**且可能描述失真/幻觉，确需画面描述时才用。\n` +
+        `4. 若上面都不可用（本地视觉后端尚未就绪）：请提示用户在「设置 → 本地模型」里装好 llama.cpp 并导入带投影器的多模态模型（也可「一键部署 Ollama」走回退链路），就绪后再重试。\n` +
         `图片已保存：${path}（用户可自行查看）。不要凭猜测断言渲染是否正常。`
       );
     }

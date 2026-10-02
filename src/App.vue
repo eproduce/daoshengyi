@@ -18,6 +18,8 @@ import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { themePrefLabel } from "@/utils/theme";
 import { formatCost } from "@/utils/tokens";
+// 本地视觉引导横幅判定（llama.cpp 优先、Ollama 回退）——纯函数，便于单测
+import { localVisionHint } from "@/utils/local-vision-hint";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImageAttachment, FileAttachment } from "@/types";
 import {
@@ -47,8 +49,8 @@ const { theme, pref, toggleTheme } = useTheme();
 const isDesktop = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 const browserModeBanner = ref(true); // 预览警示条可手动关闭
 
-// 首次启动自动检测 Ollama 本地视觉模型（结合硬件评估智能引导）
-const ollamaBanner = ref(false); // 硬件允许 → 一键部署横幅
+// 首次启动自动检测本地视觉模型（llama.cpp 优先、Ollama 回退，结合硬件评估智能引导）
+const ollamaBanner = ref(false); // 硬件允许 → 引导配置本地视觉（装 llama.cpp / 部署 Ollama）
 const ollamaNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
 const hardwareMessage = ref("");
 function openSettings(tab: SettingsTab = "api") {
@@ -67,39 +69,37 @@ watch(
     if (id) chatStore.downloadExport(id, "md");
   },
 );
-// 根据当前 Ollama 状态计算聊天窗口引导横幅。抽取为独立函数，供启动时与
-// 状态变化（含一键部署完成）时实时重算——修复「部署完成后横幅仍残留」。
+// 根据当前本地视觉状态计算聊天窗口引导横幅。抽取为独立函数，供启动时与
+// 状态变化（含部署/导入完成）时实时重算——修复「部署完成后横幅仍残留」。
 function evaluateOllamaBanner() {
-  const s = ollamaStore.status;
-  const hw = ollamaStore.hw;
-  ollamaBanner.value = false;
-  ollamaNotRecBanner.value = false;
-  if (!s) return;
-  hardwareMessage.value = hw?.message ?? "";
-  const hasLlava = s.models?.some((m) => m.includes("llava-phi3")) ?? false;
-  if (s.installed && s.running && hasLlava) return; // 已就绪，无需引导
-  if (s.installing) return; // 正在安装中，不打扰
-  if (hw?.verdict === "not_recommended") {
-    ollamaNotRecBanner.value = true; // 硬件不足 → 建议线上 API
-  } else {
-    ollamaBanner.value = true; // recommended / warning 都允许本地部署
-  }
+  hardwareMessage.value = ollamaStore.hw?.message ?? "";
+  // 判定逻辑收口在 utils/local-vision-hint（纯函数 + 单测）：llama.cpp 优先、Ollama 回退，
+  // 两者任一就绪就不再引导；硬件不足才建议线上 API。
+  const hint = localVisionHint({
+    status: ollamaStore.status,
+    runtime: ollamaStore.runtime,
+    hwVerdict: ollamaStore.hw?.verdict ?? null,
+    busy: ollamaStore.busy,
+  });
+  ollamaBanner.value = hint === "deploy";
+  ollamaNotRecBanner.value = hint === "online-api";
 }
 async function checkOllamaOnStart() {
   // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
   await ollamaStore.init();
   evaluateOllamaBanner();
 }
-// 实时跟随 Ollama 状态：部署中隐藏横幅；状态/硬件变化（含一键部署完成后
-// store.deploy 内 refreshStatus 更新 status）自动重算，无需重启应用。
-watch([() => ollamaStore.busy, () => ollamaStore.status, () => ollamaStore.hw], () => {
-  if (ollamaStore.busy) {
-    ollamaBanner.value = false;
-    ollamaNotRecBanner.value = false;
-    return;
-  }
-  evaluateOllamaBanner();
-});
+// 实时跟随本地视觉状态：状态、硬件或 llama.cpp 运行时变化（如「从 Ollama 导入模型」
+// 完成后 runtime 更新）都自动重算，无需重启应用。
+watch(
+  [
+    () => ollamaStore.busy,
+    () => ollamaStore.status,
+    () => ollamaStore.hw,
+    () => ollamaStore.runtime,
+  ],
+  () => evaluateOllamaBanner(),
+);
 const messagesContainer = ref<HTMLDivElement>();
 
 // ── 底部辅助面板（任务计划 / 子代理）────────────────────────────
@@ -302,13 +302,14 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- Ollama 本地视觉模型引导横幅（硬件允许时） -->
+      <!-- 本地视觉引导横幅（llama.cpp 优先，Ollama 回退；硬件允许时） -->
       <div v-if="ollamaBanner" class="ollama-banner">
         <span
-          >💡 检测到本地视觉模型（Ollama +
-          llava-phi3）未就绪，你的硬件足以支持，可免费在本机识别图片。</span
+          >💡 本机还没有可用的本地视觉模型。首选用 <b>llama.cpp</b>：装好 llama-server
+          并导入带投影器的多模态模型即可离线识图（约 2GB）； 也可以一键部署 Ollama
+          走回退链路。你的硬件足以支持。</span
         >
-        <button class="ollama-banner__btn" @click="openSettings('ollama')">一键部署</button>
+        <button class="ollama-banner__btn" @click="openSettings('ollama')">去配置</button>
         <button class="ollama-banner__close" title="关闭" @click="ollamaBanner = false">✕</button>
       </div>
 

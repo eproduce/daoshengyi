@@ -71,7 +71,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "describe_image",
-    desc: '用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。**慢**：本机实测 1440×900 截图需 30–120 秒（Intel 无 GPU），且输出可能失真/幻觉。**只想读截图里的文字请优先用 ocr_image（秒级）**；确需画面描述时才用本工具，不要为了「核验渲染」反复调用。',
+    desc: '用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。**慢**：本机实测 1440×900 截图需 30–120 秒（Intel 无 GPU），且输出可能失真/幻觉。**只想读截图里的文字请优先用 ocr_image（秒级）**；确需画面描述时才用本工具，不要为了「核验渲染」反复调用。需要本地视觉后端就绪（llama.cpp 优先、Ollama 回退；可在「设置 → 本地模型」查看/安装）。',
   },
   {
     name: "ocr_image",
@@ -147,7 +147,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "kb_search",
-    desc: '在已索引的**知识库**中检索（关键词 + 中文分词；若本地嵌入模型（llama.cpp 的 nomic-embed-text；Ollama 可兑底）可用则叠加**语义向量**补充召回，返回命中的文件与片段）。参数 {"kb_name": "知识库名", "query": "检索词", "limit": 可选条数（默认 6）}。**使用时机**：用户问题涉及已索引知识库的内容时，先检索再基于命中片段作答；检索不到可换关键词或提示用户先 kb_index。',
+    desc: '在已索引的**知识库**中检索（关键词 + 中文分词；若本地嵌入模型（llama.cpp 的 nomic-embed-text；Ollama 可兜底）可用则叠加**语义向量**补充召回，返回命中的文件与片段）。参数 {"kb_name": "知识库名", "query": "检索词", "limit": 可选条数（默认 6）}。**使用时机**：用户问题涉及已索引知识库的内容时，先检索再基于命中片段作答；检索不到可换关键词或提示用户先 kb_index。',
   },
   {
     name: "kb_list",
@@ -163,7 +163,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "code_index",
-    desc: '把项目代码目录**向量化索引**（P-A3 自然语言找代码，重建式；需本地嵌入模型：llama.cpp + nomic-embed-text GGUF，Ollama 可兑底）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目，再用 code_search 检索。',
+    desc: '把项目代码目录**向量化索引**（P-A3 自然语言找代码，重建式；需本地嵌入模型：llama.cpp + nomic-embed-text GGUF，Ollama 可兜底）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目，再用 code_search 检索。',
   },
   {
     name: "code_search",

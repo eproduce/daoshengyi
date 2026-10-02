@@ -1,4 +1,5 @@
-// Ollama 本地模型 store：一键部署 / 状态探测 / 视觉模型拉取 / OCR。
+// 本地视觉 / 嵌入运行时 store（llama.cpp 优先，Ollama 回退）：
+// 状态探测（含 llama.cpp 运行时、硬件评估）、Ollama 一键部署（回退链路）、模型导入与 OCR。
 // 管理部署进度（断点续传）、服务状态、硬件检测与本地视觉/OCR 能力开关。
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";

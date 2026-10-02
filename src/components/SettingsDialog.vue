@@ -874,9 +874,12 @@ function handleDelete() {
 
           <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
           <div v-show="activeTab === 'ollama'" class="ollama-panel">
-            <h3><Cpu :size="17" /> 本地视觉模型（Ollama）</h3>
+            <h3><Cpu :size="17" /> 本地视觉模型</h3>
             <p class="ollama-desc">
-              用于本地识别图片内容。模型完全在你电脑上运行，免费且隐私安全，无需联网。是否适合本地部署取决于硬件性能。
+              用于本地识别图片内容，模型完全在你电脑上运行，免费且隐私安全，无需联网。<b
+                >优先用 llama.cpp</b
+              >（按需启动、空闲自动退出）；未装 llama.cpp 时可一键部署 Ollama
+              作为回退。是否适合本地部署取决于硬件性能。
             </p>
 
             <!-- 运行时选择（llama.cpp / Ollama）：默认 Ollama 默认 5 分钟 keep_alive 会把 2.3GB 权重藕在内存里 -->
@@ -970,6 +973,11 @@ function handleDelete() {
             </div>
             <div v-if="!ollamaStore.status" class="ollama-loading">正在检测 Ollama 环境...</div>
             <template v-else>
+              <!-- Ollama 回退链路：llama.cpp 未就绪时用它（原先它是唯一路径，现已降级为回退） -->
+              <p class="ollama-desc">
+                以下为 <b>Ollama 回退链路</b>：仅在未装
+                llama.cpp、或模型目录里没有可用的多模态模型（含投影器）时才需要。
+              </p>
               <div class="ollama-status">
                 <div class="ollama-item">
                   <span
@@ -1026,11 +1034,11 @@ function handleDelete() {
                     ? "部署中..."
                     : ollamaStore.status.installed && ollamaStore.hasLlava
                       ? "重新检测"
-                      : "一键部署"
+                      : "一键部署 Ollama"
                 }}
               </button>
               <p v-if="ollamaStore.hw?.verdict !== 'not_recommended'" class="ollama-hint">
-                首次部署将安装 Ollama 并下载约 2GB
+                （回退路径）首次部署将安装 Ollama 并下载约 2GB
                 模型，耗时较长；关闭此界面会继续在后台下载，可稍后回来查看进度。
               </p>
             </template>
