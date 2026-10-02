@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { recentNetActivity } from "@/utils/net-log";
 
 // 前端全局错误收集（本地优先）：
 // window error / unhandledrejection → 复用 Rust `debug_log` 命令写入
@@ -48,11 +49,13 @@ export function installGlobalErrorLog(): void {
       const reason = e.reason;
       // 无 stack 的情况（WKWebView 的网络类失败很常见）显式标注，免得看起来像日志残缺
       const stack = reason instanceof Error ? reason.stack : undefined;
-      send(
-        "unhandledrejection",
-        describeReason(reason),
-        stack ?? "（该错误没有 stack——多为 WebView 网络/IPC 层失败）",
-      );
+      // P1-12：把「最近的 fetch 活动」一并写进日志 —— 这类错误没有 stack、没有 URL，
+      // 历史上只能靠猜。若这批错误其实来自 fetch，这里就能直接看到是谁失败了。
+      const net = recentNetActivity();
+      const extra = net.length
+        ? `（该错误没有 stack；最近网络活动 ${net.length} 条: ${net.join(" ｜ ")}）`
+        : "（该错误没有 stack；最近无 fetch 活动 → 多为 WebView IPC 层失败）";
+      send("unhandledrejection", describeReason(reason), stack ?? extra);
     });
   } catch (e) {
     // 兜底：错误监听装不上也不能拦住启动（宁可少日志，不可白屏）

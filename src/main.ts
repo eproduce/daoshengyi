@@ -1,6 +1,5 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App.vue";
 import { useMcpStore } from "./stores/mcp";
@@ -9,6 +8,9 @@ import { useChatStore } from "./stores/chat";
 import { useUiStore } from "./stores/ui";
 import { askConfirm } from "./utils/dialog";
 import { installGlobalErrorLog } from "./utils/error-log";
+import { installNetObserver } from "./utils/net-log";
+// 启动期 IPC 可能未就绪：事件监听必须带重试，否则菜单/IM 等事件会静默失效
+import { listenWithRetry } from "./utils/event-listen";
 import { initGlobalTooltips } from "./utils/tooltip";
 import { startTrayStatusSync } from "./composables/useTrayStatus";
 import "./assets/styles/main.css";
@@ -29,7 +31,9 @@ useMcpStore();
 useOllamaStore().init();
 
 // Rust 端一键部署完成后自动刷新 API 配置（自动切换为本地 Ollama，无需手动配置）
-listen("ollama-configured", () => {
+// P1-13：带重试 —— 窗口刚创建时 IPC 尚可失败（Load failed），失败则不重试会让监听
+// 静默失效（一键部署完成后不会自动刷新）。
+void listenWithRetry("ollama-configured", () => {
   const chat = useChatStore();
   chat.reloadProfilesFromRust().catch(() => {});
 });
@@ -38,13 +42,17 @@ app.mount("#app");
 // 启动标记：白屏这类「页面根本没挂起来」的问题，日志里必须留痕——否则前端一行都不输出，
 // 只能靠猜（2026-10-02 真踩过：诊断代码在顶层抛错 → 白屏 + 日志全空，极难定位）。
 invoke("debug_log", { msg: "[boot] 前端已挂载（Vue app mounted）" }).catch(() => {});
+// P1-12：挂载后才安装 fetch 旁观器 —— 不进启动关键路径，只旁观不改行为，
+// 用于给「Load failed（无 stack）」这类错误补上「是谁在请求」的线索。
+installNetObserver();
 
 // 系统托盘状态同步：把任务进度 / 当前上下文实时推送到菜单栏（Rust 侧渲染标题与菜单）
 startTrayStatusSync();
 
 // 系统菜单栏事件分发：菜单在 src-tauri/src/lib.rs 构建，点击后经 Rust
 // on_menu_event 转发为 "menu://action" 事件，这里按动作 id 路由到对应功能。
-listen<string>("menu://action", (e) => {
+// P1-13：必须重试 —— 注册失败则菜单项全都没反应（用户只能看到「点了没反应」）。
+void listenWithRetry<string>("menu://action", (e) => {
   const ui = useUiStore();
   const chat = useChatStore();
   switch (e.payload) {
@@ -95,7 +103,7 @@ listen<string>("menu://action", (e) => {
       ui.openWorkflow();
       break;
   }
-}).catch(() => {});
+});
 
 // ── 修复复制 KaTeX 公式字母翻倍 ───────────────────────────────────────
 // KaTeX 每个公式含「隐藏的 MathML 无障碍层 + 可见 HTML 层」，复制时两层都会被选中，
@@ -129,21 +137,24 @@ document.addEventListener("copy", (e) => {
 
 // ── O5 IM 配对审批：网关收到未知发送者消息时登记待审批并发此事件 → 桌面端弹确认 ──
 // 批准 → im_pair_approve（写入白名单并持久化）；拒绝 → im_pair_decline（移除待审批）
-listen<{ chat_id: string; sender: string; code: string }>("im-pair-request", async (e) => {
-  const p = e.payload;
-  if (!p || !p.chat_id) return;
-  const ok = await askConfirm(
-    `收到新的 IM 会话请求：\n\n会话 ID：${p.chat_id}\n发送者：${p.sender}\n配对码：${p.code}\n\n是否批准该会话加入白名单（批准后即可自动回复）？`,
-    "warning",
-  );
-  try {
-    if (ok) {
-      await invoke("im_pair_approve", { chatId: p.chat_id });
-    } else {
-      await invoke("im_pair_decline", { chatId: p.chat_id });
+void listenWithRetry<{ chat_id: string; sender: string; code: string }>(
+  "im-pair-request",
+  async (e) => {
+    const p = e.payload;
+    if (!p || !p.chat_id) return;
+    const ok = await askConfirm(
+      `收到新的 IM 会话请求：\n\n会话 ID：${p.chat_id}\n发送者：${p.sender}\n配对码：${p.code}\n\n是否批准该会话加入白名单（批准后即可自动回复）？`,
+      "warning",
+    );
+    try {
+      if (ok) {
+        await invoke("im_pair_approve", { chatId: p.chat_id });
+      } else {
+        await invoke("im_pair_decline", { chatId: p.chat_id });
+      }
+    } catch (err) {
+      // 审批命令失败不弹二次窗；状态/日志可在「即时聊天」面板查看
+      console.warn("[im-pair]", err);
     }
-  } catch (err) {
-    // 审批命令失败不弹二次窗；状态/日志可在「即时聊天」面板查看
-    console.warn("[im-pair]", err);
-  }
-}).catch(() => {});
+  },
+);
