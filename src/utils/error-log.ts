@@ -17,67 +17,45 @@ function send(scope: string, message: string, stack?: string) {
   });
 }
 
-/** 取「失败原因」的可读文本：非 Error 时 String()，并带上可能附着的 Tauri 命令名 */
+/** 取「失败原因」的可读文本：非 Error 时 String() */
 function describeReason(reason: unknown): string {
-  const base = reason instanceof Error ? reason.message : String(reason ?? "未处理的 Promise 拒绝");
-  const cmd = (reason as { __dsyCmd?: string } | undefined)?.__dsyCmd;
-  return cmd ? `${base}（Tauri 命令：${cmd}）` : base;
+  return reason instanceof Error ? reason.message : String(reason ?? "未处理的 Promise 拒绝");
 }
 
 /**
- * 给 Tauri `invoke` 包一层：失败时把**命令名**附到错误对象上。
+ * 安装全局错误监听（幂等）。应在应用挂载前调用以捕获初始化期错误。
  *
- * 为什么需要：WKWebView 里 IPC / fetch 失败的报错是 `TypeError: Load failed`，而且
- * **没有 stack**（实测：日志里每次启动固定 7 条，完全看不出是哪个命令）。
- * 「哪个调用失败了」这种最基本的定位信息不应该靠猜。
- * 只附加属性、不改错误类型与消息，避免影响既有 catch 逻辑对 message 的判断。
+ * ⚠️ 这里**绝不能抛**：它在 `main.ts` 顶层执行，一旦抛错，Vue 应用根本不会挂载 ——
+ * 表现就是**白屏**，而且连错误监听都没装上（日志里一点痕迹都没有），极难排查。
+ * 所以整段包 try/catch。同理，不要在启动路径上给 Tauri 的 `__TAURI_INTERNALS__.invoke`
+ * 之类内部对象打 monkey-patch：曾经为了在日志里附上失败的 Tauri 命令名而这么做过，
+ * 直接导致白屏（2026-10-02），已移除。诊断能力再重要，也不能有弄坏启动的可能。
  */
-function instrumentInvoke(): void {
-  const internals = (
-    window as unknown as {
-      __TAURI_INTERNALS__?: {
-        invoke?: (...a: unknown[]) => Promise<unknown>;
-        __dsyWrapped?: boolean;
-      };
-    }
-  ).__TAURI_INTERNALS__;
-  if (!internals?.invoke || internals.__dsyWrapped) return;
-  const raw = internals.invoke.bind(internals);
-  internals.invoke = (cmd: unknown, args?: unknown, options?: unknown) =>
-    Promise.resolve(raw(cmd as string, args, options)).catch((e: unknown) => {
-      try {
-        if (e && typeof e === "object") (e as { __dsyCmd?: string }).__dsyCmd = String(cmd);
-      } catch {
-        /* 冻结对象等：忽略，不干扰原错误 */
-      }
-      throw e;
-    });
-  internals.__dsyWrapped = true;
-}
-
-/** 安装全局错误监听（幂等）。应在应用挂载前调用以捕获初始化期错误。 */
 export function installGlobalErrorLog(): void {
   if (installed) return;
   installed = true;
-  instrumentInvoke();
+  try {
+    window.addEventListener("error", (e) => {
+      const err = e.error;
+      send(
+        "uncaught",
+        e.message || describeReason(err),
+        err instanceof Error ? err.stack : undefined,
+      );
+    });
 
-  window.addEventListener("error", (e) => {
-    const err = e.error;
-    send(
-      "uncaught",
-      e.message || describeReason(err) || "未知错误",
-      err instanceof Error ? err.stack : undefined,
-    );
-  });
-
-  window.addEventListener("unhandledrejection", (e) => {
-    const reason = e.reason;
-    // 无 stack 的情况（WKWebView 的网络类失败很常见）显式标注，免得看起来像日志残缺
-    const stack = reason instanceof Error ? reason.stack : undefined;
-    send(
-      "unhandledrejection",
-      describeReason(reason),
-      stack ?? "（该错误没有 stack——多为 WebView 网络/IPC 层失败）",
-    );
-  });
+    window.addEventListener("unhandledrejection", (e) => {
+      const reason = e.reason;
+      // 无 stack 的情况（WKWebView 的网络类失败很常见）显式标注，免得看起来像日志残缺
+      const stack = reason instanceof Error ? reason.stack : undefined;
+      send(
+        "unhandledrejection",
+        describeReason(reason),
+        stack ?? "（该错误没有 stack——多为 WebView 网络/IPC 层失败）",
+      );
+    });
+  } catch (e) {
+    // 兜底：错误监听装不上也不能拦住启动（宁可少日志，不可白屏）
+    console.error("[道生一] 全局错误监听安装失败:", e);
+  }
 }

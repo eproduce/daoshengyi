@@ -35,6 +35,10 @@ listen("ollama-configured", () => {
 });
 app.mount("#app");
 
+// 启动标记：白屏这类「页面根本没挂起来」的问题，日志里必须留痕——否则前端一行都不输出，
+// 只能靠猜（2026-10-02 真踩过：诊断代码在顶层抛错 → 白屏 + 日志全空，极难定位）。
+invoke("debug_log", { msg: "[boot] 前端已挂载（Vue app mounted）" }).catch(() => {});
+
 // 系统托盘状态同步：把任务进度 / 当前上下文实时推送到菜单栏（Rust 侧渲染标题与菜单）
 startTrayStatusSync();
 
