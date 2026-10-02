@@ -152,6 +152,33 @@ describe("从正文反解工具卡 splitLeadingToolCards", () => {
     // 解析出的卡片数 == 摘要里统计的次数（老会话折叠头的数字不会对不上）
     expect(summarizeTools(tools).count).toBe(3);
   });
+
+  // 真实回归（2026-10-02）：失败卡里的 err 含换行（失败台账说明有空行 + 内部反引号），
+  // 旧实现只剥首行 → 残留 err 不以 `>` 开头 → 循环 break → **后续卡片全部漏进正文**。
+  it("多行失败卡（err 含空行与内部反引号）整张吃掉，后面的卡片照样折叠", () => {
+    const multiFail =
+      "> ❌ 工具调用失败: `CDP 命令 Page.navigate 超时（30s），无响应\n" +
+      "\n" +
+      "[失败台账] 本会话内 `browser_navigate` 已经用同样的方式失败 2 次。别原样重试：先核对入参。`";
+    const content = `${multiFail}\n\n${doneCard("run_command")}\n\n下面是最终答案。`;
+    const { tools, body } = splitLeadingToolCards(content);
+    expect(tools.map((t) => t.name)).toEqual(["未知工具", "run_command"]);
+    expect(tools[0].status).toBe("error");
+    expect(tools[0].error).toContain("CDP 命令");
+    expect(tools[0].error).toContain("失败台账"); // 多行 err 完整取出（不截成首行）
+    expect(body).toBe("下面是最终答案。");
+    // 不变量仍然成立
+    expect(stripToolCards(content)).toBe(body);
+  });
+
+  it("多行失败卡后面跟多张卡片 + 失败卡，全部折叠且不误吃正文", () => {
+    const multiFail = "> ❌ 工具调用失败: `第一行错\n第二行错\n第三行错`";
+    const content = `${multiFail}\n\n${doneCard("a")}\n\n${failCard}\n\n${doneCard("b")}\n\n答案`;
+    const { tools, body } = splitLeadingToolCards(content);
+    expect(tools.map((t) => t.name)).toEqual(["未知工具", "a", "未知工具", "b"]);
+    expect(tools[0].error).toBe("第一行错\n第二行错\n第三行错");
+    expect(body).toBe("答案");
+  });
 });
 
 // 真实回归：工具卡原先只在内存，重载历史后整段工具记录消失。

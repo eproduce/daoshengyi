@@ -87,7 +87,7 @@ const CARD_HEAD_RE = /^(?:###[ \t]*(?:🔧|🌐)|>[ \t]*❌[ \t]*工具调用失
  * 卡片形状（两种都以 `</details>` 结尾，可连续出现多个 details 块）：
  * - `### 🔧 调用工具：`x`` + `<details>参数</details>` + `<details>✅ 工具结果</details>`
  * - `### 🌐 联网搜索` + `**查询**：` + `<details>共 N 条结果</details>`
- * - 失败：单行 `> ❌ 工具调用失败: ...`
+ * - 失败：`> ❌ 工具调用失败: \`err\``（err 可能含换行 → 卡片可能跨多行）
  *
  * 任何一条形状对不上（没找到 `<details><summary>`）就**立即停止剥离**，保守优先。
  */
@@ -119,12 +119,36 @@ function clip(s: string): string {
   return s.slice(0, 300);
 }
 
-/** 单行失败卡片：`> ❌ 工具调用失败: \`err\`` */
-function failureCard(line: string): ChatTool {
-  const inTicks = /`([\s\S]*)`/.exec(line)?.[1];
-  const err = (inTicks ?? line.replace(/^>+\s*❌\s*工具调用失败[:：]?\s*/, "")).trim();
-  // 这一行本身不含工具名（格式如此），如实标出来而不是编一个
+/** 失败卡片：`> ❌ 工具调用失败: \`err\``（err 可能含换行 → 卡片可能跨多行） */
+function failureCard(card: string): ChatTool {
+  const inTicks = /`([\s\S]*)`/.exec(card)?.[1];
+  const err = (inTicks ?? card.replace(/^>+\s*❌\s*工具调用失败[:：]?\s*/, "")).trim();
+  // 这张卡本身不含工具名（格式如此），如实标出来而不是编一个
   return { name: "未知工具", server: "app", status: "error", error: clip(err) };
+}
+
+/**
+ * 取出一张失败卡的完整文本（从 `>` 开头到卡片真正结束）。
+ *
+ * 为什么不能只取首行：失败卡由 `chat.ts` 以 `> ❌ 工具调用失败: \`${err}\`` 生成，`err` 原样
+ * 嵌入 → **err 里的换行会把卡片撑成多行**（真实数据：失败台账说明含空行与内部反引号）。
+ * 旧实现只 `slice(0, 第一个\n)`，剥掉首行后剩下的 `err` 残句不以 `>` 开头 → 循环在下一张卡
+ * 前就 `break`，**后续所有卡片全部漏进正文**（用户看到的「有些调用记录没有折叠」）。
+ *
+ * 收尾判定：生成器保证卡片以「反引号」收尾，且其后只跟空白/换行（内部反引号后面还接着正文，
+ * 不会误判）。找不到收尾反引号时退回「只取首行」的保守行为。
+ */
+function sliceFailureCard(s: string): string {
+  const nl = s.indexOf("\n");
+  const firstLineEnd = nl === -1 ? s.length : nl;
+  const open = s.indexOf("`");
+  if (open === -1) return s.slice(0, firstLineEnd);
+  let close = s.indexOf("`", open + 1);
+  while (close !== -1) {
+    if (/^[ \t]*(?:\n|$)/.test(s.slice(close + 1))) return s.slice(0, close + 1);
+    close = s.indexOf("`", close + 1);
+  }
+  return s.slice(0, firstLineEnd);
 }
 
 /** `### 🔧 调用工具：\`x\``（参数/结果块）或 `### 🌐 联网搜索`（查询行 + 结果块） */
@@ -164,7 +188,7 @@ function headingCard(head: string, between: string, blocks: string[]): ChatTool 
  * 卡片形状（两种都以 `</details>` 结尾，可连续出现多个 details 块）：
  * - `### 🔧 调用工具：`x`` + `<details>参数</details>` + `<details>✅ 工具结果</details>`
  * - `### 🌐 联网搜索` + `**查询**：` + `<details>共 N 条结果</details>`
- * - 失败：单行 `> ❌ 工具调用失败: ...`
+ * - 失败：`> ❌ 工具调用失败: \`err\``（err 可能含换行 → 卡片可能跨多行，见 sliceFailureCard）
  *
  * 任何一条形状对不上（没找到 `<details><summary>`）就**立即停止**，保守优先——
  * 宁可少折叠几条，也不能误吃正文。
@@ -178,14 +202,16 @@ export function splitLeadingToolCards(content: string | undefined): LeadingCards
     if (!CARD_HEAD_RE.test(s)) break;
     const nl = s.indexOf("\n");
     if (nl === -1) {
-      // 整段就是一行失败卡片 → 解析出来、剥完即空
+      // 没有换行：只有整行失败卡能到这里（`###` 卡片必然带 details、必然多行）
+      if (!s.startsWith(">")) break;
       tools.push(failureCard(s));
       return { tools, body: "" };
     }
-    // 失败行：解析这一行后剥掉
+    // 失败卡：解析整张卡（err 可能含换行 → 卡片跨多行）后剥掉
     if (s.startsWith(">")) {
-      tools.push(failureCard(s.slice(0, nl)));
-      s = s.slice(nl + 1).replace(/^\s+/, "");
+      const card = sliceFailureCard(s);
+      tools.push(failureCard(card));
+      s = s.slice(card.length).replace(/^\s+/, "");
       continue;
     }
     // `###` 卡片：从标题后找到「紧随其后的连续 <details> 块」的结尾

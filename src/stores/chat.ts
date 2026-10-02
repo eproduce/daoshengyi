@@ -238,6 +238,14 @@ function extractJsonBlock(s: string): string {
   return start >= 0 && end > start ? t.slice(start, end + 1) : t;
 }
 
+/// 工具卡里的自由文本（错误信息 / 中断原因）必须压成**单行**再嵌进卡片：
+/// 卡片格式 `> ❌ 工具调用失败: \`${err}\`` 靠「一行一卡」解析；err 里的换行会把卡片撑成
+/// 多行，只看首行就会把后续卡片全漏进正文（真实回归：失败台账说明含空行）。显示层已能
+/// 容错多行（见 tool-summary.sliceFailureCard，治老数据），这里从源头保证新数据不再产生多行卡。
+function flattenCardText(s: string): string {
+  return s.replace(/\s*\n\s*/g, " ").trim();
+}
+
 // --- MCP 工具辅助 ---
 let mcpToolsCache: {
   server: string;
@@ -6520,7 +6528,7 @@ export const useChatStore = defineStore("chat", () => {
             // 模型返回了未注册函数名：把错误作为 tool 结果反馈，让它换正确的工具
             const err = `未知工具「${fnName}」：不在本会话可用工具列表中。请从系统给出的函数列表选择正确的工具名（不要臆造）。`;
             dbg(`[tool-native] 未知工具 ${fnName}`);
-            toolChain.push(`> ❌ 工具调用失败: \`${err}\``);
+            toolChain.push(`> ❌ 工具调用失败: \`${flattenCardText(err)}\``);
             toolCards.push({
               name: fnName,
               server: "?",
@@ -6574,7 +6582,7 @@ export const useChatStore = defineStore("chat", () => {
             const err = e instanceof Error ? e.message : String(e);
             dbg(`[tool-native] ${tool} 执行失败: ${err}`);
             noteToolOutcome(tool, false); // 计入当前执行步骤的失败计数
-            const card = `> ❌ 工具调用失败: \`${err}\``;
+            const card = `> ❌ 工具调用失败: \`${flattenCardText(err)}\``;
             toolChain.push(card);
             toolCards.push({
               name: tool,
@@ -6961,7 +6969,7 @@ export const useChatStore = defineStore("chat", () => {
           const err = e instanceof Error ? e.message : String(e);
           dbg(`[tool] ${tc.tool} 执行失败: ${err}`);
           noteToolOutcome(tc.tool, false); // 计入当前执行步骤的失败计数
-          const card = `> ❌ 工具调用失败: \`${err}\``;
+          const card = `> ❌ 工具调用失败: \`${flattenCardText(err)}\``;
           toolChain.push(card);
           toolCards.push({
             name: tc.tool,
@@ -7201,7 +7209,7 @@ export const useChatStore = defineStore("chat", () => {
         // `|| '[错误]'` 不触发、错误被静默吞掉 → 用户只看到工具卡片没有最终答案。
         // 这里始终把错误以可见形式拼进 toolChain，确保任何中断都对用户可见。
         if (toolChain.length > 0) {
-          toolChain.push(`> ❌ 回复生成中断: ${msg}`);
+          toolChain.push(`> ❌ 回复生成中断: ${flattenCardText(msg)}`);
           streamingContent.value = ""; // 清空，让 finally 只拼 toolChain（含错误卡片）
         } else {
           streamingContent.value = streamingContent.value || `[错误] ${msg}`;
