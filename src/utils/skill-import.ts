@@ -42,6 +42,7 @@ export interface SkillSourceSpec {
 /**
  * 默认扫描来源：
  * - Claude Code：`~/.claude/skills/<name>/SKILL.md`（带 frontmatter）+ `~/.claude/commands/*.md`
+ * - 通用技能目录：`~/.agents/skills/<name>/SKILL.md`（`npx skills add -a <agent>` 装在「其它 agent」的位置）
  * - Codex：`~/.codex/prompts/*.md`
  * - Cursor：工作区 `.cursor/rules/*.mdc`
  * - 通用：`~/Documents/道生一技能/*.md`（用户自己放的地方）
@@ -58,6 +59,14 @@ export function skillSourceSpecs(home: string, workspace = ""): SkillSourceSpec[
         file_name: "SKILL.md",
       },
       { id: "claude-commands", label: "Claude Code 命令", dir: `${h}/.claude/commands` },
+      // 上游 `npx -y skills add <repo> -a <agent>` 把技能装在 ~/.agents/skills；
+      // 我们的 agent 不在它的已知名单里，但**同一个目录我们照样能读**（导入只取 SKILL.md 文本）。
+      {
+        id: "agents-skills",
+        label: "通用技能目录",
+        dir: `${h}/.agents/skills`,
+        file_name: "SKILL.md",
+      },
       { id: "codex", label: "Codex 提示词", dir: `${h}/.codex/prompts` },
       { id: "generic", label: "道生一技能目录", dir: `${h}/Documents/道生一技能` },
     );

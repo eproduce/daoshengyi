@@ -911,6 +911,22 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["title", "decision", "rationale"],
     additionalProperties: true,
   },
+  // --- 方案 B：Answer me with HTML（内置渲染器，每次显式要求才出页） ---
+  answer_html: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "页面标题（写入 frontmatter 与页面头部）" },
+      markdown: {
+        type: "string",
+        description:
+          "Markdown 草稿：可选 frontmatter + 多个 `## 面板`；面板内可用 flow/sequence/tree/timeline/limits/kv/callout/annot 围栏代码块与表格",
+      },
+      lang: { type: "string", description: "可选语言标签（zh/en/ja…），缺省按草稿语言自动判断" },
+      out_path: { type: "string", description: "可选输出路径（默认 ~/Documents/道生一产物/）" },
+    },
+    required: ["markdown"],
+    additionalProperties: true,
+  },
   trash_empty: {
     type: "object",
     properties: {},

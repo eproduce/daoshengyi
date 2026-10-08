@@ -19,13 +19,16 @@ const file = (p: Partial<ExternalSkillFile> = {}): ExternalSkillFile => ({
 });
 
 describe("P1-9a 技能导入 · 来源规格", () => {
-  it("生成 Claude Code / Codex / 通用 三类来源；有工作区时加 Cursor", () => {
+  it("生成 Claude Code / 通用技能目录 / Codex / 通用 四类来源；有工作区时加 Cursor", () => {
     const without = skillSourceSpecs("/Users/tester");
     const ids = without.map((s) => s.id);
-    expect(ids).toEqual(["claude-code", "claude-commands", "codex", "generic"]);
+    expect(ids).toEqual(["claude-code", "claude-commands", "agents-skills", "codex", "generic"]);
     expect(without[0].dir).toBe("/Users/tester/.claude/skills");
     expect(without[0].file_name).toBe("SKILL.md");
     expect(without[1].file_name).toBeUndefined();
+    // ~/.agents/skills：非 Claude Code 的 agent 技能落地处（如 `npx skills add -a <agent>`）
+    expect(without[2].dir).toBe("/Users/tester/.agents/skills");
+    expect(without[2].file_name).toBe("SKILL.md");
 
     const withWs = skillSourceSpecs("/Users/tester", "/Users/tester/op/proj/");
     expect(withWs.map((s) => s.id)).toContain("cursor");

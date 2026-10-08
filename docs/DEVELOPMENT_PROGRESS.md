@@ -2,7 +2,56 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-09-24**
+> **最后更新：2026-10-08**
+
+---
+
+## 2026-10-08（HTML 讲解页：方案 B 落地 —— 内嵌上游 am.mjs，做成内置工具 `answer_html`）
+
+### 背景
+用户提出集成上游技能 [answer-me-with-html](https://github.com/QingYunA/answer-me-with-html)（MIT，2.3k star）：
+「模型只写 Markdown 草稿 → CLI 负责排版/配色/SVG 坐标 → 输出单文件离线 HTML」。
+评估与三种方案见 **`docs/ANSWER_ME_WITH_HTML_INTEGRATION.md`**；用户拍板走**方案 B**，并定下两条产品约定：
+**输出放道生一产物目录**、**每次显式要求才出页**（不做 always-on）。
+
+### 已落地
+- **内嵌 CLI（不走上游安装方式）**：`src-tauri/resources/am.mjs`（482,049 B，v0.4.15，
+  上游 commit `d0add7e`，SHA-256 `c1fbbc9b…93cb`）+ 同目录 `AM-MJS-NOTICE.md` 记录版本/commit/哈希与
+  MIT 许可证；`tauri.conf.json` 的 `bundle.resources` 增加 `resources/am.mjs`。
+  为什么不用 `npx skills add`：它给「其它 agent」装在 `~/.agents/skills`，且 SKILL.md 通篇依赖
+  `${CLAUDE_SKILL_DIR}`（导入后必然指向不存在的路径）；而我们只需要那个**零依赖单文件**。
+- **新模块 `src-tauri/src/answer_html.rs`**（+9 单测）：`parse_node_version` / `node_version_ok` /
+  `node_candidates`（含 Homebrew、volta、nvm 版本号最大者）/ `dev_cli_candidates` / `locate_cli` /
+  `build_draft` / `slugify` / `render_args` / `resolve_out_path` / `run_render`，
+  以及命令 `answer_html(markdown, title?, lang?, out_path?, cwd?)`。
+  - **不拼 shell、不走 heredoc**：草稿写 `$TMPDIR`（沙箱放行），CLI 以 **argv** 形态调用
+    （避开上游 `<<'AM_EOF'` 那种引号/反引号/中文标点转义坑）。
+  - **走统一命令管线**：`sandbox::wrap_argv_auto` + 120s 超时 + 进程组终止 + `log_tool_call` 审计
+    —— 与 `run_tests`/`git_operation` 同款（历史教训：命令型工具自己起进程会绕过沙箱）。
+  - **前置探测**：CLI 缺失 / Node < 20 直接给可读错误，不让模型反复试错。
+  - **输出落点**：显式 `out_path`（仍过 P-A8 白名单）> `workspace-write` 时落 `<workspace>/道生一页面/`
+    > 默认 `~/Documents/道生一产物/`；`read-only` 沙箱下**明确拒绝**（生成页面本质是写文件）。
+  - **强制 `--no-open`**：绝不代替用户弹浏览器（页面由我们自己的 `open_file` 打开）。
+- **前端**：`builtin-tools.ts` 说明（含草稿格式：`## 面板` + flow/sequence/tree/timeline/limits/kv/
+  callout/annot 围栏块，面板 3~8 个、结论优先；`✗ L<行>` 只改那一行重试）+ `builtin-params.ts` schema
+  + `chat.ts` 分发（`invoke("answer_html")`，返回路径让模型原样引用）+ 系统提示词条目与
+  「HTML 讲解页使用要点」（**触发：每次显式要求**）。
+- **顺带补**：`skillSourceSpecs` 增加 `~/.agents/skills`（通用技能目录，`npx skills add -a <agent>` 的
+  落地处；我们不在它的已知名单里，但同一目录读得到）+ `tests/test-skill-import.test.ts` 同步。
+
+### 验证
+- `npm run ci:local` **8/8 全绿**（vitest 612 项 / cargo 277 项 / clippy 0 告警 / prettier / rustfmt）。
+- 新增契约测试：`H. 触发策略写死在说明与系统提示词里`、`I. 渲染必须走宿主命令（不在前端拼 node 命令）`。
+- **真机 e2e**（`#[ignore]`，`cargo test --lib answer_html -- --ignored`）：用仓库内嵌 am.mjs 真渲染
+  一页 → 退出码 0、产物含 `<html` 且 > 2KB。
+- **打包校验**：`道生一.app/Contents/Resources/resources/am.mjs` 与仓库副本 SHA-256 一致；
+  包内 CLI `node …/am.mjs --version` → 0.4.15；前端资源表 `assets/index-BFz18hIa.js` 与同批 `dist/` 一致。
+- 已装机 `/Applications/道生一.app`（备份 `道生一.app.old-2319`）；**版本号仍 1.0.0-alpha.3**（未升版本、未打标签）。
+
+### 待办
+- 模型侧实测：让 agent 在真实对话里调 `answer_html`（观察是否按「显式要求」触发、失败是否按行修正重试）。
+- 可选增强：把 `references/video.md` 的讲解视频/配音（ElevenLabs）能力评估后再说（需要外部 API）。
+- 上游升级：按 `AM-MJS-NOTICE.md` 的步骤更新 am.mjs 并重跑真机 e2e。
 
 ---
 

@@ -127,3 +127,31 @@ describe("工具契约：说明 ↔ schema ↔ 实现三者对齐", () => {
     expect(noSchema, `这些工具有分发但缺 schema：${noSchema.join(", ")}`).toEqual([]);
   });
 });
+
+/**
+ * `answer_html`（方案 B：HTML 讲解页）的两条产品约定，单测钉住防回归：
+ *   H. **触发策略 = 每次显式要求**：说明与系统提示词都必须写清楚「用户明说才出页」，
+ *      否则会退化成上游技能那种 always-on（有结论就弹一页），把普通问答都变成页面。
+ *   I. **渲染必须走宿主命令**：前端只做参数搬运 + `invoke("answer_html")`，
+ *      不在前端拼 `node …` shell 命令 —— 否则会绕开沙箱/审计/超时管线
+ *      （历史教训：run_tests / git_operation 就曾因自己起进程而绕过沙箱）。
+ */
+describe("answer_html：触发策略与渲染链路", () => {
+  const desc = BUILTIN_TOOLS.find((t) => t.name === "answer_html")?.desc ?? "";
+
+  it("H. 触发策略写死在说明与系统提示词里（每次显式要求）", () => {
+    expect(desc).toContain("仅当用户明确要求");
+    expect(chatSrc).toContain("HTML 讲解页（answer_html）使用要点");
+    expect(chatSrc).toContain("触发：每次显式要求");
+  });
+
+  it("I. 前端只搬运参数、渲染交给宿主命令（不自己拼 node 命令）", () => {
+    const start = chatSrc.indexOf('case "answer_html"');
+    expect(start).toBeGreaterThan(0);
+    const body = chatSrc.slice(start, start + 1600);
+    expect(body).toContain("invoke<");
+    expect(body).toContain('"answer_html"');
+    expect(body).toContain("args.out_path");
+    expect(body).not.toMatch(/node\s+.*am\.mjs/); // 不在前端拼命令行
+  });
+});

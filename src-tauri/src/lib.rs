@@ -8,8 +8,10 @@
 //!
 //! 子模块：`api`(LLM 请求) / `db`(SQLite) / `search`(多源搜索) / `mcp`(MCP 客户端) /
 //! `mcp_server`(MCP 服务器) / `settings`(加密配置) / `im`(IM 网关) /
-//! `execpolicy`(命令执行策略, S1) / `pty`(交互式终端, S7)。
+//! `execpolicy`(命令执行策略, S1) / `pty`(交互式终端, S7) /
+//! `answer_html`(HTML 讲解页，方案 B：内嵌上游 am.mjs CLI)。
 
+mod answer_html;
 mod api;
 mod browser;
 mod db;
@@ -348,7 +350,8 @@ pub(crate) fn sandbox_config_for(
 
 /// 文件路径沙箱校验：展开 ~ 后，若配置了白名单则必须位于白名单内。
 /// 未配置白名单时回退主目录边界（与 sanitize_home_path 一致）。
-fn sandbox_file_path(db: &Database, path: &str) -> Result<String, String> {
+/// `pub(crate)`：`answer_html` 的显式 out_path 复用同一套白名单校验。
+pub(crate) fn sandbox_file_path(db: &Database, path: &str) -> Result<String, String> {
     let allowed = sandbox_allowed_paths(db);
     if allowed.is_empty() {
         return sanitize_home_path(path);
@@ -4255,7 +4258,8 @@ fn downscale_data_uri(data_uri: &str, max_side: u32) -> String {
 }
 
 /// 产物目录（用户可见、固定）：`~/Documents/道生一产物/`（与 `~/Pictures/道生一截图/` 约定一致）。
-fn artifact_root(home: &str) -> std::path::PathBuf {
+/// `pub(crate)`：`answer_html` 的默认输出目录也用它（页面属于产物）。
+pub(crate) fn artifact_root(home: &str) -> std::path::PathBuf {
     std::path::Path::new(home)
         .join("Documents")
         .join("道生一产物")
@@ -7387,6 +7391,7 @@ pub fn run() {
             git_operation,
             run_tests,
             analyze_project,
+            answer_html::answer_html,
             kb_index,
             kb_create,
             kb_add,
