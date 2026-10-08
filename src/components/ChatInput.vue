@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/chat";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
-import { Settings, Folder } from "lucide-vue-next";
+import { Settings, Folder, Clock } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
 import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
@@ -206,6 +206,24 @@ function handleSend() {
   attachedImages.value = [];
   attachedFiles.value = [];
   if (textareaRef.value) textareaRef.value.style.height = "auto";
+}
+
+// 取回排队的待发消息编辑：从队列移除并把正文/附件回填到输入框（不丢内容）
+function editQueued(index: number) {
+  const item = chatStore.takeBackPendingTurn(index);
+  if (!item) return;
+  inputText.value = item.text || "";
+  attachedImages.value = [...(item.images ?? [])];
+  attachedFiles.value = [...(item.files ?? [])];
+  nextTick(() => {
+    autoResize();
+    textareaRef.value?.focus();
+  });
+}
+
+// 撤回排队的待发消息（本条不再发送）
+function cancelQueued(index: number) {
+  chatStore.removePendingTurn(index);
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -680,6 +698,51 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 
 <template>
   <div class="chat-input" @dragover="onDragOver" @drop="onDrop">
+    <!-- 排队中的待发消息（忙碌时提交的消息）：可**取回编辑**或**撤回**，不必干等它被发出 -->
+    <div v-if="chatStore.pendingCount > 0" class="ci-queue">
+      <div class="ci-queue__head">
+        <span class="ci-queue__title">
+          <Clock :size="13" />
+          待发 {{ chatStore.pendingCount }} 条 · 当前回复结束后自动发出
+        </span>
+        <button
+          class="ci-queue__clear"
+          title="撤回全部待发消息"
+          @click="chatStore.clearPendingTurns()"
+        >
+          全部撤回
+        </button>
+      </div>
+      <div
+        v-for="(q, i) in chatStore.pendingTurns"
+        :key="`${i}-${q.text.slice(0, 24)}`"
+        class="ci-queue__item"
+      >
+        <span class="ci-queue__idx">{{ i + 1 }}</span>
+        <span class="ci-queue__text" :title="q.text">{{ q.text || "（仅附件）" }}</span>
+        <span
+          v-if="(q.images?.length || 0) + (q.files?.length || 0) > 0"
+          class="ci-queue__att"
+          :title="`含 ${q.images?.length || 0} 张图片、${q.files?.length || 0} 个文件`"
+          >📎 {{ (q.images?.length || 0) + (q.files?.length || 0) }}</span
+        >
+        <button
+          class="ci-queue__btn"
+          title="取回编辑（从队列移除并填回输入框）"
+          @click="editQueued(i)"
+        >
+          编辑
+        </button>
+        <button
+          class="ci-queue__btn ci-queue__btn--danger"
+          title="撤回（本条不再发送）"
+          @click="cancelQueued(i)"
+        >
+          撤回
+        </button>
+      </div>
+    </div>
+
     <!-- 附件栏（图片与文件统一展示，参考 DeepSeek Chat 附件栏） -->
     <div v-if="attachedImages.length || attachedFiles.length" class="ci-attach">
       <div v-for="img in attachedImages" :key="img.id" class="ci-attach-item ci-attach-img">
@@ -1190,6 +1253,79 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 .chat-input {
   padding: 12px 20px 14px;
   background: var(--bg-primary);
+}
+
+/* 待发消息队列（忙碌时提交的消息）：可编辑 / 撤回，不必干等它被发出 */
+.ci-queue {
+  border: 1px solid var(--border, #e2e4ea);
+  border-radius: 10px;
+  background: var(--bg-soft, #f6f7f9);
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ci-queue__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ci-queue__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  opacity: 0.75;
+}
+.ci-queue__clear,
+.ci-queue__btn {
+  border: 1px solid var(--border, #e2e4ea);
+  background: var(--bg-primary);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.ci-queue__clear:hover,
+.ci-queue__btn:hover {
+  border-color: var(--accent, #4da3ff);
+  color: var(--accent, #4da3ff);
+}
+.ci-queue__btn--danger:hover {
+  border-color: #e5484d;
+  color: #e5484d;
+}
+.ci-queue__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.ci-queue__idx {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border, #e2e4ea);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  opacity: 0.8;
+}
+.ci-queue__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ci-queue__att {
+  flex: none;
+  opacity: 0.7;
 }
 
 /* 附件栏（图片缩略图 + 文件卡片，参考 DeepSeek Chat 附件栏） */

@@ -73,6 +73,7 @@ function flushPendingViewImages(msgs: AgentMsg[]): void {
 }
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
 import { parsePersistedTools } from "@/utils/tool-summary";
+import { queueRemoveAt, queueTakeAt } from "@/utils/message-queue";
 import { resolveWorkspace } from "@/utils/workspace";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
@@ -4516,6 +4517,28 @@ export const useChatStore = defineStore("chat", () => {
     dbg(`[queue] 回复结束，取出排队消息自动发送（剩余 ${pendingTurns.value.length} 条）`);
     void sendMessage(next.text, next.images, next.files, true);
   }
+  /** 撤回一条排队消息（第 index 条不再发送）；越界安全——队列会在自动发送时变短 */
+  function removePendingTurn(index: number) {
+    const before = pendingTurns.value.length;
+    pendingTurns.value = queueRemoveAt(pendingTurns.value, index);
+    if (pendingTurns.value.length !== before) {
+      dbg(`[queue] 撤回排队消息 #${index + 1}（剩 ${pendingTurns.value.length} 条）`);
+    }
+  }
+  /** 取回一条排队消息编辑（从队列移除并返回，供输入框回填）；越界返回 null */
+  function takeBackPendingTurn(index: number): PendingTurn | null {
+    const taken = queueTakeAt(pendingTurns.value, index);
+    if (!taken) return null;
+    pendingTurns.value = taken.list;
+    dbg(`[queue] 取回排队消息 #${index + 1} 编辑（剩 ${pendingTurns.value.length} 条）`);
+    return taken.item;
+  }
+  /** 撤回全部排队消息 */
+  function clearPendingTurns() {
+    if (pendingTurns.value.length === 0) return;
+    dbg(`[queue] 撤回全部排队消息（${pendingTurns.value.length} 条）`);
+    pendingTurns.value = [];
+  }
   // 切换会话：清空旧会话的排队消息，避免串话到别的会话
   watch(activeConversationId, () => {
     if (pendingTurns.value.length > 0) {
@@ -7411,10 +7434,7 @@ export const useChatStore = defineStore("chat", () => {
   function stopStreaming() {
     isStreaming.value = false;
     // 停止 = 取消：同时清空排队消息（避免停止当前后立刻自动续跑，让用户觉得“停不住”）
-    if (pendingTurns.value.length > 0) {
-      dbg(`[queue] 用户停止生成，清空 ${pendingTurns.value.length} 条排队消息`);
-      pendingTurns.value = [];
-    }
+    clearPendingTurns();
     requestStop(); // 立即中断正在运行的子代理/主代理工具循环（不只是改标志）
     // 用户终止会话 → 把进行中任务计划标记为「已终止」，任务卡不再显示“进行中”转圈
     markTaskPlanTerminated();
@@ -7564,6 +7584,10 @@ export const useChatStore = defineStore("chat", () => {
     streamingContent,
     streamingReasoning,
     pendingCount,
+    pendingTurns,
+    removePendingTurn,
+    takeBackPendingTurn,
+    clearPendingTurns,
     currentToolLabel,
     switchProfile,
     updateProfile,

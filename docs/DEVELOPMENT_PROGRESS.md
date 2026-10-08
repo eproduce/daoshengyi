@@ -2,7 +2,32 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-08**
+> **最后更新：2026-10-09**
+
+---
+
+## 2026-10-09（待发消息队列：可撤回 / 可编辑）
+
+### 背景
+用户反馈「**排队的用户消息，没法撤回也没法修改**」：agent 忙时提交的消息会进待发队列
+（界面上只在发送按钮上显示「待发 N 条」徽标 + 悬浮提示），入队后就完全失控——
+发错了只能干等它被自动发出。
+
+### 已落地
+- 新增纯函数 `src/utils/message-queue.ts`：`queueRemoveAt`（撤回第 N 条）/ `queueTakeAt`
+  （取回第 N 条）。两条要求写进注释与测试：**不可变**（返回新数组，否则 Vue 响应式不刷新视图）、
+  **越界安全**（队列会在「回复结束后自动取出队首」时变短，UI 下标可能已过期——不能抛异常、不能误删）。
+- `src/stores/chat.ts`：新增 `removePendingTurn` / `takeBackPendingTurn` / `clearPendingTurns`
+  并导出（连同 `pendingTurns`）；「停止生成」清空队列与「切换会话」清空队列统一复用 `clearPendingTurns()`。
+- `src/components/ChatInput.vue`：输入框上方新增**待发队列条**——逐条显示 `序号 + 正文摘要 + 附件数`，
+  每条带「**编辑**」（从队列移除并把正文/图片/文件回填输入框，自动聚焦）与「**撤回**」按钮，
+  右上角「全部撤回」；沿用主题变量，明暗两套主题均可见。
+
+### 验证
+- 新增 `tests/test-message-queue.test.ts` 6 条（首/中/尾移除、越界与非法下标、取回返回剩余队列、
+  原数组不被修改、附件随取回一并带走）。
+- `npm run ci:local` **8/8 全绿**（vitest 全绿 / cargo 278 / clippy 0 告警 / prettier / rustfmt）；
+  已重新打包装机到 `/Applications` 并推送 `main`。
 
 ---
 
