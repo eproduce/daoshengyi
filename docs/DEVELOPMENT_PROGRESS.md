@@ -53,6 +53,27 @@
 - 可选增强：把 `references/video.md` 的讲解视频/配音（ElevenLabs）能力评估后再说（需要外部 API）。
 - 上游升级：按 `AM-MJS-NOTICE.md` 的步骤更新 am.mjs 并重跑真机 e2e。
 
+### 真机实测反馈修复（同日晚上，已重新装机）
+用户实机跑了一次「量子理论详解」页面，暴露三个真问题：
+
+1. **产物落到主目录** `~/道生一页面/`（与「统一生成在道生一产物」的约定冲突）—— 根因是
+   `workspace-write` 档下默认输出改到了 `<工作区>/道生一页面/`，而用户的工作区设的就是主目录。
+   **改为恒定落 `~/Documents/道生一产物/`**，并把该命令的沙箱可写区**收敛到输出目录**
+   （不污染主目录、也不放开其它路径）；误落的 html 已移回产物目录。
+2. **「无法打开产物」**：模型按上游惯例写 Markdown 链接 `[标题](/Users/…/页面.html)`，
+   而 marked 原样渲染 `<a href="/Users/…">` → webview 当**本站相对路径**导航（点击无反应/白屏）。
+   修复：`localPathFromHref`（href → 本地绝对路径，扩展名表零漂移复用 `LOCAL_FILE_RE`）
+   + `renderLocalFileLink`/`renderMarkdownLink` 纯函数 + ChatMessage 的 marked `link` renderer；
+   裸路径与 Markdown 链接**共用同一实现**（此前两套）；新增 `tests/test-local-file-link.test.ts` 11 条。
+3. **页面里 LaTeX 变源码**：渲染器无 KaTeX/MathJax，首版 `$…$` 原样显示，模型自己 grep 渲染器才发现
+   （还白烧十几轮探索）。修复：Rust `latex_hits`/`latex_error` **渲染前拦截** + 给 Unicode 改写范例；
+   工具说明与系统提示词补「无数学引擎 → Unicode 记号」「timeline 用 `时间 | 标题 | 注释`」
+   「核验节制：打开一次即可，别 grep 渲染器/反复截图 OCR」。
+4. 附带：`AM_HOME` 指向 `$TMPDIR/daoshengyi-am-home`；`run_render` 增 envs 参数。
+
+验证：`npm run ci:local` 8/8（cargo 278 / clippy 0）；真机 e2e（AM_HOME 隔离）通过；
+已打包装机 `/Applications/道生一.app`（回滚点 `.old-2355`，版本仍 1.0.0-alpha.3）。
+
 ---
 
 ## 2026-09-24（本地运行时：嵌入切 llama.cpp 优先，Ollama 退出推理路径）

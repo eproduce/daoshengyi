@@ -176,6 +176,33 @@ node scripts/am.mjs render draft.md -o /tmp/amh/test.html --no-open
 **未做（明确不在本次范围）**：讲解视频 / 配音（`references/video.md`，依赖外部 TTS API）；
 技能 `references/` 随导入落地（属 O7 契约范畴）。
 
+### 9.1 真机实测反馈修复（2026-10-08 晚，已装机）
+
+用户实机跑了一次「量子理论详解」页面，暴露三个真问题，全部修复并重新装机：
+
+1. **产物落在了主目录**（`~/道生一页面/`，与「统一生成在道生一产物」的约定冲突）
+   —— 原因是 `workspace-write` 档下原逻辑把默认输出改到 `<工作区>/道生一页面/`，而用户的工作区设的就是主目录。
+   **改为恒定落 `~/Documents/道生一产物/`**，并把该命令的沙箱可写区**收敛到输出目录**
+   （既不污染主目录，也不因此放开其它路径）；已把误落的两个 html 文件移回产物目录、删掉空目录。
+2. **「无法打开产物」**（用户原文）—— 模型按上游惯例把产物写成 Markdown 链接
+   `[标题](/Users/…/页面.html)`；marked 原样渲染成 `<a href="/Users/…">`，webview 把它当
+   **本站相对路径**去导航（Tauri 里就是点击无反应 / 白屏）。修复：新增 `localPathFromHref`
+   （href → 本地绝对文件路径；扩展名表**零漂移**复用 `LOCAL_FILE_RE`）+ `renderLocalFileLink` /
+   `renderMarkdownLink` 纯函数，`ChatMessage.vue` 加 marked `link` renderer，把本地路径链接改造成
+   `.local-file-link`（点击走 `file_exists` + `open_file`，存在性校验同样生效）；**裸路径与
+   Markdown 链接共用同一实现**（以前是两套）。新增 11 条单测钉住（含百分号编码、`//host/…` 不误判）。
+3. **页面里 LaTeX 变成源码** —— 渲染器不含 KaTeX/MathJax，首版 `$…$` 原样显示；模型靠自己
+   grep 渲染器才发现（期间还白烧十几轮探索渲染器实现与应用安装目录）。修复：Rust 新增
+   `latex_hits` / `latex_error`，**渲染前就拦下**并给出 Unicode 改写范例；工具说明与系统提示词
+   同步补上「无数学引擎 → 用 Unicode 记号」「`timeline` 每行 `时间 | 标题 | 注释`」
+   「**核验节制**：browser_navigate 打开一次即可，不要 grep 渲染器、不要反复截图 + OCR」。
+4. 附带加固：`AM_HOME` 指向 `$TMPDIR/daoshengyi-am-home`（CLI 自身状态不污染主目录、也不受沙箱阻拦）；
+   `run_render` 增加 envs 参数。
+
+**验证**：`npm run ci:local` 8/8 全绿（vitest / cargo 278 / clippy 0）；真机 e2e
+（带 AM_HOME 隔离）重跑通过；重新打包 → 资源哈希与前端资源表校验一致 → 装机
+`/Applications/道生一.app`（回滚点 `.old-2355`）。
+
 ---
 
 *核实命令与输出见 §2；上游元信息取自 GitHub API（2026-10-08）。*

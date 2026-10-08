@@ -36,8 +36,6 @@ pub const RENDER_TIMEOUT_SECS: u64 = 120;
 const NODE_PROBE_TIMEOUT_SECS: u64 = 10;
 /// 内嵌 CLI 文件名（Tauri resource）
 const CLI_FILE: &str = "am.mjs";
-/// 产物子目录名（默认落在产物目录 / 工作区下）
-const OUT_SUBDIR: &str = "道生一页面";
 /// 文件名限长（字符数）
 const SLUG_MAX_CHARS: usize = 40;
 
@@ -195,15 +193,15 @@ pub fn render_args(cli: &Path, draft: &Path, out: &Path) -> Vec<String> {
     ]
 }
 
-/// `path` 是否位于 `root` 之内（组件级比较，避免 `/a/op2` 被 `/a/op` 误判）
-fn within(path: &Path, root: &Path) -> bool {
-    path == root || path.starts_with(root)
-}
-
-/// 决定输出路径。优先级：显式 `out_path` → 沙箱约束 → 默认产物目录。
+/// 决定输出路径。
 ///
-/// 显式路径的**白名单校验在命令层做**（`sandbox_file_path`），这里只负责：
-/// 目录当作目标目录（补文件名）、以及沙箱必然拒写的组合提前给出可读错误。
+/// 优先级：显式 `out_path`（白名单已在命令层校验）→ **产物目录**（用户的明确约定）。
+/// 只有 `read-only` 沙箱会拒绝：生成页面本质是写文件，在「禁止一切写入」的档位下只好如实拒绝。
+///
+/// 历史（2026-10-08 实测踩到）：曾经在 `workspace-write` 下默认落到 `<工作区>/道生一页面/`，
+/// 而用户的「工作区」设的是主目录 → 产物被写进 `~/道生一页面/`，既不是约定的产物目录、
+/// 也污染了主目录。现在改为**恒定落产物目录**，并由命令层把该命令的沙箱可写区收敛到输出目录
+/// （见 `answer_html` 里对 `cfg.workspace` 的处理）。
 pub fn resolve_out_path(
     explicit: Option<&str>,
     cfg: &sandbox::SandboxConfig,
@@ -211,47 +209,139 @@ pub fn resolve_out_path(
     file_name: &str,
 ) -> Result<PathBuf, String> {
     let mode = cfg.mode.trim().to_ascii_lowercase();
+    if mode == "read-only" {
+        return Err(
+            "当前命令沙箱为「只读」，无法写出 HTML 文件（生成页面本质是写文件）。请在工具栏切换到「工作区可写」或关闭沙箱后重试。"
+                .to_string(),
+        );
+    }
     if let Some(raw) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         let p = PathBuf::from(raw);
         let is_dir =
             raw.ends_with('/') || p.is_dir() || !raw.to_ascii_lowercase().ends_with(".html");
-        let out = if is_dir { p.join(file_name) } else { p };
-        if mode == "workspace-write" {
-            let ws_ok = cfg
-                .workspace
-                .as_deref()
-                .map(|w| within(&out, Path::new(w)))
-                .unwrap_or(false);
-            if !ws_ok {
-                return Err(format!(
-                    "当前命令沙箱为「工作区可写」，输出路径必须位于工作区内（{}）；请改用工作区内的路径，或切换沙箱模式。",
-                    cfg.workspace.as_deref().unwrap_or("-")
-                ));
-            }
-        }
-        if mode == "read-only" {
-            return Err(
-                "当前命令沙箱为「只读」，无法写出 HTML 文件（生成页面本质是写文件）。请在工具栏切换到「工作区可写」或关闭沙箱后重试。"
-                    .to_string(),
-            );
-        }
-        return Ok(out);
+        return Ok(if is_dir { p.join(file_name) } else { p });
     }
-    match mode.as_str() {
-        "read-only" => Err(
-            "当前命令沙箱为「只读」，无法写出 HTML 文件（生成页面本质是写文件）。请在工具栏切换到「工作区可写」或关闭沙箱后重试。"
-                .to_string(),
-        ),
-        "workspace-write" => cfg
-            .workspace
-            .as_deref()
-            .map(|w| Path::new(w).join(OUT_SUBDIR).join(file_name))
-            .ok_or_else(|| {
-                "沙箱模式为「工作区可写」但未设置工作区，无法确定输出目录；请先设置工作区。"
-                    .to_string()
-            }),
-        _ => Ok(artifact_root(home).join(file_name)),
+    Ok(artifact_root(home).join(file_name))
+}
+
+/// 常见 LaTeX 命令名（用于识别草稿里的公式源码；渲染器不含数学引擎，必须提前拦下）
+pub const LATEX_COMMANDS: &[&str] = &[
+    "frac",
+    "sqrt",
+    "sum",
+    "prod",
+    "int",
+    "oint",
+    "partial",
+    "nabla",
+    "psi",
+    "Psi",
+    "phi",
+    "Phi",
+    "hbar",
+    "alpha",
+    "beta",
+    "gamma",
+    "Gamma",
+    "delta",
+    "Delta",
+    "lambda",
+    "Lambda",
+    "mu",
+    "nu",
+    "sigma",
+    "Sigma",
+    "omega",
+    "Omega",
+    "theta",
+    "Theta",
+    "pi",
+    "rho",
+    "tau",
+    "times",
+    "cdot",
+    "pm",
+    "le",
+    "leq",
+    "ge",
+    "geq",
+    "ne",
+    "neq",
+    "approx",
+    "equiv",
+    "propto",
+    "sim",
+    "infty",
+    "to",
+    "rightarrow",
+    "leftarrow",
+    "Rightarrow",
+    "langle",
+    "rangle",
+    "vec",
+    "hat",
+    "dot",
+    "ddot",
+    "mathbf",
+    "mathrm",
+    "mathbb",
+    "mathcal",
+    "text",
+    "left",
+    "right",
+    "begin",
+    "end",
+    "otimes",
+    "oplus",
+    "quad",
+    "qquad",
+    "matrix",
+    "pmatrix",
+    "cases",
+];
+
+/// 草稿里的 LaTeX 数学源码（返回人读的描述；空 = 没发现）。
+///
+/// **为什么要在渲染前拦**：内置渲染器（上游 am.mjs）不含 KaTeX/MathJax，也不认美元符公式
+/// —— 写进去就是原样显示成 `$E=h\nu$` 这种源码，用户看到一堆反斜杠与美元符。
+/// 2026-10-08 实测：模型首版就是这样出的页，自己 grep 渲染器后改用 Unicode 才修好。
+/// 拦下来 + 给出改写范例，比渲完再让用户看坏页面便宜得多（也省一轮重渲的 token）。
+pub fn latex_hits(markdown: &str) -> Vec<String> {
+    let mut hits: Vec<String> = Vec::new();
+    let dollars = markdown.matches('$').count();
+    if dollars >= 2 {
+        hits.push(format!("美元符包裹的公式（{dollars} 个美元符）"));
     }
+    if markdown.contains("\\(") || markdown.contains("\\[") {
+        hits.push("反斜杠括号公式（\\( … \\) 或 \\[ … \\]）".to_string());
+    }
+    let mut cmds: Vec<&str> = Vec::new();
+    for c in LATEX_COMMANDS {
+        if markdown.contains(&format!("\\{c}")) && !cmds.contains(c) {
+            cmds.push(c);
+        }
+    }
+    if !cmds.is_empty() {
+        let list = cmds
+            .iter()
+            .map(|c| format!("\\{c}"))
+            .collect::<Vec<_>>()
+            .join("、");
+        hits.push(format!("LaTeX 命令：{list}"));
+    }
+    hits
+}
+
+/// LaTeX 命中时的可读错误（带 Unicode 改写范例）
+pub fn latex_error(hits: &[String]) -> String {
+    format!(
+        "草稿里有 LaTeX 数学源码（{}），但内置渲染器**不含数学引擎**（无 KaTeX/MathJax）\
+         —— 直接写会被原样显示成源码（用户看到一堆反斜杠和美元符）。\n\
+         请改写后重试：用 **Unicode 记号**直接写公式，例如 ψ、ħ、∂、Σ、Δ、∇、√、⊗、⟨ψ|、|ψ|²、10⁻¹²、x²、aₙ、≥ ≤ ≈ ≠ ∝ ∞ → ⇒；\n\
+         薛定谔方程写成：iħ ∂ψ/∂t = Ĥψ；能量量子写成：E = hν；不确定关系写成：Δx·Δp ≥ ħ/2。\n\
+         （确实需要保留源码时可放进 ```text 代码块；但不要用美元符/反斜杠包裹。）",
+        hits.join("；")
+    )
 }
 
 /// 探测一个 node 可执行文件的版本（跑 `<bin> --version`）
@@ -289,6 +379,7 @@ pub async fn run_render(
     cwd: Option<&str>,
     cfg: &sandbox::SandboxConfig,
     timeout_secs: u64,
+    envs: &[(String, String)],
 ) -> Result<(String, String, i32), String> {
     let prog = node_bin.to_string_lossy().to_string();
     let (exec, full_args) = match sandbox::wrap_argv_auto(cfg, &prog, args) {
@@ -298,6 +389,7 @@ pub async fn run_render(
 
     let mut cmd = tokio::process::Command::new(&exec);
     cmd.args(&full_args);
+    cmd.envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
@@ -346,6 +438,13 @@ pub async fn answer_html(
     if md.is_empty() {
         return Err("answer_html 需要 markdown 参数（页面的 Markdown 草稿）".to_string());
     }
+    // 渲染器不含数学引擎：LaTeX 必须在这里拦下（否则页面上会原样显示源码）
+    let latex = latex_hits(md);
+    if !latex.is_empty() {
+        let msg = latex_error(&latex);
+        let _ = db.log_tool_call("answer_html", "latex-precheck", &msg, true, 0);
+        return Err(msg);
+    }
 
     // 1) 内嵌 CLI
     let cli = locate_cli(&app).ok_or_else(|| {
@@ -374,8 +473,8 @@ pub async fn answer_html(
     )
     .map_err(|e| format!("写入临时草稿失败（{}）: {e}", draft_path.display()))?;
 
-    // 4) 输出路径：显式路径过 P-A8 白名单，其余按沙箱约束决定
-    let cfg = sandbox_config_for(
+    // 4) 输出路径：显式路径过 P-A8 白名单，其余一律落产物目录
+    let mut cfg = sandbox_config_for(
         &db,
         None,
         cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()),
@@ -398,11 +497,21 @@ pub async fn answer_html(
             return Err(format!("创建输出目录失败（{}）: {e}", parent.display()));
         }
     }
+    // 沙箱可写区收敛到**输出目录**：本命令只写这一处（草稿与 CLI 自身状态都在 TMPDIR）。
+    // 这样即使用户把「工作区」设得很宽（例如主目录），产物也只落在产物目录里。
+    if cfg.mode.trim().eq_ignore_ascii_case("workspace-write") {
+        if let Some(dir) = out.parent() {
+            cfg.workspace = Some(dir.to_string_lossy().to_string());
+        }
+    }
 
     // 5) 执行（沙箱包装 + 超时 + 审计）
     let args = render_args(&cli, &draft_path, &out);
     let display_cmd = format!("{} {}", node_bin.display(), args.join(" "));
     let workdir = cfg.workspace.clone();
+    // AM_HOME 指到临时目录：CLI 自己的状态/缓存不污染用户主目录（也不受沙箱阻拦）
+    let am_home = std::env::temp_dir().join("daoshengyi-am-home");
+    let envs = vec![("AM_HOME".to_string(), am_home.to_string_lossy().to_string())];
     let start = std::time::Instant::now();
     let rendered = run_render(
         &node_bin,
@@ -410,6 +519,7 @@ pub async fn answer_html(
         workdir.as_deref(),
         &cfg,
         RENDER_TIMEOUT_SECS,
+        &envs,
     )
     .await;
     let duration = start.elapsed().as_millis() as i64;
@@ -537,24 +647,34 @@ mod tests {
     }
 
     #[test]
-    fn out_path_follows_sandbox_constraints() {
-        // workspace-write：默认落到工作区内（否则沙箱必然拒写）
-        let p = resolve_out_path(
-            None,
+    fn out_path_is_always_the_artifacts_dir_by_default() {
+        // 用户约定：**统一生成在 `~/Documents/道生一产物/`**。
+        // 回归防线：曾在 workspace-write 下改落 `<工作区>/道生一页面/`，而用户的工作区是主目录
+        // → 产物被写进 `~/道生一页面/`（既不是约定位置、又污染主目录）——2026-10-08 用户实测。
+        for mode in ["off", "workspace-write", "danger-full-access", ""] {
+            let p = resolve_out_path(
+                None,
+                &cfg(mode, Some("/Users/tester")),
+                "/Users/tester",
+                "a.html",
+            )
+            .unwrap();
+            assert_eq!(
+                p,
+                PathBuf::from("/Users/tester/Documents/道生一产物/a.html"),
+                "mode={mode} 时默认输出必须是产物目录"
+            );
+        }
+        // 显式路径仍以调用方为准（白名单在命令层校验），不再因「不在工作区内」而报错
+        // （本命令的沙箱可写区会被收敛到输出目录）
+        let e = resolve_out_path(
+            Some("/tmp/out.html"),
             &cfg("workspace-write", Some("/ws")),
             "/Users/tester",
             "a.html",
         )
         .unwrap();
-        assert_eq!(p, PathBuf::from("/ws/道生一页面/a.html"));
-        // 显式给工作区外的路径：提前给可读错误，而不是等沙箱报「Operation not permitted」
-        let e = resolve_out_path(
-            Some("/Users/tester/out.html"),
-            &cfg("workspace-write", Some("/ws")),
-            "/Users/tester",
-            "a.html",
-        );
-        assert!(e.is_err());
+        assert_eq!(e, PathBuf::from("/tmp/out.html"));
         // read-only：明确拒绝（生成页面本质是写文件）
         assert!(
             resolve_out_path(None, &cfg("read-only", None), "/Users/tester", "a.html").is_err()
@@ -566,6 +686,23 @@ mod tests {
             "a.html"
         )
         .is_err());
+    }
+
+    #[test]
+    fn latex_source_is_detected_before_rendering() {
+        // 渲染器无数学引擎：美元符公式 / 反斜杠括号 / 常见命令都要能识别
+        assert!(!latex_hits("电磁场满足 $E = mc^2$ 的关系").is_empty());
+        assert!(!latex_hits("写成 \\(x^2\\) 更清楚").is_empty());
+        assert!(!latex_hits("薛定谔方程 \\frac{\\partial}{\\partial t}").is_empty());
+        assert!(!latex_hits("能量子 \\hbar\\omega").is_empty());
+        // 正常草稿（含单个货币美元符、普通反斜杠转义）不能被误伤
+        assert!(latex_hits("价格是 5$ 一件（促销）").is_empty());
+        assert!(latex_hits("用 \\n 表示换行，用 \\d 表示数字").is_empty());
+        assert!(latex_hits("## 面板\n普通中文段落，含 ψ 与 ħ 这类 Unicode 记号。").is_empty());
+        // 错误文案要给出可执行的改写范例
+        let msg = latex_error(&latex_hits("$x$"));
+        assert!(msg.contains("Unicode"));
+        assert!(msg.contains("iħ ∂ψ/∂t"));
     }
 
     #[test]
@@ -625,10 +762,19 @@ mod tests {
         std::fs::write(&draft, build_draft(md, Some("端到端渲染自检"), Some("zh"))).unwrap();
 
         let args = render_args(&cli, &draft, &out);
-        let (stdout, stderr, code) =
-            run_render(&node, &args, None, &cfg("off", None), RENDER_TIMEOUT_SECS)
-                .await
-                .expect("渲染进程应能启动");
+        // AM_HOME 与生产一致（隔离到临时目录）：验证 CLI 在只有 TMPDIR 可写时也能渲染
+        let am_home = dir.join("am-home");
+        let envs = vec![("AM_HOME".to_string(), am_home.to_string_lossy().to_string())];
+        let (stdout, stderr, code) = run_render(
+            &node,
+            &args,
+            None,
+            &cfg("off", None),
+            RENDER_TIMEOUT_SECS,
+            &envs,
+        )
+        .await
+        .expect("渲染进程应能启动");
         assert_eq!(code, 0, "渲染应成功：stdout={stdout}\nstderr={stderr}");
         assert!(out.exists(), "应产出 HTML：{}", out.display());
         let html = std::fs::read_to_string(&out).unwrap();

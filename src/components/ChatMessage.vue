@@ -97,11 +97,10 @@ marked.setOptions({ breaks: true, gfm: true });
 // URL（https://... 等外链路径，如 /finance.sina.com.cn/.../x.sh）前导是 / 或 :，
 // 落在 [\w\/:] 内 → 前缀组不匹配 → 不误判为本地文件。URL 由 marked gfm autolink 正常渲染。
 import { LOCAL_FILE_RE } from "@/utils/local-file-re";
+import { renderLocalFileLink, renderMarkdownLink } from "@/utils/local-file-link";
 
 function linkifyLocalPaths(s: string): string {
-  // 属性值转义：路径可能含引号 / & / <，直接拼进 HTML 会破坏结构
-  const esc = (v: string) =>
-    v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // 路径可能含引号 / & / <，转义由 renderLocalFileLink 统一处理
   // 符号跳转：路径后紧跟 `:行号`（如 code_search 的 `file:12`）时把行号一并捕获，
   // 点击用 VSCode goto 定位到行；无行号则照常打开文件。
   let out = "";
@@ -113,15 +112,10 @@ function linkifyLocalPaths(s: string): string {
     const line = lineM ? lineM[1] : "";
     out += s.slice(last, idx);
     const name = path.split("/").pop() || path;
-    // href 用真实 file:// 地址，title 放完整路径——这样「悬停看状态栏 / 右键复制链接 /
-    // 复制渲染内容」拿到的是可用地址（旧实现 href="#" 会被解析成页面地址
-    // http://127.0.0.1:1420/# ，复制出来是废链）。点击仍由 onContentClick 拦截
-    // （preventDefault）走 file_exists + open_file，webview 不会真的去导航 file://。
-    // `~/` 开头的路径无法构成合法 file URL → 退回 # 占位（真实路径仍在 data-path/title）。
-    const href = path.startsWith("/")
-      ? `file://${encodeURI(path).replace(/#/g, "%23").replace(/\?/g, "%3F")}`
-      : "#";
-    out += `<a href="${href}" title="${esc(path)}" class="local-file-link" data-path="${encodeURIComponent(path)}"${line ? ` data-line="${line}"` : ""}>📄 ${name}${line ? `:${line}` : ""}</a>`;
+    // 链接 HTML 统一由 renderLocalFileLink 产出（与 Markdown 链接路径同一实现）：
+    // href 用真实 file:// 地址（悬停/右键复制/复制渲染内容拿到的是可用地址），
+    // 点击仍由 onContentClick 拦截（preventDefault）走 file_exists + open_file。
+    out += renderLocalFileLink(path, `📄 ${name}${line ? `:${line}` : ""}`, line);
     last = idx + path.length + (lineM ? lineM[0].length : 0);
   }
   out += s.slice(last);
@@ -170,6 +164,21 @@ marked.use({
       }
       const lang = token.lang || "";
       return `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>${escapeHtml(token.text)}</code></pre>`;
+    },
+    // Markdown 链接 `[标题](/绝对/路径.html)`：marked 默认渲染成 `<a href="/绝对/…">`，
+    // 而 webview 会把它当**本站相对路径**去导航（Tauri 里就是点击无反应 / 白屏）——
+    // 2026-10-08 用户实测「无法打开产物」的根因就是这个。本地文件路径一律改造成
+    // `.local-file-link`（点击走 file_exists + open_file）；其余链接保持原样。
+    link(
+      this: unknown,
+      token: { href: string; title?: string | null; text?: string; tokens?: unknown[] },
+    ) {
+      const parser = (this as { parser?: { parseInline(tokens: unknown[]): string } }).parser;
+      const inner =
+        parser && token.tokens?.length
+          ? parser.parseInline(token.tokens)
+          : escapeHtml(token.text || "");
+      return renderMarkdownLink(token.href || "", inner, token.title ?? null);
     },
   },
 });
