@@ -4,6 +4,9 @@
 >
 > 最后更新：2026-10-14（发版到 `v1.0.0-alpha.4`；落地进度见 `docs/DEVELOPMENT_PROGRESS.md`，逐项状态见 `docs/DEVELOPMENT_PLAN.md`）
 >
+> **终极形态方向**：桌面环境层（贾维斯式——无固定入口、结果由 agent 决定怎么呈现）见 **`docs/DESKTOP_AMBIENT_UI.md`**；
+> 语音选型与视觉三层栈的既有结论见 `VOICE_IO_RESEARCH.md` / `VOICE_VIDEO_INPUT_PLAN.md`。
+>
 > **发版记录**：`v1.0.0-alpha.2`（2026-09-18，首个成功发布的 Release）→ `v1.0.0-alpha.3`（2026-09-20，定时任务静默停摆修复 + 会话放行作用域修复）→ `v1.0.0-alpha.4`（2026-10-14，**长任务自主接力 + 工具调用展示重构 + 技能生态兼容与技能包 + HTML 讲解页 + 原生视觉**）。发布入口只有一个：推 `v*` 标签。
 
 ---
