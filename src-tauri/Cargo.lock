@@ -861,6 +861,7 @@ dependencies = [
  "hmac",
  "image",
  "libc",
+ "objc2",
  "pdf-extract",
  "portable-pty",
  "rand 0.8.7",

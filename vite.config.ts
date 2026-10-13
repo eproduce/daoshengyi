@@ -39,6 +39,14 @@ export default defineConfig(async () => ({
   },
   build: {
     rollupOptions: {
+      // 多入口：主窗口（index.html）+ HUD 浮层（hud.html）。
+      // HUD 必须是独立入口，不复用主入口 —— 主入口会拉起 Pinia/MCP/Ollama/托盘同步
+      // 等一整套启动副作用（见 src/hud-main.ts），而浮层要求「热键按下即刻可见」，
+      // 且需要与主窗口互相隔离（HUD 崩了不能带走主窗口）。
+      input: {
+        main: resolve(__dirname, "index.html"),
+        hud: resolve(__dirname, "hud.html"),
+      },
       output: {
         // 大体积第三方库独立分块（长期缓存友好），业务代码留在入口 chunk：
         // katex（公式，含字体很大）/ highlight.js / marked / vue-flow / lucide / tauri API

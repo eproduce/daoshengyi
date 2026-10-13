@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "hud",
+  "description": "HUD 浮层窗口（环境层）：独立于主窗口的最小权限——只读核心 API + 自有命令。",
+  "windows": ["hud"],
+  "permissions": ["core:default", "core:window:allow-set-ignore-cursor-events"]
+}

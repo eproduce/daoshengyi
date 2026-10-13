@@ -168,7 +168,7 @@
 
 - **本机是 Intel Mac（无可用 GPU）**：本地 ASR 只能小模型（走 INT8）；本地 VLM 10~40s/帧 → 视觉**永远确定性优先**。
 - **权限**：麦克风 / 屏幕录制 / 辅助功能都要 macOS TCC 授权；打包版需在 `Info.plist` 写用途说明，升级后可能需重新授权。
-- **透明窗口 + 点击穿透在 WKWebView 上有坑**（我们踩过 `mask` 失效）：HUD 必须**先 spike 验证**，且**必须有静默开关**。
+- **透明窗口 + 点击穿透在 WKWebView 上有坑**（我们踩过 `mask` 失效）：HUD **已 spike 验证可用**（`docs/HUD_SPIKE.md`），但**必须有静默开关**（当前实现：不设 `DAOSHENGYI_HUD_SPIKE` 就永不创建窗口），且**不能抢焦点**（用 `orderFrontRegardless`，不是 `show()`）。
 - **成本与延迟**：语音把 LLM 调用从「按任务」变成「按话轮」→ 必须加**本地预筛**（复用 `search-gate` / `danger-rules` 那套确定性门禁思路）+ 小模型先应答的分层。
 - **隐私红线**：不做常驻录音、不做静默屏幕录制；音视频全本机处理。
 - **依赖获取受限**：crates.io 不可达（需稀疏镜像）；npm registry 受限（故 HUD 优先用系统框架与已有依赖，不轻易引新包）。
@@ -188,8 +188,8 @@
 
 | 位置 | 内容 |
 | :--- | :--- |
+| `src-tauri/src/hud.rs` + `hud.html` + `src/hud-main.ts` + `src/components/HudSpike.vue`（新，✅ spike 已落地） | HUD 窗口（透明/置顶/穿透/不抢焦点）+ 胶囊 UI（波形待接语音）；取证工具 `scripts/hud-spike-verify.swift` |
 | `src-tauri/src/voice.rs`（新） | cpal 采集 → sherpa-onnx VAD/ASR；准备状态机；并发 1 + 空闲释放 |
-| `src-tauri/src/hud.rs` + `src/components/Hud*.vue`（新） | HUD 窗口（透明/置顶/穿透）+ 胶囊 UI + 波形 |
 | `src/utils/display-ir.ts`（新，纯函数） | IR 类型 + 校验 + 降级映射（surface 能力矩阵）+ 单测 |
 | `src/utils/surfaces.ts`（新） | surface 注册表 + 呈现决策（宿主规则，模型可建议） |
 | `src-tauri/src/speak.rs`（新） | `say` 播报（流式 + 可打断） |
@@ -201,7 +201,13 @@
 
 ## 12. 待研究 / 待实测（开放问题）
 
-1. **Tauri 2.11.5 透明窗口 + `set_ignore_cursor_events` 在 macOS 26 的真实表现**（先做 1 小时 spike，再决定 HUD 形态）。
+1. ~~**Tauri 2.11.5 透明窗口 + `set_ignore_cursor_events` 在 macOS 26 的真实表现**（先做 1 小时 spike，再决定 HUD 形态）。~~
+   ✅ **已实测，见 `docs/HUD_SPIKE.md`**：透明 / 无边框 / 置顶 / 点击穿透 / 不抢焦点 **全部成立**，
+   形态定为「右上角 380×132 胶囊、圆角 18、四周 8pt 透明边、默认穿透」。
+   两个关键前提：① `transparent` 必须配合 `app.macOSPrivateApi=true` + `macos-private-api` feature
+   （代价：**不能上 App Store**）；② 显示**不能用 `show()`**（会抢走用户正在输入的焦点），
+   要用 macOS 的 `orderFrontRegardless`。
+   遗留 1 项：像素级确认需在**屏幕解锁**状态下补一次（锁屏会遮挡并停止窗口渲染，无法取证）。
 2. **sherpa-onnx 在本机的实际构建与首字延迟**（先配镜像；实测「说一句到文字落地」的端到端时间）。
 3. **HUD 的「穿透 + 局部可点」实现方式**：区域级穿透 vs 全局穿透 + 热键唤醒（后者更稳）。
 4. **呈现决策要不要模型参与**：还是纯宿主规则 + 模型只给 `priority`/`life` 提示。

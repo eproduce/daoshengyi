@@ -17,6 +17,7 @@ mod browser;
 mod db;
 mod execpolicy;
 mod github;
+mod hud;
 mod im;
 mod img_inspect;
 mod local_runtime;
@@ -7174,6 +7175,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(TrayStatusState(std::sync::Mutex::new(None)))
+        // 环境层（HUD）行为开关：点击穿透 / 跨 Space。Tauri 只提供 setter、没有 getter，
+        // 所以在这里镜像一份，用于区分「请求了没生效」与「压根没请求」。
+        .manage(hud::HudFlags::new())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -7381,6 +7385,10 @@ pub fn run() {
                 register_global_shortcuts(app.handle(), &toggle, &new_chat);
             }
 
+            // 环境层（HUD）spike 钩子：只有设置了 DAOSHENGYI_HUD_SPIKE 才会创建 HUD 窗口，
+            // 否则这里什么都不做（默认零成本 = 静默开关）。
+            hud::spike_on_startup(app.handle());
+
             // devtools 默认不自动打开；需要调试时用环境变量开启：
             //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
             #[cfg(debug_assertions)]
@@ -7442,6 +7450,8 @@ pub fn run() {
             save_app_settings,
             load_app_settings,
             apply_global_shortcuts,
+            hud::hud_spike,
+            hud::hud_note,
             cancel_stream,
             list_models,
             touch_fact,

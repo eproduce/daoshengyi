@@ -13,7 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api：HUD 浮层的**透明窗口**在 macOS 上必须开这个（官方 config schema 明确要求
+# `transparent` 配合它才生效，缺了就只是「看着设了透明、实际白底」）。
+# 代价：走私有 API，提交 App Store 会被拒 —— 我们只走 GitHub Release 分发，可接受。
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
@@ -46,3 +49,9 @@ zip = "2"
 snap = "1"
 # 图片解码/缩放：本地视觉模型输入前压缩（像素数直接决定本地推理耗时）
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+# HUD spike：回读 NSWindow 真实状态（ignoresMouseEvents / isOpaque / level / styleMask …）。
+# 这个 crate 本来就在依赖树里（tauri 的传递依赖），这里只是提为直接依赖 —— 因此**无需联网**
+# 也能解析（本机 crates.io 不可达，新增陌生依赖必须先配稀疏镜像）。仅 macOS 编译。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"

@@ -12,3 +12,6 @@ package-lock.json
 docs
 README.md
 *.md
+
+# Swift（取证/原生工具）：prettier 没有 swift 解析器，会直接报「推断不出解析器」
+*.swift
