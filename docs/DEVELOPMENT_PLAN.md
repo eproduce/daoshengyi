@@ -372,6 +372,35 @@
 
 ---
 
+## 3.14 编程能力增强：LSP 桥 / worktree 隔离 / PR 工作流（2026-10-14 规划，同日全部落地）
+
+> 背景：盘点「agent 有没有代码编写与工程化能力」时确认——**改 → 验 → 交的工程闭环已到位**
+> （改：`apply_patch`/`replace_string`/行锚点；验：`run_tests` + **验证凭据**；交：`git` 白名单 + diff 确认 + 撤销），
+> 差的只是三件「专业工具」：语义级导航、并行隔离、PR 通道。
+
+| 档 | 事项 | 状态 | 实现位置 |
+| :--- | :--- | :--- | :--- |
+| 🟢 | **LSP 桥**（`code_nav`） | ✅ 2026-10-14 | `src-tauri/src/lsp.rs`（3 命令）+ `chat.ts` 分发 + 提示词 |
+| 🟢 | **worktree 隔离**（`worktree`） | ✅ 2026-10-14 | `src-tauri/src/worktree.rs`（3 命令）+ 统一命令管线 `run_wrapped_argv` |
+| 🟡 | **PR 工作流**（`github_pr`） | ✅ 2026-10-14 | `src-tauri/src/github.rs`（`gh_operation` + 动作白名单） |
+| 🔵 | 覆盖率 / profiling 进验证凭据 | ⬜ 待做 | 解析 `cargo llvm-cov` / `vitest --coverage` / `pytest --cov` 输出 |
+| 🔵 | tree-sitter 语法级索引 | ⬜ 待做 | ⚠️ 需先验证沙箱能否装 crates.io 依赖（LSP 桥已覆盖大部需求） |
+
+### 落地要点（踩过的坑值得记）
+
+- **LSP 帧读取**：服务器会带 `Content-Type` 等额外头 —— 必须**读完整个头部（到空行）再按 `Content-Length` 读正文**；
+  读到一个头就抢着读正文→ JSON 解析失败 → 表现为「服务器不回 `initialize`」（花了两次真机迭代才定位）。
+- **服务端→客户端的请求必须应答**（`workspace/configuration` / `client/registerCapability`），否则服务器一直等我们。
+- **服务器探测要多个候选**：实测用户机器上 `~/.cargo/bin/rust-analyzer` 只是 **rustup shim**（组件未装，一启动就报错退出），
+  而 **VS Code 扩展目录里有真二进制** → 候选逐个尝试 + 把服务器 stderr 带进错误信息。
+- **`code_nav` 只读**：`rename` 只返回**预览**，不写盘（落盘仍走 `replace_string`/`apply_patch` 的 diff 确认与撤销）。
+- **`github_pr` 不给 merge/close**：不可逆的远端操作不该由模型一键做掉；参数由纯函数拼装，无「透传任意 gh 子命令」口子。
+- **worktree 不污染仓库**：副本落 `<repo>/.daoshengyi/worktrees/<slug>`，忽略规则写 **`.git/info/exclude`**（本地忽略，不动用户 `.gitignore`）；
+  删除只允许该目录下的副本，且副本有未提交改动时默认拒绝（需显式 `force`）。
+
+**验收方式**：`cargo test --lib`（+`-- --ignored lsp_real` 真机跑 rust-analyzer 断言符号非空）；
+worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护）；`gh` 用本仓 PR 真机验证；全量过 `npm run ci:local` 八门禁。
+
 ## 4. 计划功能（借鉴 Hermes-CN-Desktop，按优先级）
 
 > 参考项目：`https://github.com/Eynzof/Hermes-CN-Desktop`（许可 PolyForm Noncommercial，**只借鉴思路，不抄代码**）。调研详见会话记忆 `hermes-cn-research.md`。

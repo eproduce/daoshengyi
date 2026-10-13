@@ -51,6 +51,7 @@ export const AGENT_ROLES: AgentRole[] = [
       "git",
       "run_tests",
       "analyze_project",
+      "code_nav",
       "list_dir",
       "pdf_read",
       "plan_update",
@@ -65,7 +66,7 @@ export const AGENT_ROLES: AgentRole[] = [
       "你的职责是**验证**：运行测试/检查实现是否满足要求。自动检测测试框架（npm test / cargo test / pytest），" +
       "失败时给出**失败项列表 + 关键错误信息**，并给出修复建议，但由执行者修复。" +
       "产出物是明确的验证结论：通过 / 失败（附证据）。",
-    tools: ["run_tests", "analyze_project", "list_dir", "git", "pdf_read"],
+    tools: ["run_tests", "analyze_project", "code_nav", "list_dir", "git", "pdf_read"],
   },
   {
     id: "reviewer",
@@ -76,7 +77,7 @@ export const AGENT_ROLES: AgentRole[] = [
       "你的职责是**评审**：审阅代码改动（git diff / 相关文件）、评估正确性/健壮性/可读性。" +
       "重点：逻辑错误、边界情况、安全隐患（路径穿越/注入/危险命令）、性能问题、命名与可维护性。" +
       "产出物：问题清单（严重度分级：🔴 阻塞 / 🟡 建议 / 🔵 可选）+ 每条的依据与修改建议。",
-    tools: ["git", "analyze_project", "list_dir", "pdf_read", "run_tests"],
+    tools: ["git", "analyze_project", "code_nav", "list_dir", "pdf_read", "run_tests"],
   },
   {
     id: "researcher",

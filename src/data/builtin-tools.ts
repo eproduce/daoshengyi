@@ -170,6 +170,31 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     desc: '在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {"root": "项目目录绝对路径", "query": "自然语言描述要查的代码（如「处理用户登录」「解析配置文件」）", "limit": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后可用 read_file 精读相关文件。',
   },
   {
+    name: "code_nav",
+    desc:
+      "**语义级代码导航**（走本机语言服务器 LSP）：跳定义、找引用/实现、悬停类型、文件/工作区符号、**编译诊断**、重命名**预览**。" +
+      '参数 {"action": "servers 列出可用服务器 | definition | references | implementation | hover | symbols | workspace_symbols | diagnostics | rename", "root": "项目根目录绝对路径", "path": "文件绝对路径", "line": 行号(1 起算), "character": 列号(1 起算、按字符数), "query": "workspace_symbols 关键词", "new_name": "rename 新名字", "server": "可选指定服务器 id", "wait_ms": "可选等待毫秒"}。' +
+      "**何时用**：要**准**的（定义在哪 / 谁在引用它 / 有没有编译错 / 这行的类型是什么）就用它——`code_search` 是向量检索、给的是「相关片段」，两者互补。" +
+      "**首次调用会冷启动**（rust-analyzer 建索引可能几十秒，可调大 wait_ms），之后复用同一进程；**rename 只给预览不写盘**，确认后用 replace_string / apply_patch 落地。" +
+      "本机缺失的服务器（如 TS 的 typescript-language-server）需在**沙箱外**终端装：`npm i -g typescript-language-server typescript`。",
+  },
+  {
+    name: "github_pr",
+    desc:
+      "**GitHub PR 工作流**（封装本机 gh CLI）：列 PR / 看详情 / 看 diff / 看 CI 检查 / 建 PR / 发评论。" +
+      '参数 {"action": "pr_list | pr_view | pr_create | pr_comment | pr_diff | pr_checks | auth_status", "cwd": "仓库目录（gh 据此推断仓库；默认当前工作区）", "number": 可选 PR 号（省略=当前分支的 PR）, "title": "pr_create 标题", "body": "pr_create / pr_comment 正文", "base": "pr_create 目标分支", "limit": "pr_list 条数（默认 20）"}。' +
+      "**使用时机**：用户要求看/建/评论 PR、或要看 CI 检查结果时。**不提供 merge / close 等不可逆操作**（那类请由用户自己在网页或终端决定）。" +
+      "**pr_create 前先确认分支已推送**（`git push -u origin <分支>`），否则 gh 会报错；描述建议写清改了什么 / 为什么 / 怎么验。",
+  },
+  {
+    name: "worktree",
+    desc:
+      "**并行隔离：给子代理/并行任务各建一个 git worktree（同一个仓库的独立工作副本）**。" +
+      '参数 {"action": "create 新建副本 | list 列出副本 | remove 删除副本", "repo": "仓库目录绝对路径", "name": "create：副本名（默认时间戳）", "base_ref": "create：基于哪个 ref（默认 HEAD）", "path": "remove：要删的副本路径", "force": "remove：有未提交改动时需 true"}。' +
+      "**何时用**：多个子代理要**同时改代码**时——先给每个子任务 create 一份副本（落在 `<repo>/.daoshengyi/worktrees/<name>`，分支 `dsy/<name>`，已自动写进 `.git/info/exclude` 本地忽略，**不动你的 .gitignore**），各自在副本里改，再用 `git diff dsy/<name>` 对比后决定合并哪个。" +
+      "**不并行就别用**（白增复杂度）；单线程改代码直接在仓库里改即可。",
+  },
+  {
     name: "code_roots",
     desc: "列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建立语义索引时调用。",
   },

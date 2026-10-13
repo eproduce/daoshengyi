@@ -502,6 +502,63 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["query"],
     additionalProperties: true,
   },
+  github_pr: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        description:
+          "pr_list 列 PR | pr_view 看详情 | pr_create 建 PR | pr_comment 发评论 | pr_diff 看改动 | pr_checks 看 CI 检查 | auth_status 看登录状态",
+      },
+      cwd: { type: "string", description: "仓库目录（默认当前工作区）" },
+      number: { type: "integer", description: "可选 PR 号（省略=当前分支的 PR）" },
+      title: { type: "string", description: "pr_create 的标题" },
+      body: { type: "string", description: "pr_create / pr_comment 的正文" },
+      base: { type: "string", description: "pr_create 的目标分支（默认仓库默认分支）" },
+      limit: { type: "integer", description: "pr_list 条数（默认 20，最大 100）" },
+    },
+    required: ["action"],
+    additionalProperties: true,
+  },
+  worktree: {
+    type: "object",
+    properties: {
+      action: { type: "string", description: "create 新建副本 | list 列出副本 | remove 删除副本" },
+      repo: { type: "string", description: "仓库目录绝对路径" },
+      name: { type: "string", description: "create：副本名（会转成 slug 作为目录名与分支名）" },
+      base_ref: { type: "string", description: "create：基于哪个 ref（默认 HEAD）" },
+      path: { type: "string", description: "remove：要删的副本路径（必须是本工具建的）" },
+      force: { type: "boolean", description: "remove：副本有未提交改动时需 true" },
+    },
+    required: ["action", "repo"],
+    additionalProperties: true,
+  },
+  code_nav: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        description:
+          "servers 列出可用语言服务器 | definition 跳定义 | references 找引用 | implementation 找实现 | hover 悬停信息 | symbols 文件符号 | workspace_symbols 工作区符号 | diagnostics 诊断 | rename 重命名预览",
+      },
+      root: { type: "string", description: "项目根目录绝对路径（servers 以外必填）" },
+      path: {
+        type: "string",
+        description: "文件绝对路径（位置类动作与 symbols/diagnostics 需要）",
+      },
+      line: { type: "integer", description: "行号（1 起算）" },
+      character: { type: "integer", description: "列号（1 起算、按字符数）" },
+      query: { type: "string", description: "workspace_symbols 的符号名关键词" },
+      new_name: { type: "string", description: "rename 的新名字" },
+      server: { type: "string", description: "可选，指定语言服务器 id（默认按项目文件自动选）" },
+      wait_ms: {
+        type: "integer",
+        description: "可选等待毫秒（默认 20000；冷启动建索引时可调大）",
+      },
+    },
+    required: ["action"],
+    additionalProperties: true,
+  },
   code_roots: {
     type: "object",
     properties: {},

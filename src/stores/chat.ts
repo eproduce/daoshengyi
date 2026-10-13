@@ -903,6 +903,9 @@ function getMcpToolsPrompt(): string {
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
     '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地嵌入模型：llama.cpp 的 nomic-embed-text，Ollama 兜底，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
     '\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {"root": "项目目录绝对路径", "query": "自然语言描述要查的代码，如「处理用户登录」「解析配置文件」", "limit": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。' +
+    '\n- **code_nav** (app): **语义级代码导航**（走本机语言服务器 LSP）：跳定义 / 找引用 / 找实现 / 悬停类型 / 文件符号 / 工作区符号 / **编译诊断** / 重命名**预览**。参数 {"action": "servers | definition | references | implementation | hover | symbols | workspace_symbols | diagnostics | rename", "root": "项目根目录绝对路径", "path": "文件绝对路径", "line": 行号(1 起算), "character": 列号(1 起算、按字符数), "query": "workspace_symbols 关键词", "new_name": "rename 新名字", "server": "可选指定服务器 id", "wait_ms": "可选等待毫秒"}。**使用时机**：要「准」的答案（定义在哪 / 谁在引用 / 有没有编译错 / 这行类型是什么）时用它；code_search 给的是「相关片段」，两者互补。' +
+    '\n- **worktree** (app): **并行隔离**——给子代理/并行任务各建一个 git worktree（同一仓库的独立工作副本，落在 `<repo>/.daoshengyi/worktrees/<name>`、分支 `dsy/<name>`、已自动本地忽略）。参数 {"action": "create | list | remove", "repo": "仓库目录绝对路径", "name": "create 副本名", "base_ref": "create 基于哪个 ref", "path": "remove 要删的副本路径", "force": "remove 有未提交改动时需 true"}。**使用时机**：多个子代理要同时改代码时先各自 create 副本，改完用 git diff 对比再合并。' +
+    '\n- **github_pr** (app): **GitHub PR 工作流**（封装本机 gh CLI）：pr_list / pr_view / pr_create / pr_comment / pr_diff / pr_checks / auth_status。参数 {"action": "...", "cwd": "仓库目录", "number": 可选 PR 号, "title": "pr_create 标题", "body": "正文", "base": "目标分支", "limit": "pr_list 条数"}。**不提供 merge / close**（不可逆操作交给用户决定）。' +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
     '\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {"kb_name": "知识库名，如「个人」"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。' +
     '\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地嵌入模型可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。' +
@@ -947,6 +950,22 @@ function getMcpToolsPrompt(): string {
     "- 复杂任务先用 plan_task 展示步骤给用户；流程稳定后可用 workflow_create 固化为工作流，让同类任务执行更快更稳。\n" +
     "- 接任务先判断是否命中处理模式：记忆里有「某类任务→工作流」或 workflow_suggest 命中 → 直接 workflow_run 复用；全新但以后会重复的流程 → 完成后 workflow_create 固化 + workflow_remember 记住映射。\n" +
     "\n## 长期记忆使用要点\n" +
+    "\n\n## 并行隔离（worktree）使用要点\n" +
+    "- 多个子代理要**同时改同一个仓库**时，先各给一份副本（`worktree` action=create），否则会互相踩文件/索引；改完用 `git diff dsy/<name>` 对比后再决定合并哪个。\n" +
+    "- 副本在 `<repo>/.daoshengyi/worktrees/` 下，已写进 `.git/info/exclude`（**本地忽略，不改用户的 .gitignore**）；删除只允许删这个目录里的副本。\n" +
+    "- 副本里有未提交改动时 remove 会拒绝（需显式 `force: true`）——这是**保护**，别习惯性加 force。\n" +
+    "- 单线程改代码就别用（白增复杂度）；并行只适用于**真正互不依赖**的子任务。\n" +
+    "\n\n## PR 工作流（github_pr）使用要点\n" +
+    '- 看/建/评论 PR、查 CI 检查都走 `github_pr`（封装本机 `gh`，已登录状态可用 `action: "auth_status"` 确认）。\n' +
+    "- `pr_create` **前先确认分支已推送**（`git push -u origin <分支>`）；描述写清**改了什么 / 为什么 / 怎么验**（与我们的提交规范一致）。\n" +
+    "- **merge / close 不在工具白名单里**：需要合并或关闭时，把情况告诉用户，由用户自己决定（不可逆操作不该由模型一键做掉）。\n" +
+    "- 省略 `number` 时 gh 会作用于**当前分支**的 PR（适合刚推完就 `pr_view` / `pr_checks`）。\n" +
+    "\n\n## 代码导航（code_nav）使用要点\n" +
+    "- 要**准**的答案（某符号定义在哪、谁在引用它、有没有编译诊断、这行的类型是什么）就用 `code_nav`——它走本机语言服务器（LSP）；`code_search` 是向量检索，返回的是「相关片段」，两者互补。\n" +
+    "- `line` / `character` 都**从 1 开始、按字符数**（不是字节）；位置类动作与 symbols/diagnostics 都需 `path`（绝对路径）。\n" +
+    "- 首次调用某服务器会**冷启动**（rust-analyzer 建索引可能几十秒，必要时调大 `wait_ms`）；之后复用同一进程，再次调用很快。\n" +
+    "- `rename` **只返回预览、不写盘**：确认后用 replace_string / apply_patch 落地（仍走 diff 确认与撤销）。\n" +
+    '- 不确定本机装了哪些服务器就先 `action: "servers"`；缺 TS 等服务器时如实告知用户安装命令（须在**沙箱外**的终端执行）。\n' +
     "\n\n## HTML 讲解页（answer_html）使用要点\n" +
     "- **触发：每次显式要求**——只有用户明确说要「网页 / HTML / 一页说明 / 画个图讲清楚」时才调用；默认回答保持 Markdown 文本，**不要**自作主张把普通问答变成页面。\n" +
     "- **做法**：先想清 3~8 个面板（每个只回答一个子问题，核心结论放第一个）→ 一次 answer_html 把草稿交给渲染器；**不要手写 HTML/CSS/SVG**（坐标与配色由渲染器算）。\n" +
@@ -3954,6 +3973,137 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         )
         .join("\n\n");
       return `【项目「${root}」语义检索「${query}」】相关代码 ${hits.length} 处（按相似度）：\n\n${out}`;
+    }
+    case "github_pr": {
+      // PR 工作流：封装本机 gh CLI（白名单动作，不提供 merge/close）
+      const action = String(args.action || "").trim();
+      if (!action) throw new Error("github_pr 需要 action 参数（如 pr_list）");
+      const cwd = String(args.cwd || getSettings().workspace || "").trim();
+      const out = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+      }>("gh_operation", {
+        cwd,
+        action,
+        number: args.number ? Number(args.number) : null,
+        title: args.title ? String(args.title) : null,
+        body: args.body ? String(args.body) : null,
+        base: args.base ? String(args.base) : null,
+        limit: args.limit ? Number(args.limit) : null,
+      });
+      const text = (out.stdout || "").trim();
+      if (out.exit_code !== 0) {
+        throw new Error(
+          `gh ${action} 失败（exit=${out.exit_code}）：${(out.stderr || text).trim() || "（无输出）"}`,
+        );
+      }
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      // pr_list 给紧凑列表更好读；其余 JSON 原样（模型能直接读）
+      if (action === "pr_list" && Array.isArray(parsed)) {
+        if (!parsed.length) return "（没有匹配的 PR）";
+        return (
+          `【PR 列表】共 ${parsed.length} 条：\n` +
+          parsed
+            .map((p: Record<string, unknown>) => {
+              const n = p.number ?? "?";
+              const st = `${p.state ?? ""}${p.isDraft ? " · draft" : ""}`;
+              const author = (p.author as { login?: string } | undefined)?.login ?? "?";
+              return `- #${n} ${p.title ?? ""} [${st}] ${p.headRefName ?? ""} @${author}\n  ${p.url ?? ""}`;
+            })
+            .join("\n")
+        );
+      }
+      if (parsed !== null) {
+        return `【gh ${action}】\n\`\`\`json\n${JSON.stringify(parsed, null, 2).slice(0, 6000)}\n\`\`\``;
+      }
+      return text ? `【gh ${action}】\n${text.slice(0, 6000)}` : `（gh ${action} 无输出）`;
+    }
+    case "worktree": {
+      // 并行隔离：同一仓库的多个独立工作副本（子代理同时改代码时用）
+      const action = String(args.action || "").trim();
+      const repo = String(args.repo || args.cwd || "").trim();
+      if (!action) throw new Error("worktree 需要 action 参数（create / list / remove）");
+      if (!repo) throw new Error("worktree 需要 repo 参数（仓库目录绝对路径）");
+      if (action === "create") {
+        const info = await invoke<{ path: string; branch: string }>("worktree_create", {
+          repo,
+          name: args.name ? String(args.name) : null,
+          baseRef: args.base_ref ? String(args.base_ref) : null,
+        });
+        return `✅ 已创建 worktree 副本：${info.path}\n分支：${info.branch}（基于 ${String(args.base_ref || "HEAD")}）\n在副本里改完，用 \`git diff ${info.branch}\` 对比；不需要了用 worktree remove 删。`;
+      }
+      if (action === "list") {
+        const list = await invoke<
+          { path: string; branch: string; head: string; is_main: boolean }[]
+        >("worktree_list", { repo });
+        if (!list.length) return `（仓库 ${repo} 没有 worktree 条目）`;
+        return (
+          `【worktree 列表】${repo}\n` +
+          list
+            .map(
+              (w) =>
+                `- ${w.is_main ? "主工作区" : "副本"} ${w.path}\n  分支：${w.branch || "(未知)"}${w.head ? ` · ${w.head}` : ""}`,
+            )
+            .join("\n")
+        );
+      }
+      if (action === "remove") {
+        const path = String(args.path || "").trim();
+        if (!path) throw new Error("worktree remove 需要 path 参数（副本路径）");
+        return await invoke<string>("worktree_remove", {
+          repo,
+          path,
+          force: args.force === true,
+        });
+      }
+      throw new Error(`worktree 未知 action「${action}」（可用：create / list / remove）`);
+    }
+    case "code_nav": {
+      // LSP 桥：语义级代码导航（定义/引用/实现/悬停/符号/诊断/重命名预览）
+      const action = String(args.action || "").trim();
+      if (!action)
+        throw new Error(
+          "code_nav 需要 action 参数（servers / definition / references / implementation / hover / symbols / workspace_symbols / diagnostics / rename）",
+        );
+      if (action === "servers") {
+        const list = await invoke<
+          {
+            id: string;
+            lang: string;
+            found: boolean;
+            path: string;
+            source: string;
+            hint: string;
+          }[]
+        >("lsp_status");
+        const lines = list.map(
+          (s) =>
+            `- ${s.found ? "✅" : "❌"} ${s.id}（${s.lang}）${
+              s.found ? ` · ${s.source} · ${s.path}` : ` · 未装：${s.hint}`
+            }`,
+        );
+        return `【语言服务器】\n${lines.join("\n")}`;
+      }
+      const root = String(args.root || "").trim();
+      if (!root) throw new Error("code_nav 需要 root 参数（项目根目录绝对路径）");
+      return await invoke<string>("lsp_query", {
+        root,
+        action,
+        server: args.server ? String(args.server) : null,
+        path: args.path ? String(args.path) : null,
+        line: args.line ? Number(args.line) : null,
+        character: args.character ? Number(args.character) : null,
+        query: args.query ? String(args.query) : null,
+        newName: args.new_name ? String(args.new_name) : null,
+        waitMs: args.wait_ms ? Number(args.wait_ms) : null,
+      });
     }
     case "code_roots": {
       // P-A3 列出已索引项目

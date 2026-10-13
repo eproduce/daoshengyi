@@ -2,7 +2,109 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-13**
+> **最后更新：2026-10-14**
+
+---
+
+## 2026-10-14（编程能力三件套：LSP 桥 `code_nav` + worktree 隔离 + PR 工作流）
+
+### 背景
+盘点「agent 有没有代码编写与工程化能力」后确认：**改 → 验 → 交的闭环已到位**，差的是三件专业工具：
+语义级导航、并行隔离、PR 通道。用户拍板「按优先级逐步实现」，当日全部落地（**零新依赖**）。
+
+### 1. LSP 桥 → 内置工具 `code_nav`（🟢）
+- 新模块 `src-tauri/src/lsp.rs`（3 命令）：`lsp_status` 列可用服务器 / `lsp_query` 一次导航查询 /
+  `lsp_stop` 关会话。动作：`definition` / `references` / `implementation` / `hover` /
+  `symbols` / `workspace_symbols` / `diagnostics` / `rename`（**预览，不写盘**）。
+- 设计：`Content-Length` 帧 + **读线程→mpsc 通道**（服务器不回不会挂死命令）+ 会话按 `(server, root)`
+  复用（rust-analyzer 冷启动建索引很贵）+ **替服务器应答它反向发来的请求**（否则它一直等我们）。
+- **服务器探测多候选**：PATH/常见目录 → **VS Code 扩展内置**（`~/.vscode/extensions/rust-lang.rust-analyzer-*/server/rust-analyzer`、
+  `vue.volar-*/dist/language-server.js` 走 node）；候选逐个尝试，失败时把**服务器自己的 stderr** 带进错误。
+- 真机 e2e（`#[ignore]`）：本仓跑 rust-analyzer，`workspace_symbols("slugify")` 命中、
+  `documentSymbol(skill_pack.rs)` 返回 `import_skill_pack · 函数 (第 286 行)` 等真实符号 ✅。
+
+### 2. worktree 隔离 → 内置工具 `worktree`（🟢）
+- 新模块 `src-tauri/src/worktree.rs`（3 命令）：`worktree_create` / `worktree_list` / `worktree_remove`。
+- 约定：副本落 `<repo>/.daoshengyi/worktrees/<slug>`、分支 `dsy/<slug>`；自动把 `.daoshengyi/`
+  写进 **`.git/info/exclude`**（本地忽略，**不动用户 .gitignore**）；删除只允许删该目录下的副本，
+  且副本有未提交改动时默认拒绝（需显式 `force`）。
+- 顺手抽出**统一外部命令管线** `run_wrapped_argv`（lib.rs，`pub(crate)`）：沙箱 argv 包装 + 代理注入 +
+  超时 + 审计；`worktree`（git）与 `github_pr`（gh）共用，避免第三份重复实现。
+- 真机验证（临时仓库）：创建成功、主仓 `git status` 干净（忽略生效）、副本可独立改动、删除被 dirty 拦住 ✅。
+
+### 3. PR 工作流 → 内置工具 `github_pr`（🟡）
+- 新模块 `src-tauri/src/github.rs`：`gh_operation` + **纯函数 `gh_argv`** 拼参数（无「透传任意 gh 子命令」口子）。
+- 动作白名单：`pr_list` / `pr_view` / `pr_create` / `pr_comment` / `pr_diff` / `pr_checks` / `auth_status`；
+  **不提供 merge / close**（不可逆操作交由用户决定）。未登录/未装 gh 给**可照做**的提示。
+- 真机验证：`gh pr list --json …` 拿到本仓真实 PR（dependabot #17/#14/#13）✅。
+
+### 坑（都值得记）
+- **LSP 帧读取**：服务器会带 `Content-Type` 等额外头 —— 必须**读完整个头部（到空行）再按长度读正文**；
+  读到一个头就抢着读正文 → JSON 解析失败 → 表象是「服务器不回 initialize」（两次真机迭代才定位）。
+- **`~/.cargo/bin/rust-analyzer` 常常只是 rustup shim**（组件没装，一启动就报错退出）；真二进制在
+  VS Code 扩展目录里 —— 所以「存在即可用」的探测假设是错的，必须逐个尝试 + 带出 stderr。
+- 帧读取那次修复**第一次没落地**（oldString 没匹配上但工具报了成功），结果真机仍失败 ——
+  教训：改完关键路径要**再读一遍文件确认**，别只信编辑工具的回执。
+
+### 验证
+- `npm run ci:local` **8/8 全绿**：vitest（契约测试含 `code_nav`/`worktree`/`github_pr` 三方对齐）、
+  cargo **306 passed / 0 failed**（新增 lsp 10 + worktree 5 + github 6）、clippy `-D warnings` 0 告警。
+
+---
+
+## 2026-10-14 里程碑：v1.0.0-alpha.4（`v1.0.0-alpha.3` → 47 个提交）
+
+### 这一版的主题
+**长任务可靠性 + 展示层重构 + 技能生态 + 本地原生能力**。alpha.3 之后的 47 个提交里，
+超过一半是在修「长任务跑到一半像跑完了 / 断了 / 白屏」这类**体感生死**问题。
+
+### 1. 长任务可靠性（本版最大收益）
+- **任务模式自主接力**：不再让用户敲「继续」——计划未完成、验证凭据缺失、工具全败、正文空白
+  四类收尾原因各自路由（`auto-continue.ts`）到「该说什么 / 能不能再给一轮」。
+- **停滞检测修正**：命令失败没被记账、病因被命令回显冲散 → 都能识别了。
+- **轮次预算耗尽/停滞时如实收尾**：不再「没做完却像做完了」。
+- **「断了」的两个真因**：收尾轮续写被轮次拦截、原生 `tool_call` 参数被截断却照常派发（修复）。
+- **收尾轮**：关思考 + 接上截断续写 + 折叠头显示工具总次数。
+- 启动白屏修复（移除 invoke monkey-patch）、启动期事件监听带重试、
+  **三级代理解析并注入命令环境**（根治「直连随机超时」）、工具参数规范化（包裹键/身份元数据展开）、
+  缺失 schema 补齐 + **工具契约测试**（说明 ↔ schema ↔ 实现三方对齐）。
+
+### 2. 展示层重构
+- **工具调用整组折叠 + 正文去重**（参照 DSH 的「摘要 + Inspect」形态）、折叠记录**重载后不消失**
+  （tools 持久化）、失败卡撑破折叠的解析修复。
+- **应用内自绘确认弹窗**（长文案结构化排版，不再用系统 Alert）。
+- **待发消息队列可撤回/可编辑**（含附件一起带回）。
+- **定时任务界面重做**：预设/实时预览/编辑/立即运行/状态与倒计时徽标；统一执行路径与退出码。
+- **工作流画布**：自动排列（分层布局）、窗口放大、拖拽坐标持久化修复。
+- **会话级工作区**（DSH 语义：会话头 cwd 是真源，全局只是新会话默认）+ 权限预设「控制范围」档位。
+- macOS app 图标按 Apple 图标网格留白（不再满布画布）。
+
+### 3. 新能力
+- **HTML 讲解页 `answer_html`**：内嵌上游 `answer-me-with-html` CLI（MIT，版本/commit/哈希存档），
+  模型只写 Markdown 草稿 → 宿主渲染单文件离线页；真机复修三处（产物落点/链接打不开/LaTeX 源码）。
+- **技能生态兼容**（`docs/SKILL_COMPATIBILITY.md`）：扫描来源补 DSH（`~/.dsh/skills`）与项目级
+  `.agents/skills` / `.dsh/skills` + 自定义目录；支持扁平 `<name>.md`；来源徽标。
+- **技能包批量导入导出**（`.zip`）：包内布局即上游 agentskills 目录形态（可直接丢进 `~/.agents/skills`），
+  含 `references/` 落地与同名冲突策略（跳过/覆盖/重命名）。
+- **macOS Vision 原生视觉** `vision_inspect` / `image_similarity`（零新依赖、毫秒级、离线）。
+- **本地嵌入改走 llama.cpp 优先**（Ollama 退为回退），识图时按需自启服务。
+- 社区插件：改用 npm 镜像索引 + 本地 stdio 安装（Smithery 全链路不可达）。
+
+### 4. 质量与文档
+- 定时任务边界单测 + 夏令时漂移/溢出回绕修复（6 条边界用例）。
+- CI 的 vision 真机测试改为**优雅降级契约**（macOS runner 无推理上下文）。
+- 文档：DSH 架构深挖与吸收清单、**DSH 插件兼容性评估（结论：不兼容 Cordis）**、结构性机制差距分析、
+  Laya/Jev 决策模型评估（零样本判定不达标 → **暂缓接入**）、技能兼容矩阵与 O7 契约。
+
+### 下一步（按优先级）
+| 档 | 事项 | 状态 |
+| :--- | :--- | :--- |
+| 🟢 | **LSP 桥**：接本机语言服务器（rust-analyzer / clangd 已就位）→ 定义/引用/悬停/诊断/重命名 | 进行中 |
+| 🟢 | **git worktree 隔离**：子代理各占工作副本，并行改代码不再互相踩 | 待做 |
+| 🟡 | **PR 工作流**：把 `gh` 封装成内置工具（建 PR / 看 review） | 待做 |
+| 🟡 | 技能包小项：`${SKILL_DIR}` 变量替换表、导入期能力声明校验、装前安全扫描 | 待做 |
+| 🔵 | 覆盖率解析进验证凭据；tree-sitter 语法级索引（需先验能否装新依赖） | 待做 |
+| — | 需用户配合：IM 网关真机凭据实连、云端视觉档（API Key） | 阻塞 |
 
 ---
 

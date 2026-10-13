@@ -16,9 +16,11 @@ mod api;
 mod browser;
 mod db;
 mod execpolicy;
+mod github;
 mod im;
 mod img_inspect;
 mod local_runtime;
+mod lsp;
 mod mcp;
 mod mcp_server;
 mod middleware;
@@ -35,6 +37,7 @@ mod trash;
 // 与 `pick_vision_backend`（本地 VLM 后端选择：ollama/llamacpp）无关：
 // 这里是 macOS Vision 框架的原生检测能力（分类/人脸/人体/姿势/动物/条码/显著区域）
 mod vision_native;
+mod worktree;
 
 use execpolicy::{
     append_command_rule, check_command_policy, list_exec_rules, reset_exec_rules, save_exec_rules,
@@ -4894,6 +4897,94 @@ async fn run_shell_command_with(
     }
 }
 
+/// 统一的「外部命令」执行管线（argv 形态）：Seatbelt 沙箱包装 + 代理环境注入 + 超时 + 审计。
+///
+/// ⚠️ 新增任何**能执行外部命令**的工具都必须走这里（或 `run_shell_command_with`）——
+/// 自己 `Command::new(...)` 会绕开沙箱与审计（2026-09-20 踩过：git_operation / run_tests 就是）。
+/// 供 `worktree`（git）与 `github`（gh）共用。
+pub(crate) async fn run_wrapped_argv(
+    db: &Database,
+    cwd: &str,
+    prog: &str,
+    argv: Vec<String>,
+    timeout_secs: u64,
+    audit_tool: &str,
+) -> Result<CommandOutput, String> {
+    use tokio::io::AsyncReadExt;
+    let start = std::time::Instant::now();
+    let audit_args = format!("{} {}", prog, argv.join(" "));
+    let workdir = (!cwd.trim().is_empty()).then_some(cwd);
+    let sandbox_cfg = sandbox_config_for(db, None, workdir);
+    let (program, full_args) = match sandbox::wrap_argv_auto(&sandbox_cfg, prog, &argv) {
+        Some((p, a)) => (p, a),
+        None => (prog.to_string(), argv),
+    };
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(&full_args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    if !cwd.trim().is_empty() {
+        cmd.current_dir(cwd);
+    }
+    for (k, v) in proxy::env_pairs_for_commands() {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动 {} 失败: {}", prog, e))?;
+    let mut out_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
+    let mut err_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let result = tokio::time::timeout(timeout, async {
+        let mut o = Vec::new();
+        let mut e = Vec::new();
+        let (_, _, st) = tokio::join!(
+            out_pipe.read_to_end(&mut o),
+            err_pipe.read_to_end(&mut e),
+            child.wait(),
+        );
+        (st, o, e)
+    })
+    .await;
+    let duration = start.elapsed().as_millis() as i64;
+    match result {
+        Ok((st, o, e)) => {
+            let stdout = String::from_utf8_lossy(&o).to_string();
+            let stderr = String::from_utf8_lossy(&e).to_string();
+            let code = st
+                .map_err(|e| format!("等待进程失败: {}", e))?
+                .code()
+                .unwrap_or(-1);
+            let _ = db.log_tool_call(
+                audit_tool,
+                &audit_args,
+                &format!("exit={} out={} err={}", code, stdout, stderr),
+                code != 0,
+                duration,
+            );
+            Ok(CommandOutput {
+                stdout,
+                stderr,
+                exit_code: code,
+                timed_out: false,
+                created_files: Vec::new(),
+            })
+        }
+        Err(_) => {
+            let msg = format!("{} 超时（{}s），已终止", prog, timeout_secs);
+            let _ = db.log_tool_call(audit_tool, &audit_args, &msg, true, duration);
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: msg,
+                exit_code: -1,
+                timed_out: true,
+                created_files: Vec::new(),
+            })
+        }
+    }
+}
+
 /// Git 操作（编程 Agent：提交/推送/拉取/diff/状态/日志等）。
 /// 用 git CLI 子进程执行（cwd 指定仓库目录），带超时 + 审计；禁止危险参数逃逸。
 /// 参数 action：status/diff/log/commit/push/pull/add/branch/其他（透传 git args）
@@ -7440,6 +7531,13 @@ pub fn run() {
             skill_import::scan_external_skills,
             skill_pack::export_skill_pack,
             skill_pack::import_skill_pack,
+            lsp::lsp_status,
+            lsp::lsp_query,
+            lsp::lsp_stop,
+            worktree::worktree_create,
+            worktree::worktree_list,
+            worktree::worktree_remove,
+            github::gh_operation,
             image_inspect,
             vision_inspect,
             image_similarity,
