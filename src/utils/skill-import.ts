@@ -141,6 +141,7 @@ export interface ImportOrigin {
 
 /** 来源识别规则（按路径片段判定，与 skillSourceSpecs 的目录一一对应） */
 const ORIGIN_RULES: { kind: string; label: string; re: RegExp }[] = [
+  { kind: "pack", label: "技能包", re: /^pack:/ },
   { kind: "claude-code", label: "Claude Code", re: /\/\.claude\/skills\// },
   { kind: "claude-commands", label: "Claude Code 命令", re: /\/\.claude\/commands\// },
   { kind: "dsh", label: "DSH", re: /\/\.dsh\/skills\// },
@@ -169,6 +170,15 @@ export function normalizeSkillName(name: string): string {
   return (name || "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
+/** 重命名导入时找一个未占用的名字：`原名 (2)`、`原名 (3)`… */
+export function uniqueSkillName(base: string, taken: Set<string>): string {
+  for (let i = 2; i < 200; i++) {
+    const cand = `${base} (${i})`;
+    if (!taken.has(normalizeSkillName(cand))) return cand;
+  }
+  return `${base} (${Date.now() % 1000})`;
+}
+
 /** 现有技能表里与导入判定相关的最小字段 */
 export interface ExistingSkillRef {
   id: string;
@@ -190,6 +200,14 @@ export interface ImportItem {
     category: string;
     whenToUse?: string;
   };
+  /** 同名冲突选择「重命名导入」时，写入技能库用的新名字 */
+  renameTo?: string;
+}
+
+/** 导入选项（默认行为与历史一致：同名就冲突并跳过） */
+export interface ImportOptions {
+  /** 遇同名技能时的策略：skip 跳过（默认）/ overwrite 覆盖已有（手写的仍受保护）/ rename 重命名导入 */
+  onNameConflict?: "skip" | "overwrite" | "rename";
 }
 
 export interface ImportPlan {
@@ -211,10 +229,14 @@ export function fallbackName(file: ExternalSkillFile): string {
 
 /**
  * 生成导入计划（纯函数）。`existing` 传现有技能表（只需 id/name/source/importUrl）。
+ *
+ * 冲突策略（`opts.onNameConflict`）：默认 `skip`——同名一律进 conflicts 不覆盖；
+ * `overwrite` 覆盖已有（**用户手写的仍受保护**，这是硬规则）；`rename` 改名后新增。
  */
 export function planSkillImport(
   files: ExternalSkillFile[],
   existing: ExistingSkillRef[],
+  opts: ImportOptions = {},
 ): ImportPlan {
   const items: ImportItem[] = [];
   const conflicts: ImportPlan["conflicts"] = [];
@@ -267,13 +289,51 @@ export function planSkillImport(
       skipped.push({ path: file.path, reason: `同批次已有同名技能「${name}」` });
       continue;
     }
-    // 同名已存在 → 冲突（永不覆盖用户手写/目录安装的技能）
+    // 同名已存在 → 按策略处置（默认冲突跳过；手写技能永不被覆盖）
     const sameName = byName.get(key);
     if (sameName) {
+      const strategy = opts.onNameConflict ?? "skip";
+      const handWritten = sameName.source === "user";
+      if (strategy === "overwrite" && !handWritten) {
+        items.push({
+          action: "update",
+          targetId: sameName.id,
+          file,
+          draft: {
+            name,
+            description: parsed.description,
+            prompt: parsed.prompt,
+            category: parsed.category || "导入",
+            whenToUse: parsed.whenToUse,
+          },
+        });
+        seenNames.add(key);
+        continue;
+      }
+      if (strategy === "rename") {
+        const taken = new Set<string>([...byName.keys(), ...seenNames]);
+        const renamed = uniqueSkillName(name, taken);
+        items.push({
+          action: "add",
+          renameTo: renamed,
+          file,
+          draft: {
+            name: renamed,
+            description: parsed.description,
+            prompt: parsed.prompt,
+            category: parsed.category || "导入",
+            whenToUse: parsed.whenToUse,
+          },
+        });
+        seenNames.add(normalizeSkillName(renamed));
+        continue;
+      }
       const reason =
-        sameName.source === "import"
-          ? "同名技能已存在（来自其它文件的导入）"
-          : `同名技能已存在（来源：${sameName.source === "user" ? "你手写的" : "技能目录"}）`;
+        handWritten && strategy === "overwrite"
+          ? "同名技能是你手写的，受保护不覆盖（可改用「重命名导入」）"
+          : sameName.source === "import"
+            ? "同名技能已存在（来自其它文件的导入）"
+            : `同名技能已存在（来源：${sameName.source === "user" ? "你手写的" : "技能目录"}）`;
       conflicts.push({ path: file.path, name, reason });
       continue;
     }

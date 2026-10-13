@@ -2,6 +2,7 @@
 import { ref, computed, watch } from "vue";
 import { useSkillStore } from "@/stores/skill";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
 import { getSettings, updateSettings } from "@/api/appSettings";
 import {
@@ -10,7 +11,15 @@ import {
   skillSourceSpecs,
   summarizePlan,
   type ExternalSkillFile,
+  type ImportPlan,
 } from "@/utils/skill-import";
+import {
+  packInputsFromSkills,
+  packSlugOf,
+  readPack,
+  type PackSkillMeta,
+  type SkillPackRead,
+} from "@/utils/skill-pack";
 import { useUiStore } from "@/stores/ui";
 import { SKILL_CATALOG } from "@/data/skills-catalog";
 import { BookOpen, Package, Download, Pencil, Upload, Trash2, FolderUp } from "lucide-vue-next";
@@ -39,6 +48,11 @@ const importing = ref(false);
 const fileInput = ref<HTMLInputElement>();
 /** 设置里的自定义技能目录（每行一个；保存后下次扫描生效） */
 const customDirsText = ref("");
+/** 批量导出：勾选的技能 id */
+const selectedIds = ref<string[]>([]);
+const exporting = ref(false);
+/** 同名冲突策略（目录扫描 / 多选文件 / 技能包三种批量导入共用） */
+const conflictStrategy = ref<"skip" | "overwrite" | "rename">("skip");
 
 /** 来源徽标文案（无 importUrl / 识别不出时为「外部导入」） */
 const originLabel = (url?: string) => importOrigin(url)?.label ?? "";
@@ -145,18 +159,151 @@ function doMdImport() {
   }
 }
 
-// 文件导入
-function onFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (!file) return;
-  store
-    .importFromFile(file)
-    .then((s) => {
-      importMsg.value = `✅ 已导入: ${s.name}`;
-    })
-    .catch((err) => {
-      importMsg.value = `❌ ${err.message}`;
+// 文件导入（支持多选/多拖：一次选多个 .md）
+async function importFileList(list: File[]) {
+  if (!list.length) return;
+  importing.value = true;
+  try {
+    const files: ExternalSkillFile[] = [];
+    for (const f of list) {
+      files.push({
+        source: "file",
+        label: "本地文件",
+        path: f.name,
+        name: f.name,
+        content: await f.text(),
+        bytes: f.size,
+      });
+    }
+    const plan = planSkillImport(files, store.skills, {
+      onNameConflict: conflictStrategy.value,
     });
+    const { added, updated } = applyPlan(plan);
+    importMsg.value = `✅ ${summarizePlan(plan)}（实际写入：新增 ${added}、更新 ${updated}）${conflictNote(plan)}`;
+  } catch (err) {
+    importMsg.value = `❌ ${err instanceof Error ? err.message : "读取失败"}`;
+  }
+  importing.value = false;
+}
+
+async function onFilesChange(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const list = Array.from(input.files ?? []);
+  input.value = ""; // 允许连续两次选同一批文件
+  await importFileList(list);
+}
+
+/** 同名冲突提示（按当前策略口味措辞） */
+function conflictNote(plan: ImportPlan): string {
+  if (!plan.conflicts.length) return "";
+  const how = conflictStrategy.value === "skip" ? "已跳过" : "未处理";
+  return `；同名冲突 ${plan.conflicts.length} 个${how}`;
+}
+
+/**
+ * 把导入计划落到技能库（目录扫描 / 多选文件 / 技能包三条路径共用）。
+ * `metaBySlug` 用于补写技能包里的 references 与能力声明（包内 manifest 带来）。
+ */
+function applyPlan(plan: ImportPlan, metaBySlug?: Map<string, PackSkillMeta>) {
+  let added = 0;
+  let updated = 0;
+  for (const item of plan.items) {
+    const meta = metaBySlug?.get(packSlugOf(item.file.path));
+    const patch: Partial<Skill> = meta
+      ? {
+          tags: meta.tags ?? [],
+          version: meta.version,
+          whenToUse: meta.whenToUse ?? item.draft.whenToUse,
+          requires: meta.requires,
+          references: meta.references?.length ? meta.references : undefined,
+        }
+      : {};
+    if (item.action === "update" && item.targetId) {
+      const target = store.skills.find((s) => s.id === item.targetId);
+      if (target) {
+        target.name = item.renameTo ?? item.draft.name;
+        target.description = item.draft.description;
+        target.prompt = item.draft.prompt;
+        target.updatedAt = Date.now();
+        if (meta) store.updateSkill(target.id, patch);
+        updated++;
+        continue;
+      }
+    }
+    const s = store.importFromMd(item.file.content, item.file.path);
+    if (s) {
+      const extra: Partial<Skill> = { ...patch };
+      if (item.renameTo) extra.name = item.renameTo;
+      if (Object.keys(extra).length) store.updateSkill(s.id, extra);
+      added++;
+    }
+  }
+  return { added, updated };
+}
+
+// 勾选/全选（批量导出）
+function toggleSelect(id: string) {
+  selectedIds.value = selectedIds.value.includes(id)
+    ? selectedIds.value.filter((x) => x !== id)
+    : [...selectedIds.value, id];
+}
+const allSelected = computed(
+  () => store.skills.length > 0 && selectedIds.value.length === store.skills.length,
+);
+function toggleSelectAll() {
+  selectedIds.value = allSelected.value ? [] : store.skills.map((s) => s.id);
+}
+
+// 批量导出为技能包（.zip）：每个技能一个 <slug>/SKILL.md，可直接丢进 ~/.agents/skills
+async function doExportPack() {
+  const picked = store.skills.filter((s) => selectedIds.value.includes(s.id));
+  if (!picked.length) {
+    importMsg.value = "❌ 请先勾选要导出的技能";
+    return;
+  }
+  exporting.value = true;
+  importMsg.value = `正在打包 ${picked.length} 个技能…`;
+  try {
+    const skills = packInputsFromSkills(picked, (id) => store.exportAsMd(id));
+    const path = await invoke<string>("export_skill_pack", { skills, fileName: null });
+    importMsg.value = `✅ 已导出 ${skills.length} 个技能到技能包：${path}`;
+  } catch (e) {
+    importMsg.value = `❌ ${e instanceof Error ? e.message : "导出失败"}`;
+  }
+  exporting.value = false;
+}
+
+// 导入技能包（.zip，批量；支持冲突策略与 references 落地）
+async function doImportPack() {
+  const path = await openDialog({
+    multiple: false,
+    filters: [{ name: "道生一技能包", extensions: ["zip"] }],
+  });
+  if (!path || Array.isArray(path)) return;
+  importing.value = true;
+  importMsg.value = "正在读取技能包…";
+  try {
+    const read = await invoke<SkillPackRead>("import_skill_pack", { path });
+    const packName = path.split("/").pop() || "技能包";
+    const { files, metaBySlug } = readPack(read, packName);
+    const plan = planSkillImport(files, store.skills, {
+      onNameConflict: conflictStrategy.value,
+    });
+    // Rust 侧忽略的条目（越界路径 / 超限）要如实告知，不能装作没看见
+    const ignoredNote = read.ignored
+      ? `；包内有 ${read.ignored} 个条目被忽略（路径越界或超过体积上限）`
+      : "";
+    if (!plan.items.length) {
+      importMsg.value = `技能包里没有可导入的技能（${files.length} 个技能）${conflictNote(plan)}${ignoredNote}`;
+      importing.value = false;
+      return;
+    }
+    const { added, updated } = applyPlan(plan, metaBySlug);
+    importMsg.value = `✅ ${summarizePlan(plan)}（实际写入：新增 ${added}、更新 ${updated}）${conflictNote(plan)}${ignoredNote}`;
+  } catch (e) {
+    importMsg.value = `❌ ${e instanceof Error ? e.message : "导入技能包失败"}`;
+  }
+  importing.value = false;
 }
 
 // P1-9a 外部技能导入：扫描 Claude Code / Codex / Cursor 等目录并一键导入
@@ -177,10 +324,12 @@ async function doExternalImport() {
       sources: specs,
       workspace: workspace || null,
     });
-    const plan = planSkillImport(files, store.skills);
+    const plan = planSkillImport(files, store.skills, {
+      onNameConflict: conflictStrategy.value,
+    });
     if (!plan.items.length) {
       const detail = [
-        plan.conflicts.length ? `${plan.conflicts.length} 个同名冲突（不会覆盖你已有的）` : "",
+        plan.conflicts.length ? `${plan.conflicts.length} 个同名冲突` : "",
         plan.skipped.length ? `${plan.skipped.length} 个跳过` : "",
       ]
         .filter(Boolean)
@@ -189,30 +338,14 @@ async function doExternalImport() {
       importing.value = false;
       return;
     }
-    let added = 0;
-    let updated = 0;
-    for (const item of plan.items) {
-      if (item.action === "update" && item.targetId) {
-        const target = store.skills.find((s) => s.id === item.targetId);
-        if (target) {
-          target.name = item.draft.name;
-          target.description = item.draft.description;
-          target.prompt = item.draft.prompt;
-          target.updatedAt = Date.now();
-          updated++;
-          continue;
-        }
-      }
-      const s = store.importFromMd(item.file.content, item.file.path);
-      if (s) added++;
-    }
+    const { added, updated } = applyPlan(plan);
     const srcText = Object.entries(plan.bySource)
       .map(([k, v]) => `${specLabel.get(k) ?? k} ${v}`)
       .join(" · ");
     // 用**实际写入**的计数（plan 里的新增/更新是意图，这里是结果，两者不一致时以这里为准）
     importMsg.value =
       `✅ ${summarizePlan(plan)}（实际写入：新增 ${added}、更新 ${updated}；扫到 ${files.length} 个文件：${srcText}）` +
-      (plan.conflicts.length ? `；冲突 ${plan.conflicts.length} 个已跳过` : "");
+      conflictNote(plan);
   } catch (e) {
     importMsg.value = `❌ ${e instanceof Error ? e.message : "扫描失败"}`;
   }
@@ -323,7 +456,31 @@ const categoryColors: Record<string, string> = {
               还没有技能，去 <a href="#" @click.prevent="activeTab = 'catalog'">技能市场</a> 安装
             </div>
 
+            <div v-if="store.skills.length" class="sk-list-bar">
+              <label class="sk-pick">
+                <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
+                <span>全选</span>
+              </label>
+              <span class="sk-pick-count"
+                >已选 {{ selectedIds.length }} / {{ store.skills.length }}</span
+              >
+              <button
+                class="sk-btn sk-btn-sec sk-btn-sm"
+                :disabled="exporting || !selectedIds.length"
+                @click="doExportPack"
+              >
+                {{ exporting ? "打包中…" : "导出为技能包 (.zip)" }}
+              </button>
+            </div>
+
             <div v-for="s in store.skills" :key="s.id" class="sk-item" :class="{ off: !s.enabled }">
+              <label class="sk-pick" :title="selectedIds.includes(s.id) ? '取消选择' : '选择导出'">
+                <input
+                  type="checkbox"
+                  :checked="selectedIds.includes(s.id)"
+                  @change="toggleSelect(s.id)"
+                />
+              </label>
               <div class="sk-item-info" @click="openEdit(s.id)">
                 <div class="sk-item-name">
                   {{ s.name }}
@@ -404,6 +561,16 @@ const categoryColors: Record<string, string> = {
 
           <!-- Tab: 导入 -->
           <div v-if="activeTab === 'import'" class="sk-body">
+            <!-- 同名冲突策略（目录扫描 / 多选文件 / 技能包三条路径共用） -->
+            <div class="sk-import-block">
+              <h4>同名冲突处理</h4>
+              <select v-model="conflictStrategy" class="sk-select">
+                <option value="skip">跳过（默认：保留已有技能，不覆盖）</option>
+                <option value="overwrite">覆盖（你手写的技能仍受保护）</option>
+                <option value="rename">重命名导入（原名 (2)）</option>
+              </select>
+            </div>
+
             <!-- P1-9a 外部技能目录（Claude Code / Codex / Cursor） -->
             <div class="sk-import-block">
               <h4>从其它工具的技能目录导入（推荐）</h4>
@@ -435,6 +602,21 @@ const categoryColors: Record<string, string> = {
               </button>
             </div>
 
+            <!-- 技能包（.zip，批量） -->
+            <div class="sk-import-block">
+              <h4>导入技能包（.zip · 批量）</h4>
+              <p class="sk-hint">
+                选一个技能包即可一次导入多个技能（含参考资料与能力声明）。包内布局为
+                <code>&lt;名字&gt;/SKILL.md</code> + <code>&lt;名字&gt;/references/</code>——
+                <b>可以直接丢进 ~/.agents/skills 或 ~/.claude/skills 给别的 agent 用</b>。
+              </p>
+              <div class="sk-import-row">
+                <button class="sk-btn sk-btn-pri" :disabled="importing" @click="doImportPack">
+                  {{ importing ? "处理中…" : "选择技能包 (.zip)" }}
+                </button>
+              </div>
+            </div>
+
             <!-- URL -->
             <div class="sk-import-block">
               <h4>从 URL 导入</h4>
@@ -453,30 +635,22 @@ const categoryColors: Record<string, string> = {
 
             <!-- 文件 -->
             <div class="sk-import-block">
-              <h4>从 .md 文件导入</h4>
+              <h4>从 .md 文件导入（可多选）</h4>
               <div
                 class="sk-drop"
                 @click="fileInput?.click()"
                 @dragover.prevent
-                @drop.prevent="
-                  (e) => {
-                    const f = e.dataTransfer?.files?.[0];
-                    if (f)
-                      store
-                        .importFromFile(f)
-                        .then((s) => (importMsg = `✅ ${s.name}`))
-                        .catch((e) => (importMsg = `❌ ${e.message}`));
-                  }
-                "
+                @drop.prevent="(e) => importFileList(Array.from(e.dataTransfer?.files ?? []))"
               >
-                <FolderUp :size="18" /> 拖拽 .md 文件到此处，或点击选择
+                <FolderUp :size="18" /> 拖拽 .md 文件到此处（可以多个），或点击选择
               </div>
               <input
                 ref="fileInput"
                 type="file"
                 accept=".md,.markdown,text/markdown"
+                multiple
                 hidden
-                @change="onFileChange"
+                @change="onFilesChange"
               />
             </div>
 
@@ -679,6 +853,38 @@ category: 开发
   color: var(--text-soft, #999);
   opacity: 0.85;
   white-space: nowrap;
+}
+/* 批量导出：勾选栏 + 每行勾选框 */
+.sk-list-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px 10px;
+  border-bottom: 1px solid var(--border, #333);
+  margin-bottom: 8px;
+}
+.sk-pick {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-soft, #999);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sk-pick-count {
+  font-size: 12px;
+  color: var(--text-soft, #999);
+  flex: 1;
+}
+.sk-select {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #333);
+  background: var(--bg-input, #1b1b22);
+  color: var(--text, #eee);
+  font-size: 13px;
 }
 .sk-tag {
   font-size: 10px;

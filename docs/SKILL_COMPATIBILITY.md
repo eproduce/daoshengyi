@@ -95,14 +95,45 @@
 
 ## 6. 后续（🟡 / 🔵）
 
-| 档 | 事项 | 依赖 |
+| 档 | 事项 | 状态 |
 | :--- | :--- | :--- |
-| 🟡 | 技能可携带 `references/`（导入时一并落地） | 需要技能数据模型加资源字段 |
-| 🟡 | 变量替换表（`${SKILL_DIR}` 等宿主注入） | 与上一条同批做 |
-| 🟡 | 导入期能力声明校验 + 缺失工具降级提示 | `parseSkillMd` 已有 frontmatter 解析 |
-| 🟡 | 装前安全扫描 | 可先做纯函数规则集（危险命令/外泄域名模式） |
-| 🔵 | 技能包 manifest（版本 / 来源哈希 / 许可证 / 更新检查） | 需要技能库数据结构升级 |
+| 🟡 | 技能包（.zip 批量导入导出 + `references/` 落地 + 冲突策略） | ✅ 2026-10-13 落地（见 §7） |
+| 🟡 | 变量替换表（`${SKILL_DIR}` 等宿主注入） | ⬜ 待做 |
+| 🟡 | 导入期能力声明校验 + 缺失工具降级提示 | ⬜ 待做（manifest 已带 `requires`，只是还没校验） |
+| 🟡 | 装前安全扫描（危险命令 / 外泄域名模式） | ⬜ 待做 |
+| 🔵 | 技能包来源哈希 / 许可证 / 更新检查 | ⬜ 待做（manifest 已留字段位） |
 | 🔵 | 兼容 Cordis 插件 | **不做**（除非产品定位改变） |
 
-**验收方式**：`npm test`（技能导入 20 条）+ `cargo test --lib`（扫描/设置 279 条）+ `npm run ci:local` 八门禁；
-真机验证路径 = 技能库 → 导入 → 「扫描并导入」，观察「扫到 N 个文件」里出现新来源label。
+**验收方式**：`npm test`（技能导入 20 条 + 技能包 10 条）+ `cargo test --lib`（扫描/技能包/设置 **286 条**）+ `npm run ci:local` 八门禁；
+真机验证路径 = 技能库 → 导入 → 「扫描并导入」，观察「扫到 N 个文件」里出现新来源 label。
+
+## 7. 技能包（批量导入导出，2026-10-13 落地）
+
+### 包格式（v1，**同时就是上游 agentskills 目录形态**）
+
+```text
+manifest.json                   # format/version/exportedAt/count + 每个技能的路由/能力声明
+<slug>/SKILL.md                 # 技能正文（带 frontmatter）
+<slug>/references/<ref>.md      # 可选：参考资料
+```
+
+用 `<slug>/SKILL.md` 而不是扁平的 `<slug>.md`，是为了让包**可以直接丢进 `~/.agents/skills/` 或
+`~/.claude/skills/`** 被 Claude Code / Codex / DSH 原样读走——导出即互操作，而不是只能我们自己读回。
+纯中文技能名会得到空 slug → 退化成 `skill`、`skill-2`…（真名在 frontmatter 与 manifest 里）。
+
+### 入口与实现
+
+| 位置 | 内容 |
+| :--- | :--- |
+| `src-tauri/src/skill_pack.rs` | `export_skill_pack(skills, file_name?)` 写入 `~/Documents/道生一产物/*.zip` 并返回真实路径；`import_skill_pack(path)` 解包回内存（`manifest` + `entries` + `ignored`）+ 6 单测 |
+| `src/utils/skill-pack.ts` | 纯映射：`packInputsFromSkills`（技能→打包入参）、`readPack`（解包结果→可导入文件 + slug→元数据含 references 正文）、`packSlugOf` |
+| `src/utils/skill-import.ts` | `planSkillImport(files, existing, { onNameConflict: skip \| overwrite \| rename })`：**默认仍为 skip**（行为向后兼容）；`overwrite` 可覆盖 import/catalog 来源，**手写技能依旧受保护**；`rename` 改名成 `原名 (2)` 新增 |
+| `src/components/SkillManager.vue` | 导入页：「同名冲突处理」下拉 + 「导入技能包 (.zip)」+ 多选/多拖 `.md`；「我的技能」页：逐条勾选 + 全选 + 「导出为技能包 (.zip)」，并显示已选数量 |
+
+### 安全（解包当不可信输入处理）
+
+- 条目路径必须在包内：拒绝绝对路径、反斜杠、空段、`.`、`..`、超过 3 层（**防 zip slip**）
+- 只认 `manifest.json` / `<dir>/SKILL.md` / `<dir>/references/<file>`，其余条目忽略并计数
+- 条目数 ≤ 200（另有「异常包」硬阀值）、单条目 ≤ 256KB、总量 ≤ 8MB、非 UTF-8 跳过
+- Rust **只读进内存**，不往技能目录落任何文件：落盘与冲突决策全在前端（可测、可回滚）
+- zip 文件名与 ref 文件名都做清洗（路径字符→`-`），导出目录固定为产物目录

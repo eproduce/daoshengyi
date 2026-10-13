@@ -29,6 +29,7 @@ mod search;
 mod security;
 mod settings;
 mod skill_import;
+mod skill_pack;
 mod ssrf;
 mod trash;
 // 与 `pick_vision_backend`（本地 VLM 后端选择：ollama/llamacpp）无关：
@@ -7437,6 +7438,8 @@ pub fn run() {
             trash_restore,
             trash_empty,
             skill_import::scan_external_skills,
+            skill_pack::export_skill_pack,
+            skill_pack::import_skill_pack,
             image_inspect,
             vision_inspect,
             image_similarity,

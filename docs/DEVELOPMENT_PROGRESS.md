@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-10-13（技能包：批量导入导出 + 冲突策略 + references 落地，🟡 档）
+
+### 背景
+用户问「是否能支持批量导入导出技能包」→ 确认按 🟢 + 🟡 一起做（绿的：批量打包/解包与多选导入；
+黄的：结构化包、`references/` 落地、冲突策略、上游兼容形态）。现状缺口：导入只取 `files[0]`、
+导出只能一个一个来、没有容器格式——但 `zip = "2"` 早就是依赖（读 .numbers 用），**零新增依赖**。
+
+### 已落地
+- **Rust 新模块** `src-tauri/src/skill_pack.rs`（+ 2 个命令）：`export_skill_pack` 打在
+  `~/Documents/道生一产物/*.zip` 并返回真实路径；`import_skill_pack` 解包回内存
+  （`manifest` + `entries` + `ignored`）。包内布局 `<slug>/SKILL.md` + `<slug>/references/<ref>.md`
+  + `manifest.json`——**这个布局就是上游 agentskills 目录形态**，可直接丢进 `~/.agents/skills`
+  或 `~/.claude/skills` 被别的 agent 读（导出即互操作）。纯中文技能名 → 空 slug → 退化成
+  `skill`、`skill-2`（真名在 frontmatter/manifest 里）。
+  **安全**：拒绝绝对路径/反斜杠/空段/`.`/`..`/超 3 层（防 zip slip）、只认白名单形状、
+  条目 ≤200、单条目 ≤256KB、总量 ≤8MB、非 UTF-8 跳过、**只读进内存不落盘**；6 条单测。
+- **前端纯映射** `src/utils/skill-pack.ts`：`packInputsFromSkills`（技能 → 打包入参，含
+  references/requires）、`readPack`（解包 → 可导入文件 + slug → 元数据 + references 正文，
+  manifest 缺失也能用）、`packSlugOf`；导入路径统一加 `pack:<包名>/` 前缀（来源徽标 + 避免跨包撞 importUrl）。
+- **冲突策略**：`planSkillImport(files, existing, { onNameConflict })`——默认 `skip`（行为不变、
+  旧测试零改动）；`overwrite` 覆盖 import/catalog 来源、**手写技能仍受保护**；`rename` 改名成
+  `原名 (2)` 新增（同批次继续递增）。
+- **技能库 UI**（`SkillManager.vue`）：导入页新增「同名冲突处理」下拉 + 「导入技能包 (.zip)」
+  （原生文件对话框），`.md` 文件改为**多选/多拖**；「我的技能」页逐条勾选 + 全选 + 「导出为技能包 (.zip)」
+  （含已选数量），三条批量路径共用同一个 `applyPlan`。
+- 文档 `docs/SKILL_COMPATIBILITY.md` 新增 §7（包格式 / 入口 / 安全边界），§6 后续表同步状态。
+
+### 坑（都已修）
+- **解析器占位名**：`parseSkillMd` 把「未命名技能 / 导入技能」当未解析占位名 → 会被
+  `fallbackName` 改名，用「导入技能」当同名冲突用例名会得到 `add` 而不是 `update`（单测踩到）。
+- **命名冲突**：`plugin-dialog` 的 `open` 与组件自己的 `open()`（打开技能库）撞名 →
+  必须 `open as openDialog` 别名导入。
+- **camelCase 静默丢字段**（本项目老毛病）：前端发 `whenToUse` / `requiresTools` / `requiresServers`，
+  而 Rust 结构体字段是 snake_case 且没加 `rename_all` → serde **静默忽略**未知字段，值全丢。
+  已给 `SkillPackInput` 加 `#[serde(rename_all = "camelCase")]`，并加回归测试
+  `pack_input_accepts_frontend_camel_case` 钉住。
+
+### 验证
+- `tests/test-skill-pack.test.ts` 10 条 + `test-skill-import.test.ts` 20 条全绿（含冲突三策略、
+  manifest 缺失、references 归属、越界/超限忽略）；`npx vue-tsc --noEmit` 无错。
+- `cargo test --lib` **286 passed / 0 failed**（原 279 + 技能包 7 条）；`npm run ci:local` 8/8 全绿。
+
+---
+
 ## 2026-10-13（技能兼容 🟢 档：补扫描来源 + 扁平技能 + 自定义目录 + 来源徽标）
 
 ### 背景
