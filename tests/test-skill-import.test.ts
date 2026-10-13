@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   fallbackName,
+  importOrigin,
   normalizeSkillName,
   planSkillImport,
   skillSourceSpecs,
@@ -19,20 +20,61 @@ const file = (p: Partial<ExternalSkillFile> = {}): ExternalSkillFile => ({
 });
 
 describe("P1-9a 技能导入 · 来源规格", () => {
-  it("生成 Claude Code / 通用技能目录 / Codex / 通用 四类来源；有工作区时加 Cursor", () => {
+  it("生成 Claude Code / 通用技能目录 / DSH / Codex / 通用 五类来源；有工作区时加项目级与 Cursor", () => {
     const without = skillSourceSpecs("/Users/tester");
     const ids = without.map((s) => s.id);
-    expect(ids).toEqual(["claude-code", "claude-commands", "agents-skills", "codex", "generic"]);
+    expect(ids).toEqual([
+      "claude-code",
+      "claude-commands",
+      "agents-skills",
+      "dsh-skills",
+      "codex",
+      "generic",
+    ]);
     expect(without[0].dir).toBe("/Users/tester/.claude/skills");
     expect(without[0].file_name).toBe("SKILL.md");
     expect(without[1].file_name).toBeUndefined();
     // ~/.agents/skills：非 Claude Code 的 agent 技能落地处（如 `npx skills add -a <agent>`）
     expect(without[2].dir).toBe("/Users/tester/.agents/skills");
     expect(without[2].file_name).toBe("SKILL.md");
+    // ~/.dsh/skills：DSH 的 user-dsh 根
+    expect(without[3].dir).toBe("/Users/tester/.dsh/skills");
 
     const withWs = skillSourceSpecs("/Users/tester", "/Users/tester/op/proj/");
-    expect(withWs.map((s) => s.id)).toContain("cursor");
+    const wsIds = withWs.map((s) => s.id);
+    expect(wsIds).toContain("project-agents");
+    expect(wsIds).toContain("project-dsh");
+    expect(wsIds).toContain("cursor");
     expect(withWs[withWs.length - 1].dir).toBe("/Users/tester/op/proj/.cursor/rules");
+  });
+
+  it("flat 开关：agentskills / DSH 认扁平 .md，Claude Code 不认", () => {
+    const specs = skillSourceSpecs("/Users/tester");
+    const by = (id: string) => specs.find((s) => s.id === id);
+    expect(by("agents-skills")?.flat).toBe(true);
+    expect(by("dsh-skills")?.flat).toBe(true);
+    expect(by("claude-code")?.flat).toBeUndefined();
+    expect(by("codex")?.file_name).toBeUndefined();
+  });
+
+  it("自定义技能目录：去空行/去重、label 取末级目录名、支持 ~ 与扁平技能", () => {
+    const specs = skillSourceSpecs("/Users/tester", "/Users/tester/op/proj/", [
+      "/Users/tester/my-skills",
+      "~/work/team-skills/",
+      "",
+      "   ",
+      "/Users/tester/.dsh/skills", // 与内置来源重复 → 不重复扫
+      "/Users/tester/my-skills", // 重复项 → 只留一个
+    ]);
+    const customs = specs.filter((s) => s.id.startsWith("custom:"));
+    expect(customs.map((s) => s.dir)).toEqual(["/Users/tester/my-skills", "~/work/team-skills"]);
+    expect(customs[0].label).toBe("自定义目录 · my-skills");
+    expect(customs.every((s) => s.flat === true && s.file_name === "SKILL.md")).toBe(true);
+    expect(specs.filter((s) => s.dir === "/Users/tester/.dsh/skills")).toHaveLength(1);
+  });
+
+  it("未传自定义目录时行为不变（不崩、不多扫）", () => {
+    expect(skillSourceSpecs("/Users/tester").some((s) => s.id.startsWith("custom:"))).toBe(false);
   });
 
   it("主目录为空时只退化为空数组（不崩）", () => {
@@ -44,6 +86,25 @@ describe("P1-9a 技能导入 · 来源规格", () => {
     for (const s of skillSourceSpecs("/Users/tester/", "/Users/tester/op/")) {
       expect(s.dir).not.toContain("//");
     }
+  });
+});
+
+describe("P1-9a 技能导入 · 来源识别（列表徽标）", () => {
+  it("按 importUrl 识别各生态来源", () => {
+    expect(importOrigin("/Users/t/.claude/skills/x/SKILL.md")?.label).toBe("Claude Code");
+    expect(importOrigin("/Users/t/.claude/commands/a.md")?.label).toBe("Claude Code 命令");
+    expect(importOrigin("/Users/t/.dsh/skills/x/SKILL.md")?.label).toBe("DSH");
+    expect(importOrigin("/Users/t/.agents/skills/x.md")?.label).toBe("通用技能目录");
+    expect(importOrigin("/Users/t/.codex/prompts/a.md")?.label).toBe("Codex");
+    expect(importOrigin("/Users/t/op/p/.cursor/rules/a.mdc")?.label).toBe("Cursor");
+    expect(importOrigin("/Users/t/Documents/道生一技能/a.md")?.label).toBe("道生一技能目录");
+    expect(importOrigin("https://raw.githubusercontent.com/a/b/SKILL.md")?.label).toBe("URL 导入");
+    expect(importOrigin("/tmp/random.md")?.label).toBe("外部导入");
+  });
+
+  it("空值返回 null（模板里据此隐藏徽标）", () => {
+    expect(importOrigin("")).toBeNull();
+    expect(importOrigin(undefined)).toBeNull();
   });
 });
 

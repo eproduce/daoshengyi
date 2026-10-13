@@ -37,17 +37,28 @@ export interface SkillSourceSpec {
   label: string;
   dir: string;
   file_name?: string;
+  /** 是否同时接受**扁平**的 `<name>.md`（agentskills / DSH 允许，Claude Code 不允许） */
+  flat?: boolean;
 }
 
 /**
- * 默认扫描来源：
- * - Claude Code：`~/.claude/skills/<name>/SKILL.md`（带 frontmatter）+ `~/.claude/commands/*.md`
- * - 通用技能目录：`~/.agents/skills/<name>/SKILL.md`（`npx skills add -a <agent>` 装在「其它 agent」的位置）
+ * 默认扫描来源（2026-10-13 扩展：DSH / 项目级 / 自定义目录）：
+ * - Claude Code：`~/.claude/skills/<name>/SKILL.md` + `~/.claude/commands/*.md`
+ * - 通用技能目录：`~/.agents/skills/**`（`npx skills add -a <agent>` 装在「其它 agent」的位置）
+ * - DSH（DeepSeek Harness）：`~/.dsh/skills/**`（其 `user-dsh` 根，`DSH_HOME` 自定义时请用下面的自定义目录）
  * - Codex：`~/.codex/prompts/*.md`
- * - Cursor：工作区 `.cursor/rules/*.mdc`
  * - 通用：`~/Documents/道生一技能/*.md`（用户自己放的地方）
+ * - 项目级（有工作区时）：`<ws>/.agents/skills`（agentskills 项目级）、`<ws>/.dsh/skills`（DSH 项目级）、`<ws>/.cursor/rules/*.mdc`
+ * - 自定义：`customDirs`（设置里的「自定义技能目录」，等价 DSH 的 `Config.customSkillDirs`）
+ *
+ * `flat: true` 的来源同时接受扁平的 `<name>.md`；Claude Code 只认 `<name>/SKILL.md`，
+ * 故不开（避免把目录里顺带放的 README 之类当技能收进来）。
  */
-export function skillSourceSpecs(home: string, workspace = ""): SkillSourceSpec[] {
+export function skillSourceSpecs(
+  home: string,
+  workspace = "",
+  customDirs: string[] = [],
+): SkillSourceSpec[] {
   const h = (home || "").replace(/\/+$/, "");
   const specs: SkillSourceSpec[] = [];
   if (h) {
@@ -60,12 +71,21 @@ export function skillSourceSpecs(home: string, workspace = ""): SkillSourceSpec[
       },
       { id: "claude-commands", label: "Claude Code 命令", dir: `${h}/.claude/commands` },
       // 上游 `npx -y skills add <repo> -a <agent>` 把技能装在 ~/.agents/skills；
-      // 我们的 agent 不在它的已知名单里，但**同一个目录我们照样能读**（导入只取 SKILL.md 文本）。
+      // 我们的 agent 不在它的已知名单里，但**同一个目录我们照样能读**。
       {
         id: "agents-skills",
         label: "通用技能目录",
         dir: `${h}/.agents/skills`,
         file_name: "SKILL.md",
+        flat: true,
+      },
+      // DSH 的 user-dsh 根：`<dshHome>/skills`（默认 ~/.dsh）
+      {
+        id: "dsh-skills",
+        label: "DSH 技能",
+        dir: `${h}/.dsh/skills`,
+        file_name: "SKILL.md",
+        flat: true,
       },
       { id: "codex", label: "Codex 提示词", dir: `${h}/.codex/prompts` },
       { id: "generic", label: "道生一技能目录", dir: `${h}/Documents/道生一技能` },
@@ -73,9 +93,75 @@ export function skillSourceSpecs(home: string, workspace = ""): SkillSourceSpec[
   }
   const ws = (workspace || "").replace(/\/+$/, "");
   if (ws) {
-    specs.push({ id: "cursor", label: "Cursor 规则（当前项目）", dir: `${ws}/.cursor/rules` });
+    specs.push(
+      // DSH project-agents / agentskills 项目级
+      {
+        id: "project-agents",
+        label: "项目通用技能",
+        dir: `${ws}/.agents/skills`,
+        file_name: "SKILL.md",
+        flat: true,
+      },
+      // DSH project-dsh
+      {
+        id: "project-dsh",
+        label: "项目 DSH 技能",
+        dir: `${ws}/.dsh/skills`,
+        file_name: "SKILL.md",
+        flat: true,
+      },
+      { id: "cursor", label: "Cursor 规则（当前项目）", dir: `${ws}/.cursor/rules` },
+    );
+  }
+  // 自定义目录：逐行一个路径；去空行、去重（避免与内置来源重复扫同一目录）
+  const seen = new Set(specs.map((s) => s.dir));
+  for (const raw of customDirs || []) {
+    const dir = String(raw || "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    const base = dir.split("/").filter(Boolean).pop() || dir;
+    specs.push({
+      id: `custom:${dir}`,
+      label: `自定义目录 · ${base}`,
+      dir,
+      file_name: "SKILL.md",
+      flat: true,
+    });
   }
   return specs;
+}
+
+/** 导入来源识别结果 */
+export interface ImportOrigin {
+  kind: string;
+  label: string;
+}
+
+/** 来源识别规则（按路径片段判定，与 skillSourceSpecs 的目录一一对应） */
+const ORIGIN_RULES: { kind: string; label: string; re: RegExp }[] = [
+  { kind: "claude-code", label: "Claude Code", re: /\/\.claude\/skills\// },
+  { kind: "claude-commands", label: "Claude Code 命令", re: /\/\.claude\/commands\// },
+  { kind: "dsh", label: "DSH", re: /\/\.dsh\/skills\// },
+  { kind: "agents", label: "通用技能目录", re: /\/\.agents\/skills\// },
+  { kind: "codex", label: "Codex", re: /\/\.codex\/prompts\// },
+  { kind: "cursor", label: "Cursor", re: /\/\.cursor\/rules\// },
+  { kind: "generic", label: "道生一技能目录", re: /道生一技能\// },
+];
+
+/**
+ * 由技能的 `importUrl` 推断来源（用于列表上的来源徽标）。
+ * 纯路径判断：对**已经导入过**的旧技能同样有效，无需改数据模型。
+ * 识别不出时按「URL 导入 / 外部导入」区分，空值返回 null。
+ */
+export function importOrigin(url?: string): ImportOrigin | null {
+  const u = String(url || "");
+  if (!u) return null;
+  for (const r of ORIGIN_RULES) if (r.re.test(u)) return { kind: r.kind, label: r.label };
+  return /^https?:\/\//i.test(u)
+    ? { kind: "url", label: "URL 导入" }
+    : { kind: "external", label: "外部导入" };
 }
 
 /** 技能名归一化（判定同名） */

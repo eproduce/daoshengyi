@@ -123,6 +123,9 @@ export interface AppSettingsPayload {
   ssrfAllowHosts: string[];
   /// O2 SSRF 白名单：允许访问私有地址的 hostname（环回仍拦）
   ssrfAllowPrivateHosts: string[];
+  /// P1-9a 扩展：自定义技能扫描目录（等价 DSH 的 `Config.customSkillDirs`）；
+  /// 除内置来源外额外扫描这些目录里的 `SKILL.md` / 扁平 `<name>.md`。
+  customSkillDirs: string[];
   /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
   notifyOnFinish: boolean;
 }
@@ -159,6 +162,7 @@ let cache: AppSettingsPayload = {
   ssrfAllowLoopback: true,
   ssrfAllowHosts: [],
   ssrfAllowPrivateHosts: [],
+  customSkillDirs: [],
   notifyOnFinish: true,
 };
 let loaded = false;

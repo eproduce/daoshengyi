@@ -28,6 +28,13 @@ pub struct SkillSourceSpec {
     pub dir: String,
     /// 只收指定文件名（如 `SKILL.md`）；None = 收目录下所有 .md/.mdc
     pub file_name: Option<String>,
+    /// 是否同时接受**扁平**的 `<name>.md`
+    ///
+    /// agentskills / DSH 的本地提供方允许「目录包 `<name>/SKILL.md`」与「扁平
+    /// `<name>.md`」并存；Claude Code 只认前者。用开关逐来源控制，避免把目录里
+    /// 顺带放的 README 之类误当技能收进来。
+    #[serde(default)]
+    pub flat: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -51,31 +58,43 @@ pub const MAX_SKILL_FILES: usize = 200;
 /// 递归深度上限（含根目录层）
 pub const MAX_SKILL_DEPTH: usize = 3;
 
-/// 是否是要收的文件：指定了文件名就精确匹配（忽略大小写），否则收 .md/.mdc
-fn is_candidate_file(path: &Path, file_name: Option<&str>) -> bool {
+/// 是否是要收的文件：
+/// - 指定了文件名 → 精确匹配（忽略大小写）；`flat` 为真时额外接受扁平 `.md`
+///   （agentskills / DSH 标准允许 `<name>.md` 与 `<name>/SKILL.md` 并存）
+/// - 未指定 → 收 .md/.mdc
+fn is_candidate_file(path: &Path, file_name: Option<&str>, flat: bool) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
+    let lower = name.to_ascii_lowercase();
     match file_name {
-        Some(want) => name.eq_ignore_ascii_case(want),
-        None => {
-            let lower = name.to_ascii_lowercase();
-            lower.ends_with(".md") || lower.ends_with(".mdc")
-        }
+        Some(want) => name.eq_ignore_ascii_case(want) || (flat && lower.ends_with(".md")),
+        None => lower.ends_with(".md") || lower.ends_with(".mdc"),
     }
 }
 
 /// 递归收集候选文件（纯文件系统操作，便于单测）。
 /// 规则：跳过隐藏项（以 `.` 开头）、跳过符号链接目录、深度与条目数上限。
-pub fn collect_skill_files(root: &Path, file_name: Option<&str>, depth: usize) -> Vec<PathBuf> {
+pub fn collect_skill_files(
+    root: &Path,
+    file_name: Option<&str>,
+    flat: bool,
+    depth: usize,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_inner(root, file_name, depth, &mut out);
+    collect_inner(root, file_name, flat, depth, &mut out);
     out.sort();
     out.truncate(MAX_SKILL_FILES);
     out
 }
 
-fn collect_inner(root: &Path, file_name: Option<&str>, depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_inner(
+    root: &Path,
+    file_name: Option<&str>,
+    flat: bool,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) {
     if depth == 0 || out.len() >= MAX_SKILL_FILES {
         return;
     }
@@ -96,8 +115,8 @@ fn collect_inner(root: &Path, file_name: Option<&str>, depth: usize, out: &mut V
             continue; // 不跟进符号链接（避免环与越界）
         }
         if ft.is_dir() {
-            collect_inner(&p, file_name, depth - 1, out);
-        } else if ft.is_file() && is_candidate_file(&p, file_name) {
+            collect_inner(&p, file_name, flat, depth - 1, out);
+        } else if ft.is_file() && is_candidate_file(&p, file_name, flat) {
             out.push(p);
         }
     }
@@ -140,7 +159,8 @@ pub fn scan_external_skills(
         if !dir_allowed(&dir, &home, ws.as_deref()) {
             continue; // 越界目录静默跳过（前端不会给出这种规格）
         }
-        for file in collect_skill_files(&dir, spec.file_name.as_deref(), MAX_SKILL_DEPTH) {
+        for file in collect_skill_files(&dir, spec.file_name.as_deref(), spec.flat, MAX_SKILL_DEPTH)
+        {
             if out.len() >= MAX_SKILL_FILES {
                 break;
             }
@@ -204,7 +224,7 @@ mod tests {
         write(&root.join("alpha/SKILL.md"), "---\nname: a\n---\nA");
         write(&root.join("beta/SKILL.md"), "---\nname: b\n---\nB");
         write(&root.join("beta/README.md"), "不该被收（只收 SKILL.md）");
-        let files = collect_skill_files(&root, Some("SKILL.md"), 3);
+        let files = collect_skill_files(&root, Some("SKILL.md"), false, 3);
         let names: Vec<String> = files
             .iter()
             .map(|p| {
@@ -227,7 +247,7 @@ mod tests {
         write(&root.join("prompts/b.mdc"), "B");
         write(&root.join("prompts/c.txt"), "C");
         write(&root.join("nested/d.md"), "D");
-        let files = collect_skill_files(&root, None, 3);
+        let files = collect_skill_files(&root, None, false, 3);
         assert_eq!(files.len(), 3, "应收到 2 个 .md/.mdc + 1 个嵌套 .md");
         assert!(files
             .iter()
@@ -241,7 +261,7 @@ mod tests {
         write(&root.join(".git/SKILL.md"), "隐藏目录里的不收");
         write(&root.join("keep/SKILL.md"), "收");
         write(&root.join("l1/l2/l3/deep/SKILL.md"), "太深，不收");
-        let files = collect_skill_files(&root, Some("SKILL.md"), MAX_SKILL_DEPTH);
+        let files = collect_skill_files(&root, Some("SKILL.md"), false, MAX_SKILL_DEPTH);
         assert_eq!(files.len(), 1, "只应收到 keep/SKILL.md");
         assert!(files[0].to_string_lossy().contains("keep"));
         let _ = std::fs::remove_dir_all(&root);
@@ -250,20 +270,46 @@ mod tests {
     #[test]
     fn missing_dir_is_empty_not_error() {
         let ghost = tmp("ghost").join("nope");
-        assert!(collect_skill_files(&ghost, Some("SKILL.md"), 3).is_empty());
+        assert!(collect_skill_files(&ghost, Some("SKILL.md"), false, 3).is_empty());
+    }
+
+    #[test]
+    fn flat_md_accepted_only_when_enabled() {
+        // agentskills / DSH 的目录允许「目录包 + 扁平 .md」并存；Claude Code 只认前者
+        let root = tmp("flat");
+        write(&root.join("packed/SKILL.md"), "包里的技能");
+        write(&root.join("flat-one.md"), "扁平技能");
+        let strict = collect_skill_files(&root, Some("SKILL.md"), false, 3);
+        assert_eq!(strict.len(), 1, "不开 flat 时只收 SKILL.md");
+        let loose = collect_skill_files(&root, Some("SKILL.md"), true, 3);
+        assert_eq!(loose.len(), 2, "开 flat 后扁平 .md 也收");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn candidate_file_matching() {
         assert!(is_candidate_file(
             Path::new("/x/SKILL.md"),
-            Some("skill.md")
+            Some("skill.md"),
+            false
         ));
-        assert!(is_candidate_file(Path::new("/x/a.MDC"), None));
-        assert!(!is_candidate_file(Path::new("/x/a.txt"), None));
+        assert!(is_candidate_file(Path::new("/x/a.MDC"), None, false));
+        assert!(!is_candidate_file(Path::new("/x/a.txt"), None, false));
         assert!(!is_candidate_file(
             Path::new("/x/SKILL.md"),
-            Some("other.md")
+            Some("other.md"),
+            false
+        ));
+        // flat 只放宽 `.md`，不放宽任意扩展名
+        assert!(is_candidate_file(
+            Path::new("/x/note.md"),
+            Some("SKILL.md"),
+            true
+        ));
+        assert!(!is_candidate_file(
+            Path::new("/x/a.txt"),
+            Some("SKILL.md"),
+            true
         ));
     }
 

@@ -2,7 +2,45 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-09**
+> **最后更新：2026-10-13**
+
+---
+
+## 2026-10-13（技能兼容 🟢 档：补扫描来源 + 扁平技能 + 自定义目录 + 来源徽标）
+
+### 背景
+用户提问「以后是否考虑可以安装主流 agent 的技能兼容？比如 deepseek harness」。
+核对后确认两件事：① **「自建插件 SDK」（O7）已于 2026-09-15 降级为远期可选项**（`ROADMAP` §5.1
+三层能力模型），技能这条线一直在推进；② **DSH 有两套扩展**——`skill` 子系统（与 agentskills 标准同款，
+可兼容）与 **Cordis 插件**（不可也不建议兼容，见 `DSH_PLUGIN_COMPATIBILITY.md`）。
+
+分析与矩阵落 **`docs/SKILL_COMPATIBILITY.md`**（新增）。
+
+### 已落地
+- **Rust 扫描层**（`src-tauri/src/skill_import.rs`）：`SkillSourceSpec` 新增 `flat` 开关——
+  指定文件名（如 `SKILL.md`）时**可选额外接受扁平 `<name>.md`**（agentskills / DSH 标准允许两种并存，
+  Claude Code 只认目录包，故逐来源控制，避免把目录里顺带放的 README 当技能）。
+- **扫描来源扩展**（`src/utils/skill-import.ts`）：新增 `~/.dsh/skills`（DSH 的 user-dsh 根）、
+  `<工作区>/.agents/skills`（DSH project-agents / agentskills 项目级）、`<工作区>/.dsh/skills`（DSH project-dsh）
+  与**自定义技能目录**（入参 `customDirs`，等价 DSH 的 `Config.customSkillDirs`；去空行、去重、label 取末级目录名）。
+  `agents-skills` 同步开 `flat`。
+- **设置项**：`customSkillDirs: string[]`（`AppSettings` + `Default` + 两处测试字面量 + 前端 payload/默认值），
+  并把它加进 `frontend_settings_keys_survive_round_trip` 回归覆盖（防「前端有键而 Rust 无字段 → 保存即丢」）。
+- **技能库 UI**（`SkillManager.vue`）：导入页提示文案更新为完整来源清单 + 「自定义技能目录」文本框
+  （每行一个，保存进设置）；「我的技能」列表新增**来源徽标**（新纯函数 `importOrigin(url)` 按 `importUrl`
+  识别 Claude Code / Claude Code 命令 / DSH / 通用技能目录 / Codex / Cursor / 道生一技能目录 / URL 导入 / 外部导入——
+  **对已导入的旧技能同样有效**，无需改数据模型）。
+
+### 验证
+- `tests/test-skill-import.test.ts`：来源清单、`flat` 开关、自定义目录（去重与 `~` 保留）、`importOrigin` 识别，
+  共 **20 条**全绿；`npx vue-tsc --noEmit` 无错。
+- `cargo test --lib` **279 passed / 0 failed**（含新增 `flat_md_accepted_only_when_enabled`、
+  更新后的 `candidate_file_matching` 与设置往返用例）。
+- 边界仍与旧行为一致：只扫主目录/工作区内目录、单文件 ≤256KB、总条目 ≤200、深度 ≤3、跳过隐藏目录与符号链接。
+
+### 未做（已入档 `SKILL_COMPATIBILITY.md` §6）
+技能携带 `references/`、宿主变量替换表（`${SKILL_DIR}`）、导入期能力声明校验、装前安全扫描（🟡）；
+技能包 manifest（版本/来源哈希/许可证）（🔵）；兼容 Cordis 插件（明确不做）。
 
 ---
 

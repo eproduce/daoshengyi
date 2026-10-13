@@ -162,6 +162,11 @@ pub struct AppSettings {
     /// `[{"event":"turn_end","action":"notify","text":"完成"}]`
     #[serde(default)]
     pub hooks: serde_json::Value,
+    /// P1-9a 扩展：自定义技能扫描目录（等价 DSH 的 `Config.customSkillDirs`）——
+    /// 除内置来源外，额外扫描这些目录里的 `SKILL.md` 与扁平 `<name>.md`。
+    /// 每项一个绝对路径或 `~/` 开头路径；不在主目录/工作区内的会被扫描器静默跳过。
+    #[serde(default)]
+    pub custom_skill_dirs: Vec<String>,
     /// P1-8 输出风格 id（default / concise / detailed / teaching / review）
     #[serde(default)]
     pub output_style: String,
@@ -253,6 +258,7 @@ impl Default for AppSettings {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            custom_skill_dirs: Vec::new(),
             output_style: String::new(),
         }
     }
@@ -520,6 +526,7 @@ mod tests {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            custom_skill_dirs: Vec::new(),
             output_style: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
@@ -586,6 +593,7 @@ mod tests {
             budget_monthly: 0.0,
             permission_rules: serde_json::json!([]),
             hooks: serde_json::json!([]),
+            custom_skill_dirs: Vec::new(),
             output_style: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
@@ -608,16 +616,19 @@ mod tests {
         v["sandboxMode"] = json!("workspace-write");
         v["sandboxNetwork"] = json!("loopback-only");
         v["codeModeEnabled"] = json!(true);
+        v["customSkillDirs"] = json!(["/tmp/my-skills"]);
 
         let s: AppSettings = serde_json::from_value(v).unwrap();
         assert_eq!(s.sandbox_mode, "workspace-write");
         assert_eq!(s.sandbox_network, "loopback-only");
         assert!(s.code_mode_enabled);
+        assert_eq!(s.custom_skill_dirs, vec!["/tmp/my-skills".to_string()]);
 
         let back = serde_json::to_value(&s).unwrap();
         assert_eq!(back["sandboxMode"], "workspace-write");
         assert_eq!(back["sandboxNetwork"], "loopback-only");
         assert_eq!(back["codeModeEnabled"], true);
+        assert_eq!(back["customSkillDirs"], json!(["/tmp/my-skills"]));
     }
 
     #[test]

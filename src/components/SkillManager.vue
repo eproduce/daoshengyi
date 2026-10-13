@@ -3,8 +3,9 @@ import { ref, computed, watch } from "vue";
 import { useSkillStore } from "@/stores/skill";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
-import { getSettings } from "@/api/appSettings";
+import { getSettings, updateSettings } from "@/api/appSettings";
 import {
+  importOrigin,
   planSkillImport,
   skillSourceSpecs,
   summarizePlan,
@@ -36,11 +37,17 @@ const importMdText = ref("");
 const importMsg = ref("");
 const importing = ref(false);
 const fileInput = ref<HTMLInputElement>();
+/** 设置里的自定义技能目录（每行一个；保存后下次扫描生效） */
+const customDirsText = ref("");
+
+/** 来源徽标文案（无 importUrl / 识别不出时为「外部导入」） */
+const originLabel = (url?: string) => importOrigin(url)?.label ?? "";
 
 const myEnabled = computed(() => store.skills.filter((s) => s.enabled).length);
 
 function open() {
   activeTab.value = store.skills.length > 0 ? "mine" : "catalog";
+  loadCustomDirs();
   ui.openSkills();
 }
 
@@ -50,11 +57,32 @@ function cancel() {
   importMsg.value = "";
 }
 
+/** 把设置里的自定义目录读进文本框（设置可能异步加载完成，故每次打开都同步） */
+function loadCustomDirs() {
+  customDirsText.value = (getSettings().customSkillDirs ?? []).join("\n");
+}
+
+/** 保存自定义目录：去空行 → 写设置 → 下次扫描生效 */
+function saveCustomDirs() {
+  const dirs = customDirsText.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  updateSettings({ customSkillDirs: dirs });
+  customDirsText.value = dirs.join("\n");
+  importMsg.value = dirs.length
+    ? `✅ 已保存 ${dirs.length} 个自定义技能目录（下次扫描生效）`
+    : "✅ 已清空自定义技能目录";
+}
+
 // 从菜单栏「技能库」打开时，同样初始化到合适的分页
 watch(
   () => ui.skillsOpen,
   (v) => {
-    if (v) activeTab.value = store.skills.length > 0 ? "mine" : "catalog";
+    if (v) {
+      activeTab.value = store.skills.length > 0 ? "mine" : "catalog";
+      loadCustomDirs();
+    }
   },
 );
 
@@ -138,7 +166,8 @@ async function doExternalImport() {
   try {
     const home = (await homeDir()).replace(/\/+$/, "");
     const workspace = String(getSettings().workspace ?? "");
-    const specs = skillSourceSpecs(home, workspace);
+    const specs = skillSourceSpecs(home, workspace, getSettings().customSkillDirs ?? []);
+    const specLabel = new Map(specs.map((s) => [s.id, s.label]));
     if (!specs.length) {
       importMsg.value = "❌ 未能确定主目录，无法扫描外部技能";
       importing.value = false;
@@ -178,7 +207,7 @@ async function doExternalImport() {
       if (s) added++;
     }
     const srcText = Object.entries(plan.bySource)
-      .map(([k, v]) => `${k} ${v}`)
+      .map(([k, v]) => `${specLabel.get(k) ?? k} ${v}`)
       .join(" · ");
     // 用**实际写入**的计数（plan 里的新增/更新是意图，这里是结果，两者不一致时以这里为准）
     importMsg.value =
@@ -308,6 +337,9 @@ const categoryColors: Record<string, string> = {
                     <Download v-else-if="s.source === 'import'" :size="12" />
                     <Pencil v-else :size="12" />
                   </span>
+                  <span v-if="originLabel(s.importUrl)" class="sk-origin-tag">{{
+                    originLabel(s.importUrl)
+                  }}</span>
                 </div>
                 <div class="sk-item-desc">{{ s.description || "无描述" }}</div>
                 <div v-if="s.whenToUse" class="sk-item-desc" style="opacity: 0.65; font-size: 11px">
@@ -376,9 +408,11 @@ const categoryColors: Record<string, string> = {
             <div class="sk-import-block">
               <h4>从其它工具的技能目录导入（推荐）</h4>
               <p class="sk-hint">
-                扫描 Claude
-                Code（~/.claude/skills、~/.claude/commands）、Codex（~/.codex/prompts）、
-                Cursor（当前项目 .cursor/rules）与你自己的 ~/Documents/道生一技能。
+                扫描 Claude Code（~/.claude/skills、~/.claude/commands）、<b>通用技能目录</b>
+                （~/.agents/skills，即 <code>npx skills add</code> 装技能的位置）、<b>DSH</b>
+                （~/.dsh/skills）、Codex（~/.codex/prompts）、当前项目的 .agents/skills ·
+                .dsh/skills · .cursor/rules，以及你自己的 ~/Documents/道生一技能。
+                目录包（<code>&lt;名字&gt;/SKILL.md</code>）与扁平（<code>&lt;名字&gt;.md</code>）都能识别。
                 <b>永不覆盖你手写的同名技能</b>：来源文件没变过的会更新正文，同名冲突会跳过并告知。
               </p>
               <div class="sk-import-row">
@@ -386,6 +420,19 @@ const categoryColors: Record<string, string> = {
                   {{ importing ? "扫描中…" : "扫描并导入" }}
                 </button>
               </div>
+              <textarea
+                v-model="customDirsText"
+                class="sk-textarea"
+                rows="3"
+                placeholder="自定义技能目录（每行一个，支持绝对路径或 ~/ 开头，如 ~/work/team-skills）"
+              ></textarea>
+              <button
+                class="sk-btn sk-btn-sec sk-btn-sm"
+                style="margin-top: 6px"
+                @click="saveCustomDirs"
+              >
+                保存自定义目录
+              </button>
             </div>
 
             <!-- URL -->
@@ -623,6 +670,15 @@ category: 开发
 .sk-src-tag {
   font-size: 10px;
   opacity: 0.6;
+}
+.sk-origin-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #444);
+  color: var(--text-soft, #999);
+  opacity: 0.85;
+  white-space: nowrap;
 }
 .sk-tag {
   font-size: 10px;
