@@ -136,6 +136,8 @@ export interface AppSettingsPayload {
   surfaceSpeechVoice: string;
   /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
   surfaceSilent: boolean;
+  /// 环境层：任务结束时自动把结论呈到桌面（默认开）——模型不一定记得调 present，宿主兜一次
+  surfaceAutoFinish: boolean;
 }
 
 let cache: AppSettingsPayload = {
@@ -176,6 +178,7 @@ let cache: AppSettingsPayload = {
   surfaceSpeech: false,
   surfaceSpeechVoice: "",
   surfaceSilent: false,
+  surfaceAutoFinish: true,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

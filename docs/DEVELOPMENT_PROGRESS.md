@@ -48,8 +48,18 @@
 - **未上屏时不判穿透/遮挡/焦点**：`apply_flags` 是 show 那一刻才应用的，启动瞬间读到「还没设」，
   会输出一堆假 ❌ 把排查方向带偏。
 
+### 5. 收尾自动呈现（宿主兜底）
+- 光有 `present` 工具不够：长任务结束时用户往往已经走开，而模型**不一定记得**调工具。
+  在本轮收尾处（与系统通知同一位置）由宿主兜一次：`buildFinishIr` → `planSurfaces` → `surface_present`。
+- **预筛**（低打扰的关键）：**纯问答（没用工具）只进会话**；用过工具才 `primary`，
+  且用 **`sticky`** 而不是 `auto`（几秒淡出 = 用户不在时白推）；用户主动停止不呈现；
+  窗口在前台不冒浮层。规则全在纯函数里（8 个新单测），store 只负责调用。
+- 接线用**源码级契约测试**钉住：断言 `presentTurnFinished` 与 `notifyTurnFinished` 在同一处
+  —— 将来重构「只搬走通知、漏掉呈现」时功能会静默消失，普通单测抓不住。
+- 新增开关「任务结束时自动呈现结论」（默认开）+ 设置页开关。
+
 ### 验证
-`npm run ci:local` **8/8 全绿**：vitest（展示 IR 27 + 工具契约 8 等）、eslint、prettier、
+`npm run ci:local` **8/8 全绿**：vitest（展示 IR 38 + 工具契约 8 等）、eslint、prettier、
 vue-tsc + vite build（多入口含 `hud.html`）、tsc(tests)、rustfmt、clippy `-D warnings`、
 cargo test **336 passed / 0 failed**。
 

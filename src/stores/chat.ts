@@ -81,7 +81,7 @@ import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
-import { parseDisplayIr, planSurfaces } from "@/utils/display-ir";
+import { parseDisplayIr, planSurfaces, buildFinishIr } from "@/utils/display-ir";
 import { discoverProjectInstructions } from "@/utils/agents-md";
 import {
   executeWorkflow,
@@ -1505,6 +1505,43 @@ function notifyTurnFinished(content: string, toolCount: number): void {
     });
   } catch {
     /* 通知为增值功能，任何异常都不打断本轮 */
+  }
+}
+
+/// 本轮结束时**把结论送到桌面**（环境层，无模型参与）。
+///
+/// 为什么宿主兜这一手：长任务结束时用户常常已经走开，而模型不一定会记得调 `present` 工具；
+/// 环境层要真的“环境”，就得在收尾处兜一次。判定与出口选择仍复用纯函数
+/// （`buildFinishIr` + `planSurfaces`），所以规则可单测、不改这里也不影响它们。
+///
+/// 低打扰：纯问答只进会话（`buildFinishIr` 给 secondary）；主窗口在前台时也不冒浮层
+/// （用户正在看，刚读完正文）。
+function presentTurnFinished(content: string, toolCount: number): void {
+  try {
+    if (stopRequested) return; // 用户主动停止 ≠ 完成，不误报
+    if (!getSettings().surfaceAutoFinish) return;
+    const plain = plainTextForNotice(content, 220);
+    if (!plain) return; // 空正文（如本地命令）不呈现
+    const plan = useChatStore().taskPlan;
+    const ir = buildFinishIr({
+      text: plain,
+      toolCount,
+      planDone: plan ? plan.steps.filter((s) => s.status === "done").length : undefined,
+      planTotal: plan ? plan.steps.length : undefined,
+    });
+    const surfacePlan = planSurfaces(ir, {
+      silent: !!getSettings().surfaceSilent,
+      hudEnabled: getSettings().surfaceHud !== false,
+      speechEnabled: !!getSettings().surfaceSpeech,
+      windowFocused: typeof document !== "undefined" && document.hasFocus(),
+    });
+    // 只剩会话一个出口就不必惊动 Rust（省一次 IPC）
+    if (surfacePlan.surfaces.length <= 1) return;
+    invoke("surface_present", { payload: { ir, plan: surfacePlan } }).catch(() => {
+      /* 呈现失败不影响主流程 */
+    });
+  } catch {
+    /* 环境层为增值功能，任何异常都不打断本轮 */
   }
 }
 
@@ -7429,6 +7466,8 @@ export const useChatStore = defineStore("chat", () => {
       // 系统通知：任务完成 / 最终产物就绪（窗口未聚焦时才打扰，避免盯着屏幕被弹窗打断）
       // 注：此处 streamingContent 已是本轮最终正文（finally 才做落库装配）
       notifyTurnFinished(streamingContent.value, toolCards.length);
+      // 环境层：把本轮结论送到桌面（同一份判定逻辑走纯函数；纯问答 / 前台时不会冒）
+      presentTurnFinished(streamingContent.value, toolCards.length);
       // P1-3：turn_end 钩子（notify/shell/http/inject 都会在这里触发）
       void fireHooks({
         event: "turn_end",

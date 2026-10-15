@@ -590,6 +590,7 @@ const surfaceHud = ref(getSettings().surfaceHud !== false);
 const surfaceSpeech = ref(!!getSettings().surfaceSpeech);
 const surfaceSpeechVoice = ref(getSettings().surfaceSpeechVoice ?? "");
 const surfaceSilent = ref(!!getSettings().surfaceSilent);
+const surfaceAutoFinish = ref(getSettings().surfaceAutoFinish !== false);
 const surfaceTestResult = ref("");
 function saveSurface() {
   updateSettings({
@@ -597,6 +598,7 @@ function saveSurface() {
     surfaceSpeech: surfaceSpeech.value,
     surfaceSpeechVoice: surfaceSpeechVoice.value.trim(),
     surfaceSilent: surfaceSilent.value,
+    surfaceAutoFinish: surfaceAutoFinish.value,
   });
 }
 /// 「试一下」：走真正的呈现路径（与模型调 present 工具同一条），把结果原样显示
@@ -1566,6 +1568,15 @@ function handleDelete() {
               >
                 <input v-model="surfaceSilent" type="checkbox" @change="saveSurface" />
                 <span>静默模式（只留会话，不出声、不冒浮层）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="surfaceAutoFinish" type="checkbox" @change="saveSurface" />
+                <span>任务结束时自动呈现结论（模型不一定会记得调 present，宿主兜一次）</span>
               </label>
             </div>
             <div class="form-group">

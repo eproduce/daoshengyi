@@ -260,6 +260,49 @@ export function parseDisplayIr(raw: unknown): { ir: DisplayIr; issues: string[] 
   };
 }
 
+// ── 本轮收尾的自动呈现（宿主兜底，与模型无关）────────────────────
+
+/** 构造收尾呈现的输入（宿主在任务结束时给出） */
+export interface FinishSummaryInput {
+  /** 纯文本结论（已去 markdown/代码块） */
+  text: string;
+  /** 本轮用到的工具数：0 = 纯问答 */
+  toolCount: number;
+  /** 计划进度（有则用于标题与副文） */
+  planDone?: number;
+  planTotal?: number;
+}
+
+/**
+ * 由「本轮收尾结果」构造展示意图。
+ *
+ * **为什么宿主兜这一手**：长任务结束时用户往往已经走开去看别的了，而模型**不一定记得**
+ * 调 `present` 工具。环境层要真的"环境"，就得在收尾时自己兜一次。
+ *
+ * **预筛（低打扰的关键）**：纯问答（`toolCount = 0`）**只进会话**——把每一轮对话都冒到
+ * 桌面上就是骚扰；只有真干活（用过工具）的那一轮才值得 `primary`。
+ * 这也是把「按话轮」变回「按任务」的那道确定性门禁（与 search-gate / danger-rules 同思路）。
+ */
+export function buildFinishIr(input: FinishSummaryInput): DisplayIr {
+  const hasPlan = !!input.planTotal && input.planTotal > 0;
+  const done = hasPlan ? (input.planDone ?? 0) : undefined;
+  const allDone = hasPlan && done === input.planTotal;
+  const isTask = input.toolCount > 0;
+  const text = str(input.text, 220) ?? "";
+  const withProgress = hasPlan ? `${done}/${input.planTotal} 步 · ${text}` : text;
+  const speech = cleanForSpeech(firstSentence(text) ?? text);
+
+  return {
+    kind: isTask ? "callout" : "card",
+    title: allDone ? "✅ 任务完成" : isTask ? "✅ 执行完成" : "💬 回复完成",
+    priority: isTask ? "primary" : "secondary",
+    // sticky：用户不在时 auto 几秒就消失，等于白推；留在那儿等他回来一眼看到
+    life: isTask ? "sticky" : "auto",
+    ...(speech ? { speech } : {}),
+    body: { text: withProgress, tone: "success" },
+  };
+}
+
 // ── surface 与降级 ────────────────────────────────────────────────────────────
 
 /** 出海口。`session` 永远有（钉回会话是底线：浮层可以阅后即焚，留痕不能丢） */

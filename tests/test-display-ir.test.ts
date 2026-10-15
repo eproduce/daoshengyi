@@ -1,4 +1,6 @@
-// 展示 IR 的单测：容错解析 + 降级矩阵 + 呈现决策。
+/// <reference types="vite/client" />
+
+// 展示 IR 的单测：容错解析 + 降级矩阵 + 呈现决策 + 收尾自动呈现。
 //
 // 这里最值钱的一条是「降级不变量」：任意 kind × 任意 surface，
 // 降级之后的结果**必须**是该 surface 原生能渲染的 —— 否则就会出现
@@ -7,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import {
   DISPLAY_KINDS,
   IR_LIMITS,
+  buildFinishIr,
   cleanForSpeech,
   degradeForSurface,
   parseDisplayIr,
@@ -16,6 +19,13 @@ import {
   type DisplayIr,
   type Surface,
 } from "../src/utils/display-ir";
+
+/// 源码本身也是被测对象：有些契约（有没有真的接线）只能从源码上看
+const SOURCES = import.meta.glob("../src/**/*.{ts,vue}", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 const SURFACES: Surface[] = ["hud", "speech", "session", "page"];
 
@@ -228,5 +238,79 @@ describe("呈现决策：宿主规则为主", () => {
     ]) {
       expect(planSurfaces(ir({ title: "x" }), ctx).reasons.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("本轮收尾自动呈现：宿主兜底，但必须低打扰", () => {
+  it("纯问答只进会话（secondary + auto）——每轮对话都冒出来就是骚扰", () => {
+    const ir = buildFinishIr({ text: "天气不错", toolCount: 0 });
+    expect(ir.priority).toBe("secondary");
+    expect(ir.life).toBe("auto");
+    expect(ir.kind).toBe("card");
+  });
+
+  it("真干活的那一轮才冒浮层（primary + sticky：用户不在时 auto 等于白推）", () => {
+    const ir = buildFinishIr({ text: "已生成报告", toolCount: 3 });
+    expect(ir.priority).toBe("primary");
+    expect(ir.life).toBe("sticky");
+    expect(ir.kind).toBe("callout");
+  });
+
+  it("计划全部完成时标题写「任务完成」并带上进度", () => {
+    const ir = buildFinishIr({ text: "搞定", toolCount: 4, planDone: 3, planTotal: 3 });
+    expect(ir.title).toContain("任务完成");
+    expect(ir.body.text).toContain("3/3 步");
+  });
+
+  it("说「做得怎么样」而不是「结束」：只给「回复完成」", () => {
+    const ir = buildFinishIr({ text: "好的", toolCount: 0, planDone: 1, planTotal: 3 });
+    expect(ir.title).toContain("回复完成");
+    expect(ir.body.text).toContain("1/3 步");
+  });
+
+  it("正文超长时截断（浮层只有 380×132）", () => {
+    const ir = buildFinishIr({ text: "甲".repeat(500), toolCount: 1 });
+    // 220 上限 + 截断省略号
+    expect(ir.body.text!.length).toBeLessThanOrEqual(221);
+  });
+
+  it("要念的是首句而不是整段（语音不是念报告）", () => {
+    const ir = buildFinishIr({ text: "三份邮件已回复。其余待办见正文。", toolCount: 2 });
+    expect(ir.speech).toBe("三份邮件已回复。");
+    expect(ir.speech!.length).toBeLessThanOrEqual(IR_LIMITS.speech);
+  });
+
+  it("收尾 IR 在每个出口都能渲染（沿用降级不变量）", () => {
+    for (const toolCount of [0, 5]) {
+      const ir = buildFinishIr({ text: "结论", toolCount });
+      for (const surface of SURFACES) {
+        expect(supportsKind(surface, degradeForSurface(ir, surface).kind)).toBe(true);
+      }
+    }
+  });
+
+  it("有内容时才会带 speech（避免空字符串把语音叫出来）", () => {
+    expect(buildFinishIr({ text: "", toolCount: 1 }).speech).toBeUndefined();
+  });
+});
+
+describe("接线契约：收尾呈现必须真的被调用", () => {
+  const chatSrc = SOURCES["../src/stores/chat.ts"] ?? "";
+
+  it("能读到源码（防止路径写错导致空跑）", () => {
+    expect(chatSrc.length).toBeGreaterThan(100_000);
+  });
+
+  it("chat.ts 在本轮收尾处挂了自动呈现，且与系统通知同一处", () => {
+    // 这条只能靠源码断言：模型调 present 是「显式」，而收尾兜底是「隐式」——
+    // 将来重构只搬走通知却漏掉呈现时，功能会静默消失，很难发现。
+    expect(chatSrc).toContain("function presentTurnFinished(");
+    expect(chatSrc).toContain("presentTurnFinished(streamingContent.value, toolCards.length);");
+    expect(chatSrc).toContain("notifyTurnFinished(streamingContent.value, toolCards.length);");
+  });
+
+  it("收尾呈现复用纯函数，而不是在 store 里另写一套判定", () => {
+    expect(chatSrc).toContain("buildFinishIr({");
+    expect(chatSrc).toContain("planSurfaces(ir, {");
   });
 });

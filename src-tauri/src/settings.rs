@@ -182,6 +182,10 @@ pub struct AppSettings {
     /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
     #[serde(default)]
     pub surface_silent: bool,
+    /// 环境层：任务结束时自动把结论呈到桌面（默认开）——
+    /// 模型不一定记得调 `present`，宿主在收尾处兜一次；浮层只在窗口未聚焦时冒
+    #[serde(default = "default_true")]
+    pub surface_auto_finish: bool,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -276,6 +280,7 @@ impl Default for AppSettings {
             surface_speech: false,
             surface_speech_voice: String::new(),
             surface_silent: false,
+            surface_auto_finish: true,
         }
     }
 }
@@ -548,6 +553,7 @@ mod tests {
             surface_speech: false,
             surface_speech_voice: String::new(),
             surface_silent: false,
+            surface_auto_finish: true,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -619,6 +625,7 @@ mod tests {
             surface_speech: false,
             surface_speech_voice: String::new(),
             surface_silent: false,
+            surface_auto_finish: true,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");
