@@ -138,6 +138,14 @@ export interface AppSettingsPayload {
   surfaceSilent: boolean;
   /// 环境层：任务结束时自动把结论呈到桌面（默认开）——模型不一定记得调 present，宿主兜一次
   surfaceAutoFinish: boolean;
+  /// 环境层：**自定义音色**的命令模板（空 = 用系统 `say`）。
+  /// 占位符：`{text}` / `{out}`（输出音频）/ `{ref}`（参考音频）；含 `{out}` 由我们播放
+  surfaceTtsCommand: string;
+  /// 环境层：自定义音色的**参考音频**路径（零样本克隆类引擎需要一段参考音）
+  surfaceTtsReference: string;
+  /// 环境层：勿扰时段（`"22:30"`；两个都填才生效，支持跨零点）
+  surfaceQuietStart: string;
+  surfaceQuietEnd: string;
 }
 
 let cache: AppSettingsPayload = {
@@ -179,6 +187,10 @@ let cache: AppSettingsPayload = {
   surfaceSpeechVoice: "",
   surfaceSilent: false,
   surfaceAutoFinish: true,
+  surfaceTtsCommand: "",
+  surfaceTtsReference: "",
+  surfaceQuietStart: "",
+  surfaceQuietEnd: "",
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;

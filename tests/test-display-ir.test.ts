@@ -8,12 +8,19 @@
 import { describe, it, expect } from "vitest";
 import {
   DISPLAY_KINDS,
+  IMPLEMENTED_SURFACES,
   IR_LIMITS,
+  PRESENT_PROTOCOL_VERSION,
   SPEAK_MAX_CHARS,
+  SURFACE_CAPABILITIES,
   buildFinishIr,
   cleanForSpeech,
   degradeForSurface,
+  effectiveIr,
+  inQuietHours,
+  parseClock,
   parseDisplayIr,
+  parseRefs,
   planSurfaces,
   shouldSpeak,
   speechTextOf,
@@ -29,10 +36,41 @@ const SOURCES = import.meta.glob("../src/**/*.{ts,vue}", {
   eager: true,
 }) as Record<string, string>;
 
-const SURFACES: Surface[] = ["hud", "speech", "session", "page"];
+/// Rust 侧的镜像表也要能读到（前后端能力表必须一致）
+const RUST_SOURCES = import.meta.glob("../src-tauri/src/surface.rs", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
+/** 协议登记的全部出口（含尚未收编的 notify/tray/quicklook/im）—— 降级不变量要覆盖它们 */
+const SURFACES: Surface[] = [
+  "hud",
+  "speech",
+  "session",
+  "page",
+  "notify",
+  "tray",
+  "quicklook",
+  "im",
+];
 
 function ir(partial: Partial<DisplayIr>): DisplayIr {
-  return { kind: "card", priority: "primary", life: "auto", body: {}, ...partial };
+  return {
+    v: PRESENT_PROTOCOL_VERSION,
+    id: "ir_test",
+    source: "model",
+    kind: "card",
+    priority: "primary",
+    life: "auto",
+    body: {},
+    ...partial,
+  };
+}
+
+/** 出口决策的默认上下文（全开），个别用例再覆写 */
+function ctx(partial: Partial<Parameters<typeof planSurfaces>[1]> = {}) {
+  return { silent: false, hudEnabled: true, speechEnabled: true, ...partial };
 }
 
 describe("parseDisplayIr：模型输出一律当不可信输入", () => {
@@ -332,7 +370,11 @@ describe("接线契约：收尾呈现必须真的被调用", () => {
 
   it("收尾呈现复用纯函数，而不是在 store 里另写一套判定", () => {
     expect(chatSrc).toContain("buildFinishIr({");
-    expect(chatSrc).toContain("planSurfaces(ir, {");
+    expect(chatSrc).toContain("planSurfaces(ir,");
+    // 两个调用点必须共用同一个上下文构造函数，否则会出现“两处各判一套”
+    // （勿扰时段/静默/开关的判定一旦分叉，就会出现“设置页关了但不生效”这类怪事）
+    expect(chatSrc).toContain("surfaceContext()");
+    expect(chatSrc).toContain("quietHours");
   });
 });
 
@@ -381,5 +423,196 @@ describe("该不该念：宿主判断，用户不用操心", () => {
 
   it("模型指定了 speech 就念那一句", () => {
     expect(shouldSpeak(ir({ title: "标题", speech: "念这句" })).text).toBe("念这句");
+  });
+});
+
+// ── 协议层（P-A1）：版本 / 身份 / 来源 / 引用 / 出口注册表 / 勿扰时段 ──────────
+//
+// 这些字段不影响“怎么画”，但决定“这条结果该怎么被对待”：
+// 有没有被重复推、来自谁、要不要因为来源降打扰、深夜该不该出声。
+
+describe("协议字段：v / id / source / refs", () => {
+  it("缺省补齐 v=1、生成的 id、source=model", () => {
+    const { ir: out } = parseDisplayIr({ kind: "card" });
+    expect(out.v).toBe(PRESENT_PROTOCOL_VERSION);
+    expect(out.id).toMatch(/^ir_/);
+    expect(out.source).toBe("model");
+  });
+
+  it("报文自带的 id/source 必须沿用（HUD 重新解析不能换 id，否则去重失效）", () => {
+    const { ir: out } = parseDisplayIr({ kind: "card", id: "ir_abc", source: "schedule" });
+    expect(out.id).toBe("ir_abc");
+    expect(out.source).toBe("schedule");
+  });
+
+  it("宿主可以指定来源（定时任务/子代理在调用时告诉我们）", () => {
+    const { ir: out } = parseDisplayIr({ kind: "card" }, { source: "subagent" });
+    expect(out.source).toBe("subagent");
+    // 但报文自己写了就以报文为准
+    const { ir: out2 } = parseDisplayIr({ kind: "card", source: "hook" }, { source: "subagent" });
+    expect(out2.source).toBe("hook");
+  });
+
+  it("更高版本的报文按 v1 尽力解析并留下提示，而不是拒绝渲染", () => {
+    const { ir: out, issues } = parseDisplayIr({ kind: "card", v: 7 });
+    expect(out.v).toBe(7);
+    expect(out.kind).toBe("card");
+    expect(issues.join()).toContain("v7");
+  });
+
+  it("未知 source 退回 model 并记录（不猜）", () => {
+    const { ir: out, issues } = parseDisplayIr({ kind: "card", source: "telepathy" });
+    expect(out.source).toBe("model");
+    expect(issues.join()).toContain("source");
+  });
+
+  it("refs：合法条目保留，未知 kind/空值丢弃，超量截断到 4 条", () => {
+    const refs = parseRefs([
+      { kind: "file", value: "~/op/a.ts" },
+      { kind: "telepathy", value: "x" },
+      { kind: "url", value: "" },
+      { kind: "conversation", value: "abc" },
+      { kind: "tool", value: "run_command" },
+      { kind: "file", value: "~/op/b.ts" },
+      { kind: "file", value: "~/op/c.ts" },
+    ]);
+    expect(refs?.length).toBe(4);
+    expect(refs?.map((r) => r.value)).toEqual(["~/op/a.ts", "abc", "run_command", "~/op/b.ts"]);
+    // 非数组/全脏 → undefined（不产生空数组，省得当“有引用”处理）
+    expect(parseRefs("x")).toBeUndefined();
+    expect(parseRefs([{ kind: "nope", value: "y" }])).toBeUndefined();
+  });
+
+  it("priorityExplicit 只在显式写了优先级时为真", () => {
+    expect(parseDisplayIr({ kind: "card" }).ir.priorityExplicit).toBe(false);
+    expect(parseDisplayIr({ kind: "card", priority: "primary" }).ir.priorityExplicit).toBe(true);
+    expect(parseDisplayIr({ kind: "card", priority: "secondary" }).ir.priorityExplicit).toBe(true);
+  });
+
+  it("收尾 IR 自报来自宿主（source=host），不冒充模型调用", () => {
+    const out = buildFinishIr({ text: "做完了", toolCount: 3 });
+    expect(out.source).toBe("host");
+    expect(out.v).toBe(PRESENT_PROTOCOL_VERSION);
+    expect(out.id).toMatch(/^ir_/);
+  });
+});
+
+describe("出口注册表（协议第②层）", () => {
+  it("每个登记出口都有能力表，且 kind 表非空", () => {
+    for (const s of SURFACES) {
+      expect(SURFACE_CAPABILITIES[s], `${s} 未登记`).toBeTruthy();
+      expect(SURFACE_CAPABILITIES[s].kinds.length, `${s} 的 kind 表是空的`).toBeGreaterThan(0);
+    }
+  });
+
+  it("已接线的出口必须都在注册表里（新增出口不能绕过登记）", () => {
+    for (const s of IMPLEMENTED_SURFACES) {
+      expect(SURFACE_CAPABILITIES[s as Surface]).toBeTruthy();
+    }
+    expect(IMPLEMENTED_SURFACES.length).toBeLessThan(SURFACES.length); // 还有待收编的
+  });
+
+  it("登记表里的出口名与 Rust 侧镜像一致（防前后端各写一套）", () => {
+    // Rust 源码不在 src/ 下，单独 glob 一份（契约必须能被机器校验，不能靠人记得同步）
+    const rustSrc = RUST_SOURCES["../src-tauri/src/surface.rs"] ?? "";
+    expect(rustSrc.length).toBeGreaterThan(0);
+    const block = /pub const SURFACE_NAMES:[^=]*=\s*\[([\s\S]*?)\];/.exec(rustSrc);
+    expect(block, "surface.rs 里没找到 SURFACE_NAMES").toBeTruthy();
+    const names = [...block![1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+    expect(names.sort()).toEqual([...SURFACES].sort());
+  });
+
+  it("出声与不打扰的默认值是“安静优先”：语音默认关", () => {
+    expect(SURFACE_CAPABILITIES.speech.defaultEnabled).toBe(false);
+    expect(SURFACE_CAPABILITIES.im.defaultEnabled).toBe(false);
+    expect(SURFACE_CAPABILITIES.hud.defaultEnabled).toBe(true);
+  });
+});
+
+describe("勿扰时段：深夜不乱响，但信息不丢", () => {
+  it("parseClock 只认 HH:MM，非法一律 null（不猜）", () => {
+    expect(parseClock("22:30")).toBe(1350);
+    expect(parseClock("0:05")).toBe(5);
+    for (const bad of ["", "24:00", "22:60", "2230", "22:3", "晚十点"]) {
+      expect(parseClock(bad), bad).toBeNull();
+    }
+  });
+
+  it("跨零点的区间判定正确（22:30–08:00）", () => {
+    const quiet = { start: "22:30", end: "08:00" };
+    const at = (hhmm: string) => {
+      const [h, m] = hhmm.split(":").map(Number);
+      return inQuietHours(quiet, new Date(2026, 9, 16, h, m));
+    };
+    expect(at("23:10")).toBe(true);
+    expect(at("07:59")).toBe(true);
+    expect(at("08:00")).toBe(false);
+    expect(at("12:00")).toBe(false);
+    expect(at("22:29")).toBe(false);
+  });
+
+  it("不跨零点的区间同样成立；起止相等或非法则整条不生效（宁可不禁声）", () => {
+    const at = (quiet: { start: string; end: string } | null, hhmm: string) => {
+      const [h, m] = hhmm.split(":").map(Number);
+      return inQuietHours(quiet, new Date(2026, 9, 16, h, m));
+    };
+    expect(at({ start: "13:00", end: "14:00" }, "13:30")).toBe(true);
+    expect(at({ start: "13:00", end: "14:00" }, "14:30")).toBe(false);
+    expect(at({ start: "13:00", end: "13:00" }, "13:30")).toBe(false);
+    expect(at({ start: "补", end: "14:00" }, "13:30")).toBe(false);
+    expect(at(null, "23:00")).toBe(false);
+  });
+
+  it("处在勿扰时段：只留痕，不出声不冒层（会话永远写）", () => {
+    const plan = planSurfaces(
+      ir({ kind: "callout", speech: "构建通过" }),
+      ctx({ quietHours: { start: "22:30", end: "08:00" }, now: new Date(2026, 9, 16, 23, 30) }),
+    );
+    expect(plan.surfaces).toEqual(["session"]);
+    expect(plan.speechText).toBe("");
+    expect(plan.reasons.join()).toContain("勿扰时段");
+  });
+});
+
+describe("来源策略：后台产生的结果默认低打扰", () => {
+  it("定时任务/钩子/子代理：不念、浮层自动淡出（不 sticky）", () => {
+    for (const source of ["schedule", "hook", "subagent"] as const) {
+      const base = ir({ kind: "callout", speech: "跑完了", life: "sticky", source });
+      const plan = planSurfaces(base, ctx());
+      expect(plan.surfaces, source).not.toContain("speech");
+      expect(plan.ir.life, `${source} 不该长时间占屏`).toBe("auto");
+      expect(plan.reasons.join()).toContain("后台");
+    }
+  });
+
+  it("显式要 primary 的后台结果照办（显式意图优先于默认策略）", () => {
+    const base = ir({
+      kind: "callout",
+      speech: "跑完了",
+      life: "sticky",
+      source: "schedule",
+      priorityExplicit: true,
+    });
+    const plan = planSurfaces(base, ctx());
+    expect(plan.surfaces).toContain("speech");
+    expect(plan.ir.life).toBe("sticky");
+  });
+
+  it("模型自己调 present 不受这条策略影响", () => {
+    const plan = planSurfaces(ir({ kind: "callout", speech: "好了", life: "sticky" }), ctx());
+    expect(plan.surfaces).toContain("speech");
+    expect(plan.ir.life).toBe("sticky");
+  });
+
+  it("effectiveIr 是幂等的（重复施加不会越改越离谱）", () => {
+    const base = ir({ life: "pin", source: "hook" });
+    const once = effectiveIr(base);
+    expect(effectiveIr(once)).toEqual(once);
+    expect(once.life).toBe("auto");
+  });
+
+  it("plan.ir 是**生效后的 IR**（调用方发给执行端的就是它）", () => {
+    const plan = planSurfaces(ir({ life: "sticky", source: "hook" }), ctx());
+    expect(plan.ir.life).toBe("auto");
   });
 });

@@ -186,6 +186,20 @@ pub struct AppSettings {
     /// 模型不一定记得调 `present`，宿主在收尾处兜一次；浮层只在窗口未聚焦时冒
     #[serde(default = "default_true")]
     pub surface_auto_finish: bool,
+    /// 环境层：**自定义音色**的命令模板（空 = 用系统 `say`）。
+    /// 占位符：`{text}`（待念文本）/`{out}`（输出音频路径）/`{ref}`（参考音频）。
+    /// 含 `{out}` = 我们负责播放（拿得到真实时长）；不含 = 引擎自己出声。
+    #[serde(default)]
+    pub surface_tts_command: String,
+    /// 环境层：自定义音色的**参考音频**路径（零样本克隆类引擎需要一段参考音）
+    #[serde(default)]
+    pub surface_tts_reference: String,
+    /// 环境层：勿扰时段起（`"22:30"` 形式；与 end 必须都配才生效）
+    #[serde(default)]
+    pub surface_quiet_start: String,
+    /// 环境层：勿扰时段止（支持跨零点，如 22:30–08:00）
+    #[serde(default)]
+    pub surface_quiet_end: String,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -281,6 +295,10 @@ impl Default for AppSettings {
             surface_speech_voice: String::new(),
             surface_silent: false,
             surface_auto_finish: true,
+            surface_tts_command: String::new(),
+            surface_tts_reference: String::new(),
+            surface_quiet_start: String::new(),
+            surface_quiet_end: String::new(),
         }
     }
 }
@@ -554,6 +572,10 @@ mod tests {
             surface_speech_voice: String::new(),
             surface_silent: false,
             surface_auto_finish: true,
+            surface_tts_command: String::new(),
+            surface_tts_reference: String::new(),
+            surface_quiet_start: String::new(),
+            surface_quiet_end: String::new(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -626,6 +648,10 @@ mod tests {
             surface_speech_voice: String::new(),
             surface_silent: false,
             surface_auto_finish: true,
+            surface_tts_command: String::new(),
+            surface_tts_reference: String::new(),
+            surface_quiet_start: String::new(),
+            surface_quiet_end: String::new(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

@@ -27,6 +27,21 @@ const SAY_TIMEOUT_SECS: u64 = 30;
 /// 演示开关：推一份固定的展示 IR，用来**不调模型**地验完整条呈现链路，验收/回归时用
 pub const ENV_DEMO: &str = "DAOSHENGYI_HUD_DEMO";
 
+/// 协议登记的**全部出口名**（与前端 `SURFACE_CAPABILITIES` 一致，由契约测试钉住）。
+///
+/// 当前真正执行的只有 `hud` / `speech`（`session` 在前端就完成了留痕）；
+/// `notify` / `tray` / `quicklook` / `im` 已登记待收编（见 `docs/PRESENT_PROTOCOL.md` P-A4）。
+pub const SURFACE_NAMES: [&str; 8] = [
+    "session",
+    "hud",
+    "speech",
+    "page",
+    "notify",
+    "tray",
+    "quicklook",
+    "im",
+];
+
 /// 前端的呈现决策结果（`planSurfaces` 的产物）
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +65,29 @@ pub struct SurfacePayload {
     pub plan: SurfacePlan,
 }
 
+/// 自定义引擎的超时：本地克隆类 TTS 可能很慢（本机 CPU-only），给足时间
+const TTS_TIMEOUT_SECS: u64 = 180;
+/// 播放超时：`afplay` 会阻塞到播完，要能盖住一段长文本的朗读时长
+const PLAY_TIMEOUT_SECS: u64 = 300;
+
+impl ExecuteOptions {
+    /// 由设置推导执行许可。**只有一个推导入口**，避免两处各判一套。
+    pub fn from_settings(settings: &crate::settings::AppSettings, voice: Option<String>) -> Self {
+        Self {
+            allow_hud: !settings.surface_silent && settings.surface_hud,
+            allow_speech: !settings.surface_silent && settings.surface_speech,
+            voice: voice
+                .or_else(|| Some(settings.surface_speech_voice.clone()))
+                .filter(|v| !v.trim().is_empty()),
+            silent: settings.surface_silent,
+            tts_command: Some(settings.surface_tts_command.clone())
+                .filter(|c| !c.trim().is_empty()),
+            tts_reference: Some(settings.surface_tts_reference.clone())
+                .filter(|r| !r.trim().is_empty()),
+        }
+    }
+}
+
 /// 执行许可（由设置与静默开关推导出来；演示路径也用它，只是直接给 true）
 #[derive(Debug, Clone, Default)]
 pub struct ExecuteOptions {
@@ -59,12 +97,28 @@ pub struct ExecuteOptions {
     pub voice: Option<String>,
     /// 静默模式：只钉回会话（会写进总结，便于解释「为什么什么都没发生」）
     pub silent: bool,
+    /// **自定义音色**：命令模板（空 = 用系统 `say`）。占位符见 `render_tts_command`
+    pub tts_command: Option<String>,
+    /// 参考音频路径（喂给自定义引擎；很多克隆/零样本 TTS 需要一段参考音）
+    pub tts_reference: Option<String>,
 }
 
 impl SurfacePlan {
     /// 计划里是否包含某个出口
     pub fn wants(&self, surface: &str) -> bool {
         self.surfaces.iter().any(|s| s == surface)
+    }
+
+    /// 计划要求、但**本机尚未收编**的出口（协议已登记，实现待 P-A4）。
+    ///
+    /// 用途：把「为什么设了通知却没通知」说清楚——否则用户只能看到一片安静。
+    pub fn not_yet_implemented(&self) -> Vec<String> {
+        const IMPLEMENTED: [&str; 4] = ["session", "hud", "speech", "page"];
+        self.surfaces
+            .iter()
+            .filter(|s| SURFACE_NAMES.contains(&s.as_str()) && !IMPLEMENTED.contains(&s.as_str()))
+            .cloned()
+            .collect()
     }
 }
 
@@ -160,6 +214,13 @@ pub async fn execute(
     if opts.silent {
         notes.push("静默模式已开启：只钉回会话".into());
     }
+    let pending = plan.not_yet_implemented();
+    if !pending.is_empty() {
+        notes.push(format!(
+            "已登记但尚未收编的出口：{}（协议里有，实现待 P-A4）",
+            pending.join("/")
+        ));
+    }
 
     let mut hud_ok = false;
     if wants_hud {
@@ -170,34 +231,23 @@ pub async fn execute(
     }
 
     let mut spoke: Option<String> = None;
+    let mut speech_notes: Vec<String> = Vec::new();
     if wants_speech {
         match sanitize_speech(&plan.speech_text) {
             None => notes.push("语音文本为空或不可读，跳过播报".into()),
-            Some(text) => {
-                let argv = say_argv(&text, opts.voice.as_deref(), None);
-                let db = app.state::<crate::db::Database>();
-                let cwd = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                match crate::run_wrapped_argv(
-                    &db,
-                    &cwd,
-                    "say",
-                    argv,
-                    SAY_TIMEOUT_SECS,
-                    "surface_speech",
-                )
-                .await
-                {
-                    Ok(out) if out.exit_code == 0 => spoke = Some(text),
-                    Ok(out) => notes.push(format!(
-                        "say 退出码 {}（{}）",
-                        out.exit_code,
-                        out.stderr.trim()
-                    )),
-                    Err(e) => notes.push(format!("say 执行失败：{e}")),
+            Some(text) => match speak(app, &text, &opts).await {
+                Ok(sp) => {
+                    spoke = Some(sp.text);
+                    if let Some(secs) = sp.seconds {
+                        speech_notes.push(format!("音频 {secs:.1}s"));
+                    }
+                    speech_notes.extend(sp.notes);
                 }
-            }
+                Err(e) => notes.push(e),
+            },
         }
     }
+    notes.extend(speech_notes);
 
     summarize(plan, spoke.as_deref(), hud_ok, &notes)
 }
@@ -211,12 +261,7 @@ pub async fn surface_present(
     // 静默/开关在这里再判一次：前端可能被绕过，而「静默」是用户明确表达过的意愿
     let settings = crate::load_app_settings(app.state(), app.state())
         .map_err(|e| format!("读取设置失败：{e}"))?;
-    let opts = ExecuteOptions {
-        allow_hud: !settings.surface_silent && settings.surface_hud,
-        allow_speech: !settings.surface_silent && settings.surface_speech,
-        voice: Some(settings.surface_speech_voice).filter(|v| !v.is_empty()),
-        silent: settings.surface_silent,
-    };
+    let opts = ExecuteOptions::from_settings(&settings, None);
     Ok(execute(&app, &payload.ir, &payload.plan, opts).await)
 }
 
@@ -236,6 +281,19 @@ pub struct SayVoice {
     pub locale: String,
     /// 系统自带的示例句（`say -v ?` 里 `#` 之后那段）
     pub example: String,
+    /// **变体/趣味音色**（Apple 的 novelty voice：`Eddy` / `Flo` / `Grandma`…）
+    ///
+    /// 判定依据：名字里带括号 —— 它们本质是**多语言变体音色**，
+    /// 列表里形如 `Eddy (中文（中国大陆）)`，每个语言都有一份。
+    /// 念中文时是明显的机器怪声（本机实测：中文组里 16/19 个都是它们）。
+    /// 必须在 UI 里与真人音色分开排、并给出提示，否则用户第一个试听见到的就是最怪的。
+    #[serde(default)]
+    pub variant: bool,
+}
+
+/// 名字里带括号 = Apple 的多语言变体/趣味音色
+fn is_variant_name(name: &str) -> bool {
+    name.contains('(')
 }
 
 /// 是否是 `xx_XX` 形式的语言区域
@@ -270,6 +328,7 @@ pub fn parse_say_voices(out: &str) -> Vec<SayVoice> {
                 return None;
             }
             Some(SayVoice {
+                variant: is_variant_name(&name),
                 name,
                 locale: tokens[at].to_string(),
                 example: example.to_string(),
@@ -278,13 +337,20 @@ pub fn parse_say_voices(out: &str) -> Vec<SayVoice> {
         .collect()
 }
 
-/// 中文优先（用户多半只想在这几个里挑），其余按 locale/名字排 —— 顺序稳定，便于眼睛找人
+/// 排序：**真人音色优先，变体/趣味音色排最后**；中文在各自组内靠前。
+///
+/// 这条规则的来由是一次真机反馈：按「中文优先 + 名字字典序」排，中文组第一个是
+/// `Eddy (中文（中国大陆）)`（趣味音色）—— 用户点开设置试听的第一个就是最怪的那个，
+/// 于是得到结论「除了 Tingting 其它音色都很奇怪」。**排序也是一种产品决策。**
 pub fn sort_voices_for_ui(mut voices: Vec<SayVoice>) -> Vec<SayVoice> {
     fn rank(v: &SayVoice) -> u8 {
-        if v.locale.starts_with("zh") {
-            0
-        } else {
-            1
+        // 1) 变体/趣味音色永远在最后（不管它是哪个语言）
+        // 2) 其次是中文（用户多半只想在这几个里挑）
+        // 3) 最后才是其余语言
+        match (v.variant, v.locale.starts_with("zh")) {
+            (true, _) => 3,
+            (false, true) => 0,
+            (false, false) => 1,
         }
     }
     voices.sort_by(|a, b| {
@@ -298,6 +364,206 @@ pub fn sort_voices_for_ui(mut voices: Vec<SayVoice>) -> Vec<SayVoice> {
 
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+}
+
+// ── 自定义音色（命令模板）────────────────────────────────────────────────────
+//
+// 为什么是「命令模板」而不是内置克隆：
+// - 本机是 Intel Mac（无可用 GPU），内置克隆推理（GPT-SoVITS / CosyVoice 之流）不现实；
+//   而把几百 MB~GB 的模型与 PyTorch 塞进这个仓库更不现实。
+// - 用户真正要的是「用自己的声音念」；**能力来源可以是任意外部引擎**。
+//   我们只负责：把文本/输出路径/参考音频交给它，然后把产出的音频**放出来**（可打断、时长已知）。
+// - 这也让「自定义音色」当天可用：接 piper / GPT-SoVITS / 自写脚本都行，宿主不绑定实现。
+
+/// shell 单引号转义：`'` → `'\''`。
+///
+/// 模板是用户写的，但**文本来自模型/工具结果**（不可信）—— 绝不能让它拼出命令。
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 把模板渲染成一条 shell 命令。
+///
+/// - `{text}` → 单引号包裹的待念文本；
+/// - `{out}` → 单引号包裹的输出音频路径；
+/// - `{ref}` → 单引号包裹的参考音频路径（空串也照给，引擎可自行判定）；
+/// - 其余 `{...}` 一律不动（避免把引擎自己的模板语法当成我们的占位符）。
+pub fn render_tts_command(template: &str, text: &str, out: &str, reference: &str) -> String {
+    template
+        .replace("{text}", &sh_quote(text))
+        .replace("{out}", &sh_quote(out))
+        .replace("{ref}", &sh_quote(reference))
+}
+
+/// 模板是否让引擎写文件（含 `{out}`）。
+///
+/// 不含 `{out}` = 引擎自己负责出声（如直接调 `afplay`/`ffplay`）——
+/// 这时我们不播、也不假装知道时长。
+pub fn tts_template_writes_file(template: &str) -> bool {
+    template.contains("{out}")
+}
+
+/// 模板是否能拿到待念文本。没有 `{text}` 就没法念，直接报错比默默念出空话好。
+pub fn tts_template_has_text(template: &str) -> bool {
+    template.contains("{text}")
+}
+
+/// 从 `afinfo` 输出里取时长（秒）。拿到真实时长就能做「浮层跟着朗读淡出」。
+pub fn parse_afinfo_duration(out: &str) -> Option<f64> {
+    for line in out.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.strip_prefix("estimated duration:") {
+            let num: String = rest
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if let Ok(v) = num.parse::<f64>() {
+                if v > 0.0 {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 一次播报的结果
+pub struct Spoken {
+    /// 实际念出去的文本
+    pub text: String,
+    /// 真实音频时长（秒）—— 拿得到就说明「浮层跟着朗读淡出」有真实依据
+    pub seconds: Option<f64>,
+    /// 需要回传给用户的提醒
+    pub notes: Vec<String>,
+}
+
+/// 自定义引擎的输出音频路径（放在应用数据目录，不污染用户目录）
+fn tts_out_path(app: &tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败：{e}"))?
+        .join("tts-out");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建 tts-out 目录失败：{e}"))?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok(dir
+        .join(format!("tts-{ts}.wav"))
+        .to_string_lossy()
+        .to_string())
+}
+
+/// 取音频真实时长（`afinfo`）——失败时返回 None，不因此让播报失败
+async fn afinfo_seconds(db: &crate::db::Database, home: &str, path: &str) -> Option<f64> {
+    let out = crate::run_wrapped_argv(
+        db,
+        home,
+        "afinfo",
+        vec![path.to_string()],
+        15,
+        "surface_audio_info",
+    )
+    .await
+    .ok()?;
+    parse_afinfo_duration(&out.stdout).or_else(|| parse_afinfo_duration(&out.stderr))
+}
+
+/// **语音出口的唯一实现**：要么走系统 `say`，要么交给用户配的自定义引擎。
+///
+/// 试听与实际播报走同一条路 —— 否则设置里的「试听」就是在骗人。
+pub async fn speak(
+    app: &tauri::AppHandle,
+    text: &str,
+    opts: &ExecuteOptions,
+) -> Result<Spoken, String> {
+    let db = app.state::<crate::db::Database>();
+    let home = home_dir();
+    let template = opts
+        .tts_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+
+    let Some(template) = template else {
+        // 系统音色：一条命令、零依赖、离线
+        let argv = say_argv(text, opts.voice.as_deref(), None);
+        let out =
+            crate::run_wrapped_argv(&db, &home, "say", argv, SAY_TIMEOUT_SECS, "surface_speech")
+                .await?;
+        if out.exit_code != 0 {
+            return Err(format!(
+                "say 退出码 {}（{}）",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        return Ok(Spoken {
+            text: text.to_string(),
+            seconds: None,
+            notes: Vec::new(),
+        });
+    };
+
+    // 自定义引擎：先合成（可能很慢，给足超时），再播放
+    if !tts_template_has_text(template) {
+        return Err(
+            "自定义语音命令里没有 {text} 占位符，引擎不知道要念什么（可用：{text} / {out} / {ref}）"
+                .to_string(),
+        );
+    }
+    let writes_file = tts_template_writes_file(template);
+    let out_path = if writes_file {
+        tts_out_path(app)?
+    } else {
+        String::new()
+    };
+    let reference = opts.tts_reference.clone().unwrap_or_default();
+    let cmd = render_tts_command(template, text, &out_path, &reference);
+    // 沙箱不介入：这是用户显式配置的引擎，它要写模型缓存/输出文件；
+    // 等同“用户自己在终端跑”，但仍然带着代理注入与超时清理（run_shell_command_with 的统一行为）。
+    let gen =
+        crate::run_shell_command_with(&cmd, Some(&home), Some(TTS_TIMEOUT_SECS), None).await?;
+    if gen.exit_code != 0 {
+        let err: String = gen.stderr.trim().chars().take(200).collect();
+        return Err(format!("自定义语音命令退出码 {}（{err}）", gen.exit_code));
+    }
+    if !writes_file {
+        // 引擎自己出声（比如它内部调了 afplay）—— 我们不播、也不假装知道时长
+        return Ok(Spoken {
+            text: text.to_string(),
+            seconds: None,
+            notes: vec!["自定义引擎自行播放（命令模板里没有 {out}）".to_string()],
+        });
+    }
+    if !std::path::Path::new(&out_path).exists() {
+        return Err(format!("自定义引擎没有产出音频文件：{out_path}"));
+    }
+    let seconds = afinfo_seconds(&db, &home, &out_path).await;
+    let play = crate::run_wrapped_argv(
+        &db,
+        &home,
+        "afplay",
+        vec![out_path.clone()],
+        PLAY_TIMEOUT_SECS,
+        "surface_speech_play",
+    )
+    .await?;
+    if play.exit_code != 0 {
+        return Err(format!(
+            "afplay 退出码 {}（{}）",
+            play.exit_code,
+            play.stderr.trim()
+        ));
+    }
+    Ok(Spoken {
+        text: text.to_string(),
+        seconds,
+        notes: Vec::new(),
+    })
 }
 
 /// 列出本机可用音色（走统一命令管线：外部命令一律沙箱 + 审计）
@@ -330,6 +596,9 @@ pub async fn list_say_voices(app: tauri::AppHandle) -> Result<Vec<SayVoice>, Str
 }
 
 /// 试听：按指定音色念一句话。默认用该音色自带的示例句，用户改文本也就改了内容。
+///
+/// **走的是与实际播报同一条路**（`speak`）：配了自定义引擎就试听自定义引擎，
+/// 否则试听系统音色。设置页不会骗人。
 #[tauri::command]
 pub async fn preview_voice(
     app: tauri::AppHandle,
@@ -337,25 +606,22 @@ pub async fn preview_voice(
     text: String,
 ) -> Result<String, String> {
     let spoken = sanitize_speech(&text).ok_or_else(|| "试听文本为空或不可读".to_string())?;
-    let argv = say_argv(&spoken, Some(&voice), None);
-    let db = app.state::<crate::db::Database>();
-    let out = crate::run_wrapped_argv(
-        &db,
-        &home_dir(),
-        "say",
-        argv,
-        SAY_TIMEOUT_SECS,
-        "surface_voice_preview",
-    )
-    .await?;
-    if out.exit_code != 0 {
-        return Err(format!(
-            "say 退出码 {}（{}）",
-            out.exit_code,
-            out.stderr.trim()
-        ));
-    }
-    Ok(spoken)
+    let settings = crate::load_app_settings(app.state(), app.state())
+        .map_err(|e| format!("读取设置失败：{e}"))?;
+    let opts =
+        ExecuteOptions::from_settings(&settings, Some(voice).filter(|v| !v.trim().is_empty()));
+    let result = speak(&app, &spoken, &opts).await?;
+    let tail: Vec<String> = result
+        .seconds
+        .map(|s| format!("音频 {s:.1}s"))
+        .into_iter()
+        .chain(result.notes.iter().cloned())
+        .collect();
+    Ok(if tail.is_empty() {
+        result.text
+    } else {
+        format!("{}（{}）", result.text, tail.join("；"))
+    })
 }
 
 // ── 演示 / 验收 ──────────────────────────────────────────────────────────────
@@ -411,6 +677,7 @@ pub fn demo_on_startup(app: &tauri::AppHandle) {
             allow_speech: true,
             voice: None,
             silent: false,
+            ..Default::default()
         };
         let summary = execute(&app, &ir, &plan, opts).await;
         eprintln!("[surface] 演示结果:\n{summary}");
@@ -540,6 +807,10 @@ mod tests {
         assert_eq!(voices[1].locale, "zh_CN");
         assert_eq!(voices[1].example, "你好！我叫Eddy。");
         assert_eq!(voices[2].name, "Tingting");
+        // `variant` 是给 UI 分组/提示用的：名字带括号的是 Apple 多语言变体（趣味音色）
+        assert!(!voices[0].variant, "Albert 是真人音色");
+        assert!(voices[1].variant, "Eddy (中文（中国大陆）) 是变体音色");
+        assert!(!voices[2].variant, "Tingting 是真人音色");
     }
 
     #[test]
@@ -551,6 +822,74 @@ mod tests {
         assert_eq!(voices[0].name, "Alex");
         assert_eq!(voices[0].locale, "fr_FR");
         assert_eq!(voices[0].example, ""); // 没有 `#` 时示例为空
+        assert!(!voices[0].variant);
+    }
+
+    #[test]
+    fn tts_command_quotes_text_so_model_output_cannot_inject() {
+        // 模板是用户写的，但 `{text}` 来自模型/工具结果（不可信）—— 绝不能拼出命令
+        let cmd = render_tts_command(
+            "mytts --text {text} --out {out}",
+            "'; rm -rf ~; echo '",
+            "/tmp/a.wav",
+            "",
+        );
+        assert!(
+            cmd.contains("'\\''; rm -rf ~; echo '\\''"),
+            "文本必须被单引号转义：{cmd}"
+        );
+        assert!(
+            cmd.starts_with("mytts --text '"),
+            "文本要整体作为一个参数：{cmd}"
+        );
+
+        // 正常文本（含中文与空格）也要原样作为单参数传入
+        let cmd2 = render_tts_command("mytts {text}", "本周提交 23 次", "/tmp/o.wav", "");
+        assert_eq!(cmd2, "mytts '本周提交 23 次'");
+    }
+
+    #[test]
+    fn tts_command_keeps_unknown_placeholders_untouched() {
+        // 引擎自己的模板语法（如 `{speed}`）不能被我们吃掉
+        let cmd = render_tts_command("engine --speed {speed} --text {text}", "嗨", "", "");
+        assert!(cmd.contains("{speed}"), "非白名单占位符应原样保留：{cmd}");
+        assert!(cmd.contains("'嗨'"));
+    }
+
+    #[test]
+    fn tts_template_capabilities_are_detected() {
+        assert!(tts_template_writes_file("e --out {out}"));
+        assert!(!tts_template_writes_file("e --text {text}")); // 引擎自己出声
+        assert!(tts_template_has_text("e {text}"));
+        assert!(!tts_template_has_text("e {out}"));
+    }
+
+    #[test]
+    fn parse_afinfo_duration_reads_real_output() {
+        // 本机实测格式：`estimated duration: 3.002630 sec`
+        let raw = "File: /tmp/x.aiff\nestimated duration: 3.002630 sec\n";
+        assert_eq!(parse_afinfo_duration(raw), Some(3.00263));
+        // 拿不到就返回 None，不因此让播报失败
+        assert_eq!(parse_afinfo_duration("File: /tmp/x.aiff\n"), None);
+        assert_eq!(parse_afinfo_duration("estimated duration: 0 sec"), None);
+    }
+
+    #[test]
+    fn surface_names_match_protocol_registry() {
+        // 协议登记的出口名就这几个（改了要同步改 docs/PRESENT_PROTOCOL.md §3 与前端注册表）
+        assert_eq!(SURFACE_NAMES.len(), 8);
+        assert!(SURFACE_NAMES.contains(&"hud") && SURFACE_NAMES.contains(&"speech"));
+        assert!(SURFACE_NAMES.contains(&"notify") && SURFACE_NAMES.contains(&"im"));
+    }
+
+    #[test]
+    fn not_yet_implemented_names_the_missing_surfaces() {
+        // 登记了但没实现的出口要说出来，不能默默忽略（“设了通知却没通知”必须可解释）
+        let p = plan(&["session", "hud", "notify"], "");
+        assert_eq!(p.not_yet_implemented(), vec!["notify"]);
+        // 未知名字不报（前端发来的脏数据不该被当成“未收编出口”吓用户）
+        let dirty = plan(&["session", "telepathy"], "");
+        assert!(dirty.not_yet_implemented().is_empty());
     }
 
     #[test]
@@ -559,6 +898,7 @@ mod tests {
             name: n.into(),
             locale: l.into(),
             example: String::new(),
+            variant: false,
         };
         let sorted = sort_voices_for_ui(vec![
             v("Alex", "en_US"),
@@ -568,6 +908,40 @@ mod tests {
         assert_eq!(sorted[0].locale, "zh_CN");
         assert_eq!(sorted[1].locale, "zh_TW");
         assert_eq!(sorted[2].locale, "en_US");
+    }
+
+    #[test]
+    fn sort_voices_puts_novelty_variants_last() {
+        // **真机反馈的回归测试**：中文组里 16/19 个是 `Eddy (中文（中国大陆）)` 这类趣味变体，
+        // 按名字字典序它们会排在 Tingting 前面 → 用户点开设置第一个试听的就是最怪的。
+        // 所以变体必须排到最后（哪怕它是 zh_CN，而对照物是 en_US 真人音色）。
+        let v = |n: &str, l: &str, variant: bool| SayVoice {
+            name: n.into(),
+            locale: l.into(),
+            example: String::new(),
+            variant,
+        };
+        let sorted = sort_voices_for_ui(vec![
+            v("Eddy (中文（中国大陆）)", "zh_CN", true),
+            v("Grandma (中文（中国大陆）)", "zh_CN", true),
+            v("Sinji", "zh_HK", false),
+            v("Meijia", "zh_TW", false),
+            v("Tingting", "zh_CN", false),
+            v("Alex", "en_US", false),
+        ]);
+        let names: Vec<&str> = sorted.iter().map(|v| v.name.as_str()).collect();
+        // 真人中文（按 locale：zh_CN → zh_HK → zh_TW）→ 其它语言真人 → 变体（最后）
+        assert_eq!(
+            names,
+            vec![
+                "Tingting",
+                "Sinji",
+                "Meijia",
+                "Alex",
+                "Eddy (中文（中国大陆）)",
+                "Grandma (中文（中国大陆）)"
+            ]
+        );
     }
 
     #[test]

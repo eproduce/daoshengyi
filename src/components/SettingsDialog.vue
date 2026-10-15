@@ -5,6 +5,8 @@ import { useOllamaStore } from "@/stores/ollama";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { groupVoices, isVariantVoice, describeSelection } from "@/utils/say-voices";
 import { homeDir } from "@tauri-apps/api/path";
 import {
   getSettings,
@@ -597,22 +599,37 @@ const surfaceSpeech = ref(!!getSettings().surfaceSpeech);
 const surfaceSpeechVoice = ref(getSettings().surfaceSpeechVoice ?? "");
 const surfaceSilent = ref(!!getSettings().surfaceSilent);
 const surfaceAutoFinish = ref(getSettings().surfaceAutoFinish !== false);
+const surfaceTtsCommand = ref(getSettings().surfaceTtsCommand ?? "");
+const surfaceTtsReference = ref(getSettings().surfaceTtsReference ?? "");
+/** 勿扰时段（两个都填才生效；支持跨零点） */
+const surfaceQuietStart = ref(getSettings().surfaceQuietStart ?? "");
+const surfaceQuietEnd = ref(getSettings().surfaceQuietEnd ?? "");
+/** 自定义引擎的试听文本（引擎不看系统示例句，自己给一句） */
+const surfaceTtsPreviewText = ref("");
 const surfaceTestResult = ref("");
 
 // ── 音色列表：**由系统提供**（不同机器装的语音包不同，写死必然过时）──
 //
 // 顺带拿到了每个音色**自带的示例句**（`say -v ?` 里 `#` 之后那段），
 // 那就是设置界面里「示例」与「试听」的素材 —— 不用自己造例句。
-interface SayVoice {
+//
+// ⚠️ 真机反馈（2026-10-16）：「除了 Tingting 其它音色都很奇怪」。实测原因：`say -v ?` 的中文组
+// 19 个里有 16 个是 Apple 的**多语言趣味变体**（`Eddy (中文（中国大陆）)` 之类），真人只有
+// Tingting / Meijia / Sinji。所以这里**只列真人音色**，变体直接不展示（并在下方注明隐藏了几个）。
+interface SayVoiceRow {
   name: string;
   locale: string;
   example: string;
+  variant?: boolean;
 }
-const voices = ref<SayVoice[]>([]);
+const voices = ref<SayVoiceRow[]>([]);
 const voicesError = ref("");
 const voicePreviewMsg = ref("");
-const zhVoices = computed(() => voices.value.filter((v) => v.locale.startsWith("zh")));
-const otherVoices = computed(() => voices.value.filter((v) => !v.locale.startsWith("zh")));
+/** 只留真人音色（变体/趣味音色不进列表） */
+const realVoices = computed(() => voices.value.filter((v) => !isVariantVoice(v)));
+const hiddenVariantCount = computed(() => voices.value.length - realVoices.value.length);
+const voiceGroups = computed(() => groupVoices(realVoices.value).filter((g) => g.id !== "variant"));
+const currentVoiceNote = computed(() => describeSelection(voices.value, surfaceSpeechVoice.value));
 /** 当前音色自带的示例句（空音色 = 系统默认，没有示例可拿） */
 const currentVoiceExample = computed(
   () => voices.value.find((v) => v.name === surfaceSpeechVoice.value)?.example ?? "",
@@ -620,21 +637,39 @@ const currentVoiceExample = computed(
 async function loadVoices() {
   voicesError.value = "";
   try {
-    voices.value = await invoke<SayVoice[]>("list_say_voices");
+    voices.value = await invoke<SayVoiceRow[]>("list_say_voices");
     if (!voices.value.length) voicesError.value = "系统没返回任何音色（say -v ? 输出为空）";
   } catch (e) {
     voicesError.value = `读取音色失败：${String(e)}`;
   }
 }
+/** 选择参考音频（给自定义引擎用；录制等语音输入阶段一起上） */
+async function pickTtsReference() {
+  try {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "音频", extensions: ["wav", "mp3", "m4a", "aiff", "flac"] }],
+    });
+    if (typeof picked === "string" && picked) {
+      surfaceTtsReference.value = picked;
+      saveSurface();
+    }
+  } catch (e) {
+    voicePreviewMsg.value = `选择音频失败：${String(e)}`;
+  }
+}
 async function previewVoice() {
   voicePreviewMsg.value = "正在试听…";
   saveSurface();
-  // 声音立刻要出来，而设置写入是防抖的 → 先落盘再念（否则 Rust 端读到的还是旧音色）
+  // 声音立刻要出来，而设置写入是防抖的 → 先落盘再念（否则 Rust 端读到的还是旧音色/旧引擎）
   await flushSettings();
   try {
     const spoken = await invoke<string>("preview_voice", {
       voice: surfaceSpeechVoice.value,
-      text: currentVoiceExample.value || "这是一句试听，用来看这个音色合不合适",
+      text:
+        currentVoiceExample.value ||
+        surfaceTtsPreviewText.value ||
+        "这是一句试听，用来看这个音色合不合适",
     });
     voicePreviewMsg.value = `已念：${spoken}`;
   } catch (e) {
@@ -648,6 +683,10 @@ function saveSurface() {
     surfaceSpeechVoice: surfaceSpeechVoice.value.trim(),
     surfaceSilent: surfaceSilent.value,
     surfaceAutoFinish: surfaceAutoFinish.value,
+    surfaceTtsCommand: surfaceTtsCommand.value.trim(),
+    surfaceTtsReference: surfaceTtsReference.value.trim(),
+    surfaceQuietStart: surfaceQuietStart.value.trim(),
+    surfaceQuietEnd: surfaceQuietEnd.value.trim(),
   });
 }
 /// 「试一下」：走真正的呈现路径（与模型调 present 工具同一条），把结果原样显示
@@ -1632,31 +1671,89 @@ function handleDelete() {
               </label>
             </div>
             <div class="form-group">
-              <label>语音音色</label>
+              <label>语音音色（系统音色）</label>
               <select v-model="surfaceSpeechVoice" class="form-select" @change="saveSurface">
                 <option value="">系统默认</option>
-                <optgroup v-if="zhVoices.length" label="中文">
-                  <option v-for="v in zhVoices" :key="v.name" :value="v.name">
-                    {{ v.name }}（{{ v.locale }}）
-                  </option>
-                </optgroup>
-                <optgroup label="其它语言">
-                  <option v-for="v in otherVoices" :key="v.name" :value="v.name">
+                <optgroup v-for="g in voiceGroups" :key="g.id" :label="g.label">
+                  <option v-for="v in g.voices" :key="v.name" :value="v.name">
                     {{ v.name }}（{{ v.locale }}）
                   </option>
                 </optgroup>
               </select>
               <span class="form-hint">
-                共 {{ voices.length }} 个音色（来自系统 <code>say -v ?</code>，中文优先排在前面）。
-                示例：{{ currentVoiceExample || "系统默认音色没有自带示例 —— 点「试听」听一句" }}
+                {{ realVoices.length }} 个真人音色（当前：{{ currentVoiceNote }}）。 示例：{{
+                  currentVoiceExample || "系统默认音色没有自带示例 —— 点「试听」听一句"
+                }}
+                <template v-if="hiddenVariantCount > 0">
+                  <br />
+                  已隐藏 {{ hiddenVariantCount }} 个 Apple 趣味变体音色（Eddy / Flo / Grandma…） ——
+                  那是机器怪声，念中文没法听。
+                </template>
               </span>
               <div style="display: flex; gap: 8px; margin-top: 8px">
                 <button class="settings-reset-btn" @click="previewVoice">试听</button>
                 <button class="settings-reset-btn" @click="loadVoices">重新扫描音色</button>
               </div>
+
+              <label style="margin-top: 16px">自定义音色（用自己的声音）</label>
+              <textarea
+                v-model="surfaceTtsCommand"
+                class="form-textarea"
+                rows="2"
+                placeholder="留空则用系统音色。示例：python3 ~/tts/speak.py --ref {ref} --text {text} --out {out}"
+                @change="saveSurface"
+              ></textarea>
+              <span class="form-hint">
+                填一条**外部 TTS 命令**即可用自己的声音：{text} 待念文本 · {out} 输出音频 · {ref}
+                参考音频（三者都用单引号包裹后传入，模型内容拼不出命令）。 含 {out}
+                时由我们播放（能拿到真实时长、能打断）；不含则表示引擎自己出声。 本机（Intel、无
+                GPU）不做内置克隆 —— 接 piper / GPT-SoVITS / CosyVoice /
+                自写脚本都行，宿主不绑定实现。
+              </span>
+              <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center">
+                <button class="settings-reset-btn" @click="pickTtsReference">选择参考音频</button>
+                <span class="form-hint" style="margin: 0">
+                  {{ surfaceTtsReference || "（可选）克隆类引擎需要一段参考音" }}
+                </span>
+                <button
+                  v-if="surfaceTtsReference"
+                  class="settings-reset-btn"
+                  @click="
+                    surfaceTtsReference = '';
+                    saveSurface();
+                  "
+                >
+                  清除
+                </button>
+              </div>
               <p v-if="voicePreviewMsg" class="form-hint">{{ voicePreviewMsg }}</p>
               <p v-if="voicesError" class="form-hint notif-warn">{{ voicesError }}</p>
             </div>
+
+            <div class="form-group">
+              <label>勿扰时段</label>
+              <div style="display: flex; gap: 8px; align-items: center">
+                <input v-model="surfaceQuietStart" type="time" @change="saveSurface" />
+                <span class="form-hint" style="margin: 0">至</span>
+                <input v-model="surfaceQuietEnd" type="time" @change="saveSurface" />
+                <button
+                  v-if="surfaceQuietStart || surfaceQuietEnd"
+                  class="settings-reset-btn"
+                  @click="
+                    surfaceQuietStart = '';
+                    surfaceQuietEnd = '';
+                    saveSurface();
+                  "
+                >
+                  关闭勿扰
+                </button>
+              </div>
+              <span class="form-hint">
+                这段时间里**不出声、不冒浮层**，但结论照样写进会话（不丢信息）。 支持跨零点（如
+                22:30 至 08:00）；两个都填才生效。
+              </span>
+            </div>
+
             <div class="form-group">
               <button class="settings-reset-btn" @click="testSurface">试一下</button>
               <p v-if="surfaceTestResult" class="form-hint" style="white-space: pre-wrap">

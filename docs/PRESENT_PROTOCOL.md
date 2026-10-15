@@ -256,7 +256,7 @@ MCP 服务器 / 技能 / 用户自己的脚本没法调我们的 `invoke`，但*
 
 | 序 | 任务 | 人日 | 文件（预估） |
 | :-: | :--- | :-: | :--- |
-| **P-A1** | 报文补 `v`/`id`/`source`/`refs`；出口能力抽成注册表；`planSurfaces` 吃 `source` + `quietHours` | 0.5 | `src/utils/display-ir.ts`、`src-tauri/src/surface.rs`、`settings.rs`、`SettingsDialog.vue`（勿扰时段） |
+| **P-A1 ✅** | 报文补 `v`/`id`/`source`/`refs`；出口能力抽成注册表；`planSurfaces` 吃 `source` + `quietHours` | 0.5 | `src/utils/display-ir.ts`、`src-tauri/src/surface.rs`、`settings.rs`、`SettingsDialog.vue` |
 | **P-A2** | 第三方 `<present>` 块提取（≤3 条、删块、容错）；子代理/定时任务/钩子三个来源接入 | 1 | `src/utils/present-block.ts`（新）、`chat.ts`、`scheduled*`、`hooks.ts` |
 | **P-A3** | **钉回会话**：会话内 IR 卡片渲染（`pin`/`life` 生效） | 1 | `src/components/*Message*.vue`、复用现有渲染器 |
 | **P-A4** | 收编 `notify` / `tray` / `quicklook` 为注册表出口（通知内容由 `degradeForSurface(ir,"notify")` 得来） | 1 | `surface.rs`、`lib.rs`、`notify` 调用点 |
@@ -267,6 +267,15 @@ MCP 服务器 / 技能 / 用户自己的脚本没法调我们的 `invoke`，但*
 **总成本 6 人日**，全部**零新依赖**、不需要系统权限、不影响现有功能（每步都可独立发布）。
 > P-A6 是「语音 + 浮层同时出现」的最小可用形态（估算同步）；P-A7 才把同步做到精确。
 > 若只想要「看起来同步」，做到 P-A6 就够；要不要 P-A7 取决于逐句高亮与首响延迟（2.8s）能否接受。
+
+### 9.1 P-A1 落地记录（2026-10-16）
+
+已落地（`npm run ci:local` 8/8）：
+- 报文：`v`（默认 1，高于本机版本时按 v1 尽力解析并记 `issues`）/ `id`（缺失则生成，报文自带的**沿用** —— HUD 重新解析不能换 id）/ `source` / `refs`（≤4 条，未知 kind 与空值丢弃）；`priorityExplicit` 作为宿主侧元数据不上线。
+- 注册表：`SURFACE_CAPABILITIES` 登记 8 个出口（含尚未收编的 notify/tray/quicklook/im，每个带 kind 表/打扰度/默认开关/预算）；`Surface` 类型 = 全部出口名，`IMPLEMENTED_SURFACES` 限定真正接线的四个；降级统一兜底（出口连 `card` 都不支持时退到其首个 kind），**不变量对 8 个出口全部成立**。
+- 路由：`source ∈ {schedule, hook, subagent}` 默认低打扰（不念 + 浮层自动淡出），显式 `priority: primary` 可突破；新增**勿扰时段**（支持跨零点；非法输入视为不生效）。
+- `effectiveIr` 纯函数 + `plan.ir` —— 调用方发给执行端的是**生效后的 IR**，不再是原始 IR。
+- 前后端镜像表由契约测试盯住（TS 读 `surface.rs` 比对 `SURFACE_NAMES`）；Rust 侧对「已登记未收编」的出口会写进回执，不默默忽略。
 
 ---
 

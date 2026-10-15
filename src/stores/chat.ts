@@ -1529,19 +1529,30 @@ function presentTurnFinished(content: string, toolCount: number): void {
       planDone: plan ? plan.steps.filter((s) => s.status === "done").length : undefined,
       planTotal: plan ? plan.steps.length : undefined,
     });
-    const surfacePlan = planSurfaces(ir, {
-      silent: !!getSettings().surfaceSilent,
-      hudEnabled: getSettings().surfaceHud !== false,
-      speechEnabled: !!getSettings().surfaceSpeech,
-    });
+    const surfacePlan = planSurfaces(ir, surfaceContext());
     // 只剩会话一个出口就不必惊动 Rust（省一次 IPC）
     if (surfacePlan.surfaces.length <= 1) return;
-    invoke("surface_present", { payload: { ir, plan: surfacePlan } }).catch(() => {
+    // 发的是**生效后的 IR**（plan.ir 已施加源策略：后台来源强制自动淡出）
+    invoke("surface_present", { payload: { ir: surfacePlan.ir, plan: surfacePlan } }).catch(() => {
       /* 呈现失败不影响主流程 */
     });
   } catch {
     /* 环境层为增值功能，任何异常都不打断本轮 */
   }
+}
+
+/** 环境层上下文：**所有出口决策都必须经过它**，否则会出现两处各判一套 */
+function surfaceContext() {
+  const s = getSettings();
+  return {
+    silent: !!s.surfaceSilent,
+    hudEnabled: s.surfaceHud !== false,
+    speechEnabled: !!s.surfaceSpeech,
+    quietHours:
+      s.surfaceQuietStart && s.surfaceQuietEnd
+        ? { start: s.surfaceQuietStart, end: s.surfaceQuietEnd }
+        : null,
+  };
 }
 
 // ── Phase 3 收尾：会话轨迹 → 可复用工作流（自动沉淀）──────────────────────────
@@ -4030,13 +4041,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         body?: unknown;
       };
       const { ir, issues } = parseDisplayIr({ kind, title, priority, life, speech, body });
-      const s = getSettings();
-      const plan = planSurfaces(ir, {
-        silent: !!s.surfaceSilent,
-        hudEnabled: s.surfaceHud !== false,
-        speechEnabled: !!s.surfaceSpeech,
+      const plan = planSurfaces(ir, surfaceContext());
+      const summary = await invoke<string>("surface_present", {
+        payload: { ir: plan.ir, plan },
       });
-      const summary = await invoke<string>("surface_present", { payload: { ir, plan } });
       // 解析时的降级原因要如实带回：模型才知道自己哪一项没被接受
       return issues.length ? `${summary}\n（解析提示：${issues.join("；")}）` : summary;
     }

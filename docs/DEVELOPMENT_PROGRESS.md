@@ -2,7 +2,56 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-15**
+> **最后更新：2026-10-16**
+
+---
+
+## 2026-10-16（音色修复 + 自定义音色 + 呈现协议 P-A1）
+
+### 背景
+用户在真机上试听语音后报了两个问题：「**除了 Tingting，其他系统默认音色好像有点奇怪**」、
+「只需要真人的，不需要趣味变体，**加个可以自定义音色的入口**」；同时要求把上一轮撤下的
+呈现协议改动**做完**（`docs/PRESENT_PROTOCOL.md` P-A1）。
+
+### 1. 「其它音色很奇怪」是个真 bug（在排序上）
+- 实测：`say -v ?` 的中文组 **19 个里 16 个是 Apple 的多语言趣味变体**
+  （`Eddy (中文（中国大陆）)` / `Flo` / `Grandma` / `Rocko`…，名字带括号即变体）；
+  真人中文只有 **Tingting（zh_CN）/ Meijia（zh_TW）/ Sinji（zh_HK）**。
+- 而旧排序是「中文优先 + 名字字典序」→ **最怪的 Eddy 排第一位** —— 用户点开设置第一个试听的就是它。
+- 修法：`SayVoice` 加 `variant` 标记（名字带括号即变体）；**列表只列真人音色**（并注明隐藏了几个变体）；
+  排序把变体压到最后；前端新增纯函数 `src/utils/say-voices.ts`（分组/判定/选中提示，7 单测）。
+- **教训：列表排序也是产品决策。** 顺带把「179 个音色 / 19 个中文」那种“数字好看”的验收口径废掉
+  —— 数字多不等于可用。
+
+### 2. 自定义音色：命令模板 + 参考音频（不内置克隆）
+- `settings` 新增 `surfaceTtsCommand` / `surfaceTtsReference`；`surface.rs` 新增
+  `render_tts_command`（占位符白名单 `{text}`/`{out}`/`{ref}`，**全部单引号转义** —— 文本来自模型，
+  绝不能拼出命令）、`tts_template_writes_file` / `tts_template_has_text`、`parse_afinfo_duration`。
+- **`speak()` 成为语音出口的唯一实现**：有命令模板走外部引擎，否则走系统 `say`；
+  **试听与实际播报同一条路**（否则设置页的「试听」就是在骗人）。
+- 含 `{out}` → 我们 `afplay` 播放并取 **`afinfo` 真实时长**（这正是协议里「浮层跟着朗读淡出」需要的数据）；
+  不含 `{out}` → 引擎自己出声，我们不播也不假装知道时长。
+- 为什么不做内置克隆：本机 Intel 无 GPU，而且几百 MB~GB 的模型 + PyTorch 不该进这个仓库。
+  **能力来源可以是任意外部引擎**（piper / GPT-SoVITS / CosyVoice / 自写脚本），宿主不绑定实现。
+- 录制参考音频要麦克风（`cpal` + TCC）：本机**无 `afrecord` 类命令**（已实测），随语音输入阶段一起上。
+
+### 3. 呈现协议 P-A1 落地（零新依赖）
+- 报文补 `v` / `id` / `source` / `refs`；`id` 报文自带则**沿用**（HUD 重新解析不能换 id，否则去重失效）。
+- **出口能力注册表** `SURFACE_CAPABILITIES` 登记 8 个出口（含待收编的 notify/tray/quicklook/im，
+  各带 kind 表/打扰度/默认开关/预算）；`Surface` = 全部出口名，`IMPLEMENTED_SURFACES` = 真正接线的四个。
+  降级统一兜底（出口连 `card` 都不支持时退到其首个 kind）→ **不变量对 8 个出口全部成立**。
+- 路由：`source ∈ {schedule, hook, subagent}` 默认低打扰（不念 + 浮层自动淡出），显式 `priority: primary`
+  可突破；新增**勿扰时段**（支持跨零点；非法输入**视为不生效**，不因一个笔误永久静音）。
+- `effectiveIr` + `plan.ir`：调用方发给执行端的是**生效后的 IR**；`chat.ts` 两个调用点共用
+  `surfaceContext()`（源码级契约测试盯住，防“两处各判一套”）。
+- 前后端镜像表由契约测试比对（TS 读 `surface.rs` 的 `SURFACE_NAMES`）；Rust 会把「已登记未收编」的出口
+  写进回执，不默默忽略。
+
+### 验证
+`npm run ci:local` **8/8 全绿**：vitest（展示 IR **67** + 音色分组 7 + 版本同步 2 等）、eslint、prettier、
+vue-tsc + vite build、tsc(tests)、rustfmt、clippy `-D warnings`、cargo test **347 passed / 0 failed / 17 ignored**。
+真机 live：`cargo test --offline --lib surface::tests::live_ -- --ignored --nocapture`（排序后第一个是 Tingting）。
+打包：`1.0.0-alpha.7` 已安装到 `/Applications/道生一.app`（回滚点 `.old-003310`）。
 
 ---
 

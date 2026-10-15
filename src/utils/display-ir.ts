@@ -47,8 +47,48 @@ export const DISPLAY_KINDS: readonly DisplayKind[] = [
 export type DisplayLife = "auto" | "sticky" | "pin";
 export const DISPLAY_LIVES: readonly DisplayLife[] = ["auto", "sticky", "pin"];
 
-/** 优先级：只有 primary 才允许冒到浮层/语音；secondary 只进会话（默认 secondary = 不打扰） */
+/** 优先级：`primary` 才允许冒到浮层/语音；`secondary` 只进会话（默认 primary = 调用即呈现） */
 export type DisplayPriority = "primary" | "secondary";
+
+// ── 协议层：版本 / 身份 / 来源 / 引用（`docs/PRESENT_PROTOCOL.md`）──────────
+//
+// 这四项不是为了渲染，而是为了**协议**：
+// - `v`：协议只增不改，宿主得知道对面说的是哪一版；
+// - `id`：HUD 去重 + 回执关联（同一条重复推不该亮两次）；
+// - `source`：谁产生的 → 决定**默认打扰级别**（定时任务的结果不该跟用户当面问的一样闹）；
+// - `refs`：能跳回去（通知点击、钉回会话）。
+
+/** 当前协议版本。演进只加字段/加 kind/加出口，不删不改语义 */
+export const PRESENT_PROTOCOL_VERSION = 1;
+
+/** 谁产生的这条呈现 */
+export type DisplaySource = "model" | "host" | "schedule" | "hook" | "subagent" | "external" | "ui";
+export const DISPLAY_SOURCES: readonly DisplaySource[] = [
+  "model",
+  "host",
+  "schedule",
+  "hook",
+  "subagent",
+  "external",
+  "ui",
+];
+
+/** 后台来源：默认低打扰（浮层自动淡出、不念），除非**显式**要求 primary */
+const QUIET_SOURCES: readonly DisplaySource[] = ["schedule", "hook", "subagent"];
+
+/** 可跳回/可归属的引用（v1 只用于通知点击与钉回会话） */
+export interface DisplayRef {
+  kind: "file" | "conversation" | "url" | "tool";
+  value: string;
+}
+const REF_KINDS: readonly DisplayRef["kind"][] = ["file", "conversation", "url", "tool"];
+
+let irSeq = 0;
+/** 生成报文 id（会话内唯一即可；不引 uuid 依赖） */
+export function newIrId(): string {
+  irSeq += 1;
+  return `ir_${Date.now().toString(36)}${irSeq.toString(36)}`;
+}
 
 /** 各 kind 的正文（宽松结构：一个 kind 只用其中几项，其余忽略） */
 export interface DisplayBody {
@@ -79,12 +119,25 @@ export interface DisplayBody {
 }
 
 export interface DisplayIr {
+  /** 协议版本（`PRESENT_PROTOCOL_VERSION`） */
+  v: number;
+  /** 报文 id：HUD 去重 + 回执关联（不参与渲染） */
+  id: string;
+  /** 来源：决定默认打扰级别 */
+  source: DisplaySource;
   kind: DisplayKind;
   title?: string;
   priority: DisplayPriority;
+  /**
+   * `priority` 是不是**显式写的**（宿主侧元数据，不上线）。
+   * 需要它是因为：对后台来源而言，「默认 primary」与「明确要 primary」是两种待遇。
+   */
+  priorityExplicit?: boolean;
   life: DisplayLife;
   /** 要念出来的那一句（不填则由 title/text 推导） */
   speech?: string;
+  /** 可跳回的引用（最多 4 条） */
+  refs?: DisplayRef[];
   body: DisplayBody;
 }
 
@@ -99,6 +152,8 @@ export const IR_LIMITS = {
   items: 12,
   steps: 12,
   code: 4000,
+  refs: 4,
+  refLen: 400,
 } as const;
 
 function str(v: unknown, max: number): string | undefined {
@@ -214,17 +269,70 @@ function parseBody(raw: unknown): DisplayBody {
   return body;
 }
 
+/** 解析引用：脏条目丢掉、超量截断，不因为一条坏数据整条失败 */
+export function parseRefs(raw: unknown): DisplayRef[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: DisplayRef[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const kind = o.kind as DisplayRef["kind"];
+    if (!REF_KINDS.includes(kind)) continue;
+    const value = str(o.value, IR_LIMITS.refLen);
+    if (!value) continue;
+    out.push({ kind, value });
+    if (out.length >= IR_LIMITS.refs) break;
+  }
+  return out.length ? out : undefined;
+}
+
 /**
  * 容错解析展示意图。**永不抛错**：模型给的东西再离谱也要能变成可渲染对象。
  * `issues` 记录降级原因，便于排查「为什么呈现成了这样」。
+ *
+ * `opts.source` 是宿主告诉我们的来源（模型调用时是 `model`，定时任务是 `schedule`）；
+ * 报文里已经带了 `source` 时以报文为准（HUD 重新解析时不能把来源弄丢）。
  */
-export function parseDisplayIr(raw: unknown): { ir: DisplayIr; issues: string[] } {
+export function parseDisplayIr(
+  raw: unknown,
+  opts?: { source?: DisplaySource; id?: string },
+): { ir: DisplayIr; issues: string[] } {
   const issues: string[] = [];
+  const base = (): Pick<DisplayIr, "v" | "id" | "source"> => ({
+    v: PRESENT_PROTOCOL_VERSION,
+    id: opts?.id ?? newIrId(),
+    source: opts?.source ?? "model",
+  });
   if (!raw || typeof raw !== "object") {
     issues.push("不是对象：降级为空白卡片");
-    return { ir: { kind: "card", priority: "secondary", life: "auto", body: {} }, issues };
+    return {
+      ir: { ...base(), kind: "card", priority: "secondary", life: "auto", body: {} },
+      issues,
+    };
   }
   const r = raw as Record<string, unknown>;
+
+  // 协议版本：未知的新版本仍然按 v1 解析（只增不改），把原版本带回去便于排查
+  let v = PRESENT_PROTOCOL_VERSION;
+  if (typeof r.v === "number" && Number.isFinite(r.v) && r.v > 0) {
+    v = Math.floor(r.v);
+    if (v > PRESENT_PROTOCOL_VERSION) {
+      issues.push(`报文协议版本 v${v} 高于本机 v${PRESENT_PROTOCOL_VERSION}：按 v1 尽力解析`);
+    }
+  }
+
+  // id：有则沿用（HUD 重新解析时不能换 id，否则去重就失效了）
+  const id =
+    typeof r.id === "string" && r.id.trim() ? r.id.trim().slice(0, 64) : (opts?.id ?? newIrId());
+
+  let source: DisplaySource = opts?.source ?? "model";
+  if (typeof r.source === "string") {
+    if (DISPLAY_SOURCES.includes(r.source as DisplaySource)) {
+      source = r.source as DisplaySource;
+    } else {
+      issues.push(`未知 source「${r.source}」：按 ${source} 处理`);
+    }
+  }
 
   let kind = r.kind as DisplayKind;
   if (typeof kind !== "string" || !DISPLAY_KINDS.includes(kind)) {
@@ -249,14 +357,21 @@ export function parseDisplayIr(raw: unknown): { ir: DisplayIr; issues: string[] 
   const body = parseBody(r.body);
   const title = str(r.title, IR_LIMITS.title);
   if (r.title !== undefined && !title) issues.push("title 为空或类型不对：忽略");
+  const refs = parseRefs(r.refs);
+  const speech = str(r.speech, IR_LIMITS.speech);
 
   return {
     ir: {
+      v,
+      id,
+      source,
       kind,
       ...(title ? { title } : {}),
       priority,
+      priorityExplicit: r.priority === "primary" || r.priority === "secondary",
       life,
-      ...(str(r.speech, IR_LIMITS.speech) ? { speech: str(r.speech, IR_LIMITS.speech) } : {}),
+      ...(speech ? { speech } : {}),
+      ...(refs ? { refs } : {}),
       body,
     },
     issues,
@@ -296,9 +411,14 @@ export function buildFinishIr(input: FinishSummaryInput): DisplayIr {
   const speech = cleanForSpeech(firstSentence(text) ?? text);
 
   return {
+    v: PRESENT_PROTOCOL_VERSION,
+    id: newIrId(),
+    source: "host",
     kind: isTask ? "callout" : "card",
     title: allDone ? "✅ 任务完成" : isTask ? "✅ 执行完成" : "💬 回复完成",
     priority: isTask ? "primary" : "secondary",
+    // 显式标记：这是宿主自己算出来的主意，不是模型要求
+    priorityExplicit: true,
     // sticky：用户不在时 auto 几秒就消失，等于白推；留在那儿等他回来一眼看到
     life: isTask ? "sticky" : "auto",
     ...(speech ? { speech } : {}),
@@ -342,33 +462,11 @@ export function shouldSpeak(ir: DisplayIr): { speak: boolean; text: string; reas
 // ── surface 与降级 ────────────────────────────────────────────────────────────
 
 /** 出海口。`session` 永远有（钉回会话是底线：浮层可以阅后即焚，留痕不能丢） */
-export type Surface = "hud" | "speech" | "session" | "page";
+export type Surface = SurfaceName;
 
-/** 各 surface 能原生渲染的 kind（不在表里的按 `degradeForSurface` 降级） */
-const SURFACE_KINDS: Record<Surface, readonly DisplayKind[]> = {
-  hud: ["card", "metric", "chart", "kv", "timeline", "callout", "code", "speech"],
-  speech: ["speech", "card", "metric", "callout"],
-  // 会话要求最高保真度，但它同样**只列真正有渲染器的 kind**：
-  // flow / animation 目前没有渲染器（Phase B 再做 SVG/时间轴视图），
-  // 所以它们在每个出口都会降级 —— 矩阵必须诚实，否则就会「声明支持、实际空白」。
-  session: [
-    "card",
-    "metric",
-    "chart",
-    "table",
-    "kv",
-    "timeline",
-    "callout",
-    "code",
-    "speech",
-    "page",
-  ],
-  page: ["page", "card", "code", "table", "kv", "timeline", "chart"],
-};
-
-/** 某个 surface 是否原生支持这个 kind */
+/** 某个 surface 是否原生支持这个 kind（能力表在文件末尾的出口注册表，单一数据源） */
 export function supportsKind(surface: Surface, kind: DisplayKind): boolean {
-  return SURFACE_KINDS[surface].includes(kind);
+  return capabilityKinds(surface).includes(kind);
 }
 
 /**
@@ -378,6 +476,15 @@ export function supportsKind(surface: Surface, kind: DisplayKind): boolean {
  * 结构（图表/表格/时间轴）在放不下时退化成多行文本，最后一定有兜底文案。
  */
 export function degradeForSurface(ir: DisplayIr, surface: Surface): DisplayIr {
+  const out = degradeKindOnce(ir, surface);
+  // 统一兜底：**不变量是硬约束** —— 降级结果必须是该出口能渲染的 kind。
+  // 走到这里说明该出口连 card 都不支持（如 quicklook 只认 page），
+  // 那就退到它登记的第一个 kind：宁可在语义上妥协，也不能让渲染端拿到画不出来的东西。
+  return supportsKind(surface, out.kind) ? out : { ...out, kind: capabilityKinds(surface)[0] };
+}
+
+/** 一次降级（按 kind 逐条分支）；不保证结果被出口支持，由 `degradeForSurface` 兜底 */
+function degradeKindOnce(ir: DisplayIr, surface: Surface): DisplayIr {
   if (supportsKind(surface, ir.kind)) return ir;
 
   // 图（flow）与动画无法在窄浮层表达 → 退化成时间轴/多行
@@ -414,7 +521,11 @@ export function degradeForSurface(ir: DisplayIr, surface: Surface): DisplayIr {
     };
   }
   // 其余：退化成卡片，标题/文本优先
-  return { ...ir, kind: "card", body: { ...ir.body, text: ir.body.text ?? ir.title } };
+  return {
+    ...ir,
+    kind: "card",
+    body: { ...ir.body, text: ir.body.text ?? ir.title },
+  };
 }
 
 function flowLines(ir: DisplayIr): string[] | undefined {
@@ -455,9 +566,60 @@ export interface SurfaceContext {
   hudEnabled: boolean;
   /** 语音播报开关（默认关：出声属于打扰，必须显式开） */
   speechEnabled: boolean;
+  /** 勿扰时段（如 22:30–08:00，支持跨零点）；空/非法 = 不生效 */
+  quietHours?: QuietHours | null;
+  /** 当前时间（只为可测；不传则用真实时间） */
+  now?: Date;
+}
+
+/** 勿扰时段：`"HH:MM"` 形式的起止（跨零点也算合法：起 > 止） */
+export interface QuietHours {
+  start: string;
+  end: string;
+}
+
+/** `"22:30"` → 当天分钟数；非法返回 null（**不猜**：非法就当没配） */
+export function parseClock(hhmm: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/**
+ * 当前时刻是否落在勿扰区间。
+ *
+ * 起止相等 / 任一非法 → **不生效**（宁可不出声也不因一个笔误把语音永久关掉）。
+ */
+export function inQuietHours(
+  quiet: QuietHours | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!quiet) return false;
+  const s = parseClock(quiet.start);
+  const e = parseClock(quiet.end);
+  if (s === null || e === null || s === e) return false;
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return s < e ? cur >= s && cur < e : cur >= s || cur < e;
+}
+
+/**
+ * 源策略：把「来源」转成对 IR 的实际修正（纯函数，可测）。
+ *
+ * 后台来源（定时任务/钩子/子代理）默认**低打扰**：浮层自动淡出、不念。
+ * 但若模型/调用方**显式**写了 `priority: primary`，就按其意愿办 —— 显式意图优先于默认策略。
+ */
+export function effectiveIr(ir: DisplayIr): DisplayIr {
+  if (!QUIET_SOURCES.includes(ir.source)) return ir;
+  if (ir.priorityExplicit && ir.priority === "primary") return ir;
+  return { ...ir, life: "auto" };
 }
 
 export interface SurfacePlan {
+  /** **生效后的 IR**（已施加源策略）——调用方应该把它送给执行端，而不是原始 IR */
+  ir: DisplayIr;
   /** 实际要执行的出口 */
   surfaces: Surface[];
   /** 语音要念的文本（未选 speech 时为空串） */
@@ -479,18 +641,39 @@ export interface SurfacePlan {
  *    “一眼看到结果”，它小、不挡、会自动淡出（静默模式已提供了“别打扰”的总闸）。
  *    改用内容维度区分：**能看的都上浮层，能听且值得听的才念**。
  */
-export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
+export function planSurfaces(irRaw: DisplayIr, ctx: SurfaceContext): SurfacePlan {
+  const ir = effectiveIr(irRaw);
   const surfaces: Surface[] = ["session"];
   const reasons: string[] = [];
+  const done = (speechText = ""): SurfacePlan => ({
+    ir,
+    surfaces,
+    speechText,
+    reasons,
+  });
+
+  if (QUIET_SOURCES.includes(ir.source) && !(ir.priorityExplicit && ir.priority === "primary")) {
+    reasons.push(
+      `来源 ${ir.source}：后台结果默认低打扰（浮层自动淡出、不念；要念请显式 priority=primary）`,
+    );
+  }
 
   if (ir.priority === "secondary") {
     reasons.push("priority=secondary：只进会话，不打扰");
-    return { surfaces, speechText: "", reasons };
+    return done();
   }
 
   if (ctx.silent) {
     reasons.push("静默模式：只钉回会话");
-    return { surfaces, speechText: "", reasons };
+    return done();
+  }
+
+  // 勿扰时段：不是整条丢掉，而是“不出声不冒层，但会话照样留痕”
+  if (inQuietHours(ctx.quietHours, ctx.now)) {
+    reasons.push(
+      `勿扰时段（${ctx.quietHours!.start}–${ctx.quietHours!.end}）：只留痕，不出声不冒层`,
+    );
+    return done();
   }
 
   if (ctx.hudEnabled) {
@@ -506,8 +689,12 @@ export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
   }
 
   let speechText = "";
+  const quietSource = QUIET_SOURCES.includes(ir.source) && !ir.priorityExplicit;
   if (!ctx.speechEnabled) {
     reasons.push("语音播报未开启");
+  } else if (quietSource) {
+    // 后台来源：能看就行，默认不念（深夜跑完的定时任务不该突然开口）
+    reasons.push("后台来源默认不念（浮层可看）");
   } else {
     const verdict = shouldSpeak(ir);
     if (verdict.speak) {
@@ -519,5 +706,96 @@ export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
     }
   }
 
-  return { surfaces, speechText, reasons };
+  return done(speechText);
+}
+
+// ── 出口能力注册表（协议第②层）──────────────────────────────────────────────
+//
+// 为什么把它做成**一张表**而不是代码里的 if 分支：这张表就是协议本身 ——
+// 「这个出口能渲染什么、打扰多大、默认开不开」写在一处，前端/后端/文档都能对着它校准。
+// `docs/PRESENT_PROTOCOL.md` §3 是同一张表的人话版；改这里要同步改那边。
+
+/** 全部出口名（含**尚未收编**的 notify/tray/quicklook/im —— 先登记，后接线） */
+export type SurfaceName =
+  "session" | "hud" | "speech" | "page" | "notify" | "tray" | "quicklook" | "im";
+
+/** 已接线的出口（`planSurfaces` 只会发这些；其余登记在册、等 P-A4 收编） */
+export const IMPLEMENTED_SURFACES: readonly SurfaceName[] = ["session", "hud", "speech", "page"];
+
+export interface SurfaceCapability {
+  /** 原生支持的 kind（不在表里的靠 `degradeForSurface` 降级） */
+  kinds: readonly DisplayKind[];
+  /** 打扰度：排序即“有多吵”，供决策时比较 */
+  intrusion: "none" | "low" | "medium" | "high";
+  /** 默认是否开启 */
+  defaultEnabled: boolean;
+  /** 单条渲染预算（人话描述，写给读者与提示词用） */
+  budget: string;
+}
+
+export const SURFACE_CAPABILITIES: Record<SurfaceName, SurfaceCapability> = {
+  session: {
+    kinds: [
+      "card",
+      "metric",
+      "chart",
+      "table",
+      "kv",
+      "timeline",
+      "callout",
+      "code",
+      "speech",
+      "page",
+    ],
+    intrusion: "none",
+    defaultEnabled: true,
+    budget: "全量",
+  },
+  hud: {
+    kinds: ["card", "metric", "chart", "kv", "timeline", "callout", "code", "speech"],
+    intrusion: "low",
+    defaultEnabled: true,
+    budget: "380×132、正文 ≤400 字、图表 ≤24 点",
+  },
+  speech: {
+    kinds: ["speech", "card", "metric", "callout"],
+    intrusion: "medium",
+    defaultEnabled: false,
+    budget: "≤80 字（超长只念第一句）",
+  },
+  notify: {
+    kinds: ["card", "metric", "callout", "speech"],
+    intrusion: "low",
+    defaultEnabled: false,
+    budget: "标题 60 / 正文 140",
+  },
+  tray: {
+    kinds: ["metric", "card"],
+    intrusion: "low",
+    defaultEnabled: true,
+    budget: "8 字",
+  },
+  page: {
+    kinds: ["page", "card", "code", "table", "kv", "timeline", "chart"],
+    intrusion: "none",
+    defaultEnabled: true,
+    budget: "全量",
+  },
+  quicklook: {
+    kinds: ["page"],
+    intrusion: "none",
+    defaultEnabled: false,
+    budget: "一个文件",
+  },
+  im: {
+    kinds: ["card", "metric", "callout", "code", "speech"],
+    intrusion: "medium",
+    defaultEnabled: false,
+    budget: "平台上限",
+  },
+};
+
+/** 每个出口登记的 kind 都必须真的能渲染 —— 否则就是“声明支持、实际空白” */
+export function capabilityKinds(surface: SurfaceName): readonly DisplayKind[] {
+  return SURFACE_CAPABILITIES[surface].kinds;
 }
