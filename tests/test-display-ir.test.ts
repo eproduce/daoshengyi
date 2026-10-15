@@ -9,11 +9,13 @@ import { describe, it, expect } from "vitest";
 import {
   DISPLAY_KINDS,
   IR_LIMITS,
+  SPEAK_MAX_CHARS,
   buildFinishIr,
   cleanForSpeech,
   degradeForSurface,
   parseDisplayIr,
   planSurfaces,
+  shouldSpeak,
   speechTextOf,
   supportsKind,
   type DisplayIr,
@@ -48,10 +50,15 @@ describe("parseDisplayIr：模型输出一律当不可信输入", () => {
     expect(issues.join()).toContain("未知 kind");
   });
 
-  it("priority 只认 primary，其余一律 secondary（不打扰是默认）", () => {
-    expect(parseDisplayIr({ kind: "card", priority: "primary" }).ir.priority).toBe("primary");
-    expect(parseDisplayIr({ kind: "card", priority: "PRIMARY" }).ir.priority).toBe("secondary");
-    expect(parseDisplayIr({ kind: "card" }).ir.priority).toBe("secondary");
+  it("priority 缺省 = primary（调用即呈现），显式 secondary 才只进会话", () => {
+    // 旧行为是「不填就什么都不显示」，用户反馈“太傻”；现在调用本身就是呈现请求
+    expect(parseDisplayIr({ kind: "card" }).ir.priority).toBe("primary");
+    expect(parseDisplayIr({ kind: "card", priority: "secondary" }).ir.priority).toBe("secondary");
+    // 写错的 priority 也不能让内容“静默消失”→ 按 primary 处理并记一笔
+    expect(parseDisplayIr({ kind: "card", priority: "PRIMARY" }).ir.priority).toBe("primary");
+    expect(parseDisplayIr({ kind: "card", priority: "PRIMARY" }).issues.join()).toContain(
+      "priority",
+    );
   });
 
   it("life 非法值退回 auto，并记录", () => {
@@ -183,10 +190,9 @@ describe("呈现决策：宿主规则为主", () => {
     silent: false,
     hudEnabled: true,
     speechEnabled: true,
-    windowFocused: false,
   };
 
-  it("secondary 一律只进会话（默认不打扰）", () => {
+  it("secondary 一律只进会话（显式说了“只想留痕”）", () => {
     const plan = planSurfaces(ir({ priority: "secondary" }), allOn);
     expect(plan.surfaces).toEqual(["session"]);
     expect(plan.reasons.join()).toContain("secondary");
@@ -198,10 +204,11 @@ describe("呈现决策：宿主规则为主", () => {
     expect(plan.speechText).toBe("");
   });
 
-  it("主窗口在前台时不冒浮层（用户正在看，别打扰）", () => {
-    const plan = planSurfaces(ir({ title: "x" }), { ...allOn, windowFocused: true });
-    expect(plan.surfaces).not.toContain("hud");
-    expect(plan.reasons.join()).toContain("前台");
+  it("浮层不受“主窗口是否前台”影响（盯着屏幕时反而最该看到结果）", () => {
+    // 早先用 windowFocused 当门禁 → 用户坐在应用前什么都看不到，那是错的
+    const plan = planSurfaces(ir({ title: "x", body: { text: "一句话" } }), allOn);
+    expect(plan.surfaces).toContain("hud");
+    expect(plan.reasons.join()).toContain("桌面浮层");
   });
 
   it("HUD 关闭时不出浮层，但仍钉回会话", () => {
@@ -224,6 +231,20 @@ describe("呈现决策：宿主规则为主", () => {
     expect(plan.reasons.join()).toContain("没有可念的正文");
   });
 
+  it("适合“看”的内容只上浮层、不念（表格/代码/图表/键值）", () => {
+    for (const bad of [
+      ir({ kind: "table", title: "对比", body: { rows: [["a", "1"]] } }),
+      ir({ kind: "code", title: "改法", body: { code: "const a = 1" } }),
+      ir({ kind: "chart", title: "分布", body: { series: [{ label: "一", value: 1 }] } }),
+      ir({ kind: "kv", title: "明细", body: { items: [{ key: "a", value: "1" }] } }),
+    ]) {
+      const plan = planSurfaces(bad, allOn);
+      expect(plan.surfaces, `${bad.kind} 不该念`).not.toContain("speech");
+      expect(plan.surfaces).toContain("hud"); // 但浮层上照样看得到
+      expect(plan.reasons.join()).toContain("不出声");
+    }
+  });
+
   it("kind=page 额外走产物页", () => {
     const plan = planSurfaces(ir({ kind: "page" }), allOn);
     expect(plan.surfaces).toContain("page");
@@ -233,7 +254,7 @@ describe("呈现决策：宿主规则为主", () => {
     for (const ctx of [
       allOn,
       { ...allOn, silent: true },
-      { ...allOn, windowFocused: true },
+      { ...allOn, hudEnabled: false },
       { ...allOn, speechEnabled: false },
     ]) {
       expect(planSurfaces(ir({ title: "x" }), ctx).reasons.length).toBeGreaterThan(0);
@@ -312,5 +333,53 @@ describe("接线契约：收尾呈现必须真的被调用", () => {
   it("收尾呈现复用纯函数，而不是在 store 里另写一套判定", () => {
     expect(chatSrc).toContain("buildFinishIr({");
     expect(chatSrc).toContain("planSurfaces(ir, {");
+  });
+});
+
+describe("该不该念：宿主判断，用户不用操心", () => {
+  it("一句话结论 / 关键数字 → 念", () => {
+    expect(shouldSpeak(ir({ kind: "callout", title: "三份邮件已回复" })).speak).toBe(true);
+    expect(
+      shouldSpeak(ir({ kind: "metric", title: "内存占用", body: { value: "1.2", unit: "GB" } }))
+        .speak,
+    ).toBe(true);
+  });
+
+  it("「看」的内容不念：表格/代码/图表/时间轴/键值/产物页", () => {
+    for (const kind of ["table", "code", "chart", "timeline", "page", "kv"] as const) {
+      const verdict = shouldSpeak(ir({ kind, title: "标题" }));
+      expect(verdict.speak, `${kind} 不该念`).toBe(false);
+      expect(verdict.reason).toContain("看");
+    }
+  });
+
+  it("长正文只念「首句」而不是整段（长度控制靠取首句）", () => {
+    const verdict = shouldSpeak(ir({ kind: "card", body: { text: "啊".repeat(300) } }));
+    expect(verdict.speak).toBe(true);
+    expect(verdict.text.length).toBeLessThanOrEqual(SPEAK_MAX_CHARS);
+  });
+
+  it("模型给的 speech 太长时也不念（自己写超了要拦）", () => {
+    const verdict = shouldSpeak(
+      ir({ kind: "card", title: "标题", speech: "啊".repeat(SPEAK_MAX_CHARS + 10) }),
+    );
+    expect(verdict.speak).toBe(false);
+    expect(verdict.reason).toContain("太长");
+  });
+
+  it("标题很短时念标题（即使正文很长）——标题本来就是最好的念料", () => {
+    const verdict = shouldSpeak(
+      ir({ kind: "card", title: "本周提交分布", body: { text: "啊".repeat(300) } }),
+    );
+    expect(verdict.speak).toBe(true);
+    expect(verdict.text).toBe("本周提交分布");
+  });
+
+  it("没有正文不念", () => {
+    expect(shouldSpeak(ir({ kind: "card", body: {} })).speak).toBe(false);
+  });
+
+  it("模型指定了 speech 就念那一句", () => {
+    expect(shouldSpeak(ir({ title: "标题", speech: "念这句" })).text).toBe("念这句");
   });
 });

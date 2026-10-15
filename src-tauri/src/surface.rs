@@ -220,6 +220,144 @@ pub async fn surface_present(
     Ok(execute(&app, &payload.ir, &payload.plan, opts).await)
 }
 
+// ── 音色列表（`say -v ?`）─────────────────────────────────────────────────────
+//
+// 为什么不自己维护一份音色表：**不同机器装的语音包不一样**（本机 180 个，其中中文 10+ 个），
+// 写死必然过时。让系统报给我们，顺带拿到每个音色**自带的示例句** —— 那就是最好的试听素材，
+// 也正是设置界面里「示例」的来源。
+
+/// 一个可用音色
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SayVoice {
+    /// 音色名（可直接传给 `say -v`；可能含空格/括号/中文，如 `Eddy (中文（中国大陆）)`）
+    pub name: String,
+    /// 语言区域，如 `zh_CN` / `en_US`
+    pub locale: String,
+    /// 系统自带的示例句（`say -v ?` 里 `#` 之后那段）
+    pub example: String,
+}
+
+/// 是否是 `xx_XX` 形式的语言区域
+fn is_locale(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('_').collect();
+    parts.len() == 2
+        && parts
+            .iter()
+            .all(|p| (2..=3).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()))
+}
+
+/// 解析 `say -v ?` 的输出。
+///
+/// 真实格式（本机实测）：
+/// ```text
+/// Albert              en_US    # Hello! My name is Albert.
+/// Eddy (中文（中国大陆）)     zh_CN    # 你好！我叫Eddy。
+/// ```
+/// 难点是**音色名里可以有空格、括号、中文**，所以不能简单按空白切两段 ——
+/// 而是从右往左找第一个「长得像 locale」的 token，它左边全部是名字。
+pub fn parse_say_voices(out: &str) -> Vec<SayVoice> {
+    out.lines()
+        .filter_map(|line| {
+            let (left, example) = match line.split_once('#') {
+                Some((l, r)) => (l, r.trim()),
+                None => (line, ""),
+            };
+            let tokens: Vec<&str> = left.split_whitespace().collect();
+            let at = tokens.iter().rposition(|t| is_locale(t))?;
+            let name = tokens[..at].join(" ");
+            if name.is_empty() {
+                return None;
+            }
+            Some(SayVoice {
+                name,
+                locale: tokens[at].to_string(),
+                example: example.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 中文优先（用户多半只想在这几个里挑），其余按 locale/名字排 —— 顺序稳定，便于眼睛找人
+pub fn sort_voices_for_ui(mut voices: Vec<SayVoice>) -> Vec<SayVoice> {
+    fn rank(v: &SayVoice) -> u8 {
+        if v.locale.starts_with("zh") {
+            0
+        } else {
+            1
+        }
+    }
+    voices.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| a.locale.cmp(&b.locale))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    voices
+}
+
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+}
+
+/// 列出本机可用音色（走统一命令管线：外部命令一律沙箱 + 审计）
+#[tauri::command]
+pub async fn list_say_voices(app: tauri::AppHandle) -> Result<Vec<SayVoice>, String> {
+    let db = app.state::<crate::db::Database>();
+    let out = crate::run_wrapped_argv(
+        &db,
+        &home_dir(),
+        "say",
+        vec!["-v".to_string(), "?".to_string()],
+        20,
+        "surface_voices",
+    )
+    .await?;
+    if out.exit_code != 0 {
+        return Err(format!(
+            "say -v ? 退出码 {}（{}）",
+            out.exit_code,
+            out.stderr.trim()
+        ));
+    }
+    // 多数版本把清单打到 stdout，但不同系统/构建可能走 stderr —— 两边都认，别让「列表为空」变成谜
+    let text = if out.stdout.trim().is_empty() {
+        out.stderr
+    } else {
+        out.stdout
+    };
+    Ok(sort_voices_for_ui(parse_say_voices(&text)))
+}
+
+/// 试听：按指定音色念一句话。默认用该音色自带的示例句，用户改文本也就改了内容。
+#[tauri::command]
+pub async fn preview_voice(
+    app: tauri::AppHandle,
+    voice: String,
+    text: String,
+) -> Result<String, String> {
+    let spoken = sanitize_speech(&text).ok_or_else(|| "试听文本为空或不可读".to_string())?;
+    let argv = say_argv(&spoken, Some(&voice), None);
+    let db = app.state::<crate::db::Database>();
+    let out = crate::run_wrapped_argv(
+        &db,
+        &home_dir(),
+        "say",
+        argv,
+        SAY_TIMEOUT_SECS,
+        "surface_voice_preview",
+    )
+    .await?;
+    if out.exit_code != 0 {
+        return Err(format!(
+            "say 退出码 {}（{}）",
+            out.exit_code,
+            out.stderr.trim()
+        ));
+    }
+    Ok(spoken)
+}
+
 // ── 演示 / 验收 ──────────────────────────────────────────────────────────────
 
 /// 演示用展示意图。刻意选 chart：它能同时跑通「标题 + 多行 + 进度条」三段渲染，
@@ -381,5 +519,116 @@ mod tests {
         let plan = plan(&["session", "hud", "speech"], &demo_speech());
         assert!(plan.wants("hud") && plan.wants("speech") && plan.wants("session"));
         assert!(sanitize_speech(&plan.speech_text).is_some());
+    }
+
+    #[test]
+    fn parse_say_voices_handles_real_macos_format() {
+        // 真实输出片段（本机实测）：名字里有空格/括号/中文，示例在 `#` 之后。
+        // 直接用真实字符而不是 \u 转义 —— 转义写错会让测试变成语法错误，得不偿失。
+        let raw = concat!(
+            "Albert              en_US    # Hello! My name is Albert.\n",
+            "Eddy (中文（中国大陆）)     zh_CN    # 你好！我叫Eddy。\n",
+            "Tingting            zh_CN    # 你好，我叫Tingting。\n",
+        );
+        let voices = parse_say_voices(raw);
+        assert_eq!(voices.len(), 3);
+        assert_eq!(voices[0].name, "Albert");
+        assert_eq!(voices[0].locale, "en_US");
+        assert_eq!(voices[0].example, "Hello! My name is Albert.");
+        // 名字带空格与括号（含全角括号）也不能被切坏
+        assert_eq!(voices[1].name, "Eddy (中文（中国大陆）)");
+        assert_eq!(voices[1].locale, "zh_CN");
+        assert_eq!(voices[1].example, "你好！我叫Eddy。");
+        assert_eq!(voices[2].name, "Tingting");
+    }
+
+    #[test]
+    fn parse_say_voices_skips_junk_lines_instead_of_failing() {
+        // 空行/分隔线/没有 locale 的行都要能跳过 —— 解析失败会让「音色列表为空」变成谜
+        let raw = "\n----\n音色清单\nno-locale-here\nAlex  fr_FR\n";
+        let voices = parse_say_voices(raw);
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0].name, "Alex");
+        assert_eq!(voices[0].locale, "fr_FR");
+        assert_eq!(voices[0].example, ""); // 没有 `#` 时示例为空
+    }
+
+    #[test]
+    fn sort_voices_puts_chinese_first() {
+        let v = |n: &str, l: &str| SayVoice {
+            name: n.into(),
+            locale: l.into(),
+            example: String::new(),
+        };
+        let sorted = sort_voices_for_ui(vec![
+            v("Alex", "en_US"),
+            v("Tingting", "zh_CN"),
+            v("Mei-Jia", "zh_TW"),
+        ]);
+        assert_eq!(sorted[0].locale, "zh_CN");
+        assert_eq!(sorted[1].locale, "zh_TW");
+        assert_eq!(sorted[2].locale, "en_US");
+    }
+
+    #[test]
+    fn is_locale_only_accepts_language_region_pairs() {
+        assert!(is_locale("zh_CN"));
+        assert!(is_locale("en_US"));
+        assert!(is_locale("yue_HK"));
+        // 名字里的括号片段、纯词、过长的都别误判成 locale
+        assert!(!is_locale("Eddy"));
+        assert!(!is_locale("(\u{4e2d}\u{6587})"));
+        assert!(!is_locale("abcdef_gh"));
+        assert!(!is_locale("zh"));
+    }
+
+    /// 真机 live 测试（默认 `#[ignore]`）：音色列表必须**真的**能从 `say -v ?` 走完整管线拿到，
+    /// 且本机至少有一个中文音色 —— 单测里的假数据证明不了这一点。
+    ///
+    /// 跑法：`cargo test --offline --lib surface::live_ -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn live_list_say_voices_yields_chinese_voice() {
+        let dir = std::env::temp_dir().join(format!("dsy-voices-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db = crate::db::Database::new(dir).expect("临时库应能创建");
+        let out = crate::run_wrapped_argv(
+            &db,
+            &home_dir(),
+            "say",
+            vec!["-v".to_string(), "?".to_string()],
+            30,
+            "surface_list_voices",
+        )
+        .await
+        .expect("say 应能执行");
+        // 本机 `say -v ?` 走的是 stdout，但留个兜底以防版本差异
+        let raw = if out.stdout.trim().is_empty() {
+            out.stderr
+        } else {
+            out.stdout
+        };
+        let voices = sort_voices_for_ui(parse_say_voices(&raw));
+        println!(
+            "音色总数 {}，中文 {} 个，第一个是 {}（{}）示例：{}",
+            voices.len(),
+            voices.iter().filter(|v| v.locale.starts_with("zh")).count(),
+            voices[0].name,
+            voices[0].locale,
+            voices[0].example
+        );
+        assert!(
+            voices.len() > 20,
+            "音色太少（{}），解析或管线有问题",
+            voices.len()
+        );
+        assert!(
+            voices.iter().any(|v| v.locale.starts_with("zh")),
+            "本机应有中文音色，否则设置里的「中文」分组会是空的"
+        );
+        assert!(
+            voices.iter().any(|v| !v.example.is_empty()),
+            "示例句全空 → 设置界面的「示例」提示没东西可显示"
+        );
     }
 }

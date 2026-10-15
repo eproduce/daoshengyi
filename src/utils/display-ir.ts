@@ -232,9 +232,12 @@ export function parseDisplayIr(raw: unknown): { ir: DisplayIr; issues: string[] 
     kind = "card";
   }
 
-  const priority: DisplayPriority = r.priority === "primary" ? "primary" : "secondary";
+  // 默认 **primary**：调用 present 本身就是「请求呈现」。
+  // 早先默认 secondary，结果是「模型没填 priority 就什么都不显示」——那很傻（用户反馈过）。
+  // secondary 保留为**显式逃生口**：只想留痕、不想冒浮层时填它。
+  const priority: DisplayPriority = r.priority === "secondary" ? "secondary" : "primary";
   if (r.priority !== undefined && r.priority !== "primary" && r.priority !== "secondary") {
-    issues.push(`未知 priority「${String(r.priority)}」：按 secondary 处理（不打扰）`);
+    issues.push(`未知 priority「${String(r.priority)}」：按 primary 处理`);
   }
 
   let life = r.life as DisplayLife;
@@ -301,6 +304,39 @@ export function buildFinishIr(input: FinishSummaryInput): DisplayIr {
     ...(speech ? { speech } : {}),
     body: { text: withProgress, tone: "success" },
   };
+}
+
+// ── 该不该念（宿主判断，模型不用操心）────────────────────────
+
+/** 适合「念」的 kind：念是给看不到屏幕的场景的；表格/代码/图表/时间轴属于「看」的内容 */
+const SPEAKABLE_KINDS: readonly DisplayKind[] = ["speech", "metric", "callout", "card"];
+
+/** 语音长度上限：超过它念出来是折磨（而且用户多半已经在看 / 会去看） */
+export const SPEAK_MAX_CHARS = 80;
+
+/**
+ * 判断这条展示意图“值不值得念”。
+ *
+ * 设计前提：**用户没必要为“该不该出声”操心**（也不用模型每次指定）——
+ * 开了语音总闸后，由宿主按内容决定哪此念、哪些只看：
+ * - 内容太短/太长、纯符号 → 不念；
+ * - 表格/代码/图表/时间轴 → 不念（那是看的，念出来没意义）；
+ * - 剩下的（一句话结论、关键数字、提示）→ 念。
+ */
+export function shouldSpeak(ir: DisplayIr): { speak: boolean; text: string; reason: string } {
+  const text = speechTextOf(ir);
+  if (!text) return { speak: false, text: "", reason: "没有可念的正文" };
+  if (!SPEAKABLE_KINDS.includes(ir.kind)) {
+    return { speak: false, text, reason: `${ir.kind} 属于「看」的内容（表格/代码/图表），不念` };
+  }
+  if (text.length > SPEAK_MAX_CHARS) {
+    return {
+      speak: false,
+      text,
+      reason: `正文 ${text.length} 字太长，念出来是折磨（浮层上能看）`,
+    };
+  }
+  return { speak: true, text, reason: "" };
 }
 
 // ── surface 与降级 ────────────────────────────────────────────────────────────
@@ -411,16 +447,14 @@ function firstSentence(text: string): string | undefined {
   return m?.[0];
 }
 
-/** 宿主侧的能力与场景（决定"要不要冒出来"） */
+/** 宿主侧的能力与场景（决定“要不要冒出来”） */
 export interface SurfaceContext {
-  /** 静默模式：只钉回会话，不出声、不冒层 */
+  /** 静默模式：只钉回会话，不出声、不冒层（这是“别打扰我”的总闸） */
   silent: boolean;
-  /** 环境层总开关（用户可在设置里关掉） */
+  /** 桌面浮层开关（用户可在设置里关掉） */
   hudEnabled: boolean;
   /** 语音播报开关（默认关：出声属于打扰，必须显式开） */
   speechEnabled: boolean;
-  /** 主窗口是否在前台：在前台时没必要再弹浮层/发通知（用户已经在看了） */
-  windowFocused: boolean;
 }
 
 export interface SurfacePlan {
@@ -435,14 +469,21 @@ export interface SurfacePlan {
 /**
  * 呈现决策：**宿主规则为主**（模型只能给 kind/priority/life 的建议）。
  *
- * 为什么不让模型直接决定出口：模型不知道窗口是否在前台、用户是否开了静默、
- * 浮层是否被占用 —— 这些只有宿主知道。规则可单测，也便于事后解释。
+ * 为什么不让模型直接决定出口：模型不知道用户开了静默还是关了浮层 —— 这些只有宿主知道。
+ * 规则可单测，也便于事后解释。
+ *
+ * **两条从真实反馈里改掉的错规则**（之前很“傻”）：
+ * 1. 默认 `secondary` ⇒ 模型不填 priority 就什么都不显示。现在**调用即呈现**（默认 primary），
+ *    `secondary` 降级为“只想留痕”的显式逃生口。
+ * 2. “主窗口在前台就不冒浮层” ⇒ 用户盯着屏幕做事时反而什么都看不到。浮层的本职就是
+ *    “一眼看到结果”，它小、不挡、会自动淡出（静默模式已提供了“别打扰”的总闸）。
+ *    改用内容维度区分：**能看的都上浮层，能听且值得听的才念**。
  */
 export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
   const surfaces: Surface[] = ["session"];
   const reasons: string[] = [];
 
-  if (ir.priority !== "primary") {
+  if (ir.priority === "secondary") {
     reasons.push("priority=secondary：只进会话，不打扰");
     return { surfaces, speechText: "", reasons };
   }
@@ -452,13 +493,11 @@ export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
     return { surfaces, speechText: "", reasons };
   }
 
-  if (ctx.windowFocused) {
-    reasons.push("主窗口在前台：你正在看，不再冒浮层");
-  } else if (ctx.hudEnabled) {
+  if (ctx.hudEnabled) {
     surfaces.push("hud");
-    reasons.push("已推送到 HUD 浮层");
+    reasons.push("已推送到桌面浮层");
   } else {
-    reasons.push("HUD 已在设置里关闭");
+    reasons.push("桌面浮层已在设置里关闭");
   }
 
   if (ir.kind === "page") {
@@ -467,16 +506,17 @@ export function planSurfaces(ir: DisplayIr, ctx: SurfaceContext): SurfacePlan {
   }
 
   let speechText = "";
-  if (ctx.speechEnabled) {
-    speechText = speechTextOf(ir);
-    if (speechText) {
+  if (!ctx.speechEnabled) {
+    reasons.push("语音播报未开启");
+  } else {
+    const verdict = shouldSpeak(ir);
+    if (verdict.speak) {
+      speechText = verdict.text;
       surfaces.push("speech");
       reasons.push("已语音播报");
     } else {
-      reasons.push("没有可念的正文（speech/title/text 都为空）");
+      reasons.push(`不出声：${verdict.reason}`);
     }
-  } else {
-    reasons.push("语音播报未开启");
   }
 
   return { surfaces, speechText, reasons };

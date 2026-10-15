@@ -68,6 +68,7 @@ type SettingsTabId =
   | "undo"
   | "permissions"
   | "shortcuts"
+  | "surface"
   | "appearance"
   | "pty";
 
@@ -123,6 +124,9 @@ const SETTINGS_GROUPS: {
     label: "界面与运行",
     tabs: [
       { id: "appearance", label: "外观", icon: Palette },
+      // 通知与桌面呈现曾经塞在「快捷键」页里（用户反馈“为啥放那儿”）——
+      // 它们回答的是「结果怎么送达」，与快捷键不是一回事，单独一页。
+      { id: "surface", label: "通知与呈现", icon: Bell },
       { id: "shortcuts", label: "快捷键", icon: Keyboard },
       { id: "stats", label: "用量统计", icon: ChartColumn },
       { id: "health", label: "诊断", icon: Stethoscope },
@@ -168,6 +172,8 @@ onMounted(() => {
   ollamaStore.refreshStatus();
   refreshKb();
   loadExecRules();
+  // 音色列表由系统提供（`say -v ?`），一次 IO，很便宜；拿不到也不影响其它设置
+  void loadVoices();
 });
 
 const editingId = ref<string>(chatStore.activeProfileId);
@@ -592,6 +598,49 @@ const surfaceSpeechVoice = ref(getSettings().surfaceSpeechVoice ?? "");
 const surfaceSilent = ref(!!getSettings().surfaceSilent);
 const surfaceAutoFinish = ref(getSettings().surfaceAutoFinish !== false);
 const surfaceTestResult = ref("");
+
+// ── 音色列表：**由系统提供**（不同机器装的语音包不同，写死必然过时）──
+//
+// 顺带拿到了每个音色**自带的示例句**（`say -v ?` 里 `#` 之后那段），
+// 那就是设置界面里「示例」与「试听」的素材 —— 不用自己造例句。
+interface SayVoice {
+  name: string;
+  locale: string;
+  example: string;
+}
+const voices = ref<SayVoice[]>([]);
+const voicesError = ref("");
+const voicePreviewMsg = ref("");
+const zhVoices = computed(() => voices.value.filter((v) => v.locale.startsWith("zh")));
+const otherVoices = computed(() => voices.value.filter((v) => !v.locale.startsWith("zh")));
+/** 当前音色自带的示例句（空音色 = 系统默认，没有示例可拿） */
+const currentVoiceExample = computed(
+  () => voices.value.find((v) => v.name === surfaceSpeechVoice.value)?.example ?? "",
+);
+async function loadVoices() {
+  voicesError.value = "";
+  try {
+    voices.value = await invoke<SayVoice[]>("list_say_voices");
+    if (!voices.value.length) voicesError.value = "系统没返回任何音色（say -v ? 输出为空）";
+  } catch (e) {
+    voicesError.value = `读取音色失败：${String(e)}`;
+  }
+}
+async function previewVoice() {
+  voicePreviewMsg.value = "正在试听…";
+  saveSurface();
+  // 声音立刻要出来，而设置写入是防抖的 → 先落盘再念（否则 Rust 端读到的还是旧音色）
+  await flushSettings();
+  try {
+    const spoken = await invoke<string>("preview_voice", {
+      voice: surfaceSpeechVoice.value,
+      text: currentVoiceExample.value || "这是一句试听，用来看这个音色合不合适",
+    });
+    voicePreviewMsg.value = `已念：${spoken}`;
+  } catch (e) {
+    voicePreviewMsg.value = `试听失败：${String(e)}`;
+  }
+}
 function saveSurface() {
   updateSettings({
     surfaceHud: surfaceHud.value,
@@ -1494,8 +1543,11 @@ function handleDelete() {
             <button class="settings-reset-btn" @click="resetShortcuts">
               恢复默认（⌘⇧Space / ⌘⇧K）
             </button>
+          </div>
 
-            <h3 style="margin-top: 22px"><Bell :size="17" /> 系统通知</h3>
+          <!-- 通知与呈现：系统通知 / 桌面浮层 / 语音播报（之前错放在「快捷键」页里） -->
+          <div v-show="activeTab === 'surface'">
+            <h3><Bell :size="17" /> 系统通知</h3>
             <p class="ollama-desc">
               任务完成或给出最终产物时发系统通知。仅当主窗口不在前台时才提醒（正在看着屏幕时
               不打扰），用户主动「停止生成」也不会误报为完成。
@@ -1537,7 +1589,7 @@ function handleDelete() {
               </div>
             </div>
 
-            <h3 style="margin-top: 22px"><Monitor :size="17" /> 环境层（桌面浮层 / 语音）</h3>
+            <h3 style="margin-top: 22px"><Monitor :size="17" /> 桌面浮层与语音</h3>
             <p class="ollama-desc">
               让结果直接出现在桌面上：浮层胶囊（不抢焦点、点击穿透，几秒后自动淡出）与语音播报。
               模型只有在明确需要时才呈现（工具参数 priority=primary）；正文仍会写在对话里，
@@ -1581,12 +1633,29 @@ function handleDelete() {
             </div>
             <div class="form-group">
               <label>语音音色</label>
-              <input
-                v-model="surfaceSpeechVoice"
-                placeholder="留空用系统默认（如 Tingting）"
-                @change="saveSurface"
-              />
-              <span class="form-hint"> 取 macOS `say -v ?` 里的音色名；留空即系统默认声音。 </span>
+              <select v-model="surfaceSpeechVoice" class="form-select" @change="saveSurface">
+                <option value="">系统默认</option>
+                <optgroup v-if="zhVoices.length" label="中文">
+                  <option v-for="v in zhVoices" :key="v.name" :value="v.name">
+                    {{ v.name }}（{{ v.locale }}）
+                  </option>
+                </optgroup>
+                <optgroup label="其它语言">
+                  <option v-for="v in otherVoices" :key="v.name" :value="v.name">
+                    {{ v.name }}（{{ v.locale }}）
+                  </option>
+                </optgroup>
+              </select>
+              <span class="form-hint">
+                共 {{ voices.length }} 个音色（来自系统 <code>say -v ?</code>，中文优先排在前面）。
+                示例：{{ currentVoiceExample || "系统默认音色没有自带示例 —— 点「试听」听一句" }}
+              </span>
+              <div style="display: flex; gap: 8px; margin-top: 8px">
+                <button class="settings-reset-btn" @click="previewVoice">试听</button>
+                <button class="settings-reset-btn" @click="loadVoices">重新扫描音色</button>
+              </div>
+              <p v-if="voicePreviewMsg" class="form-hint">{{ voicePreviewMsg }}</p>
+              <p v-if="voicesError" class="form-hint notif-warn">{{ voicesError }}</p>
             </div>
             <div class="form-group">
               <button class="settings-reset-btn" @click="testSurface">试一下</button>

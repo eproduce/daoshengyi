@@ -11,12 +11,12 @@
 | 文件 | 职责 |
 | :--- | :--- |
 | `src/utils/display-ir.ts`（新，纯函数） | IR 类型 + **容错解析** + **降级矩阵** + **呈现决策**（`planSurfaces`） |
-| `tests/test-display-ir.test.ts`（新） | 27 个单测：容错、降级不变量、语音文本清洗、决策规则 |
-| `src-tauri/src/surface.rs`（新） | **执行端**：HUD 上屏 + 语音播报（`say`），走统一命令管线；演示钩子 |
+| `tests/test-display-ir.test.ts`（新） | 46 个单测：容错、降级不变量、语音文本清洗、决策规则、出声门禁 |
+| `src-tauri/src/surface.rs`（新） | **执行端**：HUD 上屏 + 语音播报（`say`），走统一命令管线；音色列表/试听；演示钩子 |
 | `src-tauri/src/hud.rs` | `present()` 推 IR 给 HUD（事件 + 可补拉）；AppKit 自证与取证 |
 | `src/components/HudOverlay.vue`（新，取代 spike 占位组件） | IR 的**渲染端**：有内容画内容、没内容画自检胶囊 |
 | `src/data/builtin-tools.ts` / `builtin-params.ts` / `src/stores/chat.ts` / `roles-catalog.ts` | 内置工具 `present` 的四处接线 + 角色工具集 |
-| `src/api/appSettings.ts` / `src-tauri/src/settings.rs` / `SettingsDialog.vue` | 4 个环境层开关 + 「试一下」按钮（含 `flushSettings`） |
+| `src/api/appSettings.ts` / `src-tauri/src/settings.rs` / `SettingsDialog.vue` | 4 个环境层开关 + 音色下拉（含示例）+「试听」+「试一下」；集中在**独立页签「通知与呈现」** |
 
 ## 2. 数据流
 
@@ -24,7 +24,7 @@
 模型 → present(kind/title/priority/life/speech/body)
         │
         ├─ parseDisplayIr   容错：未知 kind→card、超长截断、脏条目丢弃（**永不抛错**）
-        ├─ planSurfaces     决策：静默/前台/开关 → 该走哪些出口（附人话原因）
+        ├─ planSurfaces     决策：静默/开关 → 该走哪些出口（附人话原因）
         │
         └─ invoke("surface_present", { ir, plan })
                  │
@@ -43,13 +43,37 @@
 
 | 条件 | 结果 | 原因 |
 | :--- | :--- | :--- |
-| `priority != primary` | 只进会话 | **默认不打扰**：不确定就不冒出来 |
 | 静默模式 | 只进会话 | 用户明确表达过"别打扰" |
-| 主窗口**在前台** | 不冒浮层 | 用户正在看，没必要再弹一遍（但语音仍可念） |
+| `priority = secondary` | 只进会话 | 模型**自己声明**次要；不拿"不确定"当不显示的理由 |
 | `hudEnabled = false` | 不冒浮层 | 设置里关了 |
-| `speechEnabled = false` | 不出声 | **默认关**：出声属于主动打扰 |
 | `kind = page` | 额外走产物页 | 完整内容交给 `answer_html` 渲染 |
-| 没有可念文本 | 不选语音 | 宁可不念，也不念一句空话 |
+| 语音：`speechEnabled = false` | 不出声 | **默认关**：出声属于主动打扰（见 §3.2） |
+| 语音：kind 不在可念集合 | 不出声 | 能看的别念，否则就是噪音（见 §3.2） |
+| 语音：无可念文本 / 超 80 字 | 不选语音 / 只念第一句 | 宁可不念，也不念一句空话 |
+
+### 3.0 语义：**调用即呈现**（一次 UX 纠正）
+
+初版把「优先级」当成"冒不冒出来"的绊线：不标 `primary` 就只进会话，并加了一条
+「主窗口在前台就不冒浮层」的门禁。真机用下来两个都错了：
+
+- **模型没标 primary = 你不说它就不显示**。`present` 本来就是"我特意调一个工具"的动作，
+  这个动作本身已经是最强的"值得一看"信号 —— 所以现在 **`priority` 默认 `primary`**，
+  只有模型**显式**写 `secondary` 才降级进会话。
+- **「前台就不冒」= 盯着屏幕时反而什么都看不到**。恰好是用户在守长任务的时候，
+  最需要瞥一眼结果。而且浮层已保证**不抢焦点 + 点击穿透**，不会抢走操作；
+  所以前台门禁整条删除（`SurfaceContext` 里不再有 `windowFocused`）。
+
+一句话：**呈现由模型"调用"这个动作触发，打扰与否只在设置里关**（静默模式 / 开关）。
+
+### 3.2 出声规则（`shouldSpeak`）
+
+语音不是"有文本就念"。三条门禁全部满足才出声，否则**明确说明为什么没出声**：
+
+| 门禁 | 规则 | 理由 |
+| :--- | :--- | :--- |
+| kind | 仅 `speech` / `metric` / `callout` / `card` | `table`/`code`/`page` 念出来没意义 |
+| 文本 | 不为空（含 `speech` 字段或正文） | 不念空话 |
+| 长度 | ≤ 80 字，否则**只念第一句** | 300 字的长文照播就是故意折磨人 |
 
 每条决策都会带一句**人话原因**回给模型（`reasons`），工具结果里也会写清楚
 「为什么没弹出来 / 为什么没出声」——不然用户只会看到"什么都没发生"。
@@ -65,7 +89,6 @@
 | 纯问答（没用工具） | `secondary` + `auto` → **只进会话** | 每轮对话都冒出来就是骚扰 |
 | 用过工具 | `primary` + **`sticky`** | 真干活了值得看一眼；`auto` 几秒就淡，用户不在时等于白推 |
 | 用户主动停止 | 不呈现 | 停止 ≠ 完成，不能误报 |
-| 主窗口在前台 | 不冒浮层 | 用户正在看，刚读完正文 |
 
 接线由**源码级契约测试**钉住（`tests/test-display-ir.test.ts`）：断言 `chat.ts` 里
 `presentTurnFinished(...)` 与 `notifyTurnFinished(...)` 挂在同一处 —— 将来重构
@@ -94,10 +117,30 @@
 | :--- | :-: | :--- |
 | 环境层：桌面浮层（`surfaceHud`） | **开** | 浮层已保证不抢焦点 + 点击穿透（不挡操作） |
 | 环境层：语音播报（`surfaceSpeech`） | **关** | **出声属于主动打扰，必须显式开** |
-| 环境层：语音音色（`surfaceSpeechVoice`） | 空 | `say -v ?` 里的名字；空 = 系统默认 |
+| 环境层：语音音色（`surfaceSpeechVoice`） | 空 | **下拉选择**，选项来自系统 `say -v ?`（中文分一组排最前）；空 = 系统默认 |
 | 环境层：静默模式（`surfaceSilent`） | 关 | 打开后只留会话，不出声、不冒层 |
-| 环境层：收尾自动呈现（`surfaceAutoFinish`） | **开** | 任务结束时宿主兜一次结论（纯问答 / 前台时不会冒） |
+| 环境层：收尾自动呈现（`surfaceAutoFinish`） | **开** | 任务结束时宿主兜一次结论（纯问答时不会冒） |
 | 环境变量 `DAOSHENGYI_HUD_SPIKE` | 未设 | 仅 spike：不设则**永不创建** HUD 窗口（零成本） |
+
+### 5.1 设置放在哪（一次 UX 纠正）
+
+这四个开关原本塞在**「快捷键」页**里 —— 用户的原话是「设置为啥要放在快捷键那里」。
+现在它们有自己的页签：**设置 → 界面与运行 → 通知与呈现**（内含「系统通知」+
+「桌面浮层与语音」）。
+
+理由：快捷键页回答的是"怎么**触发**"，而通知/浮层/语音回答的是"结果怎么**送达**"，
+两件事混在一页，用户找开关时得先把快捷键列表读完。
+
+### 5.2 音色列表与试听（不做硬编码）
+
+音色**不写死在代码里**：不同机器装的语音包不同，写死必然过时。
+- `list_say_voices()`：跑 `say -v ?`（同样经 `run_wrapped_argv`），解析出 `{name, locale, example}`
+  —— 名字里有空格/全角括号（如 `Eddy (中文（中国大陆）)`）也不能切坏，解析器有单测;
+  **示例句就是 `#` 之后那段**（系统自带），不用自己造例句。
+- `preview_voice(voice, text)`：试听。点「试听」时先 `flushSettings()` 再念 —— 否则
+  Rust 端读到的还是防抖里没落盘的旧音色。
+- 真机实测：**179 个音色 / 19 个中文**，示例句正常（已加 `#[ignore]` live 测试钉住：
+  `cargo test --offline --lib surface::tests::live_ -- --ignored --nocapture`）。
 
 > 设置界面的「试一下」按钮走的是**与模型调用同一条**路径（`surface_present`），
 > 并把返回的总结原样显示 —— 这样"为什么没出声"在设置页就能看懂。
@@ -129,6 +172,16 @@ HUD 浮层：已显示
 
 **演示数据里故意塞了一个非法项（字符串）**，端到端验证了「坏数据被忽略而不是整条失败」：
 6 个条目里 5 个合法 → 渲染 4 条 + 「共 5 项」。
+
+### 6.1 本轮（语义纠正 + 音色）验收
+
+| 对象 | 怎么验 | 结果 |
+| :--- | :--- | :--- |
+| 决策语义（调用即呈现 / 无声禁前台门禁） | `npx vitest run tests/test-display-ir.test.ts` | **46 passed** |
+| 音色列表与解析 | `cargo test --offline --lib surface::` | **14 passed** |
+| 音色链路（真机，走统一管线） | `cargo test --offline --lib surface::tests::live_ -- --ignored --nocapture` | **179 音色 / 19 中文**，示例句正常 |
+| 浮层在**主窗口前台**时也显示 | `DAOSHENGYI_HUD_DEMO=1 npm run tauri dev` + 截图取证 | 见下方 |
+| 设置页新页签 / 音色下拉 / 试听 | 手动（`/Applications` 装的 alpha 版） | 见下方 |
 
 ## 7. 边界与不做
 

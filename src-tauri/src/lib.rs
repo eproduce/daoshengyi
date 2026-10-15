@@ -7458,6 +7458,8 @@ pub fn run() {
             hud::hud_note,
             hud::hud_last_ir,
             surface::surface_present,
+            surface::list_say_voices,
+            surface::preview_voice,
             cancel_stream,
             list_models,
             touch_fact,
