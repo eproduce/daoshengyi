@@ -63,6 +63,8 @@ pub struct HudFlags {
     /// 前端自述：HUD 是**独立 webview**，白屏时既没有可见控制台也看不到 DOM。
     /// 让它把自己的渲染状态（尺寸 / DOM / 错误）写回来，诊断才有依据。
     note: std::sync::Mutex<Option<String>>,
+    /// 上次落盘时的状态指纹：用于「状态变了才刷新证据文件」（见 `should_dump`）
+    last_dump_key: std::sync::Mutex<Option<String>>,
 }
 
 impl HudFlags {
@@ -72,6 +74,7 @@ impl HudFlags {
             click_through: AtomicBool::new(true),
             all_workspaces: AtomicBool::new(false),
             note: std::sync::Mutex::new(None),
+            last_dump_key: std::sync::Mutex::new(None),
         }
     }
 
@@ -99,6 +102,23 @@ impl HudFlags {
         if let Ok(mut g) = self.note.lock() {
             *g = Some(v);
         }
+    }
+
+    /// 状态没变就不重复落盘。
+    ///
+    /// 两个极端都踩过：① 每次调用（含前端每秒轮询）都写 → 证据文件被刷成噪音；
+    /// ② 只在显式动作时写 → 文件停在旧值，spike 里读到的是「启动前」的快照，差点误判。
+    /// 折中：状态指纹变了才写。
+    pub fn should_dump(&self, key: &str) -> bool {
+        let mut g = match self.last_dump_key.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if g.as_deref() == Some(key) {
+            return false;
+        }
+        *g = Some(key.to_string());
+        true
     }
 }
 
@@ -227,6 +247,10 @@ pub fn collection_names(behavior: usize) -> Vec<String> {
 /// 把事实翻译成「结论行」——spike 报告直接引用这些行，避免人工看图猜。
 ///
 /// 纯函数：不碰窗口，便于单测「透明失效」「穿透没生效」这类必须报警的组合。
+///
+/// **未上屏时不做后四项判定**：`apply_flags`（穿透/跨 Space）是 show 那一刻才应用的，
+/// 窗口刚创建、页面刚加载时读到的是「还没设」，报 ❌ 会把人引向完全错误的方向
+/// （spike 里就被这几行假 ❌ 带偏过：真正的原因其实是「还没到 show 时刻」）。
 pub fn verdict_of(click_through_requested: bool, appkit: &AppKitFacts) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -237,18 +261,6 @@ pub fn verdict_of(click_through_requested: bool, appkit: &AppKitFacts) -> Vec<St
         );
     } else {
         out.push("✅ 真透明：AppKit isOpaque=false".into());
-    }
-
-    if appkit.ignores_mouse_events == click_through_requested {
-        out.push(format!(
-            "✅ 点击穿透：ignoresMouseEvents={}，与请求一致",
-            appkit.ignores_mouse_events
-        ));
-    } else {
-        out.push(format!(
-            "❌ 点击穿透不一致：请求 {click_through_requested}，实际 {}",
-            appkit.ignores_mouse_events
-        ));
     }
 
     if appkit.style_mask & 1 != 0 {
@@ -283,16 +295,33 @@ pub fn verdict_of(click_through_requested: bool, appkit: &AppKitFacts) -> Vec<St
         out.push("✅ 无系统阴影：hasShadow=false".into());
     }
 
-    if appkit.is_visible {
-        out.push("✅ 已上屏：AppKit isVisible=true".into());
-    } else {
-        out.push("❌ 未上屏：AppKit isVisible=false（窗口创建了但没显示）".into());
+    // 以上四项在窗口创建时即生效；以下四项要等真正上屏才有意义
+    if !appkit.is_visible {
+        out.push(
+            "ℹ️ 尚未上屏（isVisible=false）：窗口已创建但还没显示 —— 穿透/遮挡/焦点三项留到显示后再判"
+                .into(),
+        );
+        return out;
     }
+
+    out.push("✅ 已上屏：AppKit isVisible=true".into());
 
     if appkit.is_occluded {
         out.push("⚠️ 窗口被遮挡：occlusionState 不含 Visible（AppKit 会停掉渲染）→ 离屏截图可能全透明，不能当作渲染失败".into());
     } else {
         out.push("✅ 未被遮挡：occlusionState 含 Visible（渲染应正常）".into());
+    }
+
+    if appkit.ignores_mouse_events == click_through_requested {
+        out.push(format!(
+            "✅ 点击穿透：ignoresMouseEvents={}，与请求一致",
+            appkit.ignores_mouse_events
+        ));
+    } else {
+        out.push(format!(
+            "❌ 点击穿透不一致：请求 {click_through_requested}，实际 {}",
+            appkit.ignores_mouse_events
+        ));
     }
 
     if appkit.is_key_window {
@@ -558,6 +587,26 @@ fn collect_facts(app: &tauri::AppHandle, flags: &HudFlags) -> HudFacts {
     }
 }
 
+/// 状态指纹：只要这几位变了，就值得刷新一次证据文件
+fn facts_key(facts: &HudFacts) -> String {
+    let ak = facts.appkit.as_ref();
+    format!(
+        "exists={} visible={} focused={} occl={} key={} opaque={} ignore={} pos={:?} note={}",
+        facts.exists,
+        facts.visible,
+        facts.focused,
+        ak.map(|a| a.occlusion_state).unwrap_or(0),
+        ak.map(|a| a.is_key_window).unwrap_or(false),
+        ak.map(|a| a.is_opaque).unwrap_or(false),
+        ak.map(|a| a.ignores_mouse_events).unwrap_or(false),
+        (
+            facts.position.0.round() as i64,
+            facts.position.1.round() as i64
+        ),
+        facts.frontend_note.as_deref().unwrap_or("-"),
+    )
+}
+
 /// 落盘 + 打日志：让 shell 侧能确定性取到结果（spike 证据链）。
 ///
 /// 日志只打**结论行**，不打整份 JSON：这份快照本来就会落盘，而前端每秒轮询一次，
@@ -647,8 +696,8 @@ pub async fn hud_spike(
 
     std::thread::sleep(std::time::Duration::from_millis(60));
     let facts = collect_facts(&app, &flags);
-    // 只在「有动作」时落盘：前端每秒轮询 status，每次都写会把证据文件刷成一团噪音
-    if action != "status" {
+    // 状态没变就不写：前端每秒轮询 status，每次都写会把证据文件刷成噪音
+    if flags.should_dump(&facts_key(&facts)) {
         dump_facts(&facts);
     }
     Ok(facts)
@@ -672,7 +721,9 @@ pub async fn hud_note(
     state.set_note(note);
     // 立刻并进事实快照：spike 的所有判定都读这个文件，不能让自述和快照错位
     let facts = collect_facts(&app, &state);
-    dump_facts(&facts);
+    if state.should_dump(&facts_key(&facts)) {
+        dump_facts(&facts);
+    }
     Ok(())
 }
 
@@ -832,6 +883,30 @@ mod tests {
     }
 
     #[test]
+    fn verdict_defers_shown_only_checks_before_visible() {
+        // 未上屏时不能报假 ❌（穿透/遮挡此时都还没设置）：只留创建即生效的四项 + 一行说明
+        let mut f = facts(true, false);
+        f.is_visible = false;
+        // 未上屏时这些值天然是「未设置」状态
+        f.ignores_mouse_events = false;
+        f.occlusion_state = 0;
+        f.is_occluded = true;
+        let v = verdict_of(true, &f);
+        assert!(
+            !v.iter().any(|l| l.starts_with("❌")),
+            "未上屏时不应有 ❌：{v:?}"
+        );
+        assert!(v.iter().any(|l| l.contains("尚未上屏")));
+        assert!(
+            !v.iter().any(|l| l.contains("点击穿透不一致")),
+            "穿透要等上屏后再判"
+        );
+        // 创建即生效的四项仍然要给出
+        assert!(v.iter().any(|l| l.starts_with("✅ 真透明")));
+        assert!(v.iter().any(|l| l.starts_with("✅ 置顶")));
+    }
+
+    #[test]
     fn verdict_explains_occluded_window() {
         // 被遮挡时离屏截图会全透明 —— 结论里必须说清「拍不到 ≠ 没画对」，
         // 否则会把锁屏/遮挡误判成渲染失败（spike 里真的错判过一次）
@@ -875,6 +950,44 @@ mod tests {
         assert!(!f.all_workspaces(), "默认不跨 Space（不骚扰）");
         f.set_click_through(false);
         assert!(!f.click_through());
+    }
+
+    #[test]
+    fn should_dump_only_when_state_changes() {
+        // 前端每秒轮询，重复指纹不能反复写盘；状态一变必须能写出去
+        let f = HudFlags::new();
+        assert!(f.should_dump("a"));
+        assert!(!f.should_dump("a"));
+        assert!(f.should_dump("b"));
+        assert!(!f.should_dump("b"));
+        assert!(f.should_dump("a"));
+    }
+
+    #[test]
+    fn facts_key_tracks_the_fields_we_judge_on() {
+        let flags = HudFlags::new();
+        let mut f = HudFacts {
+            exists: true,
+            visible: false,
+            focused: false,
+            position: (100.0, 50.0),
+            size: (HUD_WIDTH, HUD_HEIGHT),
+            scale_factor: 2.0,
+            monitor_name: "m".into(),
+            work_area_logical: (0.0, 30.0, 1920.0, 960.0),
+            click_through_requested: flags.click_through(),
+            all_workspaces_requested: false,
+            appkit: None,
+            visible_tauri: false,
+            frontend_note: None,
+            verdict: vec![],
+        };
+        let base = facts_key(&f);
+        assert_eq!(base, facts_key(&f), "同样的状态必须得到同样的指纹");
+        f.visible = true;
+        assert_ne!(base, facts_key(&f), "上屏状态变了必须能触发刷新");
+        f.frontend_note = Some("mounted".into());
+        assert_ne!(facts_key(&f), base, "前端自述变了也要能触发刷新");
     }
 
     /// 契约：HUD 指向的入口页必须真实存在。

@@ -171,10 +171,11 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.14);
   /* 半透明玻璃：透出桌面 → 透明本身也是视觉证据 */
   background: linear-gradient(180deg, rgba(30, 33, 42, 0.9), rgba(20, 22, 29, 0.82));
-  /* backdrop-filter（毛玻璃）暂不启用：它要采样「窗口背后的内容」，而 Tauri 的透明窗口
-     在滚动/截图/被遮挡等场景下能否稳定拿到背景，本机还没验证过。
-     不验证就先不用 —— 浮层一旦在某些场景下变糊或变透明，属于最难查的那类问题。
-     （待办：屏幕解锁后单独验证 backdrop-filter 与 Tauri windowEffects 两条路线） */
+  /* 这里**故意不用** backdrop-filter（毛玻璃）：实测在透明窗口上它是无效的 ——
+     backdrop-filter 只能采样「页面内部」的内容，而浮层页面里除了胶囊空无一物，
+     于是它什么也糊不到（真机截图对比与不开时几乎一致）。
+     代价却是白给的合成开销。真毛玻璃要走原生 NSVisualEffectView（Tauri 的
+     windowEffects），那是另一条需要单独验证的路线（见 docs/HUD_SPIKE.md §5）。 */
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.38);
 }
 

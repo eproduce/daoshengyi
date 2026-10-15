@@ -81,6 +81,13 @@ func differs(_ a: Bitmap, _ b: Bitmap, _ x: Int, _ y: Int, threshold: Int = 24) 
     return abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2) > threshold
 }
 
+/// 「强变化」：用来把「胶囊自身的柔和阴影」（轻微、设计效果）与
+/// 「窗口铺了一层不透明底色」（强、真故障）区分开 ——
+/// 两者在内边距上都会改变像素，但量级差很多（实测阴影最大 alpha 只有 14/255）。
+func differsStrong(_ a: Bitmap, _ b: Bitmap, _ x: Int, _ y: Int) -> Bool {
+    differs(a, b, x, y, threshold: 96)
+}
+
 @discardableResult
 func run(_ launchPath: String, _ args: [String]) -> Int32 {
     let p = Process()
@@ -180,18 +187,21 @@ if args.count >= 4, args[1] == "--window" {
 
     print("抓到窗口图        \(out)  \(bmp.width)x\(bmp.height) 像素")
 
-    // 统计 alpha：全透明（0）与有内容（>8）的像素比例
-    var zeroAlpha = 0
+    // 统计 alpha：近乎透明（<24）与有内容（>8）的像素比例。
+    // 阈值取 24 而不是 0：胶囊自带柔和阴影（box-shadow 0 10px 30px），
+    // 它会把内边距区的 alpha 抬到个位数（实测 2~14），那是设计效果、不是不透明底色。
+    // 真正要排除的失败态是「整块 alpha=255 的白底/黑底」，两者相差一个数量级。
+    var lowAlpha = 0
     var solidAlpha = 0
     var total = 0
     for y in stride(from: 0, to: bmp.height, by: 1) {
         for x in stride(from: 0, to: bmp.width, by: 1) {
             let (_, _, _, a) = bmp.rgba(x, y)
             total += 1
-            if a == 0 { zeroAlpha += 1 } else if a > 8 { solidAlpha += 1 }
+            if a < 24 { lowAlpha += 1 } else if a > 8 { solidAlpha += 1 }
         }
     }
-    let ratioZero = Double(zeroAlpha) / Double(total)
+    let ratioTransparent = Double(lowAlpha) / Double(total)
     let ratioSolid = Double(solidAlpha) / Double(total)
 
     // 四角（各取 4x4 小块的平均 alpha）
@@ -214,23 +224,24 @@ if args.count >= 4, args[1] == "--window" {
     let br = cornerAlpha(bmp.width - 4, bmp.height - 4)
     let center = cornerAlpha(bmp.width / 2, bmp.height / 2, 8)
 
-    print(String(format: "alpha 全 0 像素   %.1f%%（内边距 + 圆角应计入这里）", ratioZero * 100))
+    print(String(format: "alpha 接近 0 像素  %.1f%%（内边距 + 圆角 + 阴影过渡应计入这里）", ratioTransparent * 100))
     print(String(format: "alpha 有内容像素  %.1f%%（胶囊本体）", ratioSolid * 100))
     print(String(format: "四角 alpha        左上 %.0f / 右上 %.0f / 左下 %.0f / 右下 %.0f", tl, tr, bl, br))
     print(String(format: "中心 alpha        %.0f", center))
     print("")
 
     var verdicts: [String] = []
-    let cornersTransparent = tl < 8 && tr < 8 && bl < 8 && br < 8
+    let cornerMax = max(max(tl, tr), max(bl, br))
+    let cornersTransparent = cornerMax < 24
     verdicts.append(mark(cornersTransparent, cornersTransparent
-        ? "四角完全透明（alpha=0）：窗口是真透明的，没有白底/黑底"
-        : "四角不是全透明：窗口存在不透明底色（透明未生效）"))
-    verdicts.append(mark(ratioZero > 0.02, "存在透明区域 \(String(format: "%.1f%%", ratioZero * 100))（内边距 + 圆角）"))
+        ? "四角基本透明（最大 alpha \(Int(cornerMax))/255：胶囊外无不透明底色，残留来自柔和阴影）"
+        : "四角不透明（最大 alpha \(Int(cornerMax))）：窗口有不透明底色，透明未生效"))
+    verdicts.append(mark(ratioTransparent > 0.02, "存在透明区域 \(String(format: "%.1f%%", ratioTransparent * 100))（内边距 + 圆角）"))
     verdicts.append(mark(center > 8, "中心有内容（alpha=\(String(format: "%.0f", center))）：HUD 界面确实画出来了"))
     verdicts.append(mark(onscreen, onscreen ? "窗口在屏（CGWindowIsOnscreen=true）" : "窗口不在屏：显示器/空间不对"))
     print("结论")
     for v in verdicts { print("  " + v) }
-    let pass = cornersTransparent && ratioZero > 0.02 && center > 8 && onscreen
+    let pass = cornersTransparent && ratioTransparent > 0.02 && center > 8 && onscreen
     print("")
     print("VERDICT \(pass ? "PASS" : "FAIL")")
     exit(0)
@@ -283,6 +294,7 @@ let outsidePx = Int(16.0 * scale)
 
 var insideChanged = 0, insideTotal = 0
 var insetChanged = 0, insetTotal = 0
+var insetStrongChanged = 0
 var outsideChanged = 0, outsideTotal = 0
 var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
 
@@ -305,6 +317,7 @@ for y in (rectY - outsidePx)..<(rectY + rectH + outsidePx) {
             if inInset {
                 insetTotal += 1
                 if changed { insetChanged += 1 }
+                if differsStrong(before, after, x, y) { insetStrongChanged += 1 }
             }
         } else {
             outsideTotal += 1
@@ -329,6 +342,7 @@ let ratioGlobal = Double(globalChanged) * 4.0 / Double(imgW * imgH)
 
 let ratioInside = insideTotal > 0 ? Double(insideChanged) / Double(insideTotal) : 0
 let ratioInset = insetTotal > 0 ? Double(insetChanged) / Double(insetTotal) : 0
+let ratioInsetStrong = insetTotal > 0 ? Double(insetStrongChanged) / Double(insetTotal) : 0
 let ratioOutside = outsideTotal > 0 ? Double(outsideChanged) / Double(outsideTotal) : 0
 
 func writeCrop(_ src: Bitmap, _ path: String, _ x: Int, _ y: Int, _ w: Int, _ h: Int) {
@@ -370,8 +384,9 @@ if globalChanged > 0 {
     print("整屏变化包围盒    像素 \(gMinX),\(gMinY)→\(gMaxX),\(gMaxY)")
 }
 print("矩形内差异比例    \(String(format: "%.1f%%", ratioInside * 100))")
-print("最外圈差异比例    \(String(format: "%.1f%%", ratioInset * 100))   ← 应为 0")
-print("矩形外差异比例    \(String(format: "%.1f%%", ratioOutside * 100))   ← 应为 0")
+print("最外圈弱变化      \(String(format: "%.1f%%", ratioInset * 100))   ← 允许非 0：胶囊自身柔和阴影会让内边距轻微变化")
+print("最外圈强变化      \(String(format: "%.1f%%", ratioInsetStrong * 100))   ← 应为 0：强变化才意味着铺了不透明底色")
+print("矩形外差异比例    \(String(format: "%.1f%%", ratioOutside * 100))   ← 应为 0：无阴影/边框溢出窗口")
 print("裁剪图            \(beforeCrop) / \(afterCrop)")
 print("")
 
@@ -409,15 +424,19 @@ verdicts.append(mark(backgroundOk, backgroundOk
     : "背景不稳定（整屏变化 \(String(format: "%.1f%%", ratioGlobal * 100))）：壁纸轮播/屏保/其它窗口在动，本次前后对比不可信 → 改用 --window 模式"))
 if screenOk && backgroundOk {
     verdicts.append(mark(ratioInside > 0.05, "窗口矩形内已绘制内容（\(String(format: "%.1f%%", ratioInside * 100))）"))
-    verdicts.append(mark(ratioInset < 0.01, ratioInset < 0.01
-        ? "窗口最外圈完全无绘制：透明"
-        : "窗口最外圈有 \(String(format: "%.1f%%", ratioInset * 100)) 像素变化"))
+    if ratioInsetStrong < 0.02 {
+        verdicts.append(mark(true, ratioInset > 0.01
+            ? "窗口最外圈无强变化（弱变化 \(String(format: "%.1f%%", ratioInset * 100)) 来自胶囊自身柔和阴影）"
+            : "窗口最外圈无任何绘制：透明"))
+    } else {
+        verdicts.append(mark(false, "窗口最外圈有 \(String(format: "%.1f%%", ratioInsetStrong * 100)) 强变化：疑似铺了不透明底色"))
+    }
     verdicts.append(mark(ratioOutside < 0.005, ratioOutside < 0.005
         ? "窗口外侧无阴影溢出"
-        : "窗口外侧有 \(String(format: "%.1f%%", ratioOutside * 100)) 像素变化：疑似阴影"))
+        : "窗口外侧有 \(String(format: "%.1f%%", ratioOutside * 100)) 像素变化：疑似阴影溢出"))
 }
 print("结论")
 for v in verdicts { print("  " + v) }
-let pass = screenOk && backgroundOk && ratioInside > 0.05 && ratioInset < 0.01 && ratioOutside < 0.005
+let pass = screenOk && backgroundOk && ratioInside > 0.05 && ratioInsetStrong < 0.02 && ratioOutside < 0.005
 print("")
 print("VERDICT \(pass ? "PASS" : "FAIL")")
