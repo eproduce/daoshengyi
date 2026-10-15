@@ -396,6 +396,17 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "log_decision",
     desc: '**把一项技术决策写入项目的 DECISIONS.md（做了什么、为什么、排除了什么）**。参数 {"title": "一句话标题", "decision": "决定了什么", "rationale": "为什么（约束/取舍/依据）", "alternatives": ["排除的方案（可省）"], "files": ["相关文件（可省）"], "dir": 可选项目目录}。**何时用**：做了**不明显、将来会被人质疑**的技术选择时（换运行时/改架构/选依赖/定接口/否掉某个方案）。同一标题重复记录会**原地更新**（不会堆重复条目）。**不要**为琐碎改动记录；也不要在只有一句「改了 X」时记——理由与排除方案才是它的价值。',
   },
+  {
+    name: "present",
+    desc:
+      '**把结果直接呈现在用户桌面上**（环境层）：桌面浮层卡片 / 语音播报 / 产物页。参数 {"kind": "card", "title": "一句话结论", "priority": "primary", "life": "auto", "speech": "要念的那一句", "body": {...}}。' +
+      '**kind 决定怎么画**：card（正文用 body.text 或直接写字符串）｜metric 单个数字（body: {value, unit, delta}）｜chart 图表（body: {chartType: "bar"|"line"|"pie", series: [{label, value}]}）｜kv 键值（body: {items: [{key, value}]}）｜timeline 时间轴（body: {steps: [{label, detail, status}]}）｜table 表格（body: {columns, rows}）｜callout 结论/警示（body: {text, tone: "info"|"warn"|"success"}）｜code 代码（body: {language, code}）｜page 讲解页（body: {markdown}，交给产物页渲染）。' +
+      "**priority**：只有 `primary` 才允许冒到浮层/语音；缺省或 `secondary` **只进会话**（默认不打扰）。" +
+      "**life**：auto（默认，几秒后自动淡出）｜sticky（留着直到下一次）｜pin（钉回会话）。" +
+      "**speech**：要念出来的那一句（≤120 字，**别把整段报告塞进去**；缺省用 title）。用户没开语音开关时不会出声，但会告诉你「语音播报未开启」。" +
+      "**何时用**：① 用户说「直接告诉我 / 念给我听 / 放桌面上」；② 长任务结束时给一句话结论；③ 有单个关键数字或对比需要一眼看到。" +
+      "**不要**用它替代正文回答——**正文仍然要写在回复里**（浮层会淡出，会话才是留痕）；也不要把已经在正文里说清楚的内容再复述一遍。",
+  },
 ];
 
 export const BUILTIN_TOOL_NAMES: string[] = BUILTIN_TOOLS.map((t) => t.name);

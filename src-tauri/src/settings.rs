@@ -170,6 +170,18 @@ pub struct AppSettings {
     /// P1-8 输出风格 id（default / concise / detailed / teaching / review）
     #[serde(default)]
     pub output_style: String,
+    /// 环境层：HUD 浮层开关（默认开）——关掉后 `present` 不再冒浮层，只钉回会话
+    #[serde(default = "default_true")]
+    pub surface_hud: bool,
+    /// 环境层：语音播报开关（默认**关**）——出声属于打扰，必须显式打开
+    #[serde(default)]
+    pub surface_speech: bool,
+    /// 环境层：语音音色（`say -v` 的名字；空 = 系统默认）
+    #[serde(default)]
+    pub surface_speech_voice: String,
+    /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
+    #[serde(default)]
+    pub surface_silent: bool,
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -260,6 +272,10 @@ impl Default for AppSettings {
             hooks: serde_json::json!([]),
             custom_skill_dirs: Vec::new(),
             output_style: String::new(),
+            surface_hud: true,
+            surface_speech: false,
+            surface_speech_voice: String::new(),
+            surface_silent: false,
         }
     }
 }
@@ -528,6 +544,10 @@ mod tests {
             hooks: serde_json::json!([]),
             custom_skill_dirs: Vec::new(),
             output_style: String::new(),
+            surface_hud: true,
+            surface_speech: false,
+            surface_speech_voice: String::new(),
+            surface_silent: false,
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -595,6 +615,10 @@ mod tests {
             hooks: serde_json::json!([]),
             custom_skill_dirs: Vec::new(),
             output_style: String::new(),
+            surface_hud: true,
+            surface_speech: false,
+            surface_speech_voice: String::new(),
+            surface_silent: false,
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

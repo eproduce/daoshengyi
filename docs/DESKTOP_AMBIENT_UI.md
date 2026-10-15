@@ -11,11 +11,12 @@
 | 能力 | 含义 | 现状（2026-10-14 实测） |
 | :--- | :--- | :--- |
 | ① 输入无摩擦 | 随时开口/给图/给屏幕，不用找窗口 | 🟡 **雏形**：全局快捷键、托盘、系统通知已有；视觉三层栈（`image_inspect` → `vision_inspect` → 本地 VLM）已落地；**语音选型已定但未接线**（`VOICE_IO_RESEARCH.md`） |
-| ② 呈现不固定 | **agent 自己决定**用卡片/图/动画/语音/页面 | 🔴 **最弱**：目前只有「产物文件」一种（`answer_html`），且要跳系统浏览器 |
+| ② 呈现不固定 | **agent 自己决定**用卡片/图/动画/语音/页面 | � **骨架已落地**：展示 IR + 呈现决策 + 3 个出口（桌面浮层 HUD / 语音 `say` / 产物页）+ 降级矩阵（见 `DISPLAY_SURFACE.md`）；缺 `flow`/`animation` 渲染器与「钉回会话的卡片渲染」 |
 | ③ 主动性与情境 | 知道你在干什么、该不该插话 | 🔴 基本为零（纯「你问我答」） |
 | ④ 长期人格与记忆 | 认识你、记得你、跨设备 | 🟢 **最厚**：长期记忆 / 用户画像 / 跨会话摘要 / 工作流沉淀 |
 
-**结论**：瓶颈在 ②，其次是 ③。而 ④ 与内核（工具链/沙箱/验证凭据/审计）是我们的差异化护城河 —— 贾维斯的强项不是聊天，是**把事做完**。
+**结论**：瓶颈在 ②（已从 🔴 提到 🟡：IR + 出口都落地了，差渲染器全谱），其次是 ③。
+而 ④ 与内核（工具链/沙箱/验证凭据/审计）是我们的差异化护城河 —— 贾维斯的强项不是聊天，是**把事做完**。
 
 ---
 
@@ -190,8 +191,8 @@
 | :--- | :--- |
 | `src-tauri/src/hud.rs` + `hud.html` + `src/hud-main.ts` + `src/components/HudSpike.vue`（新，✅ spike 已落地） | HUD 窗口（透明/置顶/穿透/不抢焦点）+ 胶囊 UI（波形待接语音）；取证工具 `scripts/hud-spike-verify.swift` |
 | `src-tauri/src/voice.rs`（新） | cpal 采集 → sherpa-onnx VAD/ASR；准备状态机；并发 1 + 空闲释放 |
-| `src/utils/display-ir.ts`（新，纯函数） | IR 类型 + 校验 + 降级映射（surface 能力矩阵）+ 单测 |
-| `src/utils/surfaces.ts`（新） | surface 注册表 + 呈现决策（宿主规则，模型可建议） |
+| `src/utils/display-ir.ts`（新，✅ 已落地） | IR 类型 + 纯函数：容错解析 + 降级映射（surface 能力矩阵）+ 呈现决策；27 个单测 |
+| `src-tauri/src/surface.rs`（新，✅ 已落地） | surface 出口执行：HUD 上屏 + 语音 `say`（走统一命令管线）+ 演示钩子 |
 | `src-tauri/src/speak.rs`（新） | `say` 播报（流式 + 可打断） |
 | `src-tauri/capabilities/default.json` | 补 window 相关权限（always-on-top / decorations / ignore-cursor-events 等） |
 | `src-tauri/Info.plist` | 麦克风 / 屏幕录制 用途说明 |

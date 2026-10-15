@@ -6,7 +6,12 @@ import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
-import { getSettings, updateSettings, type PermissionRuleShape } from "@/api/appSettings";
+import {
+  getSettings,
+  updateSettings,
+  flushSettings,
+  type PermissionRuleShape,
+} from "@/api/appSettings";
 import { contextsFromAudit, dryRun, parseRules, validateRules } from "@/utils/permission-rules";
 import { validateHooks } from "@/utils/hooks";
 import { DEFAULT_STYLE_ID, OUTPUT_STYLES, getOutputStyle } from "@/utils/output-styles";
@@ -575,6 +580,52 @@ async function refreshNotifPermission() {
 }
 function saveNotify() {
   updateSettings({ notifyOnFinish: notifyOnFinish.value });
+}
+
+// ── 环境层：桌面浮层 / 语音播报（present 工具的出口） ──
+//
+// 为什么默认「浮层开、语音关」：浮层已经保证不抢焦点 + 点击穿透（不挡操作），
+// 而**出声**属于主动打扰，必须用户显式打开。
+const surfaceHud = ref(getSettings().surfaceHud !== false);
+const surfaceSpeech = ref(!!getSettings().surfaceSpeech);
+const surfaceSpeechVoice = ref(getSettings().surfaceSpeechVoice ?? "");
+const surfaceSilent = ref(!!getSettings().surfaceSilent);
+const surfaceTestResult = ref("");
+function saveSurface() {
+  updateSettings({
+    surfaceHud: surfaceHud.value,
+    surfaceSpeech: surfaceSpeech.value,
+    surfaceSpeechVoice: surfaceSpeechVoice.value.trim(),
+    surfaceSilent: surfaceSilent.value,
+  });
+}
+/// 「试一下」：走真正的呈现路径（与模型调 present 工具同一条），把结果原样显示
+async function testSurface() {
+  surfaceTestResult.value = "正在呈现…";
+  saveSurface();
+  // 设置写入是防抖的，必须等它落盘 —— 否则 Rust 端读到的还是旧开关
+  await flushSettings();
+  try {
+    const text = "这是一条桌面呈现测试：浮层与语音都已就绪";
+    surfaceTestResult.value = await invoke<string>("surface_present", {
+      payload: {
+        ir: {
+          kind: "callout",
+          title: "环境层测试",
+          priority: "primary",
+          life: "auto",
+          body: { text, tone: "info" },
+        },
+        plan: {
+          surfaces: ["session", "hud", "speech"],
+          speechText: text,
+          reasons: ["用户在设置里点了「试一下」"],
+        },
+      },
+    });
+  } catch (e) {
+    surfaceTestResult.value = `失败：${String(e)}`;
+  }
 }
 async function requestNotif() {
   try {
@@ -1482,6 +1533,55 @@ function handleDelete() {
                 <button class="settings-reset-btn" @click="requestNotif">请求权限</button>
                 <button class="settings-reset-btn" @click="testNotify">发送测试通知</button>
               </div>
+            </div>
+
+            <h3 style="margin-top: 22px"><Monitor :size="17" /> 环境层（桌面浮层 / 语音）</h3>
+            <p class="ollama-desc">
+              让结果直接出现在桌面上：浮层胶囊（不抢焦点、点击穿透，几秒后自动淡出）与语音播报。
+              模型只有在明确需要时才呈现（工具参数 priority=primary）；正文仍会写在对话里，
+              浮层只是额外的出口，不作为留痕。
+            </p>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="surfaceHud" type="checkbox" @change="saveSurface" />
+                <span>启用桌面浮层（HUD）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="surfaceSpeech" type="checkbox" @change="saveSurface" />
+                <span>启用语音播报（默认关：出声属于打扰）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="surfaceSilent" type="checkbox" @change="saveSurface" />
+                <span>静默模式（只留会话，不出声、不冒浮层）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>语音音色</label>
+              <input
+                v-model="surfaceSpeechVoice"
+                placeholder="留空用系统默认（如 Tingting）"
+                @change="saveSurface"
+              />
+              <span class="form-hint"> 取 macOS `say -v ?` 里的音色名；留空即系统默认声音。 </span>
+            </div>
+            <div class="form-group">
+              <button class="settings-reset-btn" @click="testSurface">试一下</button>
+              <p v-if="surfaceTestResult" class="form-hint" style="white-space: pre-wrap">
+                {{ surfaceTestResult }}
+              </p>
             </div>
           </div>
         </div>

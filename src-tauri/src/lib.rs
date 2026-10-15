@@ -34,6 +34,7 @@ mod settings;
 mod skill_import;
 mod skill_pack;
 mod ssrf;
+mod surface;
 mod trash;
 // 与 `pick_vision_backend`（本地 VLM 后端选择：ollama/llamacpp）无关：
 // 这里是 macOS Vision 框架的原生检测能力（分类/人脸/人体/姿势/动物/条码/显著区域）
@@ -7388,6 +7389,9 @@ pub fn run() {
             // 环境层（HUD）spike 钩子：只有设置了 DAOSHENGYI_HUD_SPIKE 才会创建 HUD 窗口，
             // 否则这里什么都不做（默认零成本 = 静默开关）。
             hud::spike_on_startup(app.handle());
+            // 环境层演示钩子：DAOSHENGYI_HUD_DEMO=1 时推一份固定展示内容，
+            // 用来不调模型地验收整条呈现链路（与 present 工具同一条执行路径）。
+            surface::demo_on_startup(app.handle());
 
             // devtools 默认不自动打开；需要调试时用环境变量开启：
             //   DAOSHENGYI_DEVTOOLS=1 npm run tauri dev
@@ -7452,6 +7456,8 @@ pub fn run() {
             apply_global_shortcuts,
             hud::hud_spike,
             hud::hud_note,
+            hud::hud_last_ir,
+            surface::surface_present,
             cancel_stream,
             list_models,
             touch_fact,

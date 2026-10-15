@@ -398,6 +398,41 @@
 - **worktree 不污染仓库**：副本落 `<repo>/.daoshengyi/worktrees/<slug>`，忽略规则写 **`.git/info/exclude`**（本地忽略，不动用户 `.gitignore`）；
   删除只允许该目录下的副本，且副本有未提交改动时默认拒绝（需显式 `force`）。
 
+---
+
+## 3.15 环境层：展示 IR + surface 出口（2026-10-15 落地）
+
+> 背景：`DESKTOP_AMBIENT_UI.md` 把「贾维斯」拆成 4 项能力后，瓶颈最明确的是 **② 呈现不固定**
+> （此前只有「产物文件」一种出口）。先做 spike ① 验证 HUD 可行性（**全部成立**），
+> 再把「展示 IR + 呈现决策 + 出口」整条链路落地（**零新依赖**）。
+> 详见 `docs/DISPLAY_SURFACE.md`（实现）与 `docs/HUD_SPIKE.md`（实测报告）。
+
+| 档 | 事项 | 状态 | 实现位置 |
+| :--- | :--- | :--- | :--- |
+| 🟢 | **HUD 浮层**（透明/置顶/穿透/不抢焦点） | ✅ 2026-10-14 | `src-tauri/src/hud.rs` + `hud.html` + `src/hud-main.ts` + `HudOverlay.vue` |
+| 🟢 | **展示 IR + 降级矩阵 + 呈现决策** | ✅ 2026-10-15 | `src/utils/display-ir.ts`（纯函数，27 单测含降级不变量） |
+| 🟢 | **surface 出口**（浮层 / 语音） | ✅ 2026-10-15 | `src-tauri/src/surface.rs`（`surface_present`，`say` 走统一命令管线） |
+| 🟢 | **内置工具 `present`** | ✅ 2026-10-15 | `builtin-tools` + `builtin-params` + `chat.ts` + 5 个角色工具集 |
+| 🟢 | **环境层开关**（浮层/语音/音色/静默） | ✅ 2026-10-15 | `settings.rs` + `appSettings.ts` + 设置页「环境层」+ 「试一下」 |
+| 🔵 | `flow` / `animation` 渲染器（SVG/时间轴视图） | ⬜ 待做 | 目前这两个 kind 在所有出口都降级（矩阵只列真正能渲染的） |
+| 🔵 | 钉回会话的**卡片渲染** | ⬜ 待做 | 现在只有工具结果文本留痕；浮层内容还没在会话里画成卡片 |
+| 🔵 | 原生毛玻璃（`windowEffects`） | ⬜ 待验证 | `backdrop-filter` 在透明窗口上**实测无效**（只能采样页面内部），已弃用 |
+
+### 落地要点（踩过的坑值得记）
+
+- **透明窗口的两条硬前提**：`transparent` 必须配 `macOSPrivateApi`（缺了不报错、只是白底；**代价：不能上 App Store**）；
+  显示**不能用 `win.show()`**（走 `makeKeyAndOrderFront`，实测抢走用户正在输入的焦点）→ 用 `orderFrontRegardless`。
+- **推 + 拉两条路都要**：事件是「推」，而 HUD 可能是刚创建的 webview、监听还没挂上 → 必须同时存一份 IR 让前端挂载后补拉，
+  否则会出现「第一次不显示、第二次才显示」这种极难查的现象。
+- **模型输出一律当不可信输入**：`parseDisplayIr` **永不抛错**（未知 kind 降级、超长截断、脏条目丢弃）；
+  「坏数据被忽略而非整条失败」有端到端验证（演示数据里故意塞了一个非法项）。
+- **降级必须是不变量**：任意 `kind × surface`，降级结果必须被该出口原生支持（单测钉住）。
+- **语音文本要清洗**：`say` 会把 `**` 念成"星号星号"、把换行念成停顿；纯符号串直接不念（宁可不念也别念噪音）；
+  argv 用 `--` 结束选项（正文以 `-` 开头时否则会被当成参数）。
+- **设置写入是防抖的**：`updateSettings` 延迟 300ms 落盘，"改完设置紧接着调用依赖该设置的 Rust 命令"会读到旧值
+  → 需要"改完立刻生效"时用 `flushSettings()`。
+
+
 **验收方式**：`cargo test --lib`（+`-- --ignored lsp_real` 真机跑 rust-analyzer 断言符号非空）；
 worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护）；`gh` 用本仓 PR 真机验证；全量过 `npm run ci:local` 八门禁。
 

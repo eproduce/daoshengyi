@@ -2,7 +2,56 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-14**
+> **最后更新：2026-10-15**
+
+---
+
+## 2026-10-15（环境层：HUD 浮层 + 展示 IR + surface 出口）
+
+### 背景
+`DESKTOP_AMBIENT_UI.md` 把「贾维斯」拆成 4 项能力后，瓶颈最明确的是 **② 呈现不固定**
+（此前只有「产物文件」一种出口，且要跳系统浏览器）。当日先做 spike ① 验证 HUD 可行性
+（结论：**全部成立**），再把「展示 IR + 呈现决策 + 出口」整条链路落地（**零新依赖**）。
+
+### 1. HUD 浮层 spike ①（🟢，报告见 `docs/HUD_SPIKE.md`）
+- 结论：透明 / 无边框 / 置顶 / 点击穿透 / **不抢焦点** 全部成立，形态定为右上角 380×132 胶囊
+  （四周 8pt 透明边、圆角 18、默认点击穿透）。
+- 两条硬前提：① `transparent` 必须配 `macOSPrivateApi` + `macos-private-api` feature
+  （缺了不报错、只是白底；**代价：不能上 App Store**）；② 显示**不能用 `win.show()`**
+  （走 `makeKeyAndOrderFront`，实测抢走用户正在输入的焦点）→ 用 `orderFrontRegardless`。
+- 取证工具 `scripts/hud-spike-verify.swift`（零依赖，三模式：`--list` / `--window` 按 alpha 判定 /
+  整屏前后对比）；三个验证陷阱已记录：**显示器睡眠给纯黑图、壁纸轮播让整屏差异达 83%、
+  锁屏遮挡使 `occlusionState` 不含 Visible 从而停止渲染**（"拍不到" ≠ "没画对"）。
+- 像素级验收 **PASS**：窗口级四角 alpha 2/2/14/14、中心 224；整屏矩形内 24.8%、矩形外 0.2%。
+
+### 2. 展示 IR + 呈现决策（🟢，见 `docs/DISPLAY_SURFACE.md`）
+- `src/utils/display-ir.ts`（纯函数）：12 个 kind + **容错解析（永不抛错）** + 降级矩阵 +
+  `planSurfaces` 决策（每条决策带人话原因，便于回答「为什么没弹出来」）。
+- 27 个单测，含**降级不变量**：任意 `kind × surface`，降级结果必须被该出口原生支持
+  —— 否则会出现「换个出口就空白」，那种问题只在真机上偶然暴露。
+
+### 3. surface 出口与 `present` 工具（🟢）
+- `src-tauri/src/surface.rs`：HUD 上屏（`hud::present` 推事件 + `hud_last_ir` **可补拉**，
+  解决「刚创建的 webview 还没挂监听会丢事件」）+ 语音 `say`（**经 `run_wrapped_argv` 统一管线**：
+  沙箱 + 超时 + 审计；`say --` 的 `--` 保护以横线开头的正文，本机实测三种形态都 exit 0）。
+- 内置工具 `present` 四处接线（说明/schema/分发/提示词）+ 5 个角色工具集；
+  4 个环境层开关（HUD 默认开、**语音默认关**、静默模式）+ 设置页「试一下」按钮。
+- 真机验收（`DAOSHENGYI_HUD_DEMO=1`，**不调模型**）：日志给出「HUD 浮层：已显示 / 语音播报：已念「…」/
+  会话留痕」，窗口级 alpha PASS，截图确认渲染（标题 + 4 条进度条 + 「共 5 项」提示）。
+  演示数据**故意塞了一个非法项**：6 项里 5 项合法 → 渲染 4 条，端到端验证「坏数据被忽略而非整条失败」。
+
+### 4. 顺手修掉三个真问题
+- **`updateSettings` 是 300ms 防抖的**：改完设置紧接着调用依赖该设置的 Rust 命令会**踩空**（读到旧值）
+  → 新增 `flushSettings()` 并写上注释说明这个坑。
+- **HUD 事实快照只在显式动作时落盘** → 读到的是「启动前」的快照，差点误判成「透明没生效」
+  → 改为按**状态指纹**刷新（变了才写，既不刷噪音也不读旧值）。
+- **未上屏时不判穿透/遮挡/焦点**：`apply_flags` 是 show 那一刻才应用的，启动瞬间读到「还没设」，
+  会输出一堆假 ❌ 把排查方向带偏。
+
+### 验证
+`npm run ci:local` **8/8 全绿**：vitest（展示 IR 27 + 工具契约 8 等）、eslint、prettier、
+vue-tsc + vite build（多入口含 `hud.html`）、tsc(tests)、rustfmt、clippy `-D warnings`、
+cargo test **336 passed / 0 failed**。
 
 ---
 

@@ -559,6 +559,33 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["action"],
     additionalProperties: true,
   },
+  present: {
+    type: "object",
+    properties: {
+      kind: {
+        type: "string",
+        description:
+          "card 卡片｜metric 单个数字｜chart 图表｜kv 键值｜timeline 时间轴｜table 表格｜callout 结论/警示｜code 代码｜page 讲解页",
+      },
+      title: { type: "string", description: "一句话标题（浮层只显示标题与 body）" },
+      priority: {
+        type: "string",
+        description: "primary 才冒到浮层/语音；缺省 secondary（只进会话，不打扰）",
+      },
+      life: {
+        type: "string",
+        description: "auto（默认，几秒后自动淡出）｜sticky（留着）｜pin（钉回会话）",
+      },
+      speech: { type: "string", description: "要念出来的那一句（≤120 字；缺省用 title）" },
+      body: {
+        type: "object",
+        description:
+          "按 kind 定：metric{value,unit,delta}／chart{chartType,series:[{label,value}]}／kv{items:[{key,value}]}／timeline{steps:[{label,detail,status}]}／table{columns,rows}／code{language,code}／page{markdown}；也可直接写一句话字符串",
+      },
+    },
+    required: ["kind"],
+    additionalProperties: true,
+  },
   code_roots: {
     type: "object",
     properties: {},

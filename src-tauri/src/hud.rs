@@ -26,7 +26,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// HUD 窗口标签
 pub const HUD_LABEL: &str = "hud";
@@ -43,6 +43,13 @@ pub const ENV_SPIKE: &str = "DAOSHENGYI_HUD_SPIKE";
 /// spike 延迟（秒）：留出「HUD 未出现时先截一张基线图」的时间窗，
 /// 这样透明度验证才能做成前后对比（见 `scripts/hud-spike-verify.swift`）
 pub const ENV_SPIKE_DELAY: &str = "DAOSHENGYI_HUD_SPIKE_DELAY";
+
+/// 环境变量开关（空/0 视为关）
+pub fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+}
 
 /// 事实快照落盘路径：让验证脚本能**确定性读到**结果，而不是去解析日志文本
 pub fn facts_path() -> std::path::PathBuf {
@@ -65,6 +72,10 @@ pub struct HudFlags {
     note: std::sync::Mutex<Option<String>>,
     /// 上次落盘时的状态指纹：用于「状态变了才刷新证据文件」（见 `should_dump`）
     last_dump_key: std::sync::Mutex<Option<String>>,
+    /// 最近一次要展示的 IR。HUD 是独立 webview：事件是「推」，而刚创建的 webview
+    /// 还没挂监听 → 推过去的会丢。所以同时存一份，让 HUD 挂载后**自己拉一次**
+    /// （`hud_last_ir`）。推+拉都有，才不会出现「第一次不显示、第二次才显示」这种怪现象。
+    last_ir: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 impl HudFlags {
@@ -75,6 +86,7 @@ impl HudFlags {
             all_workspaces: AtomicBool::new(false),
             note: std::sync::Mutex::new(None),
             last_dump_key: std::sync::Mutex::new(None),
+            last_ir: std::sync::Mutex::new(None),
         }
     }
 
@@ -102,6 +114,17 @@ impl HudFlags {
         if let Ok(mut g) = self.note.lock() {
             *g = Some(v);
         }
+    }
+
+    /// 记下最近一份展示意图（供 HUD 挂载后补拉）
+    pub fn set_last_ir(&self, ir: serde_json::Value) {
+        if let Ok(mut g) = self.last_ir.lock() {
+            *g = Some(ir);
+        }
+    }
+
+    pub fn last_ir(&self) -> Option<serde_json::Value> {
+        self.last_ir.lock().ok().and_then(|g| g.clone())
     }
 
     /// 状态没变就不重复落盘。
@@ -727,16 +750,39 @@ pub async fn hud_note(
     Ok(())
 }
 
+/// 把一份展示意图推给 HUD（`surface` 出口的执行端）。
+///
+/// 顺序很重要：**先把窗口准备好再发事件**。事件是「推」——刚创建的 webview 还没挂监听，
+/// 推过去的会丢，所以同时把 IR 存进状态，HUD 前端挂载后会再拉一次（`hud_last_ir`）。
+/// 推 + 拉两条路都有，才不会出现「第一次不显示、第二次才显示」。
+pub fn present(app: &tauri::AppHandle, ir: &serde_json::Value) -> Result<(), String> {
+    let flags = app.state::<HudFlags>();
+    flags.set_last_ir(ir.clone());
+    let win = ensure_hud(app)?;
+    place_top_right(&win).ok(); // 定位失败不致命（用系统给的位置）
+    apply_flags(&win, &flags)?;
+    show_hud(app, &win)?;
+    app.emit_to(
+        tauri::EventTarget::labeled(HUD_LABEL),
+        "surface://hud",
+        ir.clone(),
+    )
+    .map_err(|e| format!("推送 HUD 事件失败：{e}"))
+}
+
+/// HUD 前端挂载后拉取最近一份 IR（补上「事件早于监听」的窗口期）
+#[tauri::command]
+pub fn hud_last_ir(state: tauri::State<'_, HudFlags>) -> Option<serde_json::Value> {
+    state.last_ir()
+}
+
 /// spike 启动钩子（在 `setup` 里调用，**主线程**）。
 ///
 /// 创建窗口留在主线程（Tauri 约定）；定位/show/回读放到事件循环起来之后的独立线程
 /// —— 在 `setup` 里调 `set_position`/`show` 会往事件循环投递消息，早期调用有阻塞风险。
 pub fn spike_on_startup(app: &tauri::AppHandle) {
     // 不设置环境变量 → 直接返回：HUD 永不出现（这就是静默开关）
-    if !std::env::var(ENV_SPIKE)
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false)
-    {
+    if !env_flag(ENV_SPIKE) {
         return;
     }
     let win = match ensure_hud(app) {
@@ -988,6 +1034,19 @@ mod tests {
         assert_ne!(base, facts_key(&f), "上屏状态变了必须能触发刷新");
         f.frontend_note = Some("mounted".into());
         assert_ne!(facts_key(&f), base, "前端自述变了也要能触发刷新");
+    }
+
+    #[test]
+    fn env_flag_treats_empty_and_zero_as_off() {
+        // 环境变量没设置/空/0 一律视为关（“设了个空值就弹浮层”会很莫名）
+        assert!(!env_flag("DAOSHENGYI_DEFINITELY_NOT_SET_XYZ"));
+        std::env::set_var("DAOSHENGYI_TEST_FLAG", "");
+        assert!(!env_flag("DAOSHENGYI_TEST_FLAG"));
+        std::env::set_var("DAOSHENGYI_TEST_FLAG", "0");
+        assert!(!env_flag("DAOSHENGYI_TEST_FLAG"));
+        std::env::set_var("DAOSHENGYI_TEST_FLAG", "1");
+        assert!(env_flag("DAOSHENGYI_TEST_FLAG"));
+        std::env::remove_var("DAOSHENGYI_TEST_FLAG");
     }
 
     /// 契约：HUD 指向的入口页必须真实存在。

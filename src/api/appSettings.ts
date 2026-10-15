@@ -128,6 +128,14 @@ export interface AppSettingsPayload {
   customSkillDirs: string[];
   /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
   notifyOnFinish: boolean;
+  /// 环境层：HUD 浮层开关（默认开）——关掉后 `present` 不再冒浮层，只钉回会话
+  surfaceHud: boolean;
+  /// 环境层：语音播报开关（默认**关**）——出声属于打扰，必须显式打开
+  surfaceSpeech: boolean;
+  /// 环境层：语音音色（`say -v` 的名字；空 = 系统默认）
+  surfaceSpeechVoice: string;
+  /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
+  surfaceSilent: boolean;
 }
 
 let cache: AppSettingsPayload = {
@@ -164,6 +172,10 @@ let cache: AppSettingsPayload = {
   ssrfAllowPrivateHosts: [],
   customSkillDirs: [],
   notifyOnFinish: true,
+  surfaceHud: true,
+  surfaceSpeech: false,
+  surfaceSpeechVoice: "",
+  surfaceSilent: false,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
@@ -210,18 +222,38 @@ export async function reloadSettings(): Promise<AppSettingsPayload> {
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
 
+/// 立刻把当前缓存写回 Rust（不防抖），返回写入完成的 Promise
+function persistNow(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  const snapshot = JSON.stringify(cache);
+  // 串行写，避免并发覆盖
+  saveChain = saveChain
+    .then(() => invoke("save_app_settings", { settings: JSON.parse(snapshot) }))
+    .then(() => undefined)
+    .catch((e) => console.warn("[道生一] 保存设置失败:", e));
+  return saveChain;
+}
+
 /// 更新设置字段并 debounce 写回 Rust
+///
+/// 注意防抖的副作用：改完设置**紧接着调用依赖该设置的 Rust 命令**（如「试听」要读
+/// 语音开关）会踩空——命令读到的是旧值。这种场景请先 `await flushSettings()`。
 export function updateSettings(patch: Partial<AppSettingsPayload>) {
   cache = { ...cache, ...patch };
   if (!isTauri()) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    const snapshot = JSON.stringify(cache);
-    // 串行写，避免并发覆盖
-    saveChain = saveChain
-      .then(() => invoke("save_app_settings", { settings: JSON.parse(snapshot) }))
-      .then(() => undefined)
-      .catch((e) => console.warn("[道生一] 保存设置失败:", e));
+    void persistNow();
   }, 300);
+}
+
+/// 取消防抖并把设置**立即**刷到 Rust，等写入完成后再返回
+/// （给「改完要立刻生效」的调用方用，比如设置页里的「试一下」按钮）
+export async function flushSettings(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await persistNow();
 }

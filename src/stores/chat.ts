@@ -81,6 +81,7 @@ import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
+import { parseDisplayIr, planSurfaces } from "@/utils/display-ir";
 import { discoverProjectInstructions } from "@/utils/agents-md";
 import {
   executeWorkflow,
@@ -906,6 +907,7 @@ function getMcpToolsPrompt(): string {
     '\n- **code_nav** (app): **语义级代码导航**（走本机语言服务器 LSP）：跳定义 / 找引用 / 找实现 / 悬停类型 / 文件符号 / 工作区符号 / **编译诊断** / 重命名**预览**。参数 {"action": "servers | definition | references | implementation | hover | symbols | workspace_symbols | diagnostics | rename", "root": "项目根目录绝对路径", "path": "文件绝对路径", "line": 行号(1 起算), "character": 列号(1 起算、按字符数), "query": "workspace_symbols 关键词", "new_name": "rename 新名字", "server": "可选指定服务器 id", "wait_ms": "可选等待毫秒"}。**使用时机**：要「准」的答案（定义在哪 / 谁在引用 / 有没有编译错 / 这行类型是什么）时用它；code_search 给的是「相关片段」，两者互补。' +
     '\n- **worktree** (app): **并行隔离**——给子代理/并行任务各建一个 git worktree（同一仓库的独立工作副本，落在 `<repo>/.daoshengyi/worktrees/<name>`、分支 `dsy/<name>`、已自动本地忽略）。参数 {"action": "create | list | remove", "repo": "仓库目录绝对路径", "name": "create 副本名", "base_ref": "create 基于哪个 ref", "path": "remove 要删的副本路径", "force": "remove 有未提交改动时需 true"}。**使用时机**：多个子代理要同时改代码时先各自 create 副本，改完用 git diff 对比再合并。' +
     '\n- **github_pr** (app): **GitHub PR 工作流**（封装本机 gh CLI）：pr_list / pr_view / pr_create / pr_comment / pr_diff / pr_checks / auth_status。参数 {"action": "...", "cwd": "仓库目录", "number": 可选 PR 号, "title": "pr_create 标题", "body": "正文", "base": "目标分支", "limit": "pr_list 条数"}。**不提供 merge / close**（不可逆操作交给用户决定）。' +
+    '\n- **present** (app): **把结果直接呈现在用户桌面上**（环境层）：桌面浮层卡片 / 语音播报 / 产物页。参数 {"kind": "card|metric|chart|kv|timeline|table|callout|code|page", "title": "一句话结论", "priority": "primary|secondary", "life": "auto|sticky|pin", "speech": "要念的那一句", "body": {...}}。**只有 priority=primary 才冒到浮层/语音**（缺省只进会话，不打扰）；**正文仍要写在回复里**（浮层会淡出，会话才是留痕）。' +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
     '\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {"kb_name": "知识库名，如「个人」"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。' +
     '\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地嵌入模型可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。' +
@@ -966,6 +968,12 @@ function getMcpToolsPrompt(): string {
     "- 首次调用某服务器会**冷启动**（rust-analyzer 建索引可能几十秒，必要时调大 `wait_ms`）；之后复用同一进程，再次调用很快。\n" +
     "- `rename` **只返回预览、不写盘**：确认后用 replace_string / apply_patch 落地（仍走 diff 确认与撤销）。\n" +
     '- 不确定本机装了哪些服务器就先 `action: "servers"`；缺 TS 等服务器时如实告知用户安装命令（须在**沙箱外**的终端执行）。\n' +
+    "\n\n## 桌面呈现（present）使用要点\n" +
+    "- **正文照常写在回复里，present 只是额外的出口**：浮层会淡出、语音念完就过，**会话才是留痕**。不要用它替代回答，也不要把已说清的内容再复述一遍。\n" +
+    '- **默认不打扰**：只有 `priority: "primary"` 才会冒到浮层/语音；不确定时**不要**填 primary（缺省 = 只进会话）。\n' +
+    "- **只放一眼能看完的东西**：标题 + 一句话（或一个关键数字/一张小图）。整段报告请用 answer_html（kind=page 只负责提示走产物页）。\n" +
+    "- **语音（speech）**：只写要念的那一句（≤120 字）；缺省用 title。用户没开语音开关时不会出声，工具结果会写明原因。\n" +
+    "- **工具结果会告诉你实际出口与原因**（为什么没弹、为什么没出声）——如与预期不符，按结果里的原因处理，不要盲目重试。\n" +
     "\n\n## HTML 讲解页（answer_html）使用要点\n" +
     "- **触发：每次显式要求**——只有用户明确说要「网页 / HTML / 一页说明 / 画个图讲清楚」时才调用；默认回答保持 Markdown 文本，**不要**自作主张把普通问答变成页面。\n" +
     "- **做法**：先想清 3~8 个面板（每个只回答一个子问题，核心结论放第一个）→ 一次 answer_html 把草稿交给渲染器；**不要手写 HTML/CSS/SVG**（坐标与配色由渲染器算）。\n" +
@@ -3973,6 +3981,30 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         )
         .join("\n\n");
       return `【项目「${root}」语义检索「${query}」】相关代码 ${hits.length} 处（按相似度）：\n\n${out}`;
+    }
+    case "present": {
+      // 环境层：模型给「展示意图」，**宿主决定落到哪个出口**（浮层/语音/会话）。
+      // 决策（planSurfaces）是纯函数、可单测；执行在 Rust（surface_present）。
+      const { kind, title, priority, life, speech, body } = args as {
+        kind?: string;
+        title?: string;
+        priority?: string;
+        life?: string;
+        speech?: string;
+        body?: unknown;
+      };
+      const { ir, issues } = parseDisplayIr({ kind, title, priority, life, speech, body });
+      const s = getSettings();
+      const plan = planSurfaces(ir, {
+        silent: !!s.surfaceSilent,
+        hudEnabled: s.surfaceHud !== false,
+        speechEnabled: !!s.surfaceSpeech,
+        // 主窗口在前台 = 用户正在看，没必要再冒浮层
+        windowFocused: typeof document !== "undefined" && document.hasFocus(),
+      });
+      const summary = await invoke<string>("surface_present", { payload: { ir, plan } });
+      // 解析时的降级原因要如实带回：模型才知道自己哪一项没被接受
+      return issues.length ? `${summary}\n（解析提示：${issues.join("；")}）` : summary;
     }
     case "github_pr": {
       // PR 工作流：封装本机 gh CLI（白名单动作，不提供 merge/close）

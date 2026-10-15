@@ -6,7 +6,7 @@
 // 独立入口的产物也是独立的（`dist/hud.html` + 它自己的 chunk），HUD 崩了不影响主窗口。
 import { createApp } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import HudSpike from "./components/HudSpike.vue";
+import HudOverlay from "./components/HudOverlay.vue";
 import { installGlobalErrorLog } from "./utils/error-log";
 
 // HUD 是独立 webview：出错时控制台没人看得到，必须落本地日志（否则「点了没反应」无从查证）
@@ -32,7 +32,7 @@ report(
 );
 
 try {
-  createApp(HudSpike).mount("#app");
+  createApp(HudOverlay).mount("#app");
   // 等一帧再量：挂载是同步的，但布局与样式计算要等渲染
   window.setTimeout(() => {
     const app = document.getElementById("app");

@@ -1,0 +1,129 @@
+# 展示层（Display Surface）：IR + 呈现决策 + 出口
+
+> 日期：2026-10-15 ｜ 性质：**实现文档**（`docs/DESKTOP_AMBIENT_UI.md` §4/§8 的落地说明）
+> 一句话：**模型说「想表达什么」（展示 IR），宿主决定「落到哪、怎么降级」（surface）**。
+> 这样「agent 自己决定怎么展示」才有实现位置，也顺手治了老问题（模型手写 HTML 错位、长文塞进浮层）。
+
+---
+
+## 1. 落地清单
+
+| 文件 | 职责 |
+| :--- | :--- |
+| `src/utils/display-ir.ts`（新，纯函数） | IR 类型 + **容错解析** + **降级矩阵** + **呈现决策**（`planSurfaces`） |
+| `tests/test-display-ir.test.ts`（新） | 27 个单测：容错、降级不变量、语音文本清洗、决策规则 |
+| `src-tauri/src/surface.rs`（新） | **执行端**：HUD 上屏 + 语音播报（`say`），走统一命令管线；演示钩子 |
+| `src-tauri/src/hud.rs` | `present()` 推 IR 给 HUD（事件 + 可补拉）；AppKit 自证与取证 |
+| `src/components/HudOverlay.vue`（新，取代 spike 占位组件） | IR 的**渲染端**：有内容画内容、没内容画自检胶囊 |
+| `src/data/builtin-tools.ts` / `builtin-params.ts` / `src/stores/chat.ts` / `roles-catalog.ts` | 内置工具 `present` 的四处接线 + 角色工具集 |
+| `src/api/appSettings.ts` / `src-tauri/src/settings.rs` / `SettingsDialog.vue` | 4 个环境层开关 + 「试一下」按钮（含 `flushSettings`） |
+
+## 2. 数据流
+
+```
+模型 → present(kind/title/priority/life/speech/body)
+        │
+        ├─ parseDisplayIr   容错：未知 kind→card、超长截断、脏条目丢弃（**永不抛错**）
+        ├─ planSurfaces     决策：静默/前台/开关 → 该走哪些出口（附人话原因）
+        │
+        └─ invoke("surface_present", { ir, plan })
+                 │
+                 ├─ 再次门禁（读设置：静默 / HUD 开关 / 语音开关）——前端可能被绕过
+                 ├─ HUD：ensure 窗口 → 定位 → 穿透 → **无焦点显示** → emit `surface://hud`
+                 └─ 语音：`say`（经 run_wrapped_argv：沙箱 + 超时 + 审计）
+                          │
+                          └─ 返回人话总结（已显示/已念/未出声的原因）→ 进会话（留痕）
+```
+
+**为什么"推 + 拉"两条路都要**：事件是「推」，而 HUD 可能是**刚创建**的 webview —— 监听还没挂上，
+推过去的就丢了。所以 Rust 同时把 IR 存进状态，HUD 挂载后再 `hud_last_ir` 拉一次。
+少任何一条，都会出现「第一次不显示、第二次才显示」这种极难查的现象。
+
+## 3. 呈现决策规则（宿主规则为主，模型只能建议）
+
+| 条件 | 结果 | 原因 |
+| :--- | :--- | :--- |
+| `priority != primary` | 只进会话 | **默认不打扰**：不确定就不冒出来 |
+| 静默模式 | 只进会话 | 用户明确表达过"别打扰" |
+| 主窗口**在前台** | 不冒浮层 | 用户正在看，没必要再弹一遍（但语音仍可念） |
+| `hudEnabled = false` | 不冒浮层 | 设置里关了 |
+| `speechEnabled = false` | 不出声 | **默认关**：出声属于主动打扰 |
+| `kind = page` | 额外走产物页 | 完整内容交给 `answer_html` 渲染 |
+| 没有可念文本 | 不选语音 | 宁可不念，也不念一句空话 |
+
+每条决策都会带一句**人话原因**回给模型（`reasons`），工具结果里也会写清楚
+「为什么没弹出来 / 为什么没出声」——不然用户只会看到"什么都没发生"。
+
+## 4. 降级矩阵与不变量
+
+各出口能**原生渲染**的 kind（不在表里的自动降级）：
+
+| surface | 原生支持 |
+| :--- | :--- |
+| `hud` | card / metric / chart / kv / timeline / callout / code / speech |
+| `speech` | speech / card / metric / callout |
+| `session` | card / metric / chart / table / kv / timeline / callout / code / speech / page |
+| `page` | page / card / code / table / kv / timeline / chart |
+
+**不变量（有单测钉住）**：任意 `kind × surface`，`degradeForSurface` 之后的结果**必须是该出口原生支持的**。
+否则就会出现「换个出口就渲染出错/一片空白」——那种问题只在真机上偶然暴露。
+
+几个具体降级：`flow` 在会话里退化成时间轴、在浮层里退化成多行；`table` 落到浮层只留 4 行 +
+「共 N 项」提示；`page` 落到浮层退化成正文文本；**`flow`/`animation` 目前没有渲染器，
+所以在每个出口都降级** —— 矩阵只列真正能渲染的，不写"声明支持、实际空白"。
+
+## 5. 开关与默认值
+
+| 设置项 | 默认 | 说明 |
+| :--- | :-: | :--- |
+| 环境层：桌面浮层（`surfaceHud`） | **开** | 浮层已保证不抢焦点 + 点击穿透（不挡操作） |
+| 环境层：语音播报（`surfaceSpeech`） | **关** | **出声属于主动打扰，必须显式开** |
+| 环境层：语音音色（`surfaceSpeechVoice`） | 空 | `say -v ?` 里的名字；空 = 系统默认 |
+| 环境层：静默模式（`surfaceSilent`） | 关 | 打开后只留会话，不出声、不冒层 |
+| 环境变量 `DAOSHENGYI_HUD_SPIKE` | 未设 | 仅 spike：不设则**永不创建** HUD 窗口（零成本） |
+
+> 设置界面的「试一下」按钮走的是**与模型调用同一条**路径（`surface_present`），
+> 并把返回的总结原样显示 —— 这样"为什么没出声"在设置页就能看懂。
+> 它调用了新增的 `flushSettings()`：`updateSettings` 是 300ms 防抖的，
+> 改完设置**紧接着**调用依赖该设置的 Rust 命令会踩空（读到旧值）。
+
+## 6. 验收（真机实测）
+
+不调模型、不点鼠标就能验整条链路：
+
+```bash
+caffeinate -d -u -t 600 &                       # 保持屏幕唤醒（否则截图全黑）
+DAOSHENGYI_HUD_DEMO=1 npm run tauri dev          # 推一份固定展示内容
+swift scripts/hud-spike-verify.swift --window "道生一 HUD" /tmp/hud.png
+```
+
+实测结果（2026-10-15）：
+
+```
+[surface] 演示结果:
+HUD 浮层：已显示
+语音播报：已念「本周共提交 23 次，周三最多」      ← 说明 say 经管线执行成功（exit 0）
+会话留痕：已记录（浮层可以阅后即焚，留痕不能丢）
+决策：演示模式（DAOSHENGYI_HUD_DEMO=1）：不调模型，验证整条呈现链路
+
+窗口级取证：四角 alpha 2/2/14/14 ・ 中心 alpha 219 ・ 透明区 6.9% ・ 在屏 → PASS
+截图内容：标题「本周提交分布」+ 4 条进度条（周一3 / 周二5 / 周三8 / 周四4）+「共 5 项」提示
+```
+
+**演示数据里故意塞了一个非法项（字符串）**，端到端验证了「坏数据被忽略而不是整条失败」：
+6 个条目里 5 个合法 → 渲染 4 条 + 「共 5 项」。
+
+## 7. 边界与不做
+
+- **不做** `flow` / `animation` 渲染器（Phase B 的 SVG/时间轴视图）；
+- **不做**「浮层局部可点」：当前是全局点击穿透，交互建议走「全局穿透 + 热键唤起交互态」；
+- **不做** `backdrop-filter` 毛玻璃（实测在透明窗口上无效，见 `HUD_SPIKE.md` §4.4）；
+  真毛玻璃要走原生 `windowEffects`，**待验证**；
+- **不做**把 `present` 当正文替代品：浮层会淡出，**正文仍要写在回复里**（纪律已写进工具说明与提示词）。
+
+## 8. 下一步
+
+1. **热键唤起 + push-to-talk**（Phase A 的语音半段，需先配 crates 稀疏镜像再引 sherpa-onnx）；
+2. **钉回会话的渲染**：会话里把 IR 渲染成卡片（现在只有工具结果文本留痕）；
+3. **surface 注册表抽象**：目前出口是写死的 if 分支，出口变多后要抽成表；
+4. **首次呈现的可验证性**：`hud_last_ir` 解决了丢事件，但"窗口刚创建那一瞬"仍值得加一条单测/日志。
