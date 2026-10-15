@@ -6,6 +6,8 @@
 >
 > **终极形态方向**：桌面环境层（贾维斯式——无固定入口、结果由 agent 决定怎么呈现）见 **`docs/DESKTOP_AMBIENT_UI.md`**；
 > 语音选型与视觉三层栈的既有结论见 `VOICE_IO_RESEARCH.md` / `VOICE_VIDEO_INPUT_PLAN.md`。
+> **二期已排期（2026-10-16）**：结果呈现统一协议 `docs/PRESENT_PROTOCOL.md`（P-A1~A7，零新依赖）；
+> 语音输入 + 连续语音对话 `docs/VOICE_INTERACTION_PLAN.md`（阶段 0~3）。
 >
 > **发版记录**：`v1.0.0-alpha.2`（2026-09-18，首个成功发布的 Release）→ `v1.0.0-alpha.3`（2026-09-20，定时任务静默停摆修复 + 会话放行作用域修复）→ `v1.0.0-alpha.4`（2026-10-14，**长任务自主接力 + 工具调用展示重构 + 技能生态兼容与技能包 + HTML 讲解页 + 原生视觉**）。发布入口只有一个：推 `v*` 标签。
 
@@ -120,7 +122,7 @@
 | 安全审计 + Doctor | ⚠️ HealthPanel 基础诊断 | security_check 配置审计并入 HealthPanel | 🟡 |
 | SSRF 防护 | ❌ 直连 | hostname allowlist + 内网 IP 阻断 | 🟢 |
 | 结构化不可信内容边界 | ⚠️ 提示词层防注入 | 外部内容包裹标记 + 严格模式开关 | 🟡 |
-| 语音 / 图像 / 视频生成 | 🟡 视觉检测已完成（macOS Vision 原生）；语音/视频抽帧/生图未做 | 计划：`docs/VOICE_VIDEO_INPUT_PLAN.md` | 🔵 逐步推进 |
+| 语音 / 图像 / 视频生成 | 🟡 视觉检测已完成（macOS Vision 原生）；语音**输出**已通（`say` 出口 + 179 音色 + 试听）、**输入**未做 | 排期：`docs/VOICE_INTERACTION_PLAN.md`（阶段 0~3）；输入设计 `docs/VOICE_VIDEO_INPUT_PLAN.md` | 🔵 逐步推进（协议先行） |
 
 详见开发计划 §3.13 的实现要点与落地顺序。
 
@@ -315,6 +317,9 @@
 > 下一步：**P2**（代码知识图谱 / 数据库只读连接器 / 文档→Markdown / 生成式 UI / OTLP / 多模态 / IM 渠道补齐）。
 > **更新 2026-09-23**：P2 的多模态已部分落地（macOS Vision 原生 `vision_inspect`）；
 > 语音 / 视频 / YOLO 见 `docs/VOICE_VIDEO_INPUT_PLAN.md`；工作区已做到**会话级**（DSH 语义）。
+> **更新 2026-10-16**：环境层一期已落地（HUD 浮层 + 展示 IR + `present` 工具 + 语音出口 + 音色选择/试听）。
+> 二期已排期：**结果呈现统一协议** → `docs/PRESENT_PROTOCOL.md`（P-A1~A7，零新依赖）；
+> **语音输入 + 连续语音对话** → `docs/VOICE_INTERACTION_PLAN.md`（阶段 0~3）。
 > 明确不做：皮肤主题、桌面壳/启动器、MCP apps、hosted 工具（产品定位不符）。
 
 | 优先级 | 功能 | 理由 |
