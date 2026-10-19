@@ -8,6 +8,8 @@
 import { describe, it, expect } from "vitest";
 import {
   DISPLAY_KINDS,
+  HUD_AUTO_HIDE_MS,
+  HUD_STICKY_HIDE_MS,
   IMPLEMENTED_SURFACES,
   IR_LIMITS,
   PRESENT_PROTOCOL_VERSION,
@@ -17,6 +19,7 @@ import {
   cleanForSpeech,
   degradeForSurface,
   effectiveIr,
+  hudHideDelay,
   inQuietHours,
   parseClock,
   parseDisplayIr,
@@ -614,5 +617,24 @@ describe("来源策略：后台产生的结果默认低打扰", () => {
   it("plan.ir 是**生效后的 IR**（调用方发给执行端的就是它）", () => {
     const plan = planSurfaces(ir({ life: "sticky", source: "hook" }), ctx());
     expect(plan.ir.life).toBe("auto");
+  });
+});
+
+describe("HUD 浮层生命周期", () => {
+  it("sticky 只是“停留更久”，不是永久驻留", () => {
+    expect(HUD_STICKY_HIDE_MS).toBeGreaterThan(HUD_AUTO_HIDE_MS);
+    expect(HUD_STICKY_HIDE_MS).toBeLessThanOrEqual(60_000);
+  });
+
+  it("auto / pin 用同一个短停留（pin 的归宿是会话，不是桌面常驻）", () => {
+    expect(hudHideDelay("auto")).toBe(HUD_AUTO_HIDE_MS);
+    expect(hudHideDelay("pin")).toBe(HUD_AUTO_HIDE_MS);
+    expect(hudHideDelay("sticky")).toBe(HUD_STICKY_HIDE_MS);
+  });
+
+  it("HUD 前端对任何 life 都排淡出定时器（源码级契约，防“永不消失”回归）", () => {
+    const hudSrc = SOURCES["../src/components/HudOverlay.vue"] ?? "";
+    expect(hudSrc).toContain("hudHideDelay(ir.life)");
+    expect(hudSrc).not.toContain('ir.life === "auto"');
   });
 });

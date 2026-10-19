@@ -61,7 +61,7 @@
   "kind": "callout",               // card|metric|chart|table|kv|timeline|callout|code|speech|page|flow|animation
   "title": "✅ 构建通过",
   "priority": "primary",           // primary(默认) | secondary(显式逃生口：只留痕)
-  "life": "sticky",                // auto(默认，自动淡出) | sticky(留到下次) | pin(钉回会话)
+  "life": "sticky",                // auto(默认，6 秒淡出) | sticky(停留 30 秒，有上限) | pin(钉回会话)
   "speech": "构建通过，耗时 42 秒",  // 「要让用户听到的那一句」；念不念由宿主判（shouldSpeak）
   "body": { "text": "…", "tone": "success" },
   "refs": [                        // 新增：可跳回/可归属（通知点击、钉回会话、产物打开）
@@ -117,7 +117,7 @@
 | 输入 | 作用 |
 | :--- | :--- |
 | `ir.priority` | `secondary` → 只进 `session`（显式逃生口） |
-| `ir.life` | `auto` 淡出 / `sticky` 留住 / `pin` 进会话卡片 |
+| `ir.life` | `auto` 6 秒淡出 / `sticky` 30 秒（**有上限**）/ `pin` 进会话卡片 |
 | `ir.source`（新增） | 默认打扰级别：`model`/`host` 按原样；`schedule`/`subagent` **降一级**（无 `priority` 时按 `secondary`）；`hook` 同 `schedule` |
 | `ctx.silent` | 用户在静默模式 → 只进 `session` |
 | `ctx.hudEnabled` / `ctx.speechEnabled` | 出口总开关（**不设 `windowFocused`**：盯着屏幕时恰恰最需要瞥一眼，见 `DISPLAY_SURFACE.md` §3.0） |
@@ -195,7 +195,7 @@ MCP 服务器 / 技能 / 用户自己的脚本没法调我们的 `invoke`，但*
 ### 6.3 并发与抢占（多条 IR 同时来）
 
 - **语音永远串行**（两句话叠着念 = 谁也听不清）：队列上限 3，超出丢最旧并记 `issues`；
-- **浮层同级抢占 = 最新胜**（旧内容直接换掉，不排队）；`life=sticky` 的浮层**不被抢占**；
+- **浮层同级抢占 = 最新胜**（旧内容直接换掉，不排队）；`life=sticky` 的浮层**不被抢占**（但仍有 30 秒停留上限，不存在永久驻留）；
 - 抢占时对旧单元触发 `onInterrupt`（旧语音立刻停）。
 
 ### 6.4 同步精度分层（v1 / v1.1，均零新依赖）

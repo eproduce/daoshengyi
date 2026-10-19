@@ -43,9 +43,23 @@ export const DISPLAY_KINDS: readonly DisplayKind[] = [
   "animation",
 ];
 
-/** 浮层生命周期：auto = 自动淡出（默认）｜sticky = 留着直到下次｜pin = 钉回会话 */
+/** 浮层生命周期：auto = 自动淡出（默认）｜sticky = 停留更久｜pin = 钉回会话 */
 export type DisplayLife = "auto" | "sticky" | "pin";
 export const DISPLAY_LIVES: readonly DisplayLife[] = ["auto", "sticky", "pin"];
+
+/**
+ * 浮层停留时长（毫秒）。
+ *
+ * `sticky` 曾经是「留着直到下次」——**没有下次就永远留着**（真机上表现为
+ * 一次任务结束后浮层一直钉在桌面）。环境层可以多停一会儿，但必须有上限。
+ */
+export const HUD_AUTO_HIDE_MS = 6000;
+export const HUD_STICKY_HIDE_MS = 30_000;
+
+/** life → 浮层停留时长（`pin` 的归宿是会话，不是桌面常驻） */
+export function hudHideDelay(life: DisplayLife): number {
+  return life === "sticky" ? HUD_STICKY_HIDE_MS : HUD_AUTO_HIDE_MS;
+}
 
 /** 优先级：`primary` 才允许冒到浮层/语音；`secondary` 只进会话（默认 primary = 调用即呈现） */
 export type DisplayPriority = "primary" | "secondary";
@@ -419,7 +433,8 @@ export function buildFinishIr(input: FinishSummaryInput): DisplayIr {
     priority: isTask ? "primary" : "secondary",
     // 显式标记：这是宿主自己算出来的主意，不是模型要求
     priorityExplicit: true,
-    // sticky：用户不在时 auto 几秒就消失，等于白推；留在那儿等他回来一眼看到
+    // sticky：用户不在时 auto 几秒就消失，等于白推；多留一会儿等他回来一眼看到。
+    // 注意“多留”也有上限（`HUD_STICKY_HIDE_MS`），否则就是永久占屏。
     life: isTask ? "sticky" : "auto",
     ...(speech ? { speech } : {}),
     body: { text: withProgress, tone: "success" },

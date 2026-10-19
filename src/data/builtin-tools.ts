@@ -403,7 +403,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
       '**kind 决定怎么画**：card（正文用 body.text 或直接写字符串）｜metric 单个数字（body: {value, unit, delta}）｜chart 图表（body: {chartType: "bar"|"line"|"pie", series: [{label, value}]}）｜kv 键值（body: {items: [{key, value}]}）｜timeline 时间轴（body: {steps: [{label, detail, status}]}）｜table 表格（body: {columns, rows}）｜callout 结论/警示（body: {text, tone: "info"|"warn"|"success"}）｜code 代码（body: {language, code}）｜page 讲解页（body: {markdown}，交给产物页渲染）。' +
       '**调用即呈现**：不必填 `priority`；只有当你**只想留个痕、不想打扰**时才填 `"priority": "secondary"`（那就只进会话）。' +
       "**语音不用你操心**：用户开了语音总闸时，**宿主自己判断哪条值得念**——一句话结论/关键数字会念；表格、代码、图表、长文属于「看」的内容，只在浮层上显示，不念。想指定念什么就写 `speech`（≤120 字）。" +
-      "**life**：auto（默认，几秒后自动淡出）｜sticky（留着直到下一次）｜pin（钉回会话）。" +
+      "**life**：auto（默认，6 秒后淡出）｜sticky（停留约 30 秒，有上限）｜pin（钉回会话）。" +
       "**何时用**：① 用户说「直接告诉我 / 念给我听 / 放桌面上」；② 长任务结束时给一句话结论；③ 有单个关键数字或对比需要一眼看到。" +
       "**不要**用它替代正文回答——**正文仍然要写在回复里**（浮层会淡出，会话才是留痕）；也不要把已经在正文里说清楚的内容再复述一遍。",
   },

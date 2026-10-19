@@ -574,7 +574,7 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       },
       life: {
         type: "string",
-        description: "auto（默认，几秒后自动淡出）｜sticky（留着）｜pin（钉回会话）",
+        description: "auto（默认，6 秒后淡出）｜sticky（停留约 30 秒）｜pin（钉回会话）",
       },
       speech: { type: "string", description: "要念出来的那一句（≤120 字；缺省用 title）" },
       body: {

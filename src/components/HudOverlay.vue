@@ -17,6 +17,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { listenWithRetry } from "@/utils/event-listen";
 import {
   degradeForSurface,
+  hudHideDelay,
   parseDisplayIr,
   type DisplayBody,
   type DisplayIr,
@@ -43,8 +44,6 @@ interface HudFacts {
   appkit: AppKitFacts | null;
 }
 
-/** `life=auto` 时浮层停留多久（够读完一句话，又不至于一直杵在那） */
-const AUTO_HIDE_MS = 6000;
 /** HUD 高度有限：列表类内容只画前几行，其余折成一句提示 */
 const MAX_ROWS = 4;
 
@@ -140,12 +139,11 @@ function statusMark(status?: string): string {
 function show(ir: DisplayIr) {
   current.value = ir;
   if (hideTimer) window.clearTimeout(hideTimer);
-  if (ir.life === "auto") {
-    hideTimer = window.setTimeout(() => {
-      current.value = null;
-      void invoke("hud_spike", { action: "hide" }).catch(() => {});
-    }, AUTO_HIDE_MS);
-  }
+  // 任何 life 都必须有淡出定时器：浮层没有“永久驻留”这种状态
+  hideTimer = window.setTimeout(() => {
+    current.value = null;
+    void invoke("hud_spike", { action: "hide" }).catch(() => {});
+  }, hudHideDelay(ir.life));
 }
 
 async function refreshFacts() {
@@ -289,7 +287,9 @@ body {
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: linear-gradient(180deg, rgba(30, 33, 42, 0.9), rgba(20, 22, 29, 0.82));
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.38);
+  /* 只做内阴影：外阴影会被 380×132 的透明窗口边界硬切一刀，
+     表现为胶囊四周一圈灰色方框（窗口本身已 shadow=false，画不出柔和投影） */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   /* 不用 backdrop-filter：实测在透明窗口上它什么也糊不到（只能采样页面内部，
      而页面里除了胶囊空无一物）—— 详见 docs/HUD_SPIKE.md §4.4 */
 }
