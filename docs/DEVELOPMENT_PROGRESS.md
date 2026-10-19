@@ -25,8 +25,13 @@
 - 修法：去掉外阴影，只留 `inset` 高光（不越界）。窗口几何与 8px 透明边保持不变（spike 判据仍有效）。
 
 ### 验证
-- `npx vitest run tests/test-display-ir.test.ts`（新增 3 项：时长关系 + 前端源码级契约）。
-- 真机：等一次带工具的回合结束，HUD 在 30 秒内自行消失；窗口内边距 alpha 全为 0（无灰边）。
+- `npx vitest run tests/test-display-ir.test.ts`（新增 3 项：时长关系 + 前端源码级契约）；
+  全量 `npm test` 55 文件 / 723 项、`vue-tsc`、测试 tsc、eslint、prettier 全过。
+- 真机（dev，`DAOSHENGYI_HUD_DEMO=1`）：sticky 演示浮层 30 秒内自动消失；
+  窗口内边距 alpha 全为 0（无灰边）。
+- **打包**：`1.0.0-alpha.8` 已构建并安装到 `/Applications/道生一.app`
+  （回滚点 `.old-0013`）；dmg 在 `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.8_x64.dmg`；
+  `resources/am.mjs` SHA-256 与仓库一致；**打包版同样验证通过**（HUD 演示 30 秒后 `isVisible=false`）。
 
 ---
 
