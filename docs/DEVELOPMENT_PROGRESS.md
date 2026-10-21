@@ -41,7 +41,10 @@
   `cargo clippy --all-targets` 0 warning；`cargo fmt --check` 通过。
 - `npm test`：55 文件 / 720 项全绿；`vue-tsc --noEmit`、ESLint 通过。
 - 真机渲染自检：am.mjs 页面内 bar/donut/line 图正常显示，坐标轴取整、深色主题配色正确。
-- **打包**：`1.0.0-alpha.9` 构建并安装到 `/Applications/道生一.app`（待补最终产物路径）。
+- **打包**：`1.0.0-alpha.9` 已构建并安装到 `/Applications/道生一.app`
+  （回滚点 `/Applications/道生一.app.old-2214`）；DMG：
+  `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.9_x64.dmg`。
+  打包内已含 `resources/echarts.min.js`；启动后进程正常、前端已挂载（日志 22:14:36）。
 
 ---
 
