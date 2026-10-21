@@ -1508,7 +1508,7 @@ impl Database {
         Ok(())
     }
 
-    /// 写入一个代码分块（embedding 为 Ollama 向量）
+    /// 写入一个代码分块（embedding 为本地嵌入向量）
     pub fn code_add_chunk(
         &self,
         root: &str,

@@ -1,6 +1,6 @@
 //! macOS Vision 原生视觉层（`vision_inspect` / `image_similarity`）。
 //!
-//! 命名说明：与 `pick_vision_backend`（本地 VLM 后端选择：ollama / llamacpp）**不是一回事**——
+//! 命名说明：与 `resolve_vision_backend`（本地 VLM 后端选择：llama.cpp / 外部服务）**不是一回事**——
 //! 那些是「用哪个模型看懂图」，这里是「系统框架直接算出图里有什么、在哪」。
 //!
 //! 定位（对齐 `docs/VOICE_VIDEO_INPUT_PLAN.md` 的三层视觉栈）：
