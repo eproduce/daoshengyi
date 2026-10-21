@@ -55,7 +55,23 @@
 - **删除 API 配置需二次确认**：点「删除此配置」先弹应用内确认框（显示配置名，说明
   API Key/模型/地址会一并删除且不可恢复），取消不会改动任何数据。
 
-### 4. 验证
+### 4. 修复「图表没有动画」（2026-10-21 用户反馈）
+- **根因（实测）**：`ResizeObserver` 在 `observe()` 后立即回调一次 → `fitAll()` →
+  `inst.resize()`；而 ECharts 的 `resize()` 会把进行中的入场动画**瞬间结算为最终态**。
+  逐帧采样证据：裸 ECharts 3s 动画平滑增长；动画中途调用一次 `resize()` 立即跳到终态；
+  我们的页面 900ms 动画在 ~250ms 就结束。
+- **修法**（`ECHARTS_INIT_JS`）：
+  - 尺寸未变不动作（吸收首次回调）；动画进行中把 resize 记为待办，`finished` 后再补；
+  - 主题/断点更新改用 `setOption(..., { notMerge: false })` + `animationDurationUpdate: 320`，
+    不再重播入场动画；
+  - 入场时机改为 `rootMargin: 0 0 -8%`（可见时才播），入场 1s + 多系列错峰 55ms；
+  - `?motion=off|on` 可覆盖，默认尊重 `prefers-reduced-motion`；
+  - 新增 `data-animated` 标记，便于自动化断言动画确实跑过。
+- **验证**：本机 HTTP + 逐帧采样，bar 13 帧 / pie 16 帧中间态（修前仅 3 帧）；
+  主题切换只变色不重播；`?motion=off` 直接终态；新增 Rust 单测
+  `chart_script_keeps_entry_animation_alive`。
+
+### 5. 验证
 - `cargo test --lib`：352 项全绿（新增图表解析/option/注入/离线自检等 12 项）；
   `cargo clippy --all-targets` 0 warning；`cargo fmt --check` 通过。
 - `npm test`：55 文件 / 715 项全绿；`vue-tsc --noEmit`、ESLint、Prettier 通过。

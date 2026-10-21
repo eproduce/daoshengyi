@@ -232,9 +232,12 @@ ECharts/GSAP 的代价是：单页体积 ×17、依赖 JS、打印/PDF/邮件场
    - 支持 `bar / line / area / pie / donut / scatter / radar / gauge / heatmap / funnel`；
    - 高级图表可在块内**直接写 ECharts option JSON**（覆盖任意图表类型）；
    - 模型只写数据（`labels` + 多个 `series`），坐标、坐标轴、图例、提示框全部由渲染器生成；
-   - **动效**：滚动进入视口才初始化（`IntersectionObserver`），`animationDuration: 900`、
-     `cubicOut`；尊重 `prefers-reduced-motion`（自动关闭动画）；
-   - **主题联动**：监听 `<html data-mode/data-theme>`（am.mjs 的明暗/主题切换），自动重绘配色；
+   - **动效**：真正进入视口（`rootMargin: 0 0 -8%`）才初始化，入场 1s `cubicOut` +
+     多系列逐条错峰 55ms，饼/环用 `scale` 展开；`?motion=off|on` 可覆盖，
+     默认尊重 `prefers-reduced-motion`；
+     **resize 不打断动画**：尺寸未变不动作，动画期间把 resize 延后到 `finished`；
+   - **主题联动**：监听 `<html data-mode/data-theme>`，用**合并更新**只做 320ms 颜色过渡，
+     不重播入场动画；断点（560px）变化时同样走合并更新；
    - **响应式**：`ResizeObserver` + `window.resize` 双监听；容器 < 560px 时自动收紧边距/字号、
      饼图标签移到扇区内部、拥挤的横轴标签旋转 30°；< 640px 时画布降为 280px；
    - `beforeprint` 自动 resize，打印/PDF 不错位。

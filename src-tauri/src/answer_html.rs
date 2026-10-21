@@ -999,20 +999,43 @@ pub fn build_echarts_option(spec: &ChartSpec) -> Result<serde_json::Value, Strin
     Ok(o)
 }
 
-/// ECharts 注入脚本：滚动进入视口再初始化（带入场动画）、主题切换重绘、resize、打印适配。
+/// ECharts 注入脚本：进入视口才初始化（播放入场动画）、主题/断点更新用合并模式、resize 不打断动画。
+///
+/// 2026-10-21 修复「图表没有动画」：`ResizeObserver` 在 observe 后**立即回调一次**，
+/// 原来的 `fitAll()` 直接 `inst.resize()` —— 而 ECharts 的 `resize()` 会把进行中的入场动画
+/// 立即结算成最终态（实测 3s 动画在第 3 帧被 resize 后瞬间到终态）。
+/// 现在：尺寸未变不动作；动画进行中把 resize 延后到 `finished`；主题/断点只用合并更新。
 const ECHARTS_INIT_JS: &str = r#"
 (function () {
   var OPTIONS = __DSY_OPTIONS__;
-  var REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // 动效开关：URL 参数 ?motion=on|off 优先，其次跟随系统「减少动效」
+  function motionEnabled() {
+    try {
+      var q = (location.search.match(/[?&]motion=(on|off)\b/) || [])[1];
+      if (q === 'off') return false;
+      if (q === 'on') return true;
+    } catch (err) {}
+    return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+  var MOTION = motionEnabled();
+
   var PALETTE = {
     light: ['#C2410C', '#0E7490', '#4D7C0F', '#7C3AED', '#B45309', '#0F766E'],
     dark: ['#F97316', '#22D3EE', '#A3E635', '#A78BFA', '#FBBF24', '#2DD4BF']
   };
+  var ENTRY_MS = 1000;
+  var UPDATE_MS = 320;
+
   function isDark() {
     var m = document.documentElement.getAttribute('data-mode');
     if (m === 'dark') return true;
     if (m === 'light') return false;
     return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+  function kindOf(idx) {
+    var o = OPTIONS[idx] || {};
+    return (o.__dsy && o.__dsy.kind) || '';
   }
   function responsive(o, width) {
     var info = o.__dsy || {};
@@ -1055,7 +1078,6 @@ const ECHARTS_INIT_JS: &str = r#"
       ? { text: '#E2E8F0', sub: '#94A3B8', line: 'rgba(255,255,255,.14)', axis: 'rgba(255,255,255,.32)' }
       : { text: '#0F172A', sub: '#64748B', line: 'rgba(15,23,42,.12)', axis: 'rgba(15,23,42,.30)' };
     o.color = dark ? PALETTE.dark : PALETTE.light;
-    o.animation = !REDUCED;
     o.textStyle = Object.assign({}, o.textStyle, { color: c.text });
     if (o.title) o.title.textStyle = Object.assign({}, o.title.textStyle, { color: c.text });
     if (o.legend) o.legend.textStyle = Object.assign({}, o.legend.textStyle, { color: c.sub });
@@ -1086,7 +1108,56 @@ const ECHARTS_INIT_JS: &str = r#"
     });
     return o;
   }
+
+  // 入场动画：1s + 逐条错峰（柱/线/散点/雷达），饼环用 scale 展开；减少动效时直接终态。
+  function withEntryMotion(o, kind) {
+    o.animation = MOTION;
+    o.animationDuration = MOTION ? ENTRY_MS : 0;
+    o.animationEasing = 'cubicOut';
+    o.animationDurationUpdate = UPDATE_MS;
+    o.animationEasingUpdate = 'cubicOut';
+    if (!MOTION) return o;
+    if (kind === 'pie' || kind === 'donut' || kind === 'funnel') {
+      o.animationType = 'scale';
+      o.animationTypeUpdate = 'transition';
+      return o;
+    }
+    if (kind === 'bar' || kind === 'line' || kind === 'area' || kind === 'scatter' || kind === 'radar' || kind === 'heatmap') {
+      (o.series || []).forEach(function (s) {
+        s.animationDelay = function (idx) { return Math.min(idx, 12) * 55; };
+      });
+    }
+    return o;
+  }
+
   var mounted = [];
+
+  function recordOf(el) {
+    for (var i = 0; i < mounted.length; i++) if (mounted[i].el === el) return mounted[i];
+    return null;
+  }
+
+  // 安全的尺寸同步：动画进行中不 resize（ECharts 的 resize 会把动画瞬间结算成最终态），
+  // 只登记待办，等 finished 再补；断点变化才重新下发布局（合并更新，不重播入场）。
+  function safeResize(rec, force) {
+    if (!rec) return;
+    if (rec.animating && !force) { rec.pendingResize = true; return; }
+    var w = rec.el.clientWidth || 0;
+    var h = rec.el.clientHeight || 0;
+    var narrow = w > 0 && w < 560;
+    if (narrow !== rec.narrow) {
+      rec.narrow = narrow;
+      var upd = responsive(themed(OPTIONS[rec.idx], isDark()), w);
+      upd.animation = MOTION;
+      upd.animationDuration = 0;
+      upd.animationDurationUpdate = UPDATE_MS;
+      rec.inst.setOption(upd, { notMerge: false, lazyUpdate: false });
+    }
+    rec.inst.resize();
+    rec.lastW = w;
+    rec.lastH = h;
+  }
+
   function mount(el) {
     if (el.getAttribute('data-mounted')) return;
     el.setAttribute('data-mounted', '1');
@@ -1094,59 +1165,92 @@ const ECHARTS_INIT_JS: &str = r#"
     try {
       var inst = window.echarts.init(el, null, { renderer: 'canvas' });
       var w = el.clientWidth || 0;
-      inst.setOption(responsive(themed(OPTIONS[idx], isDark()), w), true);
-      mounted.push({ inst: inst, idx: idx, el: el });
+      var kind = kindOf(idx);
+      var opt = withEntryMotion(responsive(themed(OPTIONS[idx], isDark()), w), kind);
+      var rec = {
+        inst: inst, idx: idx, el: el, kind: kind,
+        lastW: w, lastH: el.clientHeight || 0,
+        narrow: w > 0 && w < 560,
+        animating: MOTION, pendingResize: false
+      };
+      if (MOTION) {
+        var unlock = function () {
+          rec.animating = false;
+          el.setAttribute('data-animated', '1');
+          if (rec.pendingResize) { rec.pendingResize = false; safeResize(rec, true); }
+        };
+        inst.on('finished', unlock);
+        // 兜底：动画事件异常（后台标签页/异常配置）时也要解锁，避免 resize 永远被延后
+        setTimeout(unlock, ENTRY_MS + 800);
+      } else {
+        el.setAttribute('data-animated', '1');
+      }
+      mounted.push(rec);
+      inst.setOption(opt, true);
     } catch (err) {
-      // 单个图表配置有误不应拖垮整页：保留标题文字并给出可读提示
       el.setAttribute('data-error', '1');
       el.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#94A3B8;font-size:12px">图表渲染失败（配置有误）</div>';
       if (window.console) console.error('[dsy-chart] option #' + idx, err);
     }
   }
+
   var nodes = Array.prototype.slice.call(document.querySelectorAll('[data-dsy-chart]'));
   if ('IntersectionObserver' in window) {
+    // 真正进入视口（底部留 8% 余量）才挂载：动画在用户看得到的地方播放
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
         if (en.isIntersecting) { mount(en.target); io.unobserve(en.target); }
       });
-    }, { rootMargin: '160px 0px' });
+    }, { rootMargin: '0px 0px -8%' });
     nodes.forEach(function (el) { io.observe(el); });
   } else {
     nodes.forEach(mount);
   }
+
+  // 主题切换：合并更新（只做颜色过渡），不重播入场动画
   function redraw() {
     var dark = isDark();
     mounted.forEach(function (c) {
-      var w = c.el.clientWidth || 0;
-      c.inst.setOption(responsive(themed(OPTIONS[c.idx], dark), w), true);
-      c.inst.resize();
+      var upd = responsive(themed(OPTIONS[c.idx], dark), c.el.clientWidth || 0);
+      upd.animation = MOTION;
+      upd.animationDuration = 0;
+      upd.animationDurationUpdate = UPDATE_MS;
+      c.inst.setOption(upd, { notMerge: false, lazyUpdate: false });
     });
   }
   new MutationObserver(redraw).observe(document.documentElement, {
     attributes: true, attributeFilter: ['data-mode', 'data-theme']
   });
-  var timer;
-  function fitAll() {
-    clearTimeout(timer);
-    timer = setTimeout(function () {
-      var dark = isDark();
+
+  var resizeTimer;
+  function scheduleFit() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
       mounted.forEach(function (c) {
         var w = c.el.clientWidth || 0;
-        c.inst.setOption(responsive(themed(OPTIONS[c.idx], dark), w), true);
-        c.inst.resize();
+        var h = c.el.clientHeight || 0;
+        if (w === c.lastW && h === c.lastH) return; // 尺寸没变：不动（吸收 ResizeObserver 首次回调）
+        safeResize(c);
       });
     }, 120);
   }
-  window.addEventListener('resize', fitAll);
+  window.addEventListener('resize', scheduleFit);
   if ('ResizeObserver' in window) {
-    var ro = new ResizeObserver(function () { fitAll(); });
+    var ro = new ResizeObserver(function () {
+      // 只同步**已挂载**的图表；未挂载的首次回调直接忽略
+      if (mounted.length) scheduleFit();
+    });
     nodes.forEach(function (el) { ro.observe(el); });
   }
+
+  // 打印：先把所有图表挂载好并落到终态，避免 PDF 里出现半截动画
   window.addEventListener('beforeprint', function () {
     nodes.forEach(mount);
     mounted.forEach(function (c) {
-      var w = c.el.clientWidth || 0;
-      c.inst.setOption(responsive(themed(OPTIONS[c.idx], isDark()), w), true);
+      c.animating = false;
+      var fin = responsive(themed(OPTIONS[c.idx], isDark()), c.el.clientWidth || 0);
+      fin.animation = false;
+      c.inst.setOption(fin, true);
       c.inst.resize();
     });
   });
@@ -2262,6 +2366,44 @@ mod tests {
             !css.contains("*,::after,::before{box-sizing:border-box"),
             "不应包含 preflight"
         );
+    }
+
+    #[test]
+    fn chart_script_keeps_entry_animation_alive() {
+        let spec = parse_chart_block("type: bar\nlabels: A,B\nseries: x = 1, 2").unwrap();
+        let html = "<html><head></head><body><div data-dsy-chart=\"0\"></div></body></html>";
+        let out = inject_echarts(html, &[spec], "window.echarts={init:function(){}};").unwrap();
+
+        // 动画预算：入场 1s，更新 320ms（此前 900ms 且无更新时长）
+        assert!(out.contains("ENTRY_MS = 1000"), "入场动画应为 1s");
+        assert!(out.contains("UPDATE_MS = 320"), "主题/断点更新应短于入场");
+        // 尺寸未变不做事（吸收 ResizeObserver 的首次回调 —— 就是它把动画瞬间结算掉的）
+        assert!(
+            out.contains("if (w === c.lastW && h === c.lastH) return;"),
+            "尺寸未变时不得 resize"
+        );
+        // 动画进行中延后 resize，等 finished 再补
+        assert!(out.contains("pendingResize"), "动画期间应登记待办 resize");
+        assert!(
+            out.contains("inst.on('finished'"),
+            "应在动画结束时解锁 resize"
+        );
+        assert!(
+            out.contains("data-animated"),
+            "应标记动画已完成（供自动化断言）"
+        );
+        // 主题/断点走合并更新，不重播入场动画
+        assert!(
+            out.contains("{ notMerge: false, lazyUpdate: false }"),
+            "主题/断点更新必须合并，不能 notMerge"
+        );
+        // 进入视口才播放
+        assert!(out.contains("rootMargin: '0px 0px -8%'"), "应在可见时挂载");
+        assert!(!out.contains("'160px 0px'"), "旧的提前 160px 挂载已移除");
+        // 动效开关
+        assert!(out.contains("motion=on|off"), "支持 ?motion= 覆盖");
+        assert!(out.contains("prefers-reduced-motion"), "尊重系统减少动效");
+        assert!(out.contains("animationDelay"), "多系列应错峰");
     }
 
     #[test]
