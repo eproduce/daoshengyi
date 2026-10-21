@@ -56,6 +56,8 @@ pub struct AnswerHtmlResult {
     pub charts: usize,
     /// 图表渲染引擎：echarts（默认）/ svg（ECharts 资源缺失时的回退）
     pub chart_engine: String,
+    /// 是否内联了 Tailwind CSS
+    pub tailwind: bool,
     /// 渲染后的离线自检提示（外部资源引用等；空 = 没问题）
     pub warnings: Vec<String>,
 }
@@ -141,6 +143,8 @@ pub fn locate_cli(app: &AppHandle) -> Option<PathBuf> {
 
 /// 内嵌 ECharts（仅在页面含 chart 块时内联；见 resources/ECHARTS-NOTICE.md）
 const ECHARTS_FILE: &str = "echarts.min.js";
+/// 预编译 Tailwind CSS（仅在需要工具类时内联；见 resources/TAILWIND-NOTICE.md）
+const TAILWIND_FILE: &str = "tailwind.css";
 
 /// 开发态回溯查找任意 resource 文件。
 pub fn dev_resource_candidates(exe: Option<&Path>, file: &str) -> Vec<PathBuf> {
@@ -151,6 +155,24 @@ pub fn dev_resource_candidates(exe: Option<&Path>, file: &str) -> Vec<PathBuf> {
         out.push(anc.join("src-tauri").join("resources").join(file));
     }
     out
+}
+
+/// 定位内嵌 Tailwind CSS：打包态走 resource 目录，开发态回溯项目目录。
+pub fn locate_tailwind(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(dir) = app.path().resource_dir() {
+        for cand in [
+            dir.join("resources").join(TAILWIND_FILE),
+            dir.join(TAILWIND_FILE),
+        ] {
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
+    let exe = std::env::current_exe().ok();
+    dev_resource_candidates(exe.as_deref(), TAILWIND_FILE)
+        .into_iter()
+        .find(|p| p.exists())
 }
 
 /// 定位内嵌 ECharts：打包态走 resource 目录，开发态回溯项目目录。
@@ -1452,6 +1474,23 @@ pub fn pick_template(markdown: &str, explicit: Option<&str>) -> String {
     }
 }
 
+/// 是否需要 Tailwind：显式参数优先；缺省时检测草稿里是否有 `class="..."`。
+pub fn wants_tailwind(markdown: &str, explicit: Option<bool>) -> bool {
+    explicit.unwrap_or_else(|| markdown.contains("class=\"") || markdown.contains("class='"))
+}
+
+/// 把预编译 Tailwind CSS 内联进 `<head>`（工具类带 `!important`，可覆盖页面样式）。
+pub fn inject_tailwind(html: &str, css: &str) -> String {
+    let block = format!("<style id=\"dsy-tailwind\">{css}</style>\n");
+    let at = html
+        .rfind("</head>")
+        .or_else(|| html.to_lowercase().rfind("</head>"));
+    match at {
+        Some(i) => format!("{}{}{}", &html[..i], block, &html[i..]),
+        None => format!("{block}{html}"),
+    }
+}
+
 /// 渲染后的离线自检：找外部脚本/样式/图片引用（离线页面里这些会加载失败）。
 pub fn offline_warnings(html: &str) -> Vec<String> {
     let lower = html.to_ascii_lowercase();
@@ -1490,6 +1529,7 @@ pub async fn answer_html(
     out_path: Option<String>,
     template: Option<String>,
     theme: Option<String>,
+    tailwind: Option<bool>,
     cwd: Option<String>,
 ) -> Result<AnswerHtmlResult, String> {
     let md = markdown.trim();
@@ -1504,6 +1544,7 @@ pub async fn answer_html(
         return Err(msg);
     }
 
+    let original_md = md;
     // ```chart 围栏块 → ECharts 占位节点（模型不需要手算坐标）；
     // ECharts 资源缺失时回退内联 SVG（bar/line/area）。
     let echarts = locate_echarts(&app);
@@ -1517,6 +1558,7 @@ pub async fn answer_html(
     };
     let chart_count = chart_specs.len();
     let md = md_expanded.trim();
+    let use_tailwind = wants_tailwind(original_md, tailwind);
 
     // 模板：显式指定优先；报告类长文（≥4 个面板）自动用 doc（带目录）
     let template = pick_template(md, template.as_deref());
@@ -1637,6 +1679,34 @@ pub async fn answer_html(
         return Err(msg);
     }
 
+    // 需要 Tailwind 时内联预编译工具类（不联网、无运行时编译器）
+    let mut tailwind_ok = false;
+    if use_tailwind {
+        match locate_tailwind(&app) {
+            Some(css_path) => match std::fs::read_to_string(&css_path) {
+                Ok(css) => {
+                    let html = std::fs::read_to_string(&out).unwrap_or_default();
+                    if let Err(e) = std::fs::write(&out, inject_tailwind(&html, &css)) {
+                        let msg = format!("写入 Tailwind 样式失败：{e}");
+                        let _ = db.log_tool_call("answer_html", &display_cmd, &msg, true, duration);
+                        return Err(msg);
+                    }
+                    tailwind_ok = true;
+                }
+                Err(e) => {
+                    let msg = format!("读取内嵌 Tailwind 失败（{}）：{e}", css_path.display());
+                    let _ = db.log_tool_call("answer_html", &display_cmd, &msg, true, duration);
+                    return Err(msg);
+                }
+            },
+            None => {
+                let msg = "未找到内嵌 Tailwind 样式（resources/tailwind.css）".to_string();
+                let _ = db.log_tool_call("answer_html", &display_cmd, &msg, true, duration);
+                return Err(msg);
+            }
+        }
+    }
+
     // 有图表时把 ECharts + 初始化脚本内联进页面（单文件离线、带入场动画）
     if use_echarts && !chart_specs.is_empty() {
         if let Some(js_path) = echarts.as_deref() {
@@ -1700,6 +1770,7 @@ pub async fn answer_html(
         template,
         charts: chart_count,
         chart_engine: chart_engine.to_string(),
+        tailwind: tailwind_ok,
         warnings,
     })
 }
@@ -2134,6 +2205,63 @@ mod tests {
         );
         assert!(out.contains("prefers-reduced-motion"), "应尊重减少动效偏好");
         assert!(offline_warnings(&out).is_empty(), "注入后仍应无外部资源");
+    }
+
+    #[test]
+    fn tailwind_is_auto_enabled_by_class_attributes() {
+        assert!(!wants_tailwind("## 普通 Markdown\n无 HTML", None));
+        assert!(wants_tailwind(
+            "<div class=\"grid grid-cols-3\"></div>",
+            None
+        ));
+        assert!(wants_tailwind("<div class='p-4'></div>", None));
+        // 显式参数优先（可关掉自动检测）
+        assert!(!wants_tailwind("<div class=\"p-4\"></div>", Some(false)));
+        assert!(wants_tailwind("无 HTML", Some(true)));
+    }
+
+    #[test]
+    fn tailwind_is_not_enabled_by_generated_chart_placeholders() {
+        let md = "## 图表\n```chart\nlabels: A,B\nseries: x = 1,2\n```";
+        assert!(
+            !wants_tailwind(md, None),
+            "原始草稿没有 class=，不应自动开 Tailwind"
+        );
+        let (expanded, _) = expand_chart_blocks(md, true).unwrap();
+        assert!(expanded.contains("class=\"dsy-echart\""));
+        assert!(!wants_tailwind(md, None));
+    }
+
+    #[test]
+    fn inject_tailwind_adds_style_before_head_end() {
+        let html =
+            "<html><head><style>.am{}</style></head><body><div class=\"p-4\"></div></body></html>";
+        let out = inject_tailwind(html, ".p-4{padding:1rem !important}");
+        assert!(out.contains("id=\"dsy-tailwind\""));
+        assert!(out.contains(".p-4{padding:1rem !important}"));
+        let style_at = out.find("dsy-tailwind").unwrap();
+        let head_end = out.find("</head>").unwrap();
+        assert!(style_at < head_end, "样式应插入 </head> 之前");
+        assert!(offline_warnings(&out).is_empty());
+    }
+
+    #[test]
+    fn vendored_tailwind_has_core_utilities_and_no_preflight() {
+        let css = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join(TAILWIND_FILE),
+        )
+        .expect("resources/tailwind.css 应存在");
+        for cls in [".grid{", ".flex{", ".grid-cols-3{", ".bg-copper{", ".p-4{"] {
+            assert!(css.contains(cls), "缺少工具类 {cls}");
+        }
+        assert!(css.contains("!important"), "工具类应带 !important");
+        // preflight 关闭：不应出现 Tailwind 的全局 reset
+        assert!(
+            !css.contains("*,::after,::before{box-sizing:border-box"),
+            "不应包含 preflight"
+        );
     }
 
     #[test]

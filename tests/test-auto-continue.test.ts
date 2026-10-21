@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CONTINUE_RULES,
   MAX_AUTO_CONTINUES_PER_TURN,
+  MAX_PLAN_CONTINUES,
   decideAutoContinue,
   detectStopReasons,
   nudgeContextFrom,
@@ -142,7 +143,7 @@ describe("P1-6 续跑 · 护栏顺序", () => {
     });
     expect(d.action).toBe("stop");
     if (d.action === "stop") expect(d.why).toContain("上限");
-    expect(MAX_AUTO_CONTINUES_PER_TURN).toBe(3);
+    expect(MAX_AUTO_CONTINUES_PER_TURN).toBe(30);
   });
 
   it("无问题 → stop 且说明原因", () => {
@@ -174,7 +175,7 @@ describe("P1-6 续跑 · 按规则限次（防死循环）", () => {
   it("所有命中规则次数用尽 → stop 并列出被跳过的规则", () => {
     const d = decideAutoContinue({
       reasons: ["verify-gap", "plan-incomplete"],
-      attempts: { "verify-gap": 1, "plan-incomplete": 1 },
+      attempts: { "verify-gap": 1, "plan-incomplete": MAX_PLAN_CONTINUES },
     });
     expect(d.action).toBe("stop");
     if (d.action === "stop") {
@@ -183,24 +184,28 @@ describe("P1-6 续跑 · 按规则限次（防死循环）", () => {
     }
   });
 
-  it("模拟连续收尾：自动续跑次数单调增长并最终停下（不会无限循环）", () => {
+  it("模拟连续收尾：只要计划没完成就继续，直到总次数上限（不会无限循环）", () => {
     let totalContinues = 0;
     const attempts: Record<string, number> = {};
     const seen: string[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 50; i++) {
       const d = decideAutoContinue({
         reasons: ["verify-gap", "plan-incomplete", "empty-answer"],
         attempts,
         totalContinues,
       });
-      if (d.action === "stop") break;
+      if (d.action === "stop") {
+        expect(d.why).toContain("上限");
+        break;
+      }
       seen.push(d.reason);
       attempts[d.reason] = (attempts[d.reason] ?? 0) + 1;
       totalContinues++;
     }
-    // 三条规则各一次 → 3 次后停
-    expect(seen).toEqual(["verify-gap", "plan-incomplete", "empty-answer"]);
-    expect(totalContinues).toBe(3);
+    // 验证类规则只纠偏一次；计划未完可持续续跑，直到本回合总上限
+    expect(seen[0]).toBe("verify-gap");
+    expect(seen.filter((r) => r === "plan-incomplete").length).toBeGreaterThan(1);
+    expect(totalContinues).toBe(MAX_AUTO_CONTINUES_PER_TURN);
   });
 
   it("规则表齐备：每个 StopReason 都有规则、都有可执行文本", () => {

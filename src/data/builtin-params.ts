@@ -1018,6 +1018,11 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
         enum: ["auto", "blueprint", "shadcn", "paper"],
         description: "配色主题（缺省 auto）",
       },
+      tailwind: {
+        type: "boolean",
+        description:
+          "在页面中内联预编译 Tailwind 工具类（缺省自动：草稿含 class= 时开启）。可用 flex/grid/间距/排版/边框/阴影/默认调色板与品牌色 ink/coal/panel/copper/amber/elec/mint/rust/dim；任意值请用行内 style",
+      },
     },
     required: ["markdown"],
     additionalProperties: true,

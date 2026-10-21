@@ -21,7 +21,7 @@ import { DEFAULT_STYLE_ID, OUTPUT_STYLES, getOutputStyle } from "@/utils/output-
 import { useTheme } from "@/composables/useTheme";
 import { themePrefHint, themePrefLabel, resolveTheme, type ThemePref } from "@/utils/theme";
 import type { HookRuleShape, SandboxNetwork } from "@/api/appSettings";
-import { notify } from "@/utils/dialog";
+import { askConfirm, notify } from "@/utils/dialog";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
 import HealthPanel from "./HealthPanel.vue";
@@ -836,8 +836,14 @@ function handleSave() {
   emit("close");
 }
 
-function handleDelete() {
+async function handleDelete() {
   if (isNew.value || chatStore.profiles.length <= 1) return;
+  const target = chatStore.profiles.find((p) => p.id === editingId.value);
+  const name = target?.name?.trim() || "此配置";
+  const ok = await askConfirm(
+    `确定删除 API 配置「${name}」吗？\n\n该配置保存的 API Key / 模型 / 地址会一并删除，且无法恢复。`,
+  );
+  if (!ok) return;
   chatStore.deleteProfile(editingId.value);
   emit("close");
 }

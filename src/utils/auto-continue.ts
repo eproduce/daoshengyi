@@ -68,7 +68,10 @@ export interface ContinueRule {
 }
 
 /** 本回合自动续跑总次数上限（跨规则） */
-export const MAX_AUTO_CONTINUES_PER_TURN = 3;
+export const MAX_AUTO_CONTINUES_PER_TURN = 30;
+
+/** 「计划未完」规则最多自动续跑次数：由进展守卫决定是否提前停止，不按固定轮数切断任务 */
+export const MAX_PLAN_CONTINUES = 30;
 
 /** 规则表：顺序即「先处理哪类问题」的默认优先级 */
 export const CONTINUE_RULES: ContinueRule[] = [
@@ -94,7 +97,7 @@ export const CONTINUE_RULES: ContinueRule[] = [
   },
   {
     id: "plan-incomplete",
-    maxAttempts: 1,
+    maxAttempts: MAX_PLAN_CONTINUES,
     label: "计划还有未完成步骤",
     nudge: (c) =>
       `⚠️ 你的任务计划里仍有未完成的步骤：${(c.pendingSteps ?? []).slice(0, 5).join("；") || "（见进度卡片）"}。\n` +

@@ -76,6 +76,7 @@ import { parsePersistedTools } from "@/utils/tool-summary";
 import { queueRemoveAt, queueTakeAt } from "@/utils/message-queue";
 import { resolveWorkspace } from "@/utils/workspace";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
+import { finalizePlanSteps, startNextPendingStep } from "@/utils/task-plan";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
@@ -179,13 +180,6 @@ import { applyOutputStyle } from "@/utils/output-styles";
 import { bumpFailureStreak, failureHint, stuckNotice } from "@/utils/failure-ledger";
 // 断点续跑：用户只说「继续」时注入确定性指令，避免模型从头重来
 import { isBareContinue, resumePrompt } from "@/utils/resume-hint";
-// 任务模式自主续跑：任务没做完时自动开下一轮，而不是等用户敲「继续」
-import {
-  allowResumeAfterStall,
-  AUTO_RESUME_MAX,
-  AUTO_RESUME_TEXT,
-  planAutoResume,
-} from "@/utils/auto-resume";
 // read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
 import { sliceFileLines, isWholeFile } from "@/utils/file-slice";
 // OCR 读到长数字串时提示用 image_inspect 交叉验证（等宽数字串 OCR 最不可靠）
@@ -743,12 +737,6 @@ let turnFailedTools: string[] = [];
 // 提醒文案被无视、轮次预算烧光、任务没做完却看上去像做完了。
 let turnFailStreak = new Map<string, number>();
 let turnStuck: { tool: string; signature: string; count: number } | null = null;
-/** 本轮是否真正执行过「实际工作」类工具（判「有没有实质进展」用） */
-let turnRealWork = false;
-/** 本轮是否调过 plan_task/plan_update（判「确实在推进这个计划」） */
-let turnPlanTouched = false;
-/** 本轮是否被系统中断（轮次预算耗尽 / 停滞中止）—— 自动续航的前提之一 */
-let turnInterrupted = false;
 /** 记一笔失败并在达到停滞阈值时打标记（主循环随即收尾，不再空转） */
 function bumpStuckStreak(tool: string, errorText: unknown): void {
   try {
@@ -773,14 +761,7 @@ function resetTurnToolStats(): void {
   turnFailedTools = [];
   turnFailStreak = new Map<string, number>();
   turnStuck = null;
-  turnRealWork = false;
-  turnPlanTouched = false;
-  turnInterrupted = false;
 }
-
-// --- P1-10 任务模式自主续跑状态 ---
-// 用户主动发消息时归零；自动续跑每开一轮 +1（上限 AUTO_RESUME_MAX）。
-let autoResumeCount = 0;
 
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
 // 开启「文件编辑需确认」设置后，replace_string/insert_string/delete_file 会先
@@ -847,7 +828,7 @@ function resolveAskInput(answer: string | null) {
   if (askInputResolver) askInputResolver(answer);
 }
 
-function getMcpToolsPrompt(): string {
+function getMcpToolsPrompt(mode?: ReturnType<typeof getModeById>): string {
   // 内置工具：如实描述特性/优势/适用场景，由大模型根据任务自行选择，不硬编码倾向
   // 通用输出要求：DeepSeek 思考模式易把详细分析留在 reasoning，正文只给简要结论 →
   // 强制要求完整答案呈现在正文
@@ -935,7 +916,7 @@ function getMcpToolsPrompt(): string {
     '\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {"name": "工作流名称或 id", "note": "可选改进诉求"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。' +
     '\n- **workflow_suggest** (app): **按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {"task": "任务描述", "limit": "可选条数默认 3"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。' +
     '\n- **workflow_remember** (app): **沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {"task_type": "任务类型描述如 月度研究/日报生成", "workflow_name": "工作流名"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。' +
-    '\n- **answer_html** (app): **把回答渲染成一页可视化 HTML**（内置渲染器随包分发，输出单文件离线页面；你只写 Markdown 草稿，布局/配色/SVG 坐标由渲染器负责）。参数 {"title": "页面标题", "markdown": "Markdown 草稿（用 `## 面板` 分面板，可含 flow/sequence/tree/timeline/kv/callout/limits/annot 围栏块、表格或 ```chart 数据图）", "lang": "可选", "out_path": "可选，默认统一生成在 ~/Documents/道生一产物/", "template": "可选 sheet|doc", "theme": "可选 auto|blueprint|shadcn|paper"}。数据图写法：```chart + `type: bar|line|area|pie|donut|scatter|radar|gauge|heatmap|funnel`、`labels: 铜, 铝`、`series: 周涨跌 = -2.1, -0.8`（ECharts 内联、离线、带入场动画；也可直接写 option JSON）。**仅在用户明确要求网页/HTML/一页图形式时才调用**（如「用 HTML 回答」「做个网页讲清楚」），普通问答**不要**自作主张出页面。**渲染器无数学引擎：不要写 LaTeX（美元符公式/反斜杠命令会被拦下报错），公式用 Unicode 记号**。' +
+    '\n- **answer_html** (app): **把回答渲染成一页可视化 HTML**（内置渲染器随包分发，输出单文件离线页面；你只写 Markdown 草稿，布局/配色/SVG 坐标由渲染器负责）。参数 {"title": "页面标题", "markdown": "Markdown 草稿（用 `## 面板` 分面板，可含 flow/sequence/tree/timeline/kv/callout/limits/annot 围栏块、表格或 ```chart 数据图）", "lang": "可选", "out_path": "可选，默认统一生成在 ~/Documents/道生一产物/", "template": "可选 sheet|doc", "theme": "可选 auto|blueprint|shadcn|paper", "tailwind": "可选布尔值（缺省含 class= 时自动开启，用于自定义 HTML 布局）"}。数据图写法：```chart + `type: bar|line|area|pie|donut|scatter|radar|gauge|heatmap|funnel`、`labels: 铜, 铝`、`series: 周涨跌 = -2.1, -0.8`（ECharts 内联、离线、带入场动画；也可直接写 option JSON）。**仅在用户明确要求网页/HTML/一页图形式时才调用**（如「用 HTML 回答」「做个网页讲清楚」），普通问答**不要**自作主张出页面。**渲染器无数学引擎：不要写 LaTeX（美元符公式/反斜杠命令会被拦下报错），公式用 Unicode 记号**。' +
     '\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {"title": "任务标题", "steps": ["子任务1", "子任务2", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。**【任务模式】下几乎必用**：把用户目标拆成有序子步骤后立即调用本工具建立计划，再逐步执行。' +
     '\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {"step": 步骤序号(从1开始), "status": "doing" 进行中 | "done" 已完成 | "failed" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。' +
     '\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {"prompt": "后台任务的完整指令", "name": "可选子会话名（默认 子任务）"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。' +
@@ -1020,7 +1001,7 @@ function getMcpToolsPrompt(): string {
     "- **收尾前**：当实际工作全部完成、即将给出最终回答时，把计划中还处于 **待办/进行中** 的步骤**逐一** plan_update 标记为 done（不要遗漏最后几步）；确有关键步骤失败的保留 failed 并说明原因。\n" +
     "- 简单任务（1-2 步）不要使用 plan 工具，避免冗余，**但【任务模式】除外**：任务模式下用户给出的目标是需交付的任务，即使看似简单，也先 plan_task 建计划再执行。\n" +
     "- **【任务模式】硬性要求**：把用户请求视为目标；需多步/多工具/有交付物就必须先 plan_task，再逐步执行（plan_update 标记进度），并**自主连续执行到全部完成**，不要中途停下征求确认（应用层权限确认除外）。\n" +
-    "- **【任务模式】你有跨回合预算，不要把「做一半」当成交付**：单回合工具轮次约 48 轮；若这轮没做完，系统会**自动从断点继续下一回合**（保留任务计划、已落盘产物与上下文），无需用户回复「继续」。因此：① 早点把中间产物落盘（文件/清单），让断点可续；② 接近轮次上限时不要谎报完成，如实写清剩余步骤，系统会自动接续；③ 任务体量极大时（上百项）在计划里写明分批边界，按批交付。\n";
+    "- **【任务模式】连续自主执行，不要把「做一半」当成交付**：只要你还有未完成的计划步骤，系统会**自动继续**（内部续跑，不产生新的用户消息、不需要用户回复「继续」）；停止条件只有「任务完成 / 连续无进展 / 用户停止 / 预算阻断 / 防死循环安全上限」。因此：① 早点把中间产物落盘（文件/清单）；② 不要谎报完成，未完成就如实写清剩余步骤；③ 任务体量极大时（上百项）在计划里写明分批边界，按批交付。\n";
   // P-M4：多子代理结果冲突时必须仲裁而非任取其一
   const orchestrateRule =
     "\n\n## 多子代理结果仲裁规范\n" +
@@ -1061,13 +1042,22 @@ function getMcpToolsPrompt(): string {
     "- **批量追加（关键，控制调用次数）**：当内容是**表格/清单等多条目**时，把**多行/多条**合并进**同一次** `insert_string` 的 `new_text`（在 ≤2500 字符内尽量填满），例如把 `<tbody>` 里的多行 `<tr>` 一起追加；**不要一行/一条调用一次**（否则会快速触达工具循环的轮次上限，留下只写了一半的文件、只能“下轮再补”）。目标是用**少量（通常 ≤5 次）** `insert_string` 写完整个文件。\n" +
     "- 禁止使用社区 filesystem MCP 服务器的写入类工具（write_file / write_text_file 等）。";
   const pending = pendingServersPrompt();
+  // 对话模式不生成任务计划：同时从「工具清单」和「规划规范」里移除 plan_*，
+  // 避免模型看到工具名后反复尝试调用（执行侧也会拦截）。
+  const planAllowed = isToolAllowedByMode(mode, "plan_task");
+  const builtinUse = planAllowed
+    ? builtin
+    : builtin.replace(/^\s*- \*\*plan_(task|update)\*\*.*\n?/gm, "");
+  const planRuleUse = planAllowed
+    ? planRule
+    : "\n\n## 任务规划\n- 当前模式**不生成任务计划**（plan_task/plan_update 不可用）。目标需要多步骤规划或无人值守执行时，先用一句话说明，并建议用户切换到【任务】模式。\n";
 
   if (mcpToolsCache.length === 0) {
     return (
-      builtin +
+      builtinUse +
       realtime +
       searchFormat +
-      planRule +
+      planRuleUse +
       orchestrateRule +
       editRule +
       fileRule +
@@ -1077,10 +1067,10 @@ function getMcpToolsPrompt(): string {
   }
 
   return (
-    builtin +
+    builtinUse +
     realtime +
     searchFormat +
-    planRule +
+    planRuleUse +
     orchestrateRule +
     editRule +
     fileRule +
@@ -1157,7 +1147,21 @@ const stepToolOk = new Map<number, number>();
 const stepToolFail = new Map<number, number>();
 /** 真实工作工具执行结果计入当前执行步骤的健康计数（plan_* 可视化不算） */
 function noteToolOutcome(tool: string, ok: boolean) {
-  if (curStepForTools < 0 || !isRealWorkTool(tool)) return;
+  if (!isRealWorkTool(tool)) return;
+  // 模型忘了 plan_update doing、但已经在调真实工具 → 自动把第一个 pending 步标为 doing，
+  // 让进度卡片跟得上实际执行（否则会一直停在上一状态）。
+  if (curStepForTools < 0 && ok) {
+    const chat = useChatStore();
+    const plan = chat.taskPlan;
+    if (plan) {
+      const r = startNextPendingStep(plan.steps);
+      if (r.changed) {
+        chat.setTaskPlan({ ...plan, steps: r.steps });
+        beginStepHealth(r.index);
+      }
+    }
+  }
+  if (curStepForTools < 0) return;
   const map = ok ? stepToolOk : stepToolFail;
   map.set(curStepForTools, (map.get(curStepForTools) ?? 0) + 1);
 }
@@ -1630,25 +1634,20 @@ async function mineWorkflowFromTurn(goal: string, cards: ChatTool[]): Promise<st
   }
 }
 
-/// 任务收尾兜底：把「确实已开始执行」的进行中步骤标记为 done，
-/// 但**绝不把「从未执行」的待办步骤标成 done**（避免「啥也没干却全部标完成」的假完成）。
-/// failed 步骤保留，便于复盘。
+/// 任务收尾兜底：正常结束且已产出实质正文时，把未失败/未终止的步骤统一标记为 done。
+/// 背景：模型可能只推进到第 2 步就给出最终交付（或忘了 plan_update 后续步骤），
+/// 若只把 doing 改成 done，计划会永远显示「2/3」——与实际已完成不符（2026-10-21 用户反馈）。
+/// failed/terminated 保留，便于复盘；用户停止/轮次耗尽/停滞中止时**不调用**本函数。
 function markTaskPlanDoneIfPending(): void {
-  // 用户已停止（stopRequested）：打断 ≠ 完成——绝不把“正在做/没做完”的步骤强制标 done，
-  // 保留原状态让用户看到任务实际未完成，而不是“点停止后反而显示全部完成”。
   if (stopRequested) return;
   const chat = useChatStore();
   const plan = chat.taskPlan;
   if (!plan) return;
-  let changed = false;
-  const steps = plan.steps.map((s) => {
-    if (s.status === "doing") {
-      changed = true;
-      return { ...s, status: "done" as const };
-    }
-    return s;
-  });
-  if (changed) chat.setTaskPlan({ ...plan, steps });
+  const r = finalizePlanSteps(plan.steps);
+  if (r.changed) {
+    chat.setTaskPlan({ ...plan, steps: r.steps });
+    resetPlanHealth();
+  }
 }
 
 /// 用户终止任务：把「正在执行中」的步骤标记为已终止（terminated），与成功/失败区分——
@@ -1785,6 +1784,9 @@ async function foldToolResult(tool: string, result: string): Promise<string> {
 /// 上下文总长保护阈值（字符）：工具结果持续回填会让 messages 逼近模型上限
 /// （DeepSeek 1M token ≈ 200 万字符），超过阈值停止继续调工具，留足余量避免 [400]。
 const MAX_CONTEXT_CHARS = 1_500_000;
+/// 工具轮次安全上限（不是任务预算）：只在真正死循环时兜底。
+/// 是否继续由「任务是否完成 + 是否还有进展」决定（见 planAutoContinue），不按轮数切任务。
+const MAX_TOOL_ROUNDS = 240;
 // S3 技能渐进披露阈值：启用技能数 > 此值 且 指令总字符 > 此值 → 进入「路由清单 + 按需命中注入」
 const SKILL_DIRECT_INJECT_MAX_SKILLS = 2;
 const SKILL_DIRECT_INJECT_CHARS = 2000;
@@ -3586,7 +3588,6 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       planRealWork = false; // 新计划刚建立，尚未执行任何实际操作
       resetPlanHealth(); // 新计划：清空上一计划的步骤健康状态
       chat.setTaskPlan(plan);
-      turnPlanTouched = true; // P1-10：本轮确实在推进任务计划
       return (
         "✅ 已创建任务计划「" +
         title +
@@ -3642,7 +3643,6 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       }
       plan.steps[stepIdx].status = status as PlanStepStatus;
       chat.setTaskPlan({ ...plan }); // 触发响应式更新
-      turnPlanTouched = true; // P1-10：本轮确实在推进任务计划
       const done = plan.steps.filter((s) => s.status === "done").length;
       const label: Record<string, string> = {
         pending: "待办",
@@ -3922,6 +3922,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const outPath = String(args.out_path || args.outPath || "").trim() || undefined;
       const template = String(args.template || "").trim() || undefined;
       const theme = String(args.theme || "").trim() || undefined;
+      const tailwind = typeof args.tailwind === "boolean" ? (args.tailwind as boolean) : undefined;
       const res = await invoke<{
         html_path: string;
         node_version: string;
@@ -3930,6 +3931,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         template: string;
         charts: number;
         chart_engine: string;
+        tailwind: boolean;
         warnings: string[];
       }>("answer_html", {
         markdown: draft,
@@ -3938,10 +3940,12 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         outPath: outPath ?? null,
         template: template ?? null,
         theme: theme ?? null,
+        tailwind: tailwind ?? null,
       });
       const kb = Math.max(1, Math.round(res.bytes / 1024));
       const extra = [
         res.charts > 0 ? `${res.charts} 个图表（${res.chart_engine}）` : "",
+        res.tailwind ? "Tailwind" : "",
         res.template === "doc" ? "长文模板 + 目录" : "",
       ]
         .filter(Boolean)
@@ -5878,8 +5882,6 @@ export const useChatStore = defineStore("chat", () => {
     images?: ImageAttachment[],
     attachments?: FileAttachment[],
     fromQueue = false,
-    /** 是否是系统自动续跑发起（用户主动发消息时归零续跑计数） */
-    autoResume = false,
   ) {
     // 忙时（上一轮仍在生成/执行）用户发来的新消息：入队，等当前轮结束后自动发送
     if (isStreaming.value && !fromQueue) {
@@ -5894,8 +5896,6 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 新消息：重置浏览器「已打开页面」标记（上一任务的浏览器已断开，需重新导航）
     browserNavigated = false;
-    // P1-10：用户自己发起的消息 → 自动续跑计数归零（新一轮任务的预算重新开始）
-    if (!autoResume && !fromQueue) autoResumeCount = 0;
     // 命令执行指令：/run <命令>
     if (text.trim().startsWith("/run ")) {
       await runCommand(text.trim().slice(5).trim());
@@ -5974,9 +5974,6 @@ export const useChatStore = defineStore("chat", () => {
     }
     addUserMessage(convId, text, images, attachments);
     // P1-10：记录回合开始时的已完成步骤数，用于判「本轮有没有实质进展」
-    const planDoneAtStart = (useChatStore().taskPlan?.steps ?? []).filter(
-      (s) => s.status === "done",
-    ).length;
     // P1-3：turn_start 钩子（失败不影响主流程；注入内容在下一轮回填）
     void fireHooks({ event: "turn_start" });
 
@@ -6060,7 +6057,6 @@ export const useChatStore = defineStore("chat", () => {
     //（否则要等轮末才挂上，执行中只剩占位提示）
     const toolCards = reactive<ChatTool[]>([]);
     assistantMsg.tools = toolCards;
-
     try {
       // 本地图片识别失败/超时：明确报错，避免静默降级成空回复
       if (ocrFailed) {
@@ -6101,8 +6097,11 @@ export const useChatStore = defineStore("chat", () => {
       }
       let nativeRegistry: NativeToolRegistry | null = null;
       if (!nativeDisabled && supportsNativeTools(config.baseUrl || "")) {
+        const modeForTools = getModeById(activeModeId.value);
         nativeRegistry = buildNativeToolRegistry({
-          builtins: BUILTIN_TOOLS.map((t) => ({ name: t.name, desc: t.desc })),
+          builtins: BUILTIN_TOOLS.filter((t) => isToolAllowedByMode(modeForTools, t.name)).map(
+            (t) => ({ name: t.name, desc: t.desc }),
+          ),
           // 已连接 MCP 工具 + 已启用但未连接浏览器的 puppeteer 占位（保证原生能看到
           // 浏览器自动化函数名，调用时按需激活连接）
           mcp: [
@@ -6182,7 +6181,7 @@ export const useChatStore = defineStore("chat", () => {
       }
 
       // 注入 MCP 工具（工具描述相对稳定）
-      const mcpPrompt = getMcpToolsPrompt();
+      const mcpPrompt = getMcpToolsPrompt(mode);
       if (mcpPrompt) sp = sp ? `${sp}\n\n${mcpPrompt}` : mcpPrompt;
 
       // P1-8 输出风格：在末尾追加风格段（幂等替换；默认/未知风格会剥掉旧风格段）
@@ -6394,7 +6393,7 @@ export const useChatStore = defineStore("chat", () => {
       // 断点续跑（2026-10-02）：用户只回一句「继续」时，模型很容易从头重来
       //（重新规划/重新采集）。这里注入确定性指令 + 未完成步骤清单，让它接着做。
       try {
-        if (isBareContinue(text) || autoResume) {
+        if (isBareContinue(text)) {
           volatileCtx.push(resumePrompt(useChatStore().taskPlan?.steps ?? []));
         }
       } catch {
@@ -6532,7 +6531,9 @@ export const useChatStore = defineStore("chat", () => {
       // 输出「plan_update 标末步 done + 最终汇报」，收尾轮又因不执行工具而正文空 →
       // markTaskPlanDoneIfPending 把 doing 兜底标 done，出现「计划全完成却无正文输出」。
       // 上限放大到 48 让收尾动作有足够轮次；MAX_CONTEXT_CHARS 仍会兜底防上下文失控。
-      const MAX_TOOL_ROUNDS = 48;
+      // 工具轮次「安全上限」（不是任务预算）：真正决定是否继续的是任务是否完成 +
+      // 是否还有进展（见下方 planAutoContinue）。这里只防真正的死循环。
+      const maxToolRounds = MAX_TOOL_ROUNDS;
 
       // 「大内容被截断」时的统一指令：文本路径（isBigWriteFile）与原生路径
       //（tool_call.arguments 被截断）共用一份，避免两处说法不一致。
@@ -6843,7 +6844,6 @@ export const useChatStore = defineStore("chat", () => {
           const { server, tool } = ref;
           if (isRealWorkTool(tool)) {
             didRealWork = true;
-            turnRealWork = true; // P1-10：判「本轮有没有实质进展」
           }
           const serverName = server !== "app" ? `（${server}）` : "";
           streamingContent.value = `🔧 正在调用工具：${tool}${serverName}...`;
@@ -6913,6 +6913,11 @@ export const useChatStore = defineStore("chat", () => {
       // P1-6 自动续跑规则表状态：各规则本轮已纠偏次数 + 本轮总续跑次数
       const continueAttempts: Record<string, number> = {};
       let autoContinues = 0;
+      // 防「计划未完但一直在空转」：连续多次续跑都没有新工具成功/新步骤完成 → 停止。
+      let lastPlanProgressMark = "";
+      let planNoProgressStreak = 0;
+      /** 自动续跑因「无进展/次数用尽」停止：收尾时不得把未完成步骤误标 done */
+      let planContinueExhausted = false;
       resetTurnToolStats();
       resetVerificationReceipts(); // P0-5：回合开始清空验证凭据与文件改动计数
       let fakeCompletionWarned = false; // 是否已就“假完成”给出纠正（至多一次）
@@ -6924,14 +6929,13 @@ export const useChatStore = defineStore("chat", () => {
         usage?: RoundUsage;
       } | null = null;
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
-      while (round < MAX_TOOL_ROUNDS) {
+      while (round < maxToolRounds) {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
         // P1-9c 停滞中止：上一轮工具又出现「同因失败」（已达阈值）→ 不再浪费轮次，
         // 立刻走收尾流程，并在正文如实告知“被卡住了”而不是“做完了”。
         const stuckNow = stuckStopInfo();
         if (stuckNow) {
           stuckStop = stuckNow;
-          turnInterrupted = true; // P1-10：停滞中止 → 也属于「被系统中断」
           dbg(
             `[loop] 第 ${round} 轮前检测到停滞（${stuckNow.tool} 同因失败 ${stuckNow.count} 次）→ 中止工具循环`,
           );
@@ -6983,7 +6987,7 @@ export const useChatStore = defineStore("chat", () => {
             );
             rustMsgs.push({ role: "assistant", content: roundResult.content });
             rustMsgs.push({ role: "user", content: BIG_WRITE_SPLIT_HINT });
-            if (round >= MAX_TOOL_ROUNDS) break;
+            if (round >= maxToolRounds) break;
             continue;
           }
           // 任务模式护栏（原生路径）：目标须先建计划再干活。模型若直接原生调用了实际工具
@@ -7010,9 +7014,8 @@ export const useChatStore = defineStore("chat", () => {
           dbg(`[loop] 第 ${round} 轮返回原生 tool_calls ${nativeCalls.length} 个`);
           await handleNativeRound(nativeCalls, roundResult.content);
           round++;
-          if (round >= MAX_TOOL_ROUNDS) {
+          if (round >= maxToolRounds) {
             roundBudgetExhausted = true; // 记账：收尾时要说清楚这是「被打断」而不是「做完了」
-            turnInterrupted = true; // P1-10：被系统中断 → 自动续航的前提成立
             break; // 达到轮次上限，停止循环
           }
           if (totalMsgChars(rustMsgs) > MAX_CONTEXT_CHARS) break; // 上下文总长保护
@@ -7042,7 +7045,7 @@ export const useChatStore = defineStore("chat", () => {
           // 空 <tool_call></tool_call>、JSON 不合法、或写成「### 🔧 调用工具」卡片文本。
           // 这些都不会真正执行工具 → 回复中断（用户看到"断了"）。
           // 这里主动注入修正指令重试一轮，而不是直接放弃。
-          if (hasCompleteToolCall(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+          if (hasCompleteToolCall(roundResult.content) && round + 1 < maxToolRounds) {
             round++;
             dbg(`[loop] 工具调用格式无效（有闭合标记但解析失败），第 ${round} 轮注入修正指令重试`);
             rustMsgs.push({ role: "assistant", content: roundResult.content });
@@ -7059,7 +7062,7 @@ export const useChatStore = defineStore("chat", () => {
           // 有工具调用**意图**但未形成完整可解析调用（开标记未闭合 / DSML 半截 / 流式截断）：
           // 模型想调工具却因标记不完整没执行 → 正文只剩残句（用户看到「回复中断」）。
           // 注入修正指令重试一轮，要求补全成完整合法的 <tool_call>。
-          if (hasToolCallIntent(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+          if (hasToolCallIntent(roundResult.content) && round + 1 < maxToolRounds) {
             round++;
             // write_file 大 content 截断：模型把整份 HTML 塞进一个 write_file 的 content，
             // 超过单次输出上限被截断（有 write_file 开标记且已输出不少 content 但仍无 </tool_call>）。
@@ -7086,7 +7089,7 @@ export const useChatStore = defineStore("chat", () => {
           // 正文空洞（模型口头承诺要做某事、却未调用工具也未给实质内容，如
           // 「搜索与问题无关，我直接访问官网获取办事指南」）→ 注入指令要求真正执行
           // 或直接完整作答后重试一轮，避免「工具卡片 + 一句意图声明」就断头。
-          if (isVagueBody(roundResult.content) && round + 1 < MAX_TOOL_ROUNDS) {
+          if (isVagueBody(roundResult.content) && round + 1 < maxToolRounds) {
             round++;
             dbg(`[loop] 正文空洞（仅过程声明），第 ${round} 轮注入指令要求实际执行或完整作答`);
             rustMsgs.push({ role: "assistant", content: roundResult.content });
@@ -7127,7 +7130,7 @@ export const useChatStore = defineStore("chat", () => {
           // 收尾时按问题类型（工具全失败 / 验证凭据缺失 / 计划未完 / 目标未达成 / 正文为空）
           // 决定是否再给一轮，并注入针对性的纠偏文本。
           // 护栏（用户停止 / 预算阻断 / 轮数不足 / 本轮总次数 / 单规则次数）全部在纯函数里判定。
-          if (round + 1 < MAX_TOOL_ROUNDS) {
+          if (round + 1 < maxToolRounds) {
             // ⚠️ 这一段是**护栏**，不是主流程：护栏自身出错绝不能吃掉用户的最终答案。
             // 2026-10-02 实战教训：收尾门禁里一个正则异常（lookbehind 在 WKWebView 不可用）
             // 让整个 try 块抛错 → 外层 catch 把 streamingContent 清空 → 27 轮工作、2429 字
@@ -7148,10 +7151,28 @@ export const useChatStore = defineStore("chat", () => {
                 totalContinues: autoContinues,
                 stopped: stopRequested,
                 budgetBlocked: budgetVerdict.value.level === "blocked",
-                remainingRounds: MAX_TOOL_ROUNDS - round - 1,
+                remainingRounds: maxToolRounds - round - 1,
                 failedTools: turnFailedTools,
               });
               if (verdict.action === "continue") {
+                // 计划未完时，只有「有进展」才继续；连续 2 次无进展就停止（避免空转烧 token）。
+                if (verdict.ruleId === "plan-incomplete") {
+                  const p = useChatStore().taskPlan;
+                  const doneNow = p?.steps.filter((s) => s.status === "done").length ?? 0;
+                  const mark = `${turnToolOk}:${doneNow}`;
+                  if (mark === lastPlanProgressMark) planNoProgressStreak++;
+                  else {
+                    lastPlanProgressMark = mark;
+                    planNoProgressStreak = 0;
+                  }
+                  if (planNoProgressStreak >= 2) {
+                    planContinueExhausted = true;
+                    await dbg(
+                      `[continue] 计划仍未完成且连续 ${planNoProgressStreak} 次无进展 → 停止自动续跑`,
+                    );
+                    break;
+                  }
+                }
                 continueAttempts[verdict.reason] = verdict.attempt;
                 autoContinues++;
                 round++;
@@ -7163,6 +7184,7 @@ export const useChatStore = defineStore("chat", () => {
                 continue;
               }
               if (verdict.reasons.length) {
+                if (verdict.reasons.includes("plan-incomplete")) planContinueExhausted = true;
                 await dbg(`[continue] 不再续跑：${verdict.why}`);
               }
             } catch (e) {
@@ -7197,11 +7219,8 @@ export const useChatStore = defineStore("chat", () => {
         }
 
         round++;
-        if (round >= MAX_TOOL_ROUNDS) {
-          // 达到上限：直接停止工具循环（避免模型反复调工具造成死循环），
-          // 以已执行的工具卡片收尾；streamingContent 若有残留工具 JSON 由 finally 剥离
+        if (round >= maxToolRounds) {
           roundBudgetExhausted = true; // 记账：收尾时必须如实告知（不再静默结束）
-          turnInterrupted = true; // P1-10：被系统中断 → 自动续航的前提成立
           break;
         }
         // 上下文总长保护：工具结果持续回填会让 messages 逼近模型上限，
@@ -7218,7 +7237,6 @@ export const useChatStore = defineStore("chat", () => {
         const toolServer = resolveToolServer(tc.server, tc.tool);
         if (isRealWorkTool(tc.tool)) {
           didRealWork = true; // 记录确实执行了实际工作
-          turnRealWork = true; // P1-10：判「本轮有没有实质进展」
         }
         // 实时显示"正在调用工具"
         const serverName = toolServer !== "app" ? `（${toolServer}）` : "";
@@ -7255,7 +7273,7 @@ export const useChatStore = defineStore("chat", () => {
           const planDoneAll = isTaskPlanAllDone();
           const closingHint = planDoneAll
             ? "\n\n✅ 任务计划已全部完成。请**立即停止继续调用工具**，直接在正文给出**完整、详细的最终交付汇报**（做了什么、各步骤结果、最终结论）；不要再新增或重复任何步骤。"
-            : round >= MAX_TOOL_ROUNDS - 3
+            : round >= maxToolRounds - 3
               ? "\n\n⚠️ 已接近工具轮次上限（剩余轮次有限）。请**先把进度落盘**：把已完成产物、剩余步骤、下一轮从哪里接着做写进文件（或 plan_update 备注），然后在正文**如实说明**——已完成什么、还剩什么没做完、如何接着做。\n" +
                 "**绝对不要谎报完成**（例如把没做完的步骤写成“已完成”）；也不要在预算将尽时再开新的大任务。若任务体量明显超过本轮预算，请在正文给出分批交付方案。"
               : "";
@@ -7300,7 +7318,7 @@ export const useChatStore = defineStore("chat", () => {
       // 用尽次数仍截断时附可见告警，绝不让截断静默发生。
       const MAX_TRUNCATION_CONTINUES = 2;
       /// `opts.ignoreRoundBudget`：**收尾轮专用**。收尾轮已经不再调用工具，续写它是写正文、
-      /// 不挤占工具轮次，不该被 `round + 1 < MAX_TOOL_ROUNDS` 挡住。
+      /// 不挤占工具轮次，不该被 `round + 1 < maxToolRounds` 挡住。
       /// （2026-10-02 用户报「断了」：收尾轮正好卡在第 48/48 轮 → 一次续写都没做、连提示都没有，
       /// 正文就断在半句。）
       async function continueTruncated(
@@ -7314,7 +7332,7 @@ export const useChatStore = defineStore("chat", () => {
         while (
           continues < MAX_TRUNCATION_CONTINUES &&
           !stopRequested &&
-          (opts?.ignoreRoundBudget || round + 1 < MAX_TOOL_ROUNDS)
+          (opts?.ignoreRoundBudget || round + 1 < maxToolRounds)
         ) {
           continues++;
           round++;
@@ -7354,7 +7372,7 @@ export const useChatStore = defineStore("chat", () => {
           const why =
             continues > 0
               ? `已自动续写 ${continues} 次仍未写完`
-              : `已无剩余轮次可自动续写（轮次预算 ${MAX_TOOL_ROUNDS} 已用尽）`;
+              : `已无剩余轮次可自动续写（轮次预算 ${maxToolRounds} 已用尽）`;
           if (body) {
             streamingContent.value =
               body +
@@ -7452,11 +7470,19 @@ export const useChatStore = defineStore("chat", () => {
           .map((s) => `> - ${s.text}`)
           .join("\n");
         streamingContent.value +=
-          `\n\n> ⚠️ **本轮因工具轮次预算用尽（上限 ${MAX_TOOL_ROUNDS} 轮）而中断**，` +
+          `\n\n> ⚠️ **本轮因工具轮次安全上限（${maxToolRounds} 轮）而中断**，` +
           `任务计划还有 ${pendingSteps.length} 步未完成：\n${list}` +
-          `\n>\n> 系统会**自动从断点接着做**（连续自动续航上限 ${AUTO_RESUME_MAX} 次，不会从头重来）；` +
-          `不想继续请点「停止」，也可手动回复「继续」。`;
+          `\n>\n> 这是防死循环的最后一道保险，不是任务失败；可回复「继续」从断点接着做。`;
         dbg(`[loop] 轮次预算耗尽：仍有 ${pendingSteps.length} 步未完成 → 已在正文追加说明`);
+      } else if (planContinueExhausted && pendingSteps.length > 0) {
+        const list = pendingSteps
+          .slice(0, 8)
+          .map((s) => `> - ${s.text}`)
+          .join("\n");
+        streamingContent.value +=
+          `\n\n> ⚠️ 任务尚未完成：计划还有 ${pendingSteps.length} 步。\n${list}` +
+          "\n>\n> 已执行的操作与产物见上方工具记录；可回复「继续」从断点接着做。";
+        dbg(`[loop] 计划未完成且自动续跑停止：${pendingSteps.length} 步`);
       }
       // 任务收尾：若存在未完成的任务计划，把剩余 待办/进行中 步骤统一标记为 done
       //（确定性兜底，避免“实际做完但进度卡差一步没标 done”；failed 保留）。
@@ -7465,7 +7491,12 @@ export const useChatStore = defineStore("chat", () => {
       // 标 done —— 避免「啥都没输出却把计划显示成全部完成」的假象。
       // 2026-10-02 追加守卫：**因轮次预算被打断 / 因停滞被中止**时不做这个兜底 —— 把 doing 留着，
       // 用户看到的就是「这步还没做完」，与正文的说明一致（也便于「继续」时续做）。
-      if (!roundBudgetExhausted && !stuckStop && !isVagueBody(streamingContent.value)) {
+      if (
+        !roundBudgetExhausted &&
+        !stuckStop &&
+        !planContinueExhausted &&
+        !isVagueBody(streamingContent.value)
+      ) {
         markTaskPlanDoneIfPending();
       }
       // Phase 3 收尾：本轮工具序列若成功且有复用价值 → 异步抽象成可复用工作流并沉淀。
@@ -7603,59 +7634,6 @@ export const useChatStore = defineStore("chat", () => {
       isStreaming.value = false;
       conv.updatedAt = Date.now();
       scheduleSave();
-      // --- P1-10 任务模式自主续跑：任务没做完就自动开下一轮，不再等用户敲「继续」---
-      // 用户反馈「每次都做一半，留着我让它继续，太不可靠」→ 把「继续」变成系统行为；
-      // 同时用护栏（无进展 / 停滞 / 预算 / 次数上限 / 用户停止）防止它变成自动烧钱。
-      try {
-        const steps = useChatStore().taskPlan?.steps ?? [];
-        const pending = steps.filter((s) => s.status !== "done");
-        const doneNow = steps.filter((s) => s.status === "done").length;
-        const stalled = !!turnStuck;
-        const verdict = planAutoResume({
-          stoppedByUser: stopRequested,
-          planTerminated: pending.some((s) => s.status === "terminated"),
-          hasQueuedUserMessage: pendingTurns.value.length > 0,
-          errorAborted: /^\[错误\]|回复生成中断/.test(assistantMsg.content),
-          budgetBlocked: budgetVerdict.value.level === "blocked",
-          pendingSteps: pending.length,
-          autoAttempts: autoResumeCount,
-          maxAttempts: AUTO_RESUME_MAX,
-          // 停滞只给一次自动换方案的机会（第二次仍卡住才交回用户）
-          repeatedFailure: stalled && !allowResumeAfterStall(autoResumeCount),
-          madeProgress: turnRealWork || doneNow > planDoneAtStart,
-          // 推进过计划、或本轮本被系统中断（两者其一即可，避免拿旧计划误续航）
-          planTouchedThisTurn: turnPlanTouched || turnInterrupted,
-        });
-        if (verdict.resume) {
-          autoResumeCount++;
-          await dbg(
-            `[auto-resume] 第 ${autoResumeCount}/${AUTO_RESUME_MAX} 次自动续跑：${verdict.why}` +
-              `（新完成 ${doneNow - planDoneAtStart} 步，实际工作=${turnRealWork}，停滞=${stalled}）`,
-          );
-          assistantMsg.content += `\n\n> ${verdict.note}${
-            stalled
-              ? "\n> ⚠️ 上一轮因**同一失败原因反复出现**被中止：本轮必须**换方案**，不要原样重发上次的调用。"
-              : ""
-          }`;
-          scheduleSave();
-          // 延迟一拍再开新回合：等本轮 finally 收尾完；期间若用户切了会话/点了停止则放弃
-          const resumeConvId = activeConversationId.value;
-          setTimeout(() => {
-            if (stopRequested || activeConversationId.value !== resumeConvId) {
-              void dbg(
-                `[auto-resume] 放弃自动续跑（用户已停止或已切换会话：${resumeConvId} → ${activeConversationId.value}）`,
-              );
-              return;
-            }
-            void sendMessage(AUTO_RESUME_TEXT, undefined, undefined, false, true);
-          }, 50);
-        } else if (pending.length > 0) {
-          await dbg(`[auto-resume] 不续跑：${verdict.why}（剩 ${pending.length} 步）`);
-        }
-      } catch (e) {
-        // 护栏自身出错绝不能让本轮回复丢内容
-        void dbg(`[auto-resume] 判定异常（已忽略）：${e instanceof Error ? e.message : String(e)}`);
-      }
       // 本轮彻底结束：若队列有待发消息则自动续跑（放在 isStreaming=false 之后）
       drainQueue();
 

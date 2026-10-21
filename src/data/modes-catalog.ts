@@ -14,6 +14,8 @@ export interface AgentMode {
   prompt: string;
   /** 允许的工具名白名单：undefined=不限；[]=禁用全部（速答）；数组=仅允许这些工具 */
   allowedTools?: string[];
+  /** 显式禁用某些工具（优先于 allowedTools；用于「模式里不应出现的能力」） */
+  deniedTools?: string[];
 }
 
 export const MODES: AgentMode[] = [
@@ -22,7 +24,10 @@ export const MODES: AgentMode[] = [
     name: "对话",
     emoji: "💬",
     description: "日常问答，自由对话按需调用工具",
-    prompt: "",
+    prompt:
+      "你正处于【对话模式】：直接回答或按需调用工具；**不要创建任务计划**（plan_task/plan_update 在此模式不可用）。若用户的目标需要多步骤规划或无人值守执行，先用一句话说明，并建议切换到【任务】模式。",
+    // 对话模式不生成任务卡：复杂目标交给「任务」模式，避免出现与实际进度不一致的计划。
+    deniedTools: ["plan_task", "plan_update"],
   },
   {
     id: "task",
@@ -78,6 +83,7 @@ export function getModeById(id: string | null | undefined): AgentMode | undefine
 
 /** 是否允许调用某工具（模式白名单；undefined=不限，[]=全部禁用） */
 export function isToolAllowedByMode(mode: AgentMode | undefined, tool: string): boolean {
+  if (mode?.deniedTools?.includes(tool)) return false;
   if (!mode || mode.allowedTools === undefined) return true;
   return mode.allowedTools.includes(tool);
 }

@@ -247,6 +247,24 @@ ECharts/GSAP 的代价是：单页体积 ×17、依赖 JS、打印/PDF/邮件场
 6. **渲染后离线自检**：检测外部 `<script>/<link>/<img>/url(http…)` 引用，把 `warnings` 回传模型。
 7. **报告写作规范**（工具描述 + 系统提示词）：结论先行并逐条给「影响」、数字带来源与时间、
    末尾固定 `## 数据来源与口径` + `## 观察清单`。
+8. **预编译 Tailwind CSS（可选，自动开启）**：草稿里出现 `class="…"` 时自动内联
+   `resources/tailwind.css`（Tailwind 3.4.19，MIT，约 435 KB；仅此时增加体积）。
+   - 支持 flex/grid、间距、尺寸、排版、边框、圆角、阴影、透明度、默认调色板（22 色 × 11 阶）、
+     品牌色 `ink/coal/panel/copper/amber/elec/mint/rust/dim`，以及 `sm/md/lg/xl/2xl` 与部分 `hover:`；
+   - `preflight` 关闭（不重置 am.mjs 排版）、工具类带 `!important`（可覆盖局部样式）；
+   - **任意值不参与运行时 JIT**：`w-[437px]` 这类请用 `style="width:437px"`（仅少量字号
+     `text-[10px]`…`text-[16px]` 预编译）；
+   - 显式 `tailwind: false` 可关闭；`tailwind: true` 可强制开启。
+   示例：
+
+```html
+<div class="grid grid-cols-3 gap-4 p-5 rounded-xl border border-white/10 bg-panel">
+  <div class="p-4 rounded-lg bg-copper/15 border border-copper/40">
+    <div class="text-[11px] tracking-widest uppercase text-dim">Copper</div>
+    <div class="text-3xl font-bold text-copper mt-1">38%</div>
+  </div>
+</div>
+```
 
 ### 9.2 用法示例
 
@@ -297,7 +315,8 @@ series: 占比 = 38, 27, 21, 14
 
 ### 9.3 取舍
 
-- **体积**：ECharts 约 1 MB，只随「含图表的页面」内联；纯文字报告仍是 ~70 KB。
+- **体积**：ECharts 约 1 MB，只随「含图表的页面」内联；Tailwind 约 435 KB，只在草稿含
+  `class="…"`（或显式开启）时内联；纯文字报告仍是 ~70 KB。
 - **不引用 CDN**：保证离线/内网/邮件附件可用，`offline_warnings` 会在出现外部资源时告警。
 - **不内联 GSAP**：入场动画用 ECharts 自带 animation + IntersectionObserver 已足够；
   参考样本的 GSAP/ScrollTrigger 主要服务装饰性滚动效果，收益/体积比不划算。

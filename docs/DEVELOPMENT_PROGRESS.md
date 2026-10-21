@@ -35,11 +35,30 @@
 - **长报告**：≥4 个面板自动 `doc` 模板（单栏 + 目录）；新增 `template` / `theme` 参数。
 - **离线自检**：渲染后扫描外部 `<script>/<link>/<img>/url(http…)`，`warnings` 回传模型。
 - **写作规范**：结论先行并逐条给「影响」、数字带来源与时间、末尾固定「数据来源与口径」+「观察清单」。
+- **Tailwind（可选，自动开启）**：草稿含 `class="…"` 时内联预编译 Tailwind 3.4.19
+  （约 435 KB，MIT，NOTICE 随包）；`preflight` 关闭 + `!important` 工具类；
+  品牌色 ink/coal/panel/copper/amber/elec/mint/rust/dim；任意值请用行内 style。
 
-### 3. 验证
-- `cargo test --lib`：343+ 项全绿（新增图表解析/option/注入/离线自检等 12 项）；
+### 3. 任务进度与连续自主执行（2026-10-21 用户反馈）
+- **对话模式不再生成任务卡**：`chat` 模式新增 `deniedTools: ["plan_task","plan_update"]`；
+  原生工具 schema、文本模式工具清单、规划规范都不再出现这两个工具，模型不会「看到就调」；
+  需要多步骤计划时提示切到【任务】模式。
+- **进度收敛**：正常结束且产出实质正文时，未失败/未终止的步骤统一标 `done`
+  （此前只把 `doing` 改 `done`，第 3 步永远 pending → 卡片卡在「2/3」）。
+- **自动起步**：模型忘了 `plan_update doing` 但已经调用真实工具时，自动把第一个 pending 标 doing。
+- **连续自主执行（用户无感）**：删除「🔁 自动续跑」这条可见用户消息与外层续跑机制；
+  改由 `planAutoContinue` 在**同一轮对话内**注入不可见的纠偏提示并继续执行。
+  - 停止条件 = 任务完成 / 连续 2 次无进展 / 用户停止 / 预算阻断 / 240 轮防死循环安全上限；
+  - 「计划未完」最多内部续跑 30 次，但每轮都要求有新工具成功或新步骤完成（否则停），
+    不再按固定轮数把任务切断；
+  - 用户只会看到工具操作记录与最终交付，不会看到「续跑」这种系统内部动作。
+- **删除 API 配置需二次确认**：点「删除此配置」先弹应用内确认框（显示配置名，说明
+  API Key/模型/地址会一并删除且不可恢复），取消不会改动任何数据。
+
+### 4. 验证
+- `cargo test --lib`：352 项全绿（新增图表解析/option/注入/离线自检等 12 项）；
   `cargo clippy --all-targets` 0 warning；`cargo fmt --check` 通过。
-- `npm test`：55 文件 / 720 项全绿；`vue-tsc --noEmit`、ESLint 通过。
+- `npm test`：55 文件 / 715 项全绿；`vue-tsc --noEmit`、ESLint、Prettier 通过。
 - 真机渲染自检：am.mjs 页面内 bar/donut/line 图正常显示，坐标轴取整、深色主题配色正确。
 - **打包**：`1.0.0-alpha.9` 已构建并安装到 `/Applications/道生一.app`
   （回滚点 `/Applications/道生一.app.old-2214`）；DMG：

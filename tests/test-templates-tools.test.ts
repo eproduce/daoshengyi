@@ -1297,12 +1297,17 @@ console.log("\n== Agent 多模式（modes-catalog） ==");
   const quick = getModeById("quick")!;
   const task = getModeById("task")!;
   assert(isToolAllowedByMode(undefined, "web_search") === true, "无模式=不限工具");
-  assert(isToolAllowedByMode(chat, "write_file") === true, "对话模式不限工具");
+  assert(isToolAllowedByMode(chat, "write_file") === true, "对话模式其余工具不限");
+  assert(
+    isToolAllowedByMode(chat, "plan_task") === false,
+    "对话模式禁用 plan_task（不生成任务卡）",
+  );
+  assert(isToolAllowedByMode(chat, "plan_update") === false, "对话模式禁用 plan_update");
   assert(isToolAllowedByMode(task, "plan_task") === true, "任务模式允许 plan_task");
   assert(isToolAllowedByMode(quick, "write_file") === false, "速答模式禁 write_file");
   assert(isToolAllowedByMode(quick, "web_search") === false, "速答模式禁 web_search");
-  // 各模式都有行为提示词（除对话默认）
-  for (const m of MODES.filter((x) => x.id !== "chat")) {
+  // 各模式都有行为提示词
+  for (const m of MODES) {
     assert(m.prompt.length > 10, `${m.name} 模式有行为提示词`);
   }
 }
