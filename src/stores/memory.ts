@@ -1,6 +1,6 @@
 // 长期记忆系统 store：跨会话记住用户偏好 / 事实 / 决策 / 待办。
 // - 事实提取（LLM 输出 JSON → memory_facts）+ 摘要压缩 + 用户画像沉淀
-// - 检索：FTS5 关键词 + Ollama 语义向量 混合，对话时自动注入
+// - 检索：FTS5 关键词 + 本地语义向量 混合，对话时自动注入
 // - 主动记忆工具（memory_save / recall / forget）、智能复习、跨会话主题汇总（episodic）
 // - 分层：事实（semantic）/ 会话摘要 / 主题聚合（episodic）
 import { invoke } from "@tauri-apps/api/core";
@@ -51,22 +51,19 @@ export function useMemorySystem() {
     return fallback;
   }
 
-  // --- Embedding 生成 (兼容 API + P-A6 本地 Ollama) ---
+  // --- Embedding 生成 (兼容 API + P-A6 本地 llama.cpp) ---
   async function generateEmbedding(
     text: string,
     config: { baseUrl: string; apiKey: string; model: string },
   ): Promise<number[] | null> {
     const src = embeddingSource(config.baseUrl);
-    // P-A6 本地语义 embedding：baseUrl 是本地端点（Ollama /v1），或主模型 DeepSeek
-    // （无 embeddings 端点）时，用本地模型生成向量补语义检索。
-    //
-    // 2026-09-24 改：后端 `ollama_embed` 已是**统一入口**——优先 llama.cpp（本应用托管的
-    // 嵌入 GGUF，按需启动 + 空闲回收），不可用才回退 Ollama；名字里的 `ollama` 是历史遗留。
-    // 两条都不可用时返回 null（语义检索静默跳过，FTS5 关键词检索不受影响）——
+    // P-A6 本地语义 embedding：baseUrl 是本地端点，或主模型（如 DeepSeek）没有 embeddings
+    // 端点时，用本应用托管的 llama.cpp 嵌入模型生成向量（按需启动 + 空闲回收）。
+    // 不可用时返回 null（语义检索静默跳过，FTS5 关键词检索不受影响）——
     // 「静默跳过」是刻意保留的：检索质量降级不该打断对话，但**绝不能返回假向量**。
-    if (src === "ollama") {
+    if (src === "local") {
       try {
-        const emb = await invoke<number[][]>("ollama_embed", { texts: [text.slice(0, 8000)] });
+        const emb = await invoke<number[][]>("embed_texts", { texts: [text.slice(0, 8000)] });
         return emb?.[0] ?? null;
       } catch {
         return null;

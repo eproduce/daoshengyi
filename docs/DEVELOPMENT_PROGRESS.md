@@ -2,7 +2,46 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-19**
+> **最后更新：2026-10-21**
+
+---
+
+## 2026-10-21（移除 Ollama + HTML 报告升级为 ECharts）
+
+### 1. 本地运行时收敛到 llama.cpp
+- **卸载应用、保留模型**：删除 `~/Applications/Ollama.app`，`~/.ollama/models`（3.0G）原样保留；
+  应用托管目录里的 3 个 GGUF（llava-phi3 + mmproj + nomic-embed-text）本就是硬链接，不受影响。
+- **Rust**：删除 `ollama_setup/status/install_from_zip/pull/ensure_server/ensure_profile`、
+  `ollama_embed`、`ollama_describe_image`、`local_runtime_import_ollama`、Ollama keep-alive/PID 等
+  约 1200 行；`embed_prefer_local` 收敛为 `local_runtime::embed_texts`；新增
+  `local_runtime_import_gguf` / `local_runtime_import_dir`（GGUF 魔数识别 + 硬链接）。
+- **前端**：`stores/ollama.ts` → `stores/localRuntime.ts`；设置页「本地模型」重做
+  （导入文件/目录、运行时状态、硬件评估）；菜单 `open-ollama` → `open-local`；
+  引导横幅与提示词移除回退口径。
+- **可选的 Strata**：新增「外部本地推理服务」——任意 OpenAI 兼容端点
+  （Strata 默认 `http://127.0.0.1:8080/v1`，自动补 `/v1`）；API 配置页新增「本地服务」预设。
+- 文档：`docs/OLLAMA_EXIT_PLAN.md` → `docs/LOCAL_RUNTIME.md`（改写为现行架构）。
+
+### 2. HTML 结果生成技能（answer_html）
+参考 `行业晚报_2026-10-18_离线自包含.html`（1.2 MB、ECharts + GSAP、9 张图）后的取舍与落地：
+- **```chart 围栏块 → ECharts**：bar/line/area/pie/donut/scatter/radar/gauge/heatmap/funnel，
+  也支持直接写 ECharts option JSON；模型只写 labels/series，不再手算坐标。
+- **动效与响应式**：滚动进入视口才初始化（IntersectionObserver）+ ECharts 入场动画；
+  尊重 `prefers-reduced-motion`；监听 `data-mode/data-theme` 自动切换深色配色；
+  `ResizeObserver` + resize 双监听，窄屏收紧边距/字号、饼图标签内置、拥挤横轴自动旋转，
+  <640px 画布降为 280px；打印前自动 resize。
+- **单文件离线**：`resources/echarts.min.js`（5.5.1，Apache-2.0，NOTICE 随包）**仅在有图表时内联**；
+  无图表页面体积不变。ECharts 缺失时 bar/line/area 回退内联 SVG，其他类型明确报错。
+- **长报告**：≥4 个面板自动 `doc` 模板（单栏 + 目录）；新增 `template` / `theme` 参数。
+- **离线自检**：渲染后扫描外部 `<script>/<link>/<img>/url(http…)`，`warnings` 回传模型。
+- **写作规范**：结论先行并逐条给「影响」、数字带来源与时间、末尾固定「数据来源与口径」+「观察清单」。
+
+### 3. 验证
+- `cargo test --lib`：343+ 项全绿（新增图表解析/option/注入/离线自检等 12 项）；
+  `cargo clippy --all-targets` 0 warning；`cargo fmt --check` 通过。
+- `npm test`：55 文件 / 720 项全绿；`vue-tsc --noEmit`、ESLint 通过。
+- 真机渲染自检：am.mjs 页面内 bar/donut/line 图正常显示，坐标轴取整、深色主题配色正确。
+- **打包**：`1.0.0-alpha.9` 构建并安装到 `/Applications/道生一.app`（待补最终产物路径）。
 
 ---
 
@@ -478,7 +517,7 @@ cargo test **336 passed / 0 failed**。
 
 ### 背景
 用户提问「是不是可以移除 Ollama 了，完全使用 llama.cpp」→ 评估结论：**推理可全切，分发不能**
-（llama.cpp 没有模型仓库）。完整评估与迁移计划见 **`docs/OLLAMA_EXIT_PLAN.md`**。
+（llama.cpp 没有模型仓库）。完整评估与迁移计划见 **`docs/LOCAL_RUNTIME.md`**。
 
 ### 已落地
 - 新增统一入口 `embed_prefer_local`（`lib.rs`）：**llama.cpp 优先**（`local_runtime::embed_texts`，

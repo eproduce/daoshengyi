@@ -69,10 +69,9 @@ describe("listenWithRetry", () => {
 });
 
 describe("isCriticalEvent", () => {
-  it("菜单/IM/Ollama 事件算关键（失败要在日志里点名）」", () => {
+  it("菜单/IM 事件算关键（失败要在日志里点名）", () => {
     expect(isCriticalEvent("menu://action")).toBe(true);
     expect(isCriticalEvent("im-pair-request")).toBe(true);
-    expect(isCriticalEvent("ollama-configured")).toBe(true);
     expect(isCriticalEvent("some-other")).toBe(false);
   });
 });

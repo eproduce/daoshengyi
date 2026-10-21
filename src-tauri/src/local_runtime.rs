@@ -1,27 +1,20 @@
 //! llama.cpp（`llama-server`）本地运行时后端。
 //!
-//! ## 为什么要这个模块
+//! ## 为什么用独立的 llama-server
 //!
-//! 用户反馈「Ollama 太浪费资源」。2026-09-17 在本机（Intel Mac / llava-phi3 3.8B）实测：
+//! 应用按需拉起 `llama-server`，用完即停，做到**空闲 0 常驻**：内存只在识图/嵌入时占用，
+//! 进程退出即归还。参数上固定 `-np 1`（只保留一份 KV cache），避免默认多并发槽白占内存。
 //!
-//! | 运行时 | 模型加载后 | 空闲时 | 说明 |
-//! | --- | --- | --- | --- |
-//! | Ollama | 20MB(Go daemon) + **4505MB**(它自己 spawn 的 llama-server 子进程) | 4.5GB 常驻到 `keep_alive`（默认 5 分钟）到期 | 多一层守护进程 + 默认 `n_slots=4` 多留 KV |
-//! | 裸 llama.cpp（`-c 2048 -np 1`） | **3928MB** | **0**：进程退出即归还 | 无守护进程、mmap 权重可被 OS 回收 |
+//! ## 模型来源
 //!
-//! 速度**基本一致**（同一张 768px 图：41.5s vs 44.6s），所以换运行时的收益是
-//! **内存与常驻**，不是推理速度。
+//! 本模块只认本应用托管目录 `<应用数据>/models` 下的 GGUF。用户可以通过
+//! 「导入 GGUF 文件」或「从目录导入」把已有模型（含其他工具下载的 GGUF）硬链接进来，
+//! **不重复占磁盘、无需重新下载**；也可以配置外部 OpenAI 兼容服务（如 Strata）作为可选后端。
 //!
-//! ## 零下载迁移
-//!
-//! Ollama 模型库里的 blob 本质就是 GGUF（实测两个 blob 均以魔数 `GGUF` 开头），
-//! manifest 里 `model` / `projector` 两层正好对应 llama.cpp 的
-//! `-m model.gguf --mmproj mmproj.gguf` —— 因此可以硬链接导入，**不重复占磁盘、无需重新下载**。
-//!
-//! ## 生命周期策略（相对 Ollama 的核心优势）
+//! ## 生命周期策略
 //!
 //! 按需启动 + 空闲自动退出：只有真正要识图时才拉起 llama-server，`IDLE_KILL_SECS` 秒无请求就
-//! 停掉进程，做到**空闲 0 常驻**。应用退出时也会一并停止。
+//! 停掉进程。应用退出时也会一并停止。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -29,7 +22,7 @@ use std::sync::OnceLock;
 
 use tauri::Manager as _;
 
-/// llama-server 监听端口（刻意避开 Ollama 的 11434，两者可共存互不干扰）
+/// llama-server 监听端口（避开常见本地服务端口，减少冲突）
 pub const LLAMA_PORT: u16 = 18080;
 /// 上下文长度：视觉描述只需「看图说话」，2048 足够（越大越费 KV cache）
 pub const LLAMA_CTX: u32 = 2048;
@@ -39,8 +32,7 @@ pub const IDLE_KILL_SECS: u64 = 120;
 const READY_TIMEOUT_SECS: u64 = 90;
 
 /// 嵌入服务端口（与聊天服务分开：两边参数完全不同，混在一个进程里没有干净的做法）
-/// 2026-09-18 实测：`llama-server --embedding --pooling mean` 能直接加载 Ollama 的
-/// nomic-embed-text blob（GGUF），返回 768 维已归一化向量，与 Ollama 侧一致。
+/// `llama-server --embedding --pooling mean` 加载嵌入 GGUF（如 nomic-embed-text）即可用。
 pub const EMBED_PORT: u16 = 18081;
 /// 嵌入上下文：nomic-embed-text 训练长度 2048，但分块后单段短得多，512 够用且更省内存
 pub const EMBED_CTX: u32 = 512;
@@ -106,38 +98,9 @@ pub fn models_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("models")
 }
 
-/// GGUF 魔数校验（Ollama 的 blob 也是 GGUF，这是「零下载导入」的依据）
+/// GGUF 魔数校验（导入时据此拒绝非 GGUF 文件）
 pub fn is_gguf_magic(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[..4] == b"GGUF"
-}
-
-/// Ollama blob 路径：digest `sha256:abcd…` → 文件名 `sha256-abcd…`
-pub fn blob_path(blobs_dir: &Path, digest: &str) -> PathBuf {
-    blobs_dir.join(digest.replace(':', "-"))
-}
-
-/// 解析 Ollama manifest，取出 `(模型 blob digest, 投影器 blob digest)`。
-/// 只认 `.model` / `.projector` 两种 layer（其余 template/params 是文本配置，不需要）。
-pub fn parse_ollama_manifest(v: &serde_json::Value) -> Option<(String, Option<String>)> {
-    let layers = v.get("layers")?.as_array()?;
-    let mut model: Option<String> = None;
-    let mut projector: Option<String> = None;
-    for layer in layers {
-        let media = layer
-            .get("mediaType")
-            .and_then(|m| m.as_str())
-            .unwrap_or("");
-        let digest = layer.get("digest").and_then(|d| d.as_str()).unwrap_or("");
-        if digest.is_empty() {
-            continue;
-        }
-        if media.ends_with(".model") && model.is_none() {
-            model = Some(digest.to_string());
-        } else if media.ends_with(".projector") && projector.is_none() {
-            projector = Some(digest.to_string());
-        }
-    }
-    model.map(|m| (m, projector))
 }
 
 /// 文件名安全化：`llava-phi3:3.8b` → `llava-phi3-3.8b`
@@ -190,7 +153,7 @@ pub fn default_threads() -> usize {
 }
 
 /// 组装 llama-server 启动参数（纯函数，便于单测）：
-/// `-np 1` 只保留一份 KV cache 是省内存的关键（Ollama 默认 4 份）。
+/// `-np 1` 只保留一份 KV cache 是省内存的关键。
 pub fn server_args(model: &Path, mmproj: Option<&Path>, threads: usize) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
@@ -333,7 +296,7 @@ pub async fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String>
     let entries = list_gguf(&dir);
     let (model, mmproj) = pick_model_pair(&entries).ok_or_else(|| {
         format!(
-            "未在 {} 找到 GGUF 模型（可在设置里「从 Ollama 导入」，硬链接导入无需重新下载）",
+            "未在 {} 找到 GGUF 模型（可在设置里「导入 GGUF 文件」或「从目录导入」）",
             dir.display()
         )
     })?;
@@ -391,20 +354,22 @@ pub async fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String>
     ))
 }
 
-// --- 从 Ollama 模型库导入（零下载） ---
+// --- 导入 GGUF 模型（硬链接优先，同盘零额外占用） ---
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportReport {
+    /// 汇总文案（如「已导入 2 个文件」）
     pub label: String,
+    /// 多模态主模型文件名（未识别到则为空）
     pub model_file: String,
+    /// 投影器文件名（mmproj）
     pub projector_file: Option<String>,
-    pub model_mb: u64,
-    /// 导入的嵌入模型文件名（没有可导入的嵌入模型时为空）
+    /// 嵌入模型文件名
     pub embed_file: Option<String>,
-    pub embed_mb: Option<u64>,
-    /// hardlink=硬链接（不额外占盘）/ copy=复制 / exists=已存在跳过
-    pub model_link: String,
-    pub projector_link: Option<String>,
+    /// 实际导入（新建链接/复制）的文件数
+    pub imported: usize,
+    /// 逐文件说明（已存在 / 硬链接 / 复制）
+    pub message: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -417,9 +382,9 @@ enum LinkKind {
 impl LinkKind {
     fn as_str(&self) -> &'static str {
         match self {
-            LinkKind::Hardlink => "hardlink",
-            LinkKind::Copy => "copy",
-            LinkKind::Exists => "exists",
+            LinkKind::Hardlink => "硬链接（零额外磁盘）",
+            LinkKind::Copy => "复制",
+            LinkKind::Exists => "已存在，跳过",
         }
     }
 }
@@ -437,8 +402,77 @@ fn link_or_copy(src: &Path, dst: &Path) -> Result<LinkKind, String> {
         .map_err(|e| format!("导入 {} 失败: {}", src.display(), e))
 }
 
-/// 递归收集 manifest 文件（限深度，避免异常目录结构下扫太久）
-fn collect_manifests(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+/// 文件是否为 GGUF（按魔数，不看后缀）
+fn is_gguf_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() < 1024 {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    use std::io::Read as _;
+    f.read_exact(&mut magic).is_ok() && is_gguf_magic(&magic)
+}
+
+/// 导入用户显式选择的文件：校验 GGUF → 落到 `<应用数据>/models`。
+pub fn import_gguf_files(
+    app: &tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<ImportReport, String> {
+    if paths.is_empty() {
+        return Err("没有选择文件".into());
+    }
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dest = models_dir(&app_dir);
+    std::fs::create_dir_all(&dest).map_err(|e| format!("创建模型目录失败: {}", e))?;
+    let mut report = ImportReport {
+        label: String::new(),
+        model_file: String::new(),
+        projector_file: None,
+        embed_file: None,
+        imported: 0,
+        message: String::new(),
+    };
+    let mut notes: Vec<String> = Vec::new();
+    for raw in paths {
+        let src = PathBuf::from(&raw);
+        if !is_gguf_file(&src) {
+            return Err(format!(
+                "{} 不是有效的 GGUF 模型文件（需以魔数 GGUF 开头）",
+                src.display()
+            ));
+        }
+        let name = sanitize_name(&file_name_of(&src));
+        let name = if name.to_ascii_lowercase().ends_with(".gguf") {
+            name
+        } else {
+            format!("{}.gguf", name)
+        };
+        let out = dest.join(&name);
+        let kind = link_or_copy(&src, &out)?;
+        if kind != LinkKind::Exists {
+            report.imported += 1;
+        }
+        notes.push(format!("{}（{}）", name, kind.as_str()));
+        if looks_like_projector(Path::new(&name)) {
+            report.projector_file = Some(name);
+        } else if looks_like_embed(Path::new(&name)) {
+            report.embed_file = Some(name);
+        } else if report.model_file.is_empty() {
+            report.model_file = name;
+        }
+    }
+    report.label = format!("已导入 {} 个文件", report.imported);
+    report.message = notes.join("；");
+    Ok(report)
+}
+
+/// 递归收集 GGUF 文件（限深度；无 `.gguf` 后缀的按魔数识别）。
+fn collect_gguf(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth == 0 || out.len() > 200 {
         return;
     }
@@ -448,226 +482,37 @@ fn collect_manifests(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
-            collect_manifests(&p, depth - 1, out);
+            if p.file_name().and_then(|s| s.to_str()) != Some("manifests") {
+                collect_gguf(&p, depth - 1, out);
+            }
         } else if p.is_file() {
-            out.push(p);
+            let is_named_gguf = p.extension().and_then(|s| s.to_str()) == Some("gguf");
+            if is_named_gguf || is_gguf_file(&p) {
+                out.push(p);
+            }
         }
     }
 }
 
-/// 从 manifest 路径推模型名：`…/manifests/registry.ollama.ai/library/llava-phi3/latest` → `llava-phi3:latest`
-fn label_from_manifest(path: &Path) -> String {
-    let tag = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("latest")
-        .to_string();
-    let family = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("model")
-        .to_string();
-    format!("{}:{}", family, tag)
-}
-
-/// 离线列出 Ollama 已安装的模型（label 形如 `llava-phi3:latest`）——**不需要服务在跑**。
-///
-/// 为什么要离线版：`/api/tags` 只有服务运行时才问得到，而「视觉模型在不在盘上」恰恰是
-/// 判断本地视觉是否就绪的关键信息。2026-10-02 实测踩到：Ollama 已装、llava-phi3 就在磁盘上，
-/// 但服务没运行 → 状态里 models 为空 → 前端判定「未就绪」，一直弹「去配置本地视觉」横幅
-/// 催用户重新下载 2GB 模型（而其实早就装好了）。
-pub fn list_ollama_models_in(root: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    collect_manifests(&root.join("manifests"), 5, &mut files);
-    files.sort(); // 确定性：不依赖 readdir 顺序
-    let mut out: Vec<String> = Vec::new();
-    for p in &files {
-        let label = label_from_manifest(p);
-        if !out.contains(&label) {
-            out.push(label);
-        }
+/// 扫描目录并导入其中的 GGUF（用户自行下载的模型目录 / 其他工具的模型库）。
+pub fn import_gguf_dir(app: &tauri::AppHandle, dir: &Path) -> Result<ImportReport, String> {
+    if !dir.is_dir() {
+        return Err(format!("目录不存在：{}", dir.display()));
     }
-    out
-}
-
-/// 同 `list_ollama_models_in`，用 Ollama 模型库根目录（支持 `OLLAMA_MODELS` 覆盖）
-pub fn list_ollama_models_offline() -> Vec<String> {
-    match ollama_models_root() {
-        Some(root) => list_ollama_models_in(&root),
-        None => Vec::new(),
-    }
-}
-
-/// Ollama 模型库根目录（支持 `OLLAMA_MODELS` 覆盖）
-pub fn ollama_models_root() -> Option<PathBuf> {
-    if let Some(v) = std::env::var_os("OLLAMA_MODELS") {
-        if !v.is_empty() {
-            return Some(PathBuf::from(v));
-        }
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".ollama/models"))
-}
-
-/// 扫描 Ollama 模型库，返回第一个「带投影器的多模态模型」及其实体文件路径：
-/// `(label, 模型 blob, 投影器 blob)`
-pub fn find_ollama_multimodal(root: &Path) -> Option<(String, PathBuf, PathBuf)> {
-    let manifests = root.join("manifests");
-    let mut files = Vec::new();
-    collect_manifests(&manifests, 5, &mut files);
-    // 优先 llava/vision 系的多模态模型（多模态通常带 projector；再按名字偏好排序）
-    files.sort_by_key(|p| {
-        let s = p.to_string_lossy().to_ascii_lowercase();
-        let pref = if s.contains("llava") || s.contains("vision") || s.contains("vl") {
-            0
-        } else {
-            1
-        };
-        (pref, s)
-    });
-    for m in files {
-        let Ok(text) = std::fs::read_to_string(&m) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let Some((model_digest, Some(proj_digest))) = parse_ollama_manifest(&v) else {
-            continue; // 纯文本模型不代管
-        };
-        let model_blob = blob_path(&root.join("blobs"), &model_digest);
-        let proj_blob = blob_path(&root.join("blobs"), &proj_digest);
-        if !model_blob.exists() || !proj_blob.exists() {
-            continue;
-        }
-        return Some((label_from_manifest(&m), model_blob, proj_blob));
-    }
-    None
-}
-
-/// 扫描 Ollama 模型库，返回第一个**嵌入模型**：(label, 模型 blob)。
-/// 只认「无投影器 + 名字像嵌入模型」的项 —— 不确定就不导入，宁可让用户手动指定。
-pub fn find_ollama_embed(root: &Path) -> Option<(String, PathBuf)> {
-    let manifests = root.join("manifests");
-    let mut files = Vec::new();
-    collect_manifests(&manifests, 5, &mut files);
-    files.sort(); // 确定性：按路径排序，不依赖 readdir 顺序
-    for m in files {
-        let Ok(text) = std::fs::read_to_string(&m) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        // 带投影器的属于多模态，交给 find_ollama_multimodal
-        let Some((digest, None)) = parse_ollama_manifest(&v) else {
-            continue;
-        };
-        let label = label_from_manifest(&m);
-        if !looks_like_embed(Path::new(&label)) {
-            continue;
-        }
-        let blob = blob_path(&root.join("blobs"), &digest);
-        if blob.exists() {
-            return Some((label, blob));
-        }
-    }
-    None
-}
-
-/// 把 Ollama 的多模态模型导入到本应用模型目录（硬链接优先，**不新增磁盘占用、无需下载**）。
-pub fn import_from_ollama(app: &tauri::AppHandle) -> Result<ImportReport, String> {
-    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let dest = models_dir(&app_dir);
-    std::fs::create_dir_all(&dest).map_err(|e| format!("创建模型目录失败: {}", e))?;
-    let root =
-        ollama_models_root().ok_or("未找到 Ollama 模型目录（HOME / OLLAMA_MODELS 均不可用）")?;
-    if !root.exists() {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_gguf(dir, 3, &mut files);
+    files.sort();
+    if files.is_empty() {
         return Err(format!(
-            "Ollama 模型目录不存在：{}（需先在 Ollama 中拉取多模态模型）",
-            root.display()
+            "未在 {} 找到 GGUF 模型文件（支持递归 3 层；无 .gguf 后缀的文件会按 GGUF 魔数识别）",
+            dir.display()
         ));
     }
-    // 两类模型都可以代管：多模态（聊天/识图）与嵌入（语义检索）。至少有一类才继续。
-    let multi = find_ollama_multimodal(&root);
-    let embed = find_ollama_embed(&root);
-    if multi.is_none() && embed.is_none() {
-        return Err(format!(
-            "未在 {} 找到可代管的模型：需要「带投影器的多模态模型」（如 llava-phi3）或「嵌入模型」（如 nomic-embed-text）",
-            root.display()
-        ));
-    }
-    // 双保险：确认确实是 GGUF（Ollama blob 格式若变更，这里会明确报错而不是留个坏文件）
-    let gguf_check = |p: &Path, what: &str| -> Result<(), String> {
-        let mut f = std::fs::File::open(p).map_err(|e| format!("读取{}失败: {}", what, e))?;
-        let mut magic = [0u8; 4];
-        use std::io::Read as _;
-        f.read_exact(&mut magic)
-            .map_err(|e| format!("读取{}失败: {}", what, e))?;
-        if !is_gguf_magic(&magic) {
-            return Err(format!(
-                "{} 不是 GGUF 格式（{}），无法交给 llama.cpp：该 Ollama 模型可能不是 llama.cpp 系模型",
-                what,
-                p.display()
-            ));
-        }
-        Ok(())
-    };
-
-    let mut label = String::new();
-    let mut model_file = String::new();
-    let mut projector_file = None;
-    let mut model_mb = 0u64;
-    let mut model_link = "exists".to_string();
-    let mut projector_link = None;
-
-    // ① 多模态（可选）
-    if let Some((l, model_blob, proj_blob)) = multi {
-        gguf_check(&model_blob, "模型")?;
-        gguf_check(&proj_blob, "投影器")?;
-        let name = sanitize_name(&l);
-        let model_out = dest.join(format!("{}.gguf", name));
-        let proj_out = dest.join(format!("{}-mmproj.gguf", name));
-        let ml = link_or_copy(&model_blob, &model_out)?;
-        let pl = link_or_copy(&proj_blob, &proj_out)?;
-        label = l;
-        model_mb = std::fs::metadata(&model_out)
-            .map(|m| m.len() / 1_048_576)
-            .unwrap_or(0);
-        model_file = file_name_of(&model_out);
-        projector_file = Some(file_name_of(&proj_out));
-        model_link = ml.as_str().to_string();
-        projector_link = Some(pl.as_str().to_string());
-    }
-
-    // ② 嵌入模型（可选）—— 语义检索能不能用起来就看它
-    let mut embed_file = None;
-    let mut embed_mb = None;
-    if let Some((l, blob)) = embed {
-        gguf_check(&blob, "嵌入模型")?;
-        let out = dest.join(format!("{}.gguf", sanitize_name(&l)));
-        link_or_copy(&blob, &out)?;
-        if label.is_empty() {
-            label = l;
-        }
-        embed_mb = Some(
-            std::fs::metadata(&out)
-                .map(|m| m.len() / 1_048_576)
-                .unwrap_or(0),
-        );
-        embed_file = Some(file_name_of(&out));
-    }
-
-    Ok(ImportReport {
-        label,
-        model_file,
-        projector_file,
-        model_mb,
-        embed_file,
-        embed_mb,
-        model_link,
-        projector_link,
-    })
+    let paths: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    import_gguf_files(app, paths)
 }
 
 fn file_name_of(p: &Path) -> String {
@@ -679,9 +524,8 @@ fn file_name_of(p: &Path) -> String {
 
 // --- 本地嵌入（语义检索的 llama.cpp 后端） ---
 //
-// 2026-09-18 实测（Intel Mac）：Ollama 的 `nomic-embed-text` blob 是合法 GGUF，
-// `llama-server --embedding --pooling mean -c 512` 能直接加载并返回 **768 维已归一化**向量，
-// 与 Ollama 侧同模型同维度 —— 所以换运行时**不需要重建任何已存向量**。
+// `llama-server --embedding --pooling mean -c 512` 能直接加载 nomic-embed-text 等嵌入 GGUF，
+// 返回**已归一化**向量——同一模型换运行时**不需要重建任何已存向量**。
 // 收益与聊天侧一致：按需启动 + 空闲退出 = **空闲 0 常驻**。
 //
 // 另一个实测结论：本机此前**根本没装嵌入模型**，语义检索一直按设计降级到 FTS5 关键词。
@@ -840,7 +684,7 @@ pub async fn ensure_embed_server_at(bin: Option<PathBuf>, dir: &Path) -> Result<
     let entries = list_gguf(dir);
     let model = pick_embed_model(&entries).ok_or_else(|| {
         format!(
-            "未在 {} 找到嵌入模型（可在设置里从 Ollama 导入，需先 `ollama pull nomic-embed-text`）",
+            "未在 {} 找到嵌入模型（请把 nomic-embed-text 等嵌入 GGUF 放到模型目录，或从目录导入）",
             dir.display()
         )
     })?;
@@ -1055,56 +899,6 @@ mod tests {
     }
 
     #[test]
-    fn blob_path_maps_digest() {
-        let blobs = p("/home/u/.ollama/models/blobs");
-        assert_eq!(
-            blob_path(&blobs, "sha256:377876be20ba"),
-            blobs.join("sha256-377876be20ba")
-        );
-        // 没有冒号（异常输入）也不崩
-        assert_eq!(blob_path(&blobs, "abc"), blobs.join("abc"));
-    }
-
-    #[test]
-    fn parse_manifest_extracts_model_and_projector() {
-        // 结构与真实 llava-phi3 manifest 一致
-        let v = serde_json::json!({
-            "schemaVersion": 2,
-            "layers": [
-                { "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:3778", "size": 2318919200u64 },
-                { "mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:004f", "size": 607648960u64 },
-                { "mediaType": "application/vnd.ollama.image.template", "digest": "sha256:c608", "size": 100 },
-                { "mediaType": "application/vnd.ollama.image.params", "digest": "sha256:cadf", "size": 20 }
-            ]
-        });
-        assert_eq!(
-            parse_ollama_manifest(&v),
-            Some(("sha256:3778".to_string(), Some("sha256:004f".to_string())))
-        );
-    }
-
-    #[test]
-    fn parse_manifest_handles_text_only_and_garbage() {
-        let text_only = serde_json::json!({
-            "layers": [{ "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:aa" }]
-        });
-        assert_eq!(
-            parse_ollama_manifest(&text_only),
-            Some(("sha256:aa".to_string(), None))
-        );
-        // 垃圾输入 → None（调用方跳过该 manifest，绝不 panic）
-        assert_eq!(parse_ollama_manifest(&serde_json::json!({})), None);
-        assert_eq!(
-            parse_ollama_manifest(&serde_json::json!({ "layers": "x" })),
-            None
-        );
-        assert_eq!(
-            parse_ollama_manifest(&serde_json::json!({ "layers": [] })),
-            None
-        );
-    }
-
-    #[test]
     fn sanitize_name_makes_safe_filenames() {
         assert_eq!(sanitize_name("llava-phi3:3.8b"), "llava-phi3-3.8b");
         assert_eq!(sanitize_name("a/b c"), "a-b-c");
@@ -1162,54 +956,6 @@ mod tests {
             .map(|n| n.get())
             .unwrap_or(4);
         assert!(default_threads() <= cores);
-    }
-
-    #[test]
-    fn label_from_manifest_uses_family_and_tag() {
-        let path = p("/u/.ollama/models/manifests/registry.ollama.ai/library/llava-phi3/latest");
-        assert_eq!(label_from_manifest(&path), "llava-phi3:latest");
-        // 极端输入不崩：无父目录时家族名回落为 model（文件名仍作为 tag）
-        assert_eq!(label_from_manifest(&p("x")), "model:x");
-    }
-
-    #[test]
-    fn ollama_models_root_honours_env_override() {
-        // 真实环境里 HOME 一定存在；OLLAMA_MODELS 覆盖优先（这里只验证不 panic 且为绝对路径）
-        let root = ollama_models_root().expect("HOME 应存在");
-        assert!(root.is_absolute());
-    }
-
-    /// 本机装了 Ollama 时就顺路验证「真 manifest → 真 blob」的整条发现链路：
-    /// 这正是「零下载导入」的关键依据（blob 必须是 GGUF）。本机没装/没有多模态模型 → 跳过。
-    #[test]
-    fn find_ollama_multimodal_on_real_store_if_present() {
-        let Some(root) = ollama_models_root() else {
-            return;
-        };
-        if !root.join("manifests").exists() {
-            return;
-        }
-        let Some((label, model, proj)) = find_ollama_multimodal(&root) else {
-            return; // 本机无「带投影器」的多模态模型 → 不算失败
-        };
-        assert!(
-            label.contains(':'),
-            "标签应形如 llava-phi3:latest，实际 {}",
-            label
-        );
-        assert!(model.exists(), "模型 blob 应存在: {}", model.display());
-        assert!(proj.exists(), "投影器 blob 应存在: {}", proj.display());
-        use std::io::Read as _;
-        for p in [&model, &proj] {
-            let mut f = std::fs::File::open(p).unwrap();
-            let mut magic = [0u8; 4];
-            f.read_exact(&mut magic).unwrap();
-            assert!(
-                is_gguf_magic(&magic),
-                "Ollama blob 应为 GGUF（零下载导入的前提）：{}",
-                p.display()
-            );
-        }
     }
 
     #[test]
@@ -1380,50 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn find_ollama_embed_discovers_only_embedding_models() {
-        let root = std::env::temp_dir().join(format!("dsy-ollama-{}", std::process::id()));
-        let mdir = root.join("manifests/registry.ollama.ai/library/nomic-embed-text");
-        let vdir = root.join("manifests/registry.ollama.ai/library/llava-phi3");
-        std::fs::create_dir_all(&mdir).unwrap();
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::create_dir_all(root.join("blobs")).unwrap();
-        // 造一个合法 GGUF 的 blob
-        let blob = root.join("blobs/sha256-embed1");
-        std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
-        std::fs::write(
-            mdir.join("latest"),
-            serde_json::json!({
-                "layers": [{ "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:embed1" }]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        // 多模态模型（带投影器）不该被当成嵌入模型
-        let peer = root.join("blobs/sha256-vis1");
-        let proj = root.join("blobs/sha256-proj1");
-        std::fs::write(&peer, b"GGUF").unwrap();
-        std::fs::write(&proj, b"GGUF").unwrap();
-        std::fs::write(
-            vdir.join("latest"),
-            serde_json::json!({
-                "layers": [
-                    { "mediaType": "application/vnd.ollama.image.model", "digest": "sha256:vis1" },
-                    { "mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:proj1" }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let found = find_ollama_embed(&root).expect("应找到嵌入模型");
-        assert_eq!(found.0, "nomic-embed-text:latest");
-        assert_eq!(found.1, blob);
-        let _ = std::fs::remove_dir_all(&root);
-        // 不存在的根目录 → None（不 panic）
-        assert!(find_ollama_embed(&p("/definitely/not/here")).is_none());
-    }
-
-    #[test]
     fn embed_status_reports_missing_bin_and_model_clearly() {
         // 未导入模型 / 未找到二进制的组合下不 panic，字段语义明确
         stop_embed_server();
@@ -1438,86 +1140,5 @@ mod tests {
         };
         assert_eq!(st.port, 18081);
         assert!(!st.model_found);
-    }
-
-    /// 真机端到端（`cargo test --lib local_runtime:: -- --ignored`）：
-    /// 从 Ollama 模型库发现嵌入模型 → 硬链接到临时目录 → 按需拉起嵌入服务 → 真的取回向量。
-    /// 这一步覆盖「发现 + 参数 + 生命周期 + 响应解析」全链路，是这条功能唯一的硬证据。
-    #[test]
-    #[ignore]
-    fn real_ollama_embed_model_end_to_end() {
-        let Some(root) = ollama_models_root() else {
-            eprintln!("跳过：未找到 Ollama 模型目录");
-            return;
-        };
-        let Some((label, blob)) = find_ollama_embed(&root) else {
-            eprintln!("跳过：Ollama 里没有嵌入模型（ollama pull nomic-embed-text）");
-            return;
-        };
-        eprintln!("发现嵌入模型：{} → {}", label, blob.display());
-
-        let dir = std::env::temp_dir().join(format!("dsy-embed-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join(format!("{}.gguf", sanitize_name(&label)));
-        link_or_copy(&blob, &dest).unwrap();
-
-        let bin = llama_bin(None);
-        assert!(bin.is_some(), "本机没有 llama-server");
-        let model = tauri::async_runtime::block_on(ensure_embed_server_at(bin, &dir))
-            .expect("嵌入服务应能拉起");
-        eprintln!("嵌入服务已就绪，模型：{}", model);
-
-        // 直接打 /v1/embeddings，验证维度与归一化
-        let out = tauri::async_runtime::block_on(async {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-                .unwrap();
-            let resp = client
-                .post(format!("http://127.0.0.1:{}/v1/embeddings", EMBED_PORT))
-                .json(&serde_json::json!({ "input": ["道生一，一生二", "hello world"], "model": model }))
-                .send()
-                .await
-                .unwrap();
-            assert!(resp.status().is_success(), "HTTP {}", resp.status());
-            let v: serde_json::Value = resp.json().await.unwrap();
-            parse_embed_response(&v).unwrap()
-        });
-        assert_eq!(out.len(), 2, "两段文本应返回两个向量");
-        assert_eq!(out[0].len(), 768, "nomic-embed-text 应为 768 维");
-        assert_eq!(out[0].len(), out[1].len(), "维度必须一致");
-        let norm: f32 = out[0].iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!(
-            (norm - 1.0).abs() < 0.01,
-            "应为已归一化向量，实际范数 {}",
-            norm
-        );
-        // 不同文本必须得到不同向量（否则说明拿到了假向量）
-        assert_ne!(out[0], out[1]);
-
-        stop_embed_server();
-        assert!(!embed_serving(), "停止后应回到 0 常驻");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 离线列模型：服务没跑时也要能判断「视觉模型在不在盘上」
-    /// （否则会把「已装好但服务未启动」误判成没配置，一直弹引导横幅）
-    #[test]
-    fn list_ollama_models_in_reads_manifests_without_service() {
-        let dir = std::env::temp_dir().join(format!("dsy-ollama-models-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let lib = dir.join("manifests/registry.ollama.ai/library");
-        std::fs::create_dir_all(lib.join("llava-phi3")).unwrap();
-        std::fs::write(lib.join("llava-phi3/latest"), b"{}").unwrap();
-        std::fs::create_dir_all(lib.join("nomic-embed-text")).unwrap();
-        std::fs::write(lib.join("nomic-embed-text/latest"), b"{}").unwrap();
-
-        let got = list_ollama_models_in(&dir);
-        assert_eq!(got, vec!["llava-phi3:latest", "nomic-embed-text:latest"]);
-
-        // 目录不存在 → 空表，不能 panic
-        assert!(list_ollama_models_in(&dir.join("nope")).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

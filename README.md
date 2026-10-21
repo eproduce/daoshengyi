@@ -2,7 +2,7 @@
 
 > 「道生一，一生二，二生三，三生万物。」—— 从一句话开始，让 AI 帮你完成更多。
 >
-> 一个**本地优先**的 AI Agent 桌面客户端，基于 **Tauri 2 + Vue 3 + Rust** 构建。深度绑定 **DeepSeek** 等国产大模型，同时支持本地 **Ollama** 视觉模型与 macOS 系统 **OCR**，让对话不只是聊天，更能自主调用工具、操作浏览器、读写文件、执行命令。
+> 一个**本地优先**的 AI Agent 桌面客户端，基于 **Tauri 2 + Vue 3 + Rust** 构建。深度绑定 **DeepSeek** 等国产大模型，同时支持本地 **llama.cpp** 视觉/嵌入模型与 macOS 系统 **OCR**，让对话不只是聊天，更能自主调用工具、操作浏览器、读写文件、执行命令。
 
 ## 📸 界面截图
 
@@ -19,7 +19,7 @@
 ### 🤖 智能对话
 - **流式输出** — Rust SSE 流式渲染，分块不丢字，逐字显示
 - **深度思考展示** — 展开/折叠模型的推理过程（reasoning_content）
-- **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点；本地 Ollama 一键接入
+- **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点；本地推理服务（llama.cpp / Strata 等）可选接入
 - **多模型路由** — 按任务类型（对话 / 编程 / 摘要）自动选用不同 Profile
 - **日期防幻觉** — 自动注入当天日期，回答“今天/今年”类问题不胡诌
 - **缓存命中率统计** — 解析模型 `usage.prompt_cache_hit/miss_tokens`，顶栏实时显示 `缓存 xx%`
@@ -101,13 +101,15 @@
 
 ### 🖥 本地运行时（llama.cpp，可选但推荐）
 - **按需启动 + 空闲自动退出** — 只有真要用本地模型时才拉起进程，120 秒无请求自动回收，
-  **空闲 0 常驻**（Ollama 即使空闲也要守护进程 + `keep_alive` 到期前把 GPT 权重需在内存里）
+  **空闲 0 常驻**（进程退出即归还内存）
 - **两个实例各管一职** — 聊天/识图（18080）与嵌入（18081）分进程，一个挂了不影响另一个
-- **零下载迁移** — Ollama 模型库的 blob 本来就是 GGUF（已验魔数），设置里一键**硬链接**导入，
-  不重复占盘、无需重新下载；嵌入模型会一并导入
-- **语义检索双轨** — 优先走 llama.cpp 嵌入，失败自动回退 Ollama；两边都没有时**降级为关键词检索**
+- **零额外磁盘导入** — 「导入 GGUF 文件 / 从目录导入」用**硬链接**把已有模型放进托管目录，
+  不重复占盘、无需重新下载；GGUF 以魔数识别，无 `.gguf` 后缀也能导入
+- **语义检索** — 用本地嵌入 GGUF（如 nomic-embed-text）；未导入时**降级为关键词检索**
   （不会因此中断对话，但**绝不返回假向量**）
-- 设置 → 权限 → 「本地运行时」卡片可看实时状态（二进制/模型/服务/嵌入）与导入明细
+- **外部本地推理服务（可选）** — 已在本机运行 Strata / LM Studio / vLLM 时，可把视觉请求指向
+  其 OpenAI 兼容端点（如 `http://127.0.0.1:8080/v1`），无需再装模型
+- 设置 → 本地模型 → 「本地运行时」卡片可看实时状态（二进制/模型/服务/嵌入）与导入明细
 
 ### 🔒 安全与体验
 - **命令执行策略引擎** — 规则文件（`allow/deny/prompt <命令前缀>`）持久化审批决策，设置「权限」可编辑 / 测试
@@ -152,7 +154,7 @@
 | 后端能力 | reqwest、tokio、SQLite（rusqlite）、AES-256-GCM、portable-pty、tokio-tungstenite |
 | 工作流 | VueFlow（DAG 可视化工作流） |
 | Markdown | marked + highlight.js + KaTeX（数学公式） |
-| 本地运行时 | **llama.cpp**（识图 + 嵌入，按需启停）；Ollama 作为回退 |
+| 本地运行时 | **llama.cpp**（识图 + 嵌入，按需启停）；外部 OpenAI 兼容服务可选 |
 | 本地 OCR | macOS Vision（`ocr_tool.swift`） |
 | 原生视觉检测 | macOS Vision（同一侧车：分类/人脸/人体/姿势/动物/条码/显著区域 + 图像特征指纹） |
 | 图标 | lucide-vue-next |
@@ -165,8 +167,8 @@
 - **Node.js ≥ 24**（仓库根 `.nvmrc` 固定，`nvm use` 即可；CI 也读同一份）
 - **Rust ≥ 1.98**（`rust-toolchain.toml` 固定版本，rustup 会自动装好；升级时要同步改 ci.yml / build-macos.yml）
 - **macOS / Windows / Linux**
-- 可选：**llama.cpp**（`brew install llama.cpp`）—— 装了才能用「本地运行时」的按需启停；
-  不装则回退 Ollama
+- 可选：**llama.cpp**（`brew install llama.cpp`）—— 装了才能用本地识图/嵌入；
+  不装时可用线上 API，或把视觉请求指向已有的外部本地推理服务
 
 ### 安装依赖
 
@@ -220,28 +222,18 @@ git tag v1.0.0-alpha.2 && git push origin v1.0.0-alpha.2   # → 自动打包并
 - **API Key** — 你的密钥（AES-256-GCM 加密保存）
 - **模型** — 如 `deepseek-v4-flash`、`deepseek-reasoner`
 
-### 2. 一键部署本地 Ollama（可选）
+### 2. 配置本地视觉模型（可选）
 
-「设置 → Ollama」点击一键部署即可（无需 Homebrew）：
-1. 官方 zip 直装到 `~/Applications/Ollama.app`，断点续传、失败可重试
-2. 自动拉取视觉模型（如 `llava-phi3:3.8b`）并显示进度
-3. 自动添加 `ollama` API Profile，用于图片识别
+前提：`brew install llama.cpp`。然后在「设置 → 本地模型」：
 
-### 2.5 切到 llama.cpp 本地运行时（推荐，省内存）
-
-前提：`brew install llama.cpp`。然后在「设置 → 权限 → 本地运行时」：
-
-1. 点「**从 Ollama 导入模型（硬链接，零下载）**」—— 把 Ollama 已有的视觉/嵌入模型
-   硬链接到应用模型目录（**不额外占盘、不用重新下载**）
-2. 运行时选择保持「**自动**」（llama.cpp 可用就用它，不可用自动回退 Ollama）
+1. 点「**导入 GGUF 文件…**」选择带投影器（mmproj）的多模态模型，或点「**从目录导入…**」
+   扫描一个已有模型目录（递归 3 层、无 `.gguf` 后缀按魔数识别；导入走硬链接，不额外占盘）
+2. 语义检索再导入一个嵌入 GGUF（如 `nomic-embed-text`）；未导入时自动降级为关键词检索
 3. 想立即归还内存就点「立即停止运行时」（下次识图会自动再拉起）
+4. 已在本机跑 **Strata**（`http://127.0.0.1:8080/v1`）或其他 OpenAI 兼容服务时，
+   可在同一页选「外部本地推理服务」并一键填入 Strata 预设，无需再装 llama.cpp
 
-> 实测数据（Intel Mac / llava-phi3 3.8B）：Ollama = 守护进程 + 4505MB 常驻；裸 llama.cpp
-> = 3928MB 且**退出即归还**；推理速度基本一致（41.5s vs 44.6s）——换运行时的收益是
-> **内存与常驻**，不是速度。
->
-> 嵌入（语义检索）同理：需先在 Ollama 侧 `ollama pull nomic-embed-text`（~274MB），
-> 再点导入；它决定「记忆语义检索/知识库向量」能不能用（未装时自动降级为关键词检索）。
+> 本地运行时按需启停：进程退出即归还内存，空闲不常驻；推理速度取决于本机 CPU/GPU。
 
 ### 3. 启用 MCP 服务器 / 技能 / 记忆
 
@@ -251,7 +243,7 @@ git tag v1.0.0-alpha.2 && git push origin v1.0.0-alpha.2   # → 自动打包并
 
 ### 4. 图片识别
 
-直接发送图片即可：主模型非视觉时自动用本地 Ollama + OCR 识别成文字描述后交给模型；支持图片的模型则直接多模态输入。
+直接发送图片即可：主模型非视觉时自动用本地视觉模型（llama.cpp 或外部本地服务）+ OCR 识别成文字描述后交给模型；支持图片的模型则直接多模态输入。
 
 ### 5. 终端命令与文件
 
@@ -315,7 +307,7 @@ daoshengyi/
 │   │   ├── DiffConfirmDialog.vue # 文件编辑 diff 确认
 │   │   └── ...                 # 其他（AboutDialog / QuickBar / 等）
 │   ├── data/                   # 静态数据（内置工具 / MCP 市场 / 提示词 / 技能 / 模式 / 角色 / 工作流模板）
-│   ├── stores/                 # Pinia 状态（chat / mcp / memory / ollama / skill / ui / pty）
+│   ├── stores/                 # Pinia 状态（chat / mcp / memory / localRuntime / skill / ui / pty）
 │   ├── utils/                  # 工具（tool-call / permissions / model-routing / workflow-engine / agents-md / 记忆 / 搜索门等）
 │   ├── types/index.ts          # TypeScript 类型定义
 │   ├── App.vue                 # 主布局

@@ -14,12 +14,12 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import UndoHistoryDialog from "./components/UndoHistoryDialog.vue";
 import AppLogo from "./components/AppLogo.vue";
 import { useChatStore } from "./stores/chat";
-import { useOllamaStore } from "./stores/ollama";
+import { useLocalRuntimeStore } from "./stores/localRuntime";
 import { useUiStore, type SettingsTab } from "./stores/ui";
 import { useTheme } from "./composables/useTheme";
 import { themePrefLabel } from "@/utils/theme";
 import { formatCost } from "@/utils/tokens";
-// 本地视觉引导横幅判定（llama.cpp 优先、Ollama 回退）——纯函数，便于单测
+// 本地视觉引导横幅判定（llama.cpp）——纯函数，便于单测
 import { localVisionHint } from "@/utils/local-vision-hint";
 import { invoke } from "@tauri-apps/api/core";
 import type { ImageAttachment, FileAttachment } from "@/types";
@@ -41,7 +41,7 @@ import {
 } from "lucide-vue-next";
 
 const chatStore = useChatStore();
-const ollamaStore = useOllamaStore();
+const localRuntime = useLocalRuntimeStore();
 const ui = useUiStore();
 const { theme, pref, toggleTheme } = useTheme();
 
@@ -50,9 +50,9 @@ const { theme, pref, toggleTheme } = useTheme();
 const isDesktop = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 const browserModeBanner = ref(true); // 预览警示条可手动关闭
 
-// 首次启动自动检测本地视觉模型（llama.cpp 优先、Ollama 回退，结合硬件评估智能引导）
-const ollamaBanner = ref(false); // 硬件允许 → 引导配置本地视觉（装 llama.cpp / 部署 Ollama）
-const ollamaNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
+// 首次启动自动检测本地视觉模型（llama.cpp，结合硬件评估智能引导）
+const localVisionBanner = ref(false); // 硬件允许 → 引导配置本地视觉
+const localVisionNotRecBanner = ref(false); // 硬件不足 → 建议线上 API 横幅
 const hardwareMessage = ref("");
 function openSettings(tab: SettingsTab = "api") {
   ui.openSettings(tab);
@@ -72,35 +72,23 @@ watch(
 );
 // 根据当前本地视觉状态计算聊天窗口引导横幅。抽取为独立函数，供启动时与
 // 状态变化（含部署/导入完成）时实时重算——修复「部署完成后横幅仍残留」。
-function evaluateOllamaBanner() {
-  hardwareMessage.value = ollamaStore.hw?.message ?? "";
-  // 判定逻辑收口在 utils/local-vision-hint（纯函数 + 单测）：llama.cpp 优先、Ollama 回退，
-  // 两者任一就绪就不再引导；硬件不足才建议线上 API。
+function evaluateLocalVisionBanner() {
+  hardwareMessage.value = localRuntime.hw?.message ?? "";
+  // 判定逻辑收口在 utils/local-vision-hint（纯函数 + 单测）
   const hint = localVisionHint({
-    status: ollamaStore.status,
-    runtime: ollamaStore.runtime,
-    hwVerdict: ollamaStore.hw?.verdict ?? null,
-    busy: ollamaStore.busy,
+    runtime: localRuntime.runtime,
+    hwVerdict: localRuntime.hw?.verdict ?? null,
   });
-  ollamaBanner.value = hint === "deploy";
-  ollamaNotRecBanner.value = hint === "online-api";
+  localVisionBanner.value = hint === "deploy";
+  localVisionNotRecBanner.value = hint === "online-api";
 }
-async function checkOllamaOnStart() {
-  // 与设置页共享全局 ollama store（main.ts 已注册进度监听，幂等）
-  await ollamaStore.init();
-  evaluateOllamaBanner();
+async function checkLocalVisionOnStart() {
+  // 与设置页共享全局 store
+  await localRuntime.init();
+  evaluateLocalVisionBanner();
 }
-// 实时跟随本地视觉状态：状态、硬件或 llama.cpp 运行时变化（如「从 Ollama 导入模型」
-// 完成后 runtime 更新）都自动重算，无需重启应用。
-watch(
-  [
-    () => ollamaStore.busy,
-    () => ollamaStore.status,
-    () => ollamaStore.hw,
-    () => ollamaStore.runtime,
-  ],
-  () => evaluateOllamaBanner(),
-);
+// 实时跟随本地视觉状态：硬件或运行时变化（如导入模型完成）自动重算，无需重启应用。
+watch([() => localRuntime.hw, () => localRuntime.runtime], () => evaluateLocalVisionBanner());
 const messagesContainer = ref<HTMLDivElement>();
 
 // ── 底部辅助面板（任务计划 / 子代理）────────────────────────────
@@ -218,7 +206,7 @@ onMounted(() => {
   void chatStore.ensureActiveConversation();
   scrollToBottom();
   document.addEventListener("keydown", onKeydown);
-  checkOllamaOnStart();
+  checkLocalVisionOnStart();
   window.addEventListener("undo-changed", onUndoChangedEvent);
   void refreshHasUndo();
 });
@@ -292,38 +280,39 @@ onUnmounted(() => {
       </header>
 
       <!-- 浏览器预览模式警示：非 Tauri 环境（vite dev/preview 预览）无本地文件写入等桌面能力 -->
-      <div v-if="browserModeBanner && !isDesktop" class="ollama-banner ollama-banner--warn">
+      <div v-if="browserModeBanner && !isDesktop" class="local-banner local-banner--warn">
         <span
           >⚠️ 浏览器预览模式：本地文件写入 / 读取 / 打开、系统命令等桌面能力不可用——agent 无法把
           文件直接写入磁盘。请切换到「道生一」桌面应用窗口（npm run tauri dev
           打开、带系统菜单的窗口）使用完整功能。</span
         >
-        <button class="ollama-banner__close" title="关闭" @click="browserModeBanner = false">
+        <button class="local-banner__close" title="关闭" @click="browserModeBanner = false">
           ✕
         </button>
       </div>
 
-      <!-- 本地视觉引导横幅（llama.cpp 优先，Ollama 回退；硬件允许时） -->
-      <div v-if="ollamaBanner" class="ollama-banner">
+      <!-- 本地视觉引导横幅（llama.cpp；硬件允许时） -->
+      <div v-if="localVisionBanner" class="local-banner">
         <span
-          >💡 本机还没有可用的本地视觉模型。首选用 <b>llama.cpp</b>：装好 llama-server
-          并导入带投影器的多模态模型即可离线识图（约 2GB）； 也可以一键部署 Ollama
-          走回退链路。你的硬件足以支持。</span
+          >💡 本机还没有可用的本地视觉模型。装好 <b>llama.cpp</b>（llama-server）并导入带投影器的
+          多模态 GGUF 即可离线识图。你的硬件足以支持。</span
         >
-        <button class="ollama-banner__btn" @click="openSettings('ollama')">去配置</button>
-        <button class="ollama-banner__close" title="关闭" @click="ollamaBanner = false">✕</button>
+        <button class="local-banner__btn" @click="openSettings('local')">去配置</button>
+        <button class="local-banner__close" title="关闭" @click="localVisionBanner = false">
+          ✕
+        </button>
       </div>
 
       <!-- 硬件不足时：建议配置线上视觉模型 API -->
-      <div v-if="ollamaNotRecBanner" class="ollama-banner ollama-banner--warn">
+      <div v-if="localVisionNotRecBanner" class="local-banner local-banner--warn">
         <span
           >⚠️
           {{
             hardwareMessage || "你的硬件可能不适合本地部署视觉模型，建议配置线上视觉模型 API。"
           }}</span
         >
-        <button class="ollama-banner__btn" @click="openSettings('api')">配置线上 API</button>
-        <button class="ollama-banner__close" title="关闭" @click="ollamaNotRecBanner = false">
+        <button class="local-banner__btn" @click="openSettings('api')">配置线上 API</button>
+        <button class="local-banner__close" title="关闭" @click="localVisionNotRecBanner = false">
           ✕
         </button>
       </div>
@@ -795,8 +784,8 @@ onUnmounted(() => {
   box-shadow: var(--shadow-md);
 }
 
-/* Ollama 引导横幅 */
-.ollama-banner {
+/* 本地视觉引导横幅 */
+.local-banner {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -809,10 +798,10 @@ onUnmounted(() => {
   color: var(--text-primary);
   flex-shrink: 0;
 }
-.ollama-banner span {
+.local-banner span {
   flex: 1;
 }
-.ollama-banner__btn {
+.local-banner__btn {
   padding: 4px 12px;
   border: none;
   border-radius: 6px;
@@ -822,19 +811,19 @@ onUnmounted(() => {
   cursor: pointer;
   white-space: nowrap;
 }
-.ollama-banner__btn:hover {
+.local-banner__btn:hover {
   background: var(--accent-hover);
 }
-.ollama-banner--warn {
+.local-banner--warn {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(239, 68, 68, 0.1));
 }
-.ollama-banner--warn .ollama-banner__btn {
+.local-banner--warn .local-banner__btn {
   background: #f59e0b;
 }
-.ollama-banner--warn .ollama-banner__btn:hover {
+.local-banner--warn .local-banner__btn:hover {
   background: #d97706;
 }
-.ollama-banner__close {
+.local-banner__close {
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -842,7 +831,7 @@ onUnmounted(() => {
   font-size: 12px;
   padding: 4px;
 }
-.ollama-banner__close:hover {
+.local-banner__close:hover {
   color: var(--text-primary);
 }
 </style>

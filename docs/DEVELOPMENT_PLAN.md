@@ -135,7 +135,7 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| 4.1 | 本地语义检索 | ✅ | 已接入本地 embedding（`nomic-embed-text`，P-A6）：`ollama_embed` 命令 + `embed-provider` 判定 + 记忆向量余弦检索；未部署时静默回退 FTS5。**2026-09-24 改**：统一入口 `embed_prefer_local` 已改为 **llama.cpp 优先**（`local_runtime::embed_texts`），Ollama 仅作回退（见 `docs/OLLAMA_EXIT_PLAN.md`） |
+| 4.1 | 本地语义检索 | ✅ | 已接入本地 embedding（`nomic-embed-text`，P-A6）：`ollama_embed` 命令 + `embed-provider` 判定 + 记忆向量余弦检索；未部署时静默回退 FTS5。**2026-09-24 改**：统一入口 `embed_prefer_local` 已改为 **llama.cpp 优先**（`local_runtime::embed_texts`），Ollama 仅作回退（见 `docs/LOCAL_RUNTIME.md`） |
 | 4.2 | 记忆复习 | ✅ | 已实现（P-A9）：`reviewMemories` + 记忆面板「智能复习」按钮，LLM 合并过时/矛盾/重复事实 |
 | 4.3 | 跨设备同步 | ⬜ | 远期（需云端账号/服务器） |
 

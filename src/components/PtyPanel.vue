@@ -88,7 +88,7 @@ onUnmounted(stopPolling);
 <template>
   <div class="pty-panel">
     <h3><TerminalIcon :size="17" /> 交互式终端（PTY）</h3>
-    <p class="ollama-desc">
+    <p class="pty-desc">
       启动长驻/交互式进程（dev server、REPL、watch 等），在此实时查看输出并输入指令。命令用
       <code>sh -c</code> 执行，支持管道 / 重定向 / 环境变量。
     </p>
@@ -163,6 +163,12 @@ onUnmounted(stopPolling);
 </template>
 
 <style scoped>
+.pty-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .pty-panel {
   display: flex;
   flex-direction: column;

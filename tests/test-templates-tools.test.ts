@@ -17,7 +17,7 @@ import {
   roleAllowedToolNames,
   invalidRoleTools,
 } from "../src/data/roles-catalog.ts";
-import { embeddingSource, isOllamaBase } from "../src/utils/embed-provider.ts";
+import { embeddingSource, isLocalBase } from "../src/utils/embed-provider.ts";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "../src/utils/permissions.ts";
 import { buildReviewPrompt, parseReviewActions } from "../src/utils/memory-review.ts";
 import { routeProfileId } from "../src/utils/model-routing.ts";
@@ -358,11 +358,11 @@ console.log("\n== P-M4 汇总仲裁（formatParallelResults 语义） ==");
 
 console.log("\n== P-A6 本地 embedding 提供方判定 ==");
 {
-  assert(embeddingSource("http://localhost:11434/v1") === "ollama", "本地 Ollama /v1 → ollama");
-  assert(embeddingSource("http://127.0.0.1:11434") === "ollama", "127.0.0.1 Ollama → ollama");
+  assert(embeddingSource("http://127.0.0.1:8080/v1") === "local", "本机服务 → local");
+  assert(embeddingSource("http://localhost:1234/v1") === "local", "localhost → local");
   assert(
-    embeddingSource("https://api.deepseek.com") === "ollama",
-    "DeepSeek → ollama（用本地 Ollama 补语义）",
+    embeddingSource("https://api.deepseek.com") === "local",
+    "DeepSeek → local（用本地嵌入补语义）",
   );
   assert(embeddingSource("https://api.openai.com/v1") === "openai", "OpenAI → openai");
   assert(
@@ -370,11 +370,8 @@ console.log("\n== P-A6 本地 embedding 提供方判定 ==");
     "通义兼容端点 → openai",
   );
   assert(embeddingSource("") === "none", "空 baseUrl → none");
-  assert(isOllamaBase("http://localhost:11434/v1") === true, "isOllamaBase 命中本地 Ollama");
-  assert(
-    isOllamaBase("https://api.deepseek.com") === false,
-    "isOllamaBase 排除 DeepSeek（字面 Ollama 才认）",
-  );
+  assert(isLocalBase("http://127.0.0.1:8080/v1") === true, "isLocalBase 命中本机端点");
+  assert(isLocalBase("https://api.deepseek.com") === false, "isLocalBase 排除远端");
 }
 
 console.log("\n== P-A7 权限矩阵（工具开关 + 路径白名单） ==");

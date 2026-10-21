@@ -7,8 +7,8 @@
 //   此时 `listen()` 会以 `TypeError: Load failed` 失败，或者干脆**永不 settle**。
 //
 // 后果比日志噪音严重得多：`listen` 失败 = 该事件监听**根本没注册**——
-//   菜单栏项（menu://action）、IM 配对请求（im-pair-request）、Ollama 部署完成
-//   （ollama-configured）都会在本会话里静默失效，直到重启应用。
+//   菜单栏项（menu://action）、IM 配对请求（im-pair-request）等都会在本会话里静默失效，
+//   直到重启应用。
 //
 // 所以：注册失败要重试（退避几次），彻底失败要**留下可见日志**，绝不静默。
 
@@ -33,7 +33,7 @@ export interface ListenRetryOptions {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 事件名 → 是否属于「启动期必须注册上」的关键监听（用于失败时给出更明确的日志） */
-const CRITICAL_PREFIX = ["menu://", "im-", "ollama-"];
+const CRITICAL_PREFIX = ["menu://", "im-"];
 
 export function isCriticalEvent(event: string): boolean {
   return CRITICAL_PREFIX.some((p) => event.startsWith(p));

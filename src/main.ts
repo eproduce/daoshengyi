@@ -3,7 +3,7 @@ import { createPinia } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App.vue";
 import { useMcpStore } from "./stores/mcp";
-import { useOllamaStore } from "./stores/ollama";
+import { useLocalRuntimeStore } from "./stores/localRuntime";
 import { useChatStore } from "./stores/chat";
 import { useUiStore } from "./stores/ui";
 import { askConfirm } from "./utils/dialog";
@@ -27,16 +27,8 @@ app.use(pinia);
 // 触发配置加载与已启用 MCP 服务器的自动重连（Pinia store 默认惰性初始化，
 // 若不主动实例化，需用户打开 MCP 面板才生效，导致工具提示缺失）
 useMcpStore();
-// 全局注册 Ollama 进度监听并做首次硬件/服务检测（不随设置界面关闭而中断）
-useOllamaStore().init();
-
-// Rust 端一键部署完成后自动刷新 API 配置（自动切换为本地 Ollama，无需手动配置）
-// P1-13：带重试 —— 窗口刚创建时 IPC 尚可失败（Load failed），失败则不重试会让监听
-// 静默失效（一键部署完成后不会自动刷新）。
-void listenWithRetry("ollama-configured", () => {
-  const chat = useChatStore();
-  chat.reloadProfilesFromRust().catch(() => {});
-});
+// 首次硬件 / 本地运行时检测（llama.cpp）
+useLocalRuntimeStore().init();
 app.mount("#app");
 
 // 启动标记：白屏这类「页面根本没挂起来」的问题，日志里必须留痕——否则前端一行都不输出，
@@ -84,8 +76,8 @@ void listenWithRetry<string>("menu://action", (e) => {
     case "open-mcp":
       ui.openSettings("mcp");
       break;
-    case "open-ollama":
-      ui.openSettings("ollama");
+    case "open-local":
+      ui.openSettings("local");
       break;
     case "open-stats":
       ui.openSettings("stats");

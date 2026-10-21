@@ -872,7 +872,7 @@ function getMcpToolsPrompt(): string {
     '- **run_code** (app): 在**可终止的沙箱 Worker** 里执行你写的 JavaScript（多步数据处理/批量计算/编排工具调用）。参数 {"code": "JavaScript 代码"}。**代码契约**：整段代码是 async 函数体——可直接 `await`、用 `return` 交回结果，日志用 `console.log(...)`；**调用其它工具**用 `tools.工具名(参数对象)`，如 `const r = await tools.calc({ expression: "1+2" });`，返回该工具的结果字符串。**限制**：① 无文件/网络/系统能力（`fetch`/`XMLHttpRequest`/`importScripts` 被禁用，也没有 `window`/`document`），要读写文件或联网必须走 `tools.write_file(...)`/`tools.fetch_page(...)`；② **不是 Python/shell**（写 `def`/`import` 会语法错误），要跑环境命令用 `run_command`；③ 30 秒超时强制终止；④ 工具调用上限 20 次/次执行。**该工具默认关闭**，未启用时会明确提示用户去「设置 → 权限」打开。\n' +
     '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器工具（`browser_navigate` 打开 → `browser_evaluate` 提取 / `browser_screenshot` 截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
     '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
-    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。需要本地视觉后端就绪（llama.cpp 优先、Ollama 回退）。\n' +
+    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。需要本地视觉后端就绪（llama.cpp，或设置里配置的外部本地推理服务如 Strata）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。**注意**：OCR 对等宽数字串（尤其前导零）漏读率高，数位数/辨字形时要再用 image_inspect 交叉验证。\n' +
     '- **image_inspect** (app): 对图片做**确定性像素核验**（非 OCR）：列投影切出字符块 + 每个字形的墨迹量/封闭空洞数/宽高比 + ASCII 点阵。参数 {"path": "图片路径", "region": 可选 {left,top,width,height} 裁剪区, "threshold": 可选灰度阈值, "invert": 可选 true=浅色为字, "mode": "glyphs"|"info"}。**凡是数位数（证书编号/票据号/序列号/条码下方数字）或区分 0-O、1-l 这类相近字形，必须用它交叉验证**，不要只凭 ocr_image 的文本下结论；报告会给出宽度分布，"切出几块"就是几位。\n' +
     '- **vision_inspect** (app): 用 **macOS Vision 原生能力**做视觉检查（离线、零模型下载、毫秒级）：图像分类、人脸/人体/人体姿势的**数量与像素位置**、动物、条码二维码内容、**视觉显著区域**。参数 {"path": "图片路径", "max_labels": 可选，默认 8}。**分工**：image_inspect 管像素细节（数位数/辨字形）；本工具管「图里有什么、在哪」；describe_image 是本地小模型（30–120 秒且会幻觉）——**要数量/位置/是否存在优先用本工具**，需要语义描述时先用它定位、**裁出局部**再交 describe_image。返回的像素框与 image_inspect 的 region 同坐标系，可直接核验。**检测不到 ≠ 不存在**（小目标/极端角度会漏检）。\n' +
@@ -902,7 +902,7 @@ function getMcpToolsPrompt(): string {
     '\n- **git** (app): 在指定仓库目录执行 Git 操作（编程 Agent）。参数 {"cwd": "仓库目录绝对路径", "action": "status 状态 | diff 改动 | log 历史 | branch 分支 | add 暂存 | commit 提交 | pull 拉取 | push 推送 | checkout 切换 | rev-parse 解析", "args": [附加参数]}。**使用时机**：用户要求查看/提交/推送代码、对比改动、查看历史或分支时调用；提交用 action="commit" args=["-m","提交说明"]；先 status 看改动再 add+commit。只读操作（status/diff/log）安全；push/pull 会联网。' +
     '\n- **run_tests** (app): 在项目目录自动检测并运行测试（编程 Agent 验证循环）。参数 {"cwd": "项目目录绝对路径", "command": "可选，显式指定测试命令（如 pytest -q）", "args": [可选附加参数]}。自动识别：package.json→npm test、Cargo.toml→cargo test、pyproject/requirements→pytest。返回结构化结果（框架/命令/通过或失败/失败项列表），供你判断并迭代修复。**使用时机**：修改代码后必须运行测试验证；测试失败时分析失败项、修复、再运行直到通过（验证循环门禁）。' +
     '\n- **analyze_project** (app): 分析项目目录结构（编程 Agent 代码库理解）。参数 {"path": "项目目录绝对路径"}。返回：技术栈识别（Rust/TypeScript/Python/Vue 等）、清单文件信息（Cargo 包名/npm 包名+scripts）、源码文件按扩展名统计、顶层目录/文件结构（跳过 node_modules/.git/target 等大目录）。**使用时机**：用户要求分析/修改某项目前，先调用它快速建立项目认知（技术栈、结构、脚本），再深入读具体文件。' +
-    '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地嵌入模型：llama.cpp 的 nomic-embed-text，Ollama 兜底，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
+    '\n- **code_index** (app): 把项目代码目录**向量化索引**（P-A3 自然语言找代码；需本地嵌入模型：llama.cpp + nomic-embed-text 等嵌入 GGUF，重建式）。参数 {"root": "项目目录绝对路径"}。**使用时机**：用户要求「在 XX 项目里找 XX 代码/功能」前，先 code_index 索引该项目（若 code_roots 未列出）。' +
     '\n- **code_search** (app): 在已索引项目里**按自然语言找代码**（语义向量检索，返回相关文件与代码片段）。参数 {"root": "项目目录绝对路径", "query": "自然语言描述要查的代码，如「处理用户登录」「解析配置文件」", "limit": 可选条数（默认 6）}。**使用时机**：用户要求找某功能/逻辑的代码实现时，先用自然语言描述检索；命中后用 read_file 精读相关文件。' +
     '\n- **code_nav** (app): **语义级代码导航**（走本机语言服务器 LSP）：跳定义 / 找引用 / 找实现 / 悬停类型 / 文件符号 / 工作区符号 / **编译诊断** / 重命名**预览**。参数 {"action": "servers | definition | references | implementation | hover | symbols | workspace_symbols | diagnostics | rename", "root": "项目根目录绝对路径", "path": "文件绝对路径", "line": 行号(1 起算), "character": 列号(1 起算、按字符数), "query": "workspace_symbols 关键词", "new_name": "rename 新名字", "server": "可选指定服务器 id", "wait_ms": "可选等待毫秒"}。**使用时机**：要「准」的答案（定义在哪 / 谁在引用 / 有没有编译错 / 这行类型是什么）时用它；code_search 给的是「相关片段」，两者互补。' +
     '\n- **worktree** (app): **并行隔离**——给子代理/并行任务各建一个 git worktree（同一仓库的独立工作副本，落在 `<repo>/.daoshengyi/worktrees/<name>`、分支 `dsy/<name>`、已自动本地忽略）。参数 {"action": "create | list | remove", "repo": "仓库目录绝对路径", "name": "create 副本名", "base_ref": "create 基于哪个 ref", "path": "remove 要删的副本路径", "force": "remove 有未提交改动时需 true"}。**使用时机**：多个子代理要同时改代码时先各自 create 副本，改完用 git diff 对比再合并。' +
@@ -935,7 +935,7 @@ function getMcpToolsPrompt(): string {
     '\n- **workflow_improve** (app): **基于该工作流最近运行历史（含失败节点轨迹）自动优化并保存新版本**。参数 {"name": "工作流名称或 id", "note": "可选改进诉求"}。模型分析最近运行（失败/被跳过/慢节点）修复问题（换工具/加分支/细化提示词）；判定无需改动则保留原样。保存后建议 workflow_run 验证。**使用时机**：用户反馈某工作流结果不佳/报错，或你看到 workflow_run 返回里有失败节点时。' +
     '\n- **workflow_suggest** (app): **按任务文本在已保存工作流中做相关度建议**（关键词打分，返回候选与流程链）。参数 {"task": "任务描述", "limit": "可选条数默认 3"}。**使用时机**：接到任务先判断是否已有同类可复用工作流时调用；命中则 workflow_run，未命中且会重复则 workflow_create + workflow_remember。' +
     '\n- **workflow_remember** (app): **沉淀处理模式记忆：把「某类任务 → 已沉淀工作流」记住**（存长期记忆 type=workflow，跨会话自动注入）。参数 {"task_type": "任务类型描述如 月度研究/日报生成", "workflow_name": "工作流名"}。**使用时机**：你 workflow_create 固化了一个会重复的流程后，调用本工具记住映射，以后同类任务会自动想起并 workflow_run 复用。' +
-    '\n- **answer_html** (app): **把回答渲染成一页可视化 HTML**（内置渲染器随包分发，输出单文件离线页面；你只写 Markdown 草稿，布局/配色/SVG 坐标由渲染器负责）。参数 {"title": "页面标题", "markdown": "Markdown 草稿（用 `## 面板` 分面板，可含 flow/sequence/tree/timeline/kv/callout/limits/annot 围栏块或表格）", "lang": "可选", "out_path": "可选，默认统一生成在 ~/Documents/道生一产物/"}。**仅在用户明确要求网页/HTML/一页图形式时才调用**（如「用 HTML 回答」「做个网页讲清楚」），普通问答**不要**自作主张出页面。**渲染器无数学引擎：不要写 LaTeX（美元符公式/反斜杠命令会被拦下报错），公式用 Unicode 记号**。' +
+    '\n- **answer_html** (app): **把回答渲染成一页可视化 HTML**（内置渲染器随包分发，输出单文件离线页面；你只写 Markdown 草稿，布局/配色/SVG 坐标由渲染器负责）。参数 {"title": "页面标题", "markdown": "Markdown 草稿（用 `## 面板` 分面板，可含 flow/sequence/tree/timeline/kv/callout/limits/annot 围栏块、表格或 ```chart 数据图）", "lang": "可选", "out_path": "可选，默认统一生成在 ~/Documents/道生一产物/", "template": "可选 sheet|doc", "theme": "可选 auto|blueprint|shadcn|paper"}。数据图写法：```chart + `type: bar|line|area|pie|donut|scatter|radar|gauge|heatmap|funnel`、`labels: 铜, 铝`、`series: 周涨跌 = -2.1, -0.8`（ECharts 内联、离线、带入场动画；也可直接写 option JSON）。**仅在用户明确要求网页/HTML/一页图形式时才调用**（如「用 HTML 回答」「做个网页讲清楚」），普通问答**不要**自作主张出页面。**渲染器无数学引擎：不要写 LaTeX（美元符公式/反斜杠命令会被拦下报错），公式用 Unicode 记号**。' +
     '\n- **plan_task** (app): **创建/替换任务计划（进度卡片实时显示在对话区顶部）**。参数 {"title": "任务标题", "steps": ["子任务1", "子任务2", ...]}。**使用时机**：用户下达**多步骤/多文件/多研究点**的复杂任务时，先分解为子任务并调用本工具，让用户看到计划与进度；简单任务（1-2 步）不必用。**【任务模式】下几乎必用**：把用户目标拆成有序子步骤后立即调用本工具建立计划，再逐步执行。' +
     '\n- **plan_update** (app): **更新任务计划某一步骤的进度**。参数 {"step": 步骤序号(从1开始), "status": "doing" 进行中 | "done" 已完成 | "failed" 失败}。**使用时机**：开始执行某步时标记 doing、完成后标记 done、某步失败标记 failed 并调整后续计划；配合 plan_task 实现 Plan→Act→Observe→修正 循环。' +
     '\n- **session_spawn** (app): **创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {"prompt": "后台任务的完整指令", "name": "可选子会话名（默认 子任务）"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。' +
@@ -2909,7 +2909,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
     case "describe_image": {
       const path = String(args.path || "");
       if (!path) throw new Error("describe_image 需要 path 参数（本地图片文件路径）");
-      const desc = await invoke<string>("ollama_describe_image", { images: [`file://${path}`] });
+      const desc = await invoke<string>("describe_image", { images: [`file://${path}`] });
       return desc || "（本地视觉模型无法识别该图片）";
     }
     case "ocr_image": {
@@ -3126,7 +3126,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `1. ocr_image（path=${path}）：macOS 原生 OCR，秒级返回，读截图里的文字最可靠；\n` +
         `2. browser_evaluate：读 document.body.innerText，核验页面文本内容；\n` +
         `3. describe_image（path=${path}）：本地视觉模型，**实测 30–120 秒**且可能描述失真/幻觉，确需画面描述时才用。\n` +
-        `4. 若上面都不可用（本地视觉后端尚未就绪）：请提示用户在「设置 → 本地模型」里装好 llama.cpp 并导入带投影器的多模态模型（也可「一键部署 Ollama」走回退链路），就绪后再重试。\n` +
+        `4. 若上面都不可用（本地视觉后端尚未就绪）：请提示用户在「设置 → 本地模型」里装好 llama.cpp 并导入带投影器的多模态模型（或在设置里配置外部本地推理服务，如 Strata），就绪后再重试。\n` +
         `图片已保存：${path}（用户可自行查看）。不要凭猜测断言渲染是否正常。`
       );
     }
@@ -3920,20 +3920,35 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const title = String(args.title || "").trim() || undefined;
       const lang = String(args.lang || "").trim() || undefined;
       const outPath = String(args.out_path || args.outPath || "").trim() || undefined;
+      const template = String(args.template || "").trim() || undefined;
+      const theme = String(args.theme || "").trim() || undefined;
       const res = await invoke<{
         html_path: string;
         node_version: string;
         cli: string;
         bytes: number;
+        template: string;
+        charts: number;
+        chart_engine: string;
+        warnings: string[];
       }>("answer_html", {
         markdown: draft,
         title: title ?? null,
         lang: lang ?? null,
         outPath: outPath ?? null,
+        template: template ?? null,
+        theme: theme ?? null,
       });
       const kb = Math.max(1, Math.round(res.bytes / 1024));
+      const extra = [
+        res.charts > 0 ? `${res.charts} 个图表（${res.chart_engine}）` : "",
+        res.template === "doc" ? "长文模板 + 目录" : "",
+      ]
+        .filter(Boolean)
+        .join("，");
+      const warn = res.warnings.length ? `\n⚠️ 离线自检：${res.warnings.join("；")}` : "";
       return (
-        `【HTML 讲解页已生成】\n路径：${res.html_path}\n（${kb} KB，渲染器 Node ${res.node_version}）\n` +
+        `【HTML 讲解页已生成】\n路径：${res.html_path}\n（${kb} KB${extra ? `，${extra}` : ""}，渲染器 Node ${res.node_version}）${warn}\n` +
         "请在回复末尾**原样**用 Markdown 链接引用该路径（禁止改写/美化路径），正文用 2~3 句给核心结论，不要把草稿或 HTML 贴回对话。"
       );
     }
@@ -5075,14 +5090,13 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  // 一键部署后刷新配置（Rust 端可能已自动添加/切换为本地 Ollama）
+  // 从 Rust 重新加载配置（外部改动后刷新本地缓存）
   async function reloadProfilesFromRust() {
     try {
       const settings = await reloadSettings();
       if (settings.profiles.length > 0) {
         profiles.value = stripDefaultOpenAI(settings.profiles);
-        // 保持用户当前的文本主模型（如 DeepSeek）——本地 Ollama 只作为图片识别的视觉辅助，
-        // 不因一键部署而切换主模型
+        // 保持用户当前的文本主模型（如 DeepSeek）——本地视觉后端不参与文本主模型选择
         if (
           settings.activeProfileId &&
           profiles.value.some((p) => p.id === settings.activeProfileId)
@@ -5355,7 +5369,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       // 110 秒兜底：本地推理慢，但避免异常导致前端永久挂起
       semantic = await Promise.race([
-        invoke<string>("ollama_describe_image", { images: b64s }),
+        invoke<string>("describe_image", { images: b64s }),
         new Promise<string>((resolve) => setTimeout(() => resolve(""), 110000)),
       ]);
     } catch {
@@ -6006,7 +6020,7 @@ export const useChatStore = defineStore("chat", () => {
       if (u.prompt > 0) lastPromptTokens = u.prompt;
     };
 
-    // 图片预处理：主模型非视觉（如 DeepSeek）→ 先用本地 Ollama 识别图片转成文字描述。
+    // 图片预处理：主模型非视觉（如 DeepSeek）→ 先用本地视觉模型识别图片转成文字描述。
     // 描述作为上下文注入 system（模型可见），不写入用户消息，避免"分析内容"污染用户对话。
     const isDS = (currentConfig.value.baseUrl || "").includes("deepseek");
     let descCtx = "";
@@ -6051,7 +6065,7 @@ export const useChatStore = defineStore("chat", () => {
       // 本地图片识别失败/超时：明确报错，避免静默降级成空回复
       if (ocrFailed) {
         throw new Error(
-          "本地图片识别失败或超时（请确认 Ollama 服务正常运行、llava-phi3 模型已下载）后重试",
+          "本地图片识别失败或超时（请确认 llama.cpp 已安装、已导入带投影器的多模态 GGUF，或外部本地推理服务已启动）后重试",
         );
       }
       const config = currentConfig.value;

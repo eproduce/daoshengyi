@@ -1003,10 +1003,21 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
       markdown: {
         type: "string",
         description:
-          "Markdown 草稿：可选 frontmatter + 多个 `## 面板`；面板内可用 flow/sequence/tree/timeline/limits/kv/callout/annot 围栏代码块与表格",
+          "Markdown 草稿：可选 frontmatter + 多个 `## 面板`；面板内可用 flow/sequence/tree/timeline/limits/kv/callout/annot 围栏代码块与表格；数据图表可用 ```chart 块（type: bar|line|area|pie|donut|scatter|radar|gauge|heatmap|funnel，或直接写 ECharts option JSON；title/unit/labels/series/stack/height）",
       },
       lang: { type: "string", description: "可选语言标签（zh/en/ja…），缺省按草稿语言自动判断" },
       out_path: { type: "string", description: "可选输出路径（默认 ~/Documents/道生一产物/）" },
+      template: {
+        type: "string",
+        enum: ["sheet", "doc"],
+        description:
+          "页面模板：sheet=网格概览（默认）；doc=单栏长文 + 自动目录（≥4 个面板时自动选 doc）",
+      },
+      theme: {
+        type: "string",
+        enum: ["auto", "blueprint", "shadcn", "paper"],
+        description: "配色主题（缺省 auto）",
+      },
     },
     required: ["markdown"],
     additionalProperties: true,

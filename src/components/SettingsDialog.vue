@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, type Component } from "vue";
 import { useChatStore } from "@/stores/chat";
-import { useOllamaStore } from "@/stores/ollama";
+import { useLocalRuntimeStore } from "@/stores/localRuntime";
 import type { ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { invoke } from "@tauri-apps/api/core";
@@ -59,7 +59,7 @@ import {
 type SettingsTabId =
   | "api"
   | "mcp"
-  | "ollama"
+  | "local"
   | "stats"
   | "health"
   | "tasks"
@@ -95,7 +95,7 @@ const SETTINGS_GROUPS: {
     label: "模型与工具",
     tabs: [
       { id: "api", label: "API 配置", icon: KeyRound },
-      { id: "ollama", label: "本地模型", icon: Brain },
+      { id: "local", label: "本地模型", icon: Brain },
       { id: "mcp", label: "插件", icon: Puzzle },
     ],
   },
@@ -141,7 +141,7 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
-const ollamaStore = useOllamaStore();
+const localRuntime = useLocalRuntimeStore();
 // 主题：跟随系统 / 深色 / 浅色（生效值由 composable 算好，这里只管偏好）
 const { pref: themePref, systemDark, setThemePref } = useTheme();
 /** 当前真正生效的主题（跟随系统时由系统决定）—— 展示层用它，避免用户对着「跟随系统」猜 */
@@ -160,7 +160,7 @@ watch(
   { immediate: true },
 );
 
-// --- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署与进度） ---
+// --- 本地视觉模型管理（状态存于全局 store） ---
 function verdictText(v: string) {
   return v === "recommended"
     ? "✅ 推荐本地部署"
@@ -170,8 +170,8 @@ function verdictText(v: string) {
 }
 
 onMounted(() => {
-  // 打开时刷新一次状态（若后台仍在部署，进度/百分比已保存在 store 中自动恢复）
-  ollamaStore.refreshStatus();
+  // 打开时刷新一次状态
+  localRuntime.refreshRuntime();
   refreshKb();
   loadExecRules();
   // 音色列表由系统提供（`say -v ?`），一次 IO，很便宜；拿不到也不影响其它设置
@@ -448,15 +448,47 @@ function saveCodeMode() {
   updateSettings({ codeModeEnabled: codeModeEnabled.value });
 }
 
-// P0-资源 本地视觉运行时：auto（默认可就绪就用 llama.cpp）/ llamacpp / ollama
-// 切换后需重查一次状态：ollama_status 会返回「当前实际会用哪个后端」
-const localVisionRuntime = ref<"auto" | "llamacpp" | "ollama">(
+// 本地视觉运行时：auto（默认 llama.cpp 就绪就用）/ llamacpp / external（可选外部服务）
+const localVisionRuntime = ref<"auto" | "llamacpp" | "external">(
   getSettings().localVisionRuntime ?? "auto",
 );
+const externalVisionBaseUrl = ref(getSettings().externalVisionBaseUrl ?? "");
+const externalVisionModel = ref(getSettings().externalVisionModel ?? "");
+const externalVisionApiKey = ref(getSettings().externalVisionApiKey ?? "");
 function saveLocalVisionRuntime() {
-  updateSettings({ localVisionRuntime: localVisionRuntime.value });
-  void ollamaStore.refreshStatus();
-  void ollamaStore.refreshRuntime();
+  updateSettings({
+    localVisionRuntime: localVisionRuntime.value,
+    externalVisionBaseUrl: externalVisionBaseUrl.value.trim(),
+    externalVisionModel: externalVisionModel.value.trim(),
+    externalVisionApiKey: externalVisionApiKey.value.trim(),
+  });
+  void localRuntime.refreshRuntime();
+}
+
+/// 填入 Strata 的默认端点（OpenAI 兼容；模型名可任意）
+function applyStrataPreset() {
+  localVisionRuntime.value = "external";
+  externalVisionBaseUrl.value = "http://127.0.0.1:8080/v1";
+  externalVisionModel.value = "strata";
+  externalVisionApiKey.value = "local";
+  saveLocalVisionRuntime();
+}
+
+/// 选择本地 GGUF 文件导入（多选）
+async function importGgufFiles() {
+  const picked = await open({
+    multiple: true,
+    filters: [{ name: "GGUF 模型", extensions: ["gguf"] }],
+  });
+  if (!picked) return;
+  const paths = Array.isArray(picked) ? picked : [picked];
+  await localRuntime.importFiles(paths);
+}
+/// 选择目录导入（扫描其中的 GGUF，含无后缀文件）
+async function importGgufDir() {
+  const dir = await open({ directory: true, multiple: false });
+  if (!dir || Array.isArray(dir)) return;
+  await localRuntime.importDir(dir);
 }
 
 // S1 命令执行策略引擎：规则文件编辑（设置→权限 区块；规则持久化在 app_data/execpolicy.rules）
@@ -781,6 +813,18 @@ function startNew() {
   isNew.value = true;
 }
 
+/// 新建「本地推理服务」配置（可选）：Strata 默认 http://127.0.0.1:8080/v1，
+/// 任意 Key、任意模型名即可用；LM Studio / vLLM 等按各自端口填写。
+function startNewLocal() {
+  startNew();
+  editingProfile.value.name = "本地服务";
+  editingProfile.value.baseUrl = "http://127.0.0.1:8080/v1";
+  editingProfile.value.apiKey = "local";
+  editingProfile.value.model = "strata";
+  editingProfile.value.thinkingEnabled = false;
+  editingProfile.value.maxTokens = 2048;
+}
+
 function handleSave() {
   if (isNew.value) {
     chatStore.addProfile({ ...editingProfile.value });
@@ -840,7 +884,16 @@ function handleDelete() {
               >
                 {{ p.name }}
               </button>
-              <button class="profile-tab profile-tab--add" @click="startNew">＋</button>
+              <button class="profile-tab profile-tab--add" title="新建配置" @click="startNew">
+                ＋
+              </button>
+              <button
+                class="profile-tab profile-tab--add profile-tab--local"
+                title="添加本地推理服务（Strata / LM Studio / vLLM 等 OpenAI 兼容端点，可选）"
+                @click="startNewLocal"
+              >
+                本地服务
+              </button>
             </div>
 
             <!-- 编辑表单 -->
@@ -1004,8 +1057,7 @@ function handleDelete() {
                 </option>
               </select>
               <span class="form-hint"
-                >摘要/记忆提取、编程子代理等任务可指定专门模型（如更便宜的或本地
-                Ollama）；未配置则跟随「辅助任务模型」，再跟随主模型。</span
+                >摘要/记忆提取、编程子代理等任务可指定专门模型（如更便宜的或本地模型）；未配置则跟随「辅助任务模型」，再跟随主模型。</span
               >
             </div>
           </div>
@@ -1013,186 +1065,143 @@ function handleDelete() {
           <!-- MCP 服务器管理 -->
           <div v-show="activeTab === 'mcp'"><McpSettings /></div>
 
-          <!-- Ollama 本地视觉模型管理（状态存于全局 store，关闭界面不中断部署） -->
-          <div v-show="activeTab === 'ollama'" class="ollama-panel">
+          <!-- 本地视觉模型管理（llama.cpp；外部 OpenAI 兼容服务可选） -->
+          <div v-show="activeTab === 'local'" class="local-panel">
             <h3><Cpu :size="17" /> 本地视觉模型</h3>
-            <p class="ollama-desc">
-              用于本地识别图片内容，模型完全在你电脑上运行，免费且隐私安全，无需联网。<b
-                >优先用 llama.cpp</b
-              >（按需启动、空闲自动退出）；未装 llama.cpp 时可一键部署 Ollama
-              作为回退。是否适合本地部署取决于硬件性能。
+            <p class="local-desc">
+              用于本地识别图片内容，模型完全在你电脑上运行，免费且隐私安全，无需联网。
+              <b>llama.cpp</b> 按需启动、空闲自动退出（空闲 0
+              常驻）。是否适合本地部署取决于硬件性能。
             </p>
 
-            <!-- 运行时选择（llama.cpp / Ollama）：默认 Ollama 默认 5 分钟 keep_alive 会把 2.3GB 权重藕在内存里 -->
             <div class="runtime-card">
               <div class="runtime-card__title">⚙️ 本地运行时</div>
-              <p class="runtime-card__hint">
-                两者推理速度基本一致（实测同一张图 41.5s vs
-                44.6s），差别在<strong>内存与常驻</strong>：llama.cpp 按需启动、空闲自动退出（空闲 0
-                常驻），Ollama 默认会把权重藕 5 分钟。
-              </p>
               <div class="runtime-card__row">
                 <select v-model="localVisionRuntime" @change="saveLocalVisionRuntime">
-                  <option value="auto">自动（推荐：llama.cpp 可用就用它）</option>
-                  <option value="llamacpp">强制 llama.cpp</option>
-                  <option value="ollama">强制 Ollama</option>
+                  <option value="auto">自动（推荐：llama.cpp 就绪就用它）</option>
+                  <option value="llamacpp">仅 llama.cpp</option>
+                  <option value="external">外部本地推理服务（可选）</option>
                 </select>
-                <span v-if="ollamaStore.status?.vision_backend" class="runtime-badge">
-                  当前生效：{{
-                    ollamaStore.status.vision_backend === "llamacpp" ? "llama.cpp" : "Ollama"
-                  }}
-                </span>
+                <span v-if="localRuntime.visionReady" class="runtime-badge runtime-badge--ok"
+                  >llama.cpp 已就绪</span
+                >
               </div>
-              <div v-if="ollamaStore.runtime" class="runtime-card__grid">
+              <div v-if="localRuntime.runtime" class="runtime-card__grid">
                 <div>
                   llama-server：{{
-                    ollamaStore.runtime.bin_found ? "已安装" : "未安装（brew install llama.cpp）"
+                    localRuntime.runtime.bin_found ? "已安装" : "未安装（brew install llama.cpp）"
                   }}
                 </div>
                 <div>
-                  已导入模型：{{ ollamaStore.runtime.active_model || "无"
-                  }}{{ ollamaStore.runtime.has_projector ? "（含投影器）" : "" }}
+                  当前模型：{{ localRuntime.runtime.active_model || "无"
+                  }}{{
+                    localRuntime.runtime.has_projector ? "（含投影器）" : "（缺投影器，无法识图）"
+                  }}
                 </div>
                 <div>
-                  服务状态：{{ ollamaStore.runtime.serving ? "运行中" : "未运行"
+                  服务状态：{{ localRuntime.runtime.serving ? "运行中" : "未运行"
                   }}{{
-                    ollamaStore.runtime.serving && ollamaStore.runtime.idle_secs != null
-                      ? `（空闲 ${ollamaStore.runtime.idle_secs}s，${ollamaStore.runtime.idle_kill_secs}s 后自动停止）`
+                    localRuntime.runtime.serving && localRuntime.runtime.idle_secs != null
+                      ? `（空闲 ${localRuntime.runtime.idle_secs}s，${localRuntime.runtime.idle_kill_secs}s 后自动停止）`
                       : ""
                   }}
                 </div>
-                <!-- 嵌入（语义检索）：一直是「装了才能用」，所以把状态摆到桌面上 -->
                 <div>
-                  语义检索（嵌入）：{{ ollamaStore.runtime.embed.model_found ? "可用" : "不可用"
+                  语义检索（嵌入）：{{ localRuntime.runtime.embed.model_found ? "可用" : "不可用"
                   }}{{
-                    ollamaStore.runtime.embed.model_found
-                      ? `（${ollamaStore.runtime.embed.model}，端口 ${ollamaStore.runtime.embed.port}）`
-                      : "（需先导入 nomic-embed-text 的 GGUF：可点上方「从 Ollama 导入」，或自行放 GGUF 到模型目录；未装时自动降级为关键词检索）"
-                  }}{{ ollamaStore.runtime.embed.serving ? " · 嵌入服务运行中" : "" }}
+                    localRuntime.runtime.embed.model_found
+                      ? `（${localRuntime.runtime.embed.model}，端口 ${localRuntime.runtime.embed.port}）`
+                      : "（放入 nomic-embed-text 等嵌入 GGUF 即可启用；未装时自动降级为关键词检索）"
+                  }}{{ localRuntime.runtime.embed.serving ? " · 嵌入服务运行中" : "" }}
                 </div>
-                <div class="runtime-card__path">目录：{{ ollamaStore.runtime.models_dir }}</div>
+                <div class="runtime-card__path">目录：{{ localRuntime.runtime.models_dir }}</div>
               </div>
               <div class="runtime-card__row">
-                <button
-                  class="btn-secondary"
-                  :disabled="!ollamaStore.runtime?.bin_found"
-                  @click="ollamaStore.importFromOllama()"
-                >
-                  从 Ollama 导入模型（硬链接，零下载）
-                </button>
-                <button class="btn-secondary" @click="ollamaStore.stopRuntime()">
+                <button class="btn-secondary" @click="importGgufFiles()">导入 GGUF 文件…</button>
+                <button class="btn-secondary" @click="importGgufDir()">从目录导入…</button>
+                <button class="btn-secondary" @click="localRuntime.stopRuntime()">
                   立即停止运行时
                 </button>
-                <button class="btn-secondary" @click="ollamaStore.refreshRuntime()">刷新</button>
+                <button class="btn-secondary" @click="localRuntime.refreshRuntime()">刷新</button>
               </div>
-              <p v-if="ollamaStore.runtimeMsg" class="runtime-card__msg">
-                {{ ollamaStore.runtimeMsg }}
+              <p class="runtime-card__hint">
+                导入采用硬链接（同盘零额外占用、无需重新下载）；目录导入会递归 3 层，并识别无
+                <code>.gguf</code> 后缀的 GGUF 文件。
+              </p>
+              <p v-if="localRuntime.runtimeMsg" class="runtime-card__msg">
+                {{ localRuntime.runtimeMsg }}
               </p>
             </div>
 
-            <div v-if="ollamaStore.hw" class="hw-card">
+            <!-- 外部本地推理服务：可选（如 Strata / LM Studio / vLLM，均提供 OpenAI 兼容端点） -->
+            <div class="runtime-card">
+              <div class="runtime-card__title">🔌 外部本地推理服务（可选）</div>
+              <p class="runtime-card__hint">
+                已在本机运行 Strata 等 OpenAI 兼容服务时，可让本地视觉复用它，无需再装模型。 Strata
+                默认：<code>http://127.0.0.1:8080/v1</code>，模型名与 API Key 可填任意值。
+              </p>
+              <div class="runtime-card__grid runtime-card__grid--form">
+                <label>
+                  Base URL
+                  <input
+                    v-model="externalVisionBaseUrl"
+                    placeholder="http://127.0.0.1:8080/v1"
+                    @change="saveLocalVisionRuntime"
+                  />
+                </label>
+                <label>
+                  模型名
+                  <input
+                    v-model="externalVisionModel"
+                    placeholder="strata"
+                    @change="saveLocalVisionRuntime"
+                  />
+                </label>
+                <label>
+                  API Key
+                  <input
+                    v-model="externalVisionApiKey"
+                    placeholder="local（本地服务通常任意值）"
+                    @change="saveLocalVisionRuntime"
+                  />
+                </label>
+              </div>
+              <div class="runtime-card__row">
+                <button class="btn-secondary" @click="applyStrataPreset()">填入 Strata 预设</button>
+              </div>
+            </div>
+
+            <div v-if="localRuntime.hw" class="hw-card">
               <div class="hw-card__title">
                 <Monitor :size="15" /> 硬件评估
-                <span class="hw-score">综合 {{ ollamaStore.hw.score }} 分</span>
+                <span class="hw-score">综合 {{ localRuntime.hw.score }} 分</span>
               </div>
               <div class="hw-card__row">
-                CPU：{{ ollamaStore.hw.cpu_cores }} 核{{
-                  ollamaStore.hw.cpu_brand ? " · " + ollamaStore.hw.cpu_brand : ""
+                CPU：{{ localRuntime.hw.cpu_cores }} 核{{
+                  localRuntime.hw.cpu_brand ? " · " + localRuntime.hw.cpu_brand : ""
                 }}
               </div>
-              <div class="hw-card__row">内存：{{ ollamaStore.hw.memory_gb }} GB</div>
+              <div class="hw-card__row">内存：{{ localRuntime.hw.memory_gb }} GB</div>
               <div class="hw-card__row">
-                显卡：{{ ollamaStore.hw.gpu_name || "核显"
+                显卡：{{ localRuntime.hw.gpu_name || "核显"
                 }}{{
-                  ollamaStore.hw.gpu_memory_mb ? " · " + ollamaStore.hw.gpu_memory_mb + " MB" : ""
-                }}{{ ollamaStore.hw.has_metal ? " · Metal" : "" }}
+                  localRuntime.hw.gpu_memory_mb
+                    ? " · " + localRuntime.hw.gpu_memory_mb + " MB"
+                    : ""
+                }}{{ localRuntime.hw.has_metal ? " · Metal" : "" }}
               </div>
-              <div class="hw-card__verdict" :class="'hw-card__verdict--' + ollamaStore.hw.verdict">
-                {{ verdictText(ollamaStore.hw.verdict) }}
+              <div class="hw-card__verdict" :class="'hw-card__verdict--' + localRuntime.hw.verdict">
+                {{ verdictText(localRuntime.hw.verdict) }}
               </div>
-              <p class="hw-card__msg">{{ ollamaStore.hw.message }}</p>
+              <p class="hw-card__msg">{{ localRuntime.hw.message }}</p>
             </div>
-            <div v-if="!ollamaStore.status" class="ollama-loading">正在检测 Ollama 环境...</div>
-            <template v-else>
-              <!-- Ollama 回退链路：llama.cpp 未就绪时用它（原先它是唯一路径，现已降级为回退） -->
-              <p class="ollama-desc">
-                以下为 <b>Ollama 回退链路</b>：仅在未装
-                llama.cpp、或模型目录里没有可用的多模态模型（含投影器）时才需要。
-              </p>
-              <div class="ollama-status">
-                <div class="ollama-item">
-                  <span
-                    class="ollama-dot"
-                    :class="
-                      ollamaStore.status.installed
-                        ? 'green'
-                        : ollamaStore.status.installing
-                          ? 'yellow'
-                          : 'red'
-                    "
-                  ></span>
-                  Ollama 程序：{{
-                    ollamaStore.status.installed
-                      ? "已安装"
-                      : ollamaStore.status.installing
-                        ? "正在安装中..."
-                        : "未安装"
-                  }}
-                </div>
-                <div class="ollama-item">
-                  <span
-                    class="ollama-dot"
-                    :class="ollamaStore.status.running ? 'green' : 'red'"
-                  ></span>
-                  Ollama 服务：{{ ollamaStore.status.running ? "运行中" : "未运行" }}
-                </div>
-                <div v-if="ollamaStore.status.running" class="ollama-item">
-                  <span class="ollama-dot" :class="ollamaStore.hasLlava ? 'green' : 'red'"></span>
-                  视觉模型 llava-phi3：{{ ollamaStore.hasLlava ? "已部署" : "未部署" }}
-                </div>
-                <div
-                  v-if="ollamaStore.status.running && ollamaStore.status.models.length"
-                  class="ollama-models"
-                >
-                  已部署模型：{{ ollamaStore.status.models.join(", ") }}
-                </div>
-              </div>
-              <button
-                v-if="ollamaStore.hw?.verdict === 'not_recommended'"
-                class="btn-primary"
-                @click="activeTab = 'api'"
-              >
-                配置线上视觉模型 API
-              </button>
-              <button
-                v-else
-                class="btn-primary"
-                :disabled="ollamaStore.busy"
-                @click="ollamaStore.deploy()"
-              >
-                {{
-                  ollamaStore.busy
-                    ? "部署中..."
-                    : ollamaStore.status.installed && ollamaStore.hasLlava
-                      ? "重新检测"
-                      : "一键部署 Ollama"
-                }}
-              </button>
-              <p v-if="ollamaStore.hw?.verdict !== 'not_recommended'" class="ollama-hint">
-                （回退路径）首次部署将安装 Ollama 并下载约 2GB
-                模型，耗时较长；关闭此界面会继续在后台下载，可稍后回来查看进度。
-              </p>
-            </template>
-            <div
-              v-if="ollamaStore.percent !== null && ollamaStore.percent < 100"
-              class="ollama-bar"
+            <button
+              v-if="localRuntime.hw?.verdict === 'not_recommended' && !localRuntime.visionReady"
+              class="btn-primary"
+              @click="activeTab = 'api'"
             >
-              <div class="ollama-bar__fill" :style="{ width: ollamaStore.percent + '%' }"></div>
-              <span class="ollama-bar__label">{{ Math.round(ollamaStore.percent) }}%</span>
-            </div>
-            <div v-if="ollamaStore.progress" class="ollama-progress">
-              {{ ollamaStore.progress }}
-            </div>
+              配置线上视觉模型 API
+            </button>
           </div>
 
           <!-- 用量统计 -->
@@ -1220,7 +1229,7 @@ function handleDelete() {
           <!-- 知识库 RAG 自动注入 -->
           <div v-show="activeTab === 'kb'">
             <h3><Database :size="17" /> 知识库</h3>
-            <p class="ollama-desc">
+            <p class="local-desc">
               RAG 知识库通过 Agent 工具（kb_create / kb_add /
               kb_search）建立；此处可开启「自动注入」：开启后每个会话首轮自动检索默认知识库的相关分块注入上下文，回答更贴合你的文档，无需手动检索。同一会话只注入一次，精细引用时仍可让
               Agent 手动 kb_search。
@@ -1281,7 +1290,7 @@ function handleDelete() {
                 「默认」= 不加额外约束，跟随模型自身风格。
               </span>
             </div>
-            <p class="ollama-desc">
+            <p class="local-desc">
               工具级开关：被禁用的工具 Agent 无法调用；路径白名单：配置后 Agent
               的文件/命令类工具只能访问白名单内目录（写操作始终受主目录边界约束）。留空 = 不限制。
             </p>
@@ -1525,7 +1534,7 @@ function handleDelete() {
           <!-- 外观：主题偏好（跟随系统 / 深色 / 浅色） -->
           <div v-show="activeTab === 'appearance'">
             <h3><Palette :size="17" /> 外观</h3>
-            <p class="ollama-desc">
+            <p class="local-desc">
               主题选择会立即生效并记住；选「跟随系统」时 macOS 切换浅色/深色，应用会
               <strong>立刻</strong>跟着变（不是只在启动时读一次）。
             </p>
@@ -1552,7 +1561,7 @@ function handleDelete() {
           <!-- Phase 5 全局快捷键 -->
           <div v-show="activeTab === 'shortcuts'">
             <h3><Keyboard :size="17" /> 全局快捷键</h3>
-            <p class="ollama-desc">
+            <p class="local-desc">
               全局快捷键在应用最小化/隐藏到后台时仍生效。格式：修饰键 + 键名（如
               CommandOrControl+Shift+Space）。仅支持单个非修饰键 + 修饰键组合。
             </p>
@@ -1587,7 +1596,7 @@ function handleDelete() {
           <!-- 通知与呈现：系统通知 / 桌面浮层 / 语音播报（之前错放在「快捷键」页里） -->
           <div v-show="activeTab === 'surface'">
             <h3><Bell :size="17" /> 系统通知</h3>
-            <p class="ollama-desc">
+            <p class="local-desc">
               任务完成或给出最终产物时发系统通知。仅当主窗口不在前台时才提醒（正在看着屏幕时
               不打扰），用户主动「停止生成」也不会误报为完成。
             </p>
@@ -1629,7 +1638,7 @@ function handleDelete() {
             </div>
 
             <h3 style="margin-top: 22px"><Monitor :size="17" /> 桌面浮层与语音</h3>
-            <p class="ollama-desc">
+            <p class="local-desc">
               让结果直接出现在桌面上：浮层胶囊（不抢焦点、点击穿透，几秒后自动淡出）与语音播报。
               模型只有在明确需要时才呈现（工具参数 priority=primary）；正文仍会写在对话里，
               浮层只是额外的出口，不作为留痕。
@@ -1949,6 +1958,9 @@ function handleDelete() {
 .profile-tab--add {
   font-size: 18px;
   padding: 4px 12px;
+}
+.profile-tab--local {
+  font-size: 12px;
 }
 
 .form-group {
@@ -2313,7 +2325,7 @@ function handleDelete() {
   background: rgba(239, 68, 68, 0.15);
 }
 
-/* P0-资源 本地运行时卡片（llama.cpp / Ollama 选择与状态） */
+/* 本地运行时卡片（llama.cpp 状态与导入） */
 .runtime-card {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -2402,124 +2414,22 @@ function handleDelete() {
   }
 }
 
-/* --- Ollama 本地视觉模型面板 --- */
-.ollama-panel {
+/* --- 本地视觉模型面板 --- */
+.local-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
-.ollama-panel h3 {
+.local-panel h3 {
   margin: 0;
   font-size: 16px;
 }
-.ollama-desc {
+.local-desc {
   margin: 0;
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.6;
 }
-.ollama-loading {
-  color: var(--text-secondary);
-  font-size: 13px;
-  padding: 8px 0;
-}
-.ollama-status {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-}
-.ollama-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-}
-.ollama-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.ollama-dot.green {
-  background: #22c55e;
-  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
-}
-.ollama-dot.yellow {
-  background: #f59e0b;
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
-  animation: ollama-blink 1s ease-in-out infinite;
-}
-.ollama-dot.red {
-  background: #ef4444;
-}
-@keyframes ollama-blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-.ollama-models {
-  font-size: 12px;
-  color: var(--text-secondary);
-  word-break: break-all;
-}
-.ollama-panel .btn-primary {
-  align-self: flex-start;
-  margin-top: 4px;
-}
-.ollama-panel .btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-.ollama-hint {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.ollama-progress {
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 10px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  color: var(--text-primary);
-  max-height: 200px;
-  overflow-y: auto;
-}
-.ollama-bar {
-  position: relative;
-  height: 22px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.ollama-bar__fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent-color), #22c55e);
-  transition: width 0.3s ease;
-}
-.ollama-bar__label {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
 /* 硬件评估卡片 */
 .hw-card {
   display: flex;

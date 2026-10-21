@@ -137,12 +137,21 @@ pub struct AppSettings {
     /// 系统通知：任务完成 / 最终产物就绪时发系统通知（默认开；仅窗口未聚焦时打扰）
     #[serde(default = "default_true")]
     pub notify_on_finish: bool,
-    /// 本地视觉运行时（P0-资源）：
-    /// - `auto`（默认）：llama.cpp 可用（有 llama-server + 已导入模型）就用它，否则回落 Ollama
-    /// - `llamacpp`：强制 llama.cpp（按需启动 / 空闲自动退出，空闲 0 常驻）
-    /// - `ollama`：强制 Ollama（保留原一键部署链路）
+    /// 本地视觉运行时：
+    /// - `auto`（默认）：llama.cpp 可用（有 llama-server + 已导入模型）就用它，否则用外部服务（若配置）
+    /// - `llamacpp`：强制使用本应用托管的 llama.cpp（按需启动 / 空闲自动退出，空闲 0 常驻）
+    /// - `external`：强制使用外部 OpenAI 兼容服务（可选，如 Strata，默认 `http://127.0.0.1:8080/v1`）
     #[serde(default = "default_local_vision_runtime")]
     pub local_vision_runtime: String,
+    /// 外部本地推理服务的 OpenAI 兼容 Base URL（可选；留空 = 不使用）
+    #[serde(default)]
+    pub external_vision_base_url: String,
+    /// 外部本地推理服务的模型名（Strata 可填任意值）
+    #[serde(default)]
+    pub external_vision_model: String,
+    /// 外部本地推理服务的 API Key（本地服务通常任意值即可）
+    #[serde(default)]
+    pub external_vision_api_key: String,
     /// P0-6 预算护栏：本次会话预算（元；0 = 不限）——达到 80% 预警、100% 发送前拦截
     #[serde(default)]
     pub budget_session: f64,
@@ -242,7 +251,7 @@ fn default_approval_mode() -> String {
     "manual".to_string()
 }
 
-/// 本地视觉运行时默认值：auto（有 llama.cpp 模型就用它，否则用 Ollama）
+/// 本地视觉运行时默认值：auto（有 llama.cpp 模型就用它，否则用已配置的外部服务）
 fn default_local_vision_runtime() -> String {
     "auto".to_string()
 }
@@ -283,6 +292,9 @@ impl Default for AppSettings {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            external_vision_base_url: String::new(),
+            external_vision_model: String::new(),
+            external_vision_api_key: String::new(),
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,
@@ -560,6 +572,9 @@ mod tests {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            external_vision_base_url: String::new(),
+            external_vision_model: String::new(),
+            external_vision_api_key: String::new(),
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,
@@ -636,6 +651,9 @@ mod tests {
             ssrf_allow_private_hosts: Vec::new(),
             notify_on_finish: true,
             local_vision_runtime: default_local_vision_runtime(),
+            external_vision_base_url: String::new(),
+            external_vision_model: String::new(),
+            external_vision_api_key: String::new(),
             budget_session: 0.0,
             budget_daily: 0.0,
             budget_monthly: 0.0,

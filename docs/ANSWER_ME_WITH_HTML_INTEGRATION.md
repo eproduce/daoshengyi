@@ -206,3 +206,98 @@ node scripts/am.mjs render draft.md -o /tmp/amh/test.html --no-open
 ---
 
 *核实命令与输出见 §2；上游元信息取自 GitHub API（2026-10-08）。*
+
+---
+
+## 9. 2026-10-21 增强：从「行业晚报」产物反推的报告能力
+
+参考样本：`~/Documents/道生一产物/行业晚报_2026-10-18_离线自包含.html`（1.2 MB，别的 agent 生成）。
+拆解后的关键事实：
+
+| 维度 | 参考样本 | 我们当时的输出 |
+| :--- | :--- | :--- |
+| 体积 | 1.2 MB（ECharts 5.5.1 + GSAP + ScrollTrigger 全量内联） | ~70 KB（纯 CSS + 少量内联脚本） |
+| 图表 | 9 个 ECharts 图（行业涨跌、情绪、库存、电价等） | 无数据图表 |
+| 结构 | 总结 → 分行业 → 阅读笔记（类型分布）→ 明日展望 → 来源 | 面板式，长文默认 `sheet` 网格 |
+| 数据纪律 | 每个价格/指数标来源；未核实数据不进正文 | 仅提示「注明来源」，无结构约束 |
+| 交互 | 阅读进度条 + 滚动动画 + hover | 静态（可打印） |
+| 离线 | 是（三方库全内联） | 是（零外部依赖） |
+
+**结论**：值得学的是「图表 + 报告结构 + 数据纪律」，**不必照抄 1.1 MB 的 JS 运行时**。
+ECharts/GSAP 的代价是：单页体积 ×17、依赖 JS、打印/PDF/邮件场景退化，且与「模型只写草稿」的省 token 设计冲突。
+
+### 9.1 本次落地（代码）
+
+1. **```chart 围栏块 → ECharts 图表**（`answer_html.rs`）
+   - 支持 `bar / line / area / pie / donut / scatter / radar / gauge / heatmap / funnel`；
+   - 高级图表可在块内**直接写 ECharts option JSON**（覆盖任意图表类型）；
+   - 模型只写数据（`labels` + 多个 `series`），坐标、坐标轴、图例、提示框全部由渲染器生成；
+   - **动效**：滚动进入视口才初始化（`IntersectionObserver`），`animationDuration: 900`、
+     `cubicOut`；尊重 `prefers-reduced-motion`（自动关闭动画）；
+   - **主题联动**：监听 `<html data-mode/data-theme>`（am.mjs 的明暗/主题切换），自动重绘配色；
+   - **响应式**：`ResizeObserver` + `window.resize` 双监听；容器 < 560px 时自动收紧边距/字号、
+     饼图标签移到扇区内部、拥挤的横轴标签旋转 30°；< 640px 时画布降为 280px；
+   - `beforeprint` 自动 resize，打印/PDF 不错位。
+2. **ECharts 内联，单文件离线**：`src-tauri/resources/echarts.min.js`（5.5.1，Apache-2.0，
+   见 `ECHARTS-NOTICE.md`）。**仅当页面含 chart 块时**才内联，无图表页面体积不变。
+3. **SVG 兜底**：ECharts 资源缺失时，`bar/line/area` 回退为纯 SVG；其他类型明确报错，
+   不产出空白图。
+4. **长报告自动 `doc` 模板**：草稿 ≥ 4 个 `## 面板` 时自动使用单栏阅读 + 目录；也可显式传 `template`。
+5. **`theme` 参数**：透传 `auto|blueprint|shadcn|paper`。
+6. **渲染后离线自检**：检测外部 `<script>/<link>/<img>/url(http…)` 引用，把 `warnings` 回传模型。
+7. **报告写作规范**（工具描述 + 系统提示词）：结论先行并逐条给「影响」、数字带来源与时间、
+   末尾固定 `## 数据来源与口径` + `## 观察清单`。
+
+### 9.2 用法示例
+
+````markdown
+## 一、核心结论
+- 铜：矿端扰动与过剩预期僵持，短期震荡（影响：冶炼利润承压）。
+- 锂：现货加速探底，关注下周库存拐点（影响：板块估值继续压缩）。
+
+## 二、本周涨跌
+```chart
+type: bar
+title: 本周主力合约涨跌
+unit: %
+labels: 铜, 铝, 锂, 钨
+series: 本周 = -2.1, -0.8, -4.3, -3.9
+series: 上周 = 1.2, 0.4, -1.0, 0.6
+```
+
+## 三、品种占比
+```chart
+type: donut
+title: 持仓分布
+unit: %
+labels: 铜, 铝, 锂, 钨
+series: 占比 = 38, 27, 21, 14
+```
+
+## 四、事件与影响
+...
+
+## 五、数据来源与口径
+- LME 官方收盘价（2026-10-17）……
+- 国家统计局（2026-10-18 发布）……
+
+## 六、观察清单
+- 10/22 库存数据是否确认去库；
+- 11 月长单谈判价格区间。
+````
+
+高级写法（任意 ECharts 图）：
+
+````markdown
+```chart
+{"tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": ["A", "B"]},
+ "yAxis": {"type": "value"}, "series": [{"type": "bar", "data": [3, 5]}]}
+```
+````
+
+### 9.3 取舍
+
+- **体积**：ECharts 约 1 MB，只随「含图表的页面」内联；纯文字报告仍是 ~70 KB。
+- **不引用 CDN**：保证离线/内网/邮件附件可用，`offline_warnings` 会在出现外部资源时告警。
+- **不内联 GSAP**：入场动画用 ECharts 自带 animation + IntersectionObserver 已足够；
+  参考样本的 GSAP/ScrollTrigger 主要服务装饰性滚动效果，收益/体积比不划算。
