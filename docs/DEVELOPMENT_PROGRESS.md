@@ -81,6 +81,9 @@
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.10_x64.dmg`。
   打包内已含 `resources/echarts.min.js` 与 `resources/tailwind.css`；
   启动后进程正常、前端已挂载（日志 23:03:14）。
+- **打包 1.0.0-alpha.11**（图表动画修复）：安装到 `/Applications/道生一.app`
+  （回滚点 `道生一.app.old-2320`）；DMG：
+  `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.11_x64.dmg`；启动正常（日志 23:20:22）。
 
 ---
 
