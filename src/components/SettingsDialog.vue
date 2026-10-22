@@ -631,13 +631,17 @@ const TTS_PRESETS: TtsPreset[] = [
   {
     id: "edge-xiaoxiao",
     label: "Edge 神经语音 · 晓晓（女声，最接近真人）",
-    template: "edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
+    // 用 `python3 -m edge_tts` 而不是裸 `edge-tts`：pip --user 装出来的脚本在
+    // ~/Library/Python/x.y/bin，GUI 应用（Finder 启动）的 PATH 里没有这个目录，裸命令会 not found
+    template:
+      "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
     hint: "免费、需联网。先安装：python3 -m pip install --user edge-tts。晓晓的句调最自然；语速用 --rate=+8%（可改 +0% / +15%）。",
   },
   {
     id: "edge-yunxi",
     label: "Edge 神经语音 · 云希（男声）",
-    template: "edge-tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
+    template:
+      "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
     hint: "同上，需先安装 edge-tts；云希偏年轻，云健（YunjianNeural）更沉稳。",
   },
   {

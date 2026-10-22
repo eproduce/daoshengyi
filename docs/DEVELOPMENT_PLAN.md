@@ -477,6 +477,11 @@ worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护�
 - 设置页引擎预设：Edge 神经语音（晓晓/云希，免费联网）、Piper（离线）；克隆类仍走 `{ref}`。
 - 零新依赖；真机对比：同一段 44 字，`say -r 210` 8.92s / 晓晓 8.66s / 云希 8.98s。
 
+**后续（P1~P5，见 `docs/VOICE_NATURALNESS_PLAN.md`）**：用户复听仍觉机械 → 根因是 compact 音源与
+"整段一次性合成"，不是语速。计划：**P1** Provider 抽象 + Edge 一等公民 + 磁盘缓存（1 人日）→
+**P2** 句子流水线 + 播放队列 + 可打断（1）→ **P4** 本地 Kokoro-zh int8（121MB）离线兜底（1~1.5）→
+**P3** Azure SSML 风格 / OpenAI 指令式语气（1）→ **P5** 真流式（可选）。
+
 ## 4. 计划功能（借鉴 Hermes-CN-Desktop，按优先级）
 
 > 参考项目：`https://github.com/Eynzof/Hermes-CN-Desktop`（许可 PolyForm Noncommercial，**只借鉴思路，不抄代码**）。调研详见会话记忆 `hermes-cn-research.md`。
