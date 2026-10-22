@@ -5008,6 +5008,20 @@ fn load_app_settings(
         serde_json::from_str(&json).map_err(|e| format!("解析设置失败: {}", e))?;
     // 解密 apiKey；解密失败（旧数据为明文）时保留原文
     cipher.decrypt_settings(&mut settings)?;
+    // 旧内置预设迁移：只在真的变了时回写，避免每次读取都写库
+    let mut migrated = settings.clone();
+    settings::migrate_legacy_speech_presets(&mut migrated);
+    if migrated.surface_tts_command != settings.surface_tts_command
+        || migrated.surface_speech_rate != settings.surface_speech_rate
+    {
+        let mut to_save = migrated.clone();
+        if cipher.encrypt_settings(&mut to_save).is_ok() {
+            if let Ok(json) = serde_json::to_string(&to_save) {
+                let _ = db.set_setting(SETTINGS_KEY, &json);
+            }
+        }
+        settings = migrated;
+    }
     Ok(settings)
 }
 

@@ -196,10 +196,10 @@ plutil -p /System/Library/AssetsV2/com_apple_MobileAsset_VoiceServicesVocalizerV
 say -v 根本不存在 -o /tmp/x.aiff -- "测试"; echo "exit=$?"   # → exit=0
 
 # ③ 首字节 / 端到端（edge 流式 API）
-python3 -c "...edge_tts.Communicate(text, voice, rate='+8%').stream()..."  # 记录首个 audio chunk
+python3 -c "...edge_tts.Communicate(text, voice, rate='-10%').stream()..."  # 记录首个 audio chunk
 
 # ④ 走现有模板机制直连 edge（无需改代码，已验证）
-python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% \
+python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=-10% \
         --text '{text}' --write-media '{out}'            # 实测 2.07~2.96s 落盘，afplay 正常
 
 # ⑤ 本地模型 RTF（sherpa-onnx 1.13.8，6 线程）

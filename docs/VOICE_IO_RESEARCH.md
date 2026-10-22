@@ -146,10 +146,10 @@
 
 因此先做三件不换引擎的事：
 
-1. 设置里加**语速**（`surfaceSpeechRate`，0 = 系统默认，推荐 200–240）与**句末停顿**（`surfaceSpeechPause`，默认开，句末 +220ms）；
+1. 设置里加**语速**（`surfaceSpeechRate`，0 = 系统默认，推荐 180–200（用户复听反馈"太快听不清"，已从 210 降到 190））与**句末停顿**（`surfaceSpeechPause`，默认开，句末 +220ms）；
 2. 朗读前统一「口语化」清洗（`surface::naturalize_speech`）：代码块 →「（代码略）」、链接只念文字、裸 URL →「链接」、去 markdown/emoji、`→ × ℃ =` 等转中文说法；同时**剥掉正文里的 `[[slnc …]]`**，避免不可信文本反过来控制语音引擎；
 3. 设置页给**引擎预设**（一键填 `surface_tts_command`，试听与实际播报同一条路）：
-   - `python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}`
+   - `python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=-10% --text {text} --write-media {out}`
      （免费、需联网，自然度性价比最高）。**必须用 `python3 -m edge_tts` 而不是裸 `edge-tts`**：
      `pip install --user` 的脚本落在 `~/Library/Python/x.y/bin`，Finder 启动的 GUI 应用 PATH 里没有该目录；
    - `piper`（完全离线）；

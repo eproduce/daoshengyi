@@ -180,8 +180,8 @@ pub struct AppSettings {
     /// 环境层：语音音色（`say -v` 的名字；空 = 系统默认）
     #[serde(default)]
     pub surface_speech_voice: String,
-    /// 环境层：系统音色语速（`say -r`，词/分；0 = 跟随系统）。默认 210——
-    /// Apple 的 175 对中文偏拖，200–240 更接近日常语速
+    /// 环境层：系统音色语速（`say -r`，词/分；0 = 跟随系统）。默认 190——
+    /// Apple 的 175 偏拖、240 偏赶，190 是"听得清又不拖"的折中
     #[serde(default = "default_speech_rate")]
     pub surface_speech_rate: u32,
     /// 环境层：句末补停顿（默认开）——`say` 自带的句间停顿很短，长句听起来像连珠炮
@@ -208,6 +208,42 @@ pub struct AppSettings {
     /// 环境层：勿扰时段止（支持跨零点，如 22:30–08:00）
     #[serde(default)]
     pub surface_quiet_end: String,
+}
+
+/// 旧版内置语音预设 → 新默认（逐字匹配，用户手改过的模板一律不动）。
+///
+/// 为什么需要它：预设只写进 `surface_tts_command` 一次，之后就是用户配置。
+/// alpha.13/14 内置的 `--rate=+8%` 实测偏快（60 字 11.4s），听不清；
+/// 新默认 `-10%`（13.6s）才是"能跟上"的语速 —— 老配置要跟着走，否则改了等于没改。
+pub fn migrate_legacy_speech_presets(settings: &mut AppSettings) {
+    const LEGACY: &[(&str, &str)] = &[
+        // alpha.13：裸 `edge-tts`（GUI 里会 not found）+ 偏快语速
+        (
+            "edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
+            "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=-10% --text {text} --write-media {out}",
+        ),
+        (
+            "edge-tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
+            "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=-10% --text {text} --write-media {out}",
+        ),
+        // alpha.14：已改成 python 模块调用，但语速仍偏快
+        (
+            "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
+            "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=-10% --text {text} --write-media {out}",
+        ),
+        (
+            "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
+            "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=-10% --text {text} --write-media {out}",
+        ),
+    ];
+    let current = settings.surface_tts_command.trim().to_string();
+    if let Some((_, new)) = LEGACY.iter().find(|(old, _)| *old == current) {
+        settings.surface_tts_command = (*new).to_string();
+    }
+    // 210 是"求快"时期的默认值；没单独调过系统音色的用户跟着降到 190
+    if settings.surface_speech_rate == 210 {
+        settings.surface_speech_rate = 190;
+    }
 }
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
@@ -246,9 +282,9 @@ fn default_recall_limit() -> i64 {
     6
 }
 
-/// 中文默认语速：系统 175 偏拖，210 更接近日常说话（用户可在设置里调回 0 = 跟随系统）
+/// 中文默认语速：系统 175 偏拖、240 偏赶，190 听得清（用户可调回 0 = 跟随系统）
 fn default_speech_rate() -> u32 {
-    210
+    190
 }
 
 fn default_approval_mode() -> String {
@@ -306,7 +342,7 @@ impl Default for AppSettings {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
-            surface_speech_rate: 210,
+            surface_speech_rate: 190,
             surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
@@ -585,7 +621,7 @@ mod tests {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
-            surface_speech_rate: 210,
+            surface_speech_rate: 190,
             surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
@@ -663,7 +699,7 @@ mod tests {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
-            surface_speech_rate: 210,
+            surface_speech_rate: 190,
             surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
@@ -714,6 +750,51 @@ mod tests {
     }
 
     #[test]
+    fn legacy_speech_presets_migrate_to_slower_rate() {
+        let mut s = AppSettings {
+            surface_tts_command:
+                "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}"
+                    .into(),
+            surface_speech_rate: 210,
+            ..AppSettings::default()
+        };
+        migrate_legacy_speech_presets(&mut s);
+        assert!(
+            s.surface_tts_command.contains("--rate=-10%"),
+            "{}",
+            s.surface_tts_command
+        );
+        assert_eq!(s.surface_speech_rate, 190);
+
+        // alpha.13 的裸 `edge-tts` 也一并修掉（GUI 里 PATH 找不到它）
+        let mut old = AppSettings {
+            surface_tts_command:
+                "edge-tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}"
+                    .into(),
+            ..AppSettings::default()
+        };
+        migrate_legacy_speech_presets(&mut old);
+        assert!(old.surface_tts_command.starts_with("python3 -m edge_tts"));
+        assert!(old.surface_tts_command.contains("--rate=-10%"));
+    }
+
+    #[test]
+    fn custom_tts_command_is_never_rewritten() {
+        // 用户自己的引擎模板必须原样保留
+        let mut s = AppSettings {
+            surface_tts_command: "mytts --speed 0.9 --text {text} --out {out}".into(),
+            surface_speech_rate: 240,
+            ..AppSettings::default()
+        };
+        migrate_legacy_speech_presets(&mut s);
+        assert_eq!(
+            s.surface_tts_command,
+            "mytts --speed 0.9 --text {text} --out {out}"
+        );
+        assert_eq!(s.surface_speech_rate, 240, "显式选过的语速不该被改");
+    }
+
+    #[test]
     fn speech_rate_defaults_to_natural_speed() {
         // 旧数据里没有这两个键 → 不能退回 175 的拖沓默认，也不能丢掉句末停顿
         let mut v = serde_json::to_value(AppSettings::default()).unwrap();
@@ -723,7 +804,7 @@ mod tests {
 
         let s: AppSettings = serde_json::from_value(v).unwrap();
         assert_eq!(s.surface_speech_rate, default_speech_rate());
-        assert_eq!(s.surface_speech_rate, 210);
+        assert_eq!(s.surface_speech_rate, 190);
         assert!(s.surface_speech_pause);
     }
 

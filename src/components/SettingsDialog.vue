@@ -634,14 +634,14 @@ const TTS_PRESETS: TtsPreset[] = [
     // 用 `python3 -m edge_tts` 而不是裸 `edge-tts`：pip --user 装出来的脚本在
     // ~/Library/Python/x.y/bin，GUI 应用（Finder 启动）的 PATH 里没有这个目录，裸命令会 not found
     template:
-      "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
-    hint: "免费、需联网。先安装：python3 -m pip install --user edge-tts。晓晓的句调最自然；语速用 --rate=+8%（可改 +0% / +15%）。",
+      "python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=-10% --text {text} --write-media {out}",
+    hint: "免费、需联网。先安装：python3 -m pip install --user edge-tts。晓晓的句调最自然；**默认 -10%（比自然语速慢一点，听得清）**，想快改 +0%，想更慢改 -15%。",
   },
   {
     id: "edge-yunxi",
     label: "Edge 神经语音 · 云希（男声）",
     template:
-      "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
+      "python3 -m edge_tts --voice zh-CN-YunxiNeural --rate=-10% --text {text} --write-media {out}",
     hint: "同上，需先安装 edge-tts；云希偏年轻，云健（YunjianNeural）更沉稳。",
   },
   {
@@ -1707,7 +1707,8 @@ async function handleDelete() {
                 </button>
               </div>
               <span class="form-hint">
-                系统默认约 175 词/分，中文听起来偏拖；推荐 200–240。拖动后点「试听」立刻对比。
+                系统默认约 175 词/分；听到「赶不及」就往慢调，190
+                左右通常最舒服。拖动后点「试听」立刻对比。
               </span>
               <label
                 class="memory-config__toggle"

@@ -66,6 +66,15 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   **Finder 启动的 GUI 应用 PATH 里没有该目录** → 改为 `python3 -m edge_tts …`（实测 2.96s 落盘）。
 - `index.crates.io` 复核可访问（200）→ 「必须先配镜像」旧结论作废。
 
+### 7. 语速回调（用户次日反馈「很快读完，来不及听清」）
+- 实测同一段 60 字（晓晓）：`+8%` **11.38s** / `+0%` 12.26s / `-10%` **13.63s** / `-15%` 14.42s
+  → 上一版默认 `+8%` 约 5.3 字/秒，确实偏赶；新默认 **`-10%`（≈4.4 字/秒）**。
+- 系统音色 `say` 默认语速同步 210 → **190 词/分**（175 偏拖、240 偏赶）。
+- **老配置要跟着走**：预设只写进 `surface_tts_command` 一次，改了默认值不等于用户会变。
+  新增 `settings::migrate_legacy_speech_presets`（`load_app_settings` 调用）：
+  **逐字等于旧内置预设**才重写（含 alpha.13 的裸 `edge-tts` 版本），用户手改的模板原样保留；
+  `surfaceSpeechRate == 210` 时降到 190。2 个单测钉住这两条边界。
+
 ---
 
 ## 2026-10-21（移除 Ollama + HTML 报告升级为 ECharts）
@@ -163,6 +172,9 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   安装到 `/Applications/道生一.app`（回滚点 `道生一.app.old-2327`）；DMG：
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.13_x64.dmg`；启动正常
   （进程存活、`Info.plist` = 1.0.0-alpha.13、产物内已含语速 / 句末停顿 / 引擎预设文案）。
+- **打包 1.0.0-alpha.15**（语速回调 -10% / say 190 + 旧预设迁移）：直接覆盖安装（不备份），
+  DMG `道生一_1.0.0-alpha.15_x64.dmg`；启动后**实测库里已迁移**
+  （`surfaceTtsCommand` 含 `--rate=-10%`、`surfaceSpeechRate=190`）。
 - **打包 1.0.0-alpha.14**（Edge 预设 PATH 修正 + 语音自然度方案）：`npm run tauri build` 成功
   （release 2m02s）；按新约定**不再备份旧版本**，直接 `rm -rf` + `ditto` 覆盖
   `/Applications/道生一.app`；DMG：`道生一_1.0.0-alpha.14_x64.dmg`（12M）；启动正常，
