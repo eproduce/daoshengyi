@@ -94,6 +94,9 @@
 - **打包 1.0.0-alpha.11**（图表动画修复）：安装到 `/Applications/道生一.app`
   （回滚点 `道生一.app.old-2320`）；DMG：
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.11_x64.dmg`；启动正常（日志 23:20:22）。
+- **打包 1.0.0-alpha.12**（统一推理入口）：安装到 `/Applications/道生一.app`
+  （回滚点 `道生一.app.old-2200`）；DMG：
+  `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.12_x64.dmg`；启动正常（日志 22:00:12）。
 
 ---
 
