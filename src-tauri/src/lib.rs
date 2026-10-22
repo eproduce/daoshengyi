@@ -36,7 +36,7 @@ mod skill_pack;
 mod ssrf;
 mod surface;
 mod trash;
-// 与 `resolve_vision_backend`（本地 VLM 后端选择）无关：
+// 与 `use_llama_vision`（本地 VLM 后端选择）无关：
 // 这里是 macOS Vision 框架的原生检测能力（分类/人脸/人体/姿势/动物/条码/显著区域）
 mod vision_native;
 mod worktree;
@@ -3267,95 +3267,37 @@ async fn check_hardware() -> HardwareInfo {
     }
 }
 
-/// 读取本地视觉相关设置（读不到 → 默认值）。字段名与前端 camelCase 一致。
-fn read_vision_settings(app: &tauri::AppHandle) -> VisionSettings {
+/// 读取「本地视觉运行时」偏好（读不到 → auto）。字段名与前端 camelCase 一致。
+fn local_vision_runtime_pref(app: &tauri::AppHandle) -> String {
     let Ok(app_dir) = app.path().app_data_dir() else {
-        return VisionSettings::default();
+        return "auto".into();
     };
     let Ok(db) = db::Database::new(app_dir) else {
-        return VisionSettings::default();
+        return "auto".into();
     };
     let Ok(Some(json)) = db.get_setting(SETTINGS_KEY) else {
-        return VisionSettings::default();
+        return "auto".into();
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
-        return VisionSettings::default();
-    };
-    let s = |k: &str| {
-        v.get(k)
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
-    VisionSettings {
-        backend: s("localVisionRuntime"),
-        external_base_url: s("externalVisionBaseUrl"),
-        external_model: s("externalVisionModel"),
-        external_api_key: s("externalVisionApiKey"),
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct VisionSettings {
-    /// auto | llamacpp | external
-    backend: String,
-    external_base_url: String,
-    external_model: String,
-    external_api_key: String,
-}
-
-/// 外部 OpenAI 兼容端点的规范化：补上 `/v1`（用户常只填到端口）。
-/// 已包含 `/v1` 的原样保留；空值返回空串。
-fn normalize_openai_base(raw: &str) -> String {
-    let base = raw.trim().trim_end_matches('/');
-    if base.is_empty() || base.ends_with("/v1") || base.contains("/v1/") {
-        base.to_string()
-    } else {
-        format!("{base}/v1")
-    }
-}
-
-/// 视觉后端选择结果（`external` 需要额外字段，所以用枚举而不是字符串）。
-#[derive(Debug, Clone, PartialEq)]
-enum VisionBackend {
-    LlamaCpp,
-    External {
-        base_url: String,
-        model: String,
-        api_key: String,
-    },
-}
-
-/// 选择视觉后端（纯函数，便于单测）。
-/// - `llamacpp`：强制 llama.cpp（不可用时由调用方报错，**不静默降级**）
-/// - `external`：强制外部 OpenAI 兼容服务（未配置时报错）
-/// - 其他（含缺省 `auto`）：llama.cpp 就绪就用它，否则用已配置的外部服务
-fn resolve_vision_backend(
-    pref: &str,
-    llama_ready: bool,
-    cfg: &VisionSettings,
-) -> Option<VisionBackend> {
-    let external_ready = !cfg.external_base_url.trim().is_empty();
-    let external = || {
-        external_ready.then(|| VisionBackend::External {
-            base_url: normalize_openai_base(&cfg.external_base_url),
-            model: if cfg.external_model.trim().is_empty() {
-                "local".to_string()
-            } else {
-                cfg.external_model.trim().to_string()
-            },
-            api_key: if cfg.external_api_key.trim().is_empty() {
-                "local".to_string()
-            } else {
-                cfg.external_api_key.trim().to_string()
-            },
+    serde_json::from_str::<serde_json::Value>(&json)
+        .ok()
+        .and_then(|v| {
+            v.get("localVisionRuntime")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
         })
-    };
+        .unwrap_or_else(|| "auto".into())
+}
+
+/// 是否使用 llama.cpp 识别图片（纯函数，便于单测）。
+/// - `llamacpp`：强制使用（模型/二进制缺失由调用方报错，**不静默降级**）
+/// - 其他（含缺省 `auto`）：就绪才用
+///
+/// 云端或本机其它 OpenAI 兼容端点**不在这里配置**：它们统一走「API 配置」里的 Profile
+/// （前端在本地视觉不可用时自动挑一个支持图片输入的配置），避免两套入口重复。
+fn use_llama_vision(pref: &str, llama_ready: bool) -> bool {
     match pref {
-        "llamacpp" => Some(VisionBackend::LlamaCpp),
-        "external" => external(),
-        _ if llama_ready => Some(VisionBackend::LlamaCpp),
-        _ => external(),
+        "llamacpp" => true,
+        _ => llama_ready,
     }
 }
 
@@ -3364,7 +3306,6 @@ async fn vision_chat_once(
     url: &str,
     model: &str,
     image_data_uri: &str,
-    api_key: Option<&str>,
     label: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
@@ -3379,13 +3320,10 @@ async fn vision_chat_once(
         "stream": false,
     });
 
-    let mut req = client
+    let req = client
         .post(url)
         .header("Content-Type", "application/json")
         .json(&body);
-    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
-        req = req.header("Authorization", format!("Bearer {}", key));
-    }
     let resp = tokio::time::timeout(std::time::Duration::from_secs(120), req.send())
         .await
         .map_err(|_| format!("{} 识别图片超时（120 秒），请稍后重试", label))?
@@ -3417,22 +3355,22 @@ async fn vision_chat_once(
 /// 用本地视觉模型识别图片，返回文字描述（供前端图片预处理调用）。
 /// 走 Rust 后端 reqwest，避免 webview 直接 fetch localhost 受限导致识别失败。
 ///
-/// 后端二选一（`settings.localVisionRuntime`）：
-/// - **llama.cpp**（`llama-server`）：按需启动 + 空闲自动退出（0 常驻）
-/// - **外部 OpenAI 兼容服务**（可选，如 Strata：`http://127.0.0.1:8080/v1`）
+/// 只看本地：`settings.localVisionRuntime` 为 `llamacpp`（强制）或 `auto`（就绪才用）。
+/// 云端 / 本机其它 OpenAI 兼容端点不在此处理 —— 前端在本地视觉不可用时会自动使用
+/// 「API 配置」里支持图片输入的 Profile（一套入口，本地与云端通用）。
 #[tauri::command]
 async fn describe_image(app: tauri::AppHandle, images: Vec<String>) -> Result<String, String> {
-    let cfg = read_vision_settings(&app);
+    let pref = local_vision_runtime_pref(&app);
     let app_dir = app.path().app_data_dir().ok();
     let llama_ready = local_runtime::ready(app_dir.as_deref());
-    let backend = resolve_vision_backend(&cfg.backend, llama_ready, &cfg).ok_or_else(|| {
-        match cfg.backend.as_str() {
-            "llamacpp" => "已选择 llama.cpp 运行时，但缺少 llama-server 或模型：请安装 llama.cpp（`brew install llama.cpp`），并在设置 → 本地模型里导入带投影器的 GGUF",
-            "external" => "已选择外部本地推理服务，但未填写 Base URL：请在设置 → 本地模型中配置（如 Strata 的 http://127.0.0.1:8080/v1）",
-            _ => "本地视觉后端未就绪：请安装 llama.cpp 并导入带投影器的多模态 GGUF，或在设置 → 本地模型中配置外部本地推理服务（如 Strata）",
-        }
-        .to_string()
-    })?;
+    if !use_llama_vision(&pref, llama_ready) {
+        return Err(if pref == "llamacpp" {
+            "已选择 llama.cpp 运行时，但缺少 llama-server 或模型：请安装 llama.cpp（`brew install llama.cpp`），并在设置 → 本地模型里导入带投影器的 GGUF"
+                .to_string()
+        } else {
+            "本地视觉模型未就绪（缺少 llama-server 或带投影器的多模态 GGUF）。可在「设置 → 本地模型」补齐；如需用本地或云端的其它推理服务，请在「设置 → API 配置」添加一个支持图片输入的模型".to_string()
+        });
+    }
 
     // 图片预处理：统一成「最长边 ≤ VISION_MAX_SIDE 的 data URI」
     // （本地小模型对像素数极敏感，实测缩到 768px 快 3~4 倍）
@@ -3442,38 +3380,18 @@ async fn describe_image(app: tauri::AppHandle, images: Vec<String>) -> Result<St
         prepared.push(downscale_data_uri(&img, VISION_MAX_SIDE));
     }
 
-    let (url, model, api_key, label) = match &backend {
-        VisionBackend::LlamaCpp => {
-            let info = local_runtime::ensure_server(&app).await?;
-            (
-                format!("http://127.0.0.1:{}/v1/chat/completions", info.port),
-                info.model,
-                None,
-                "本地视觉模型（llama.cpp）",
-            )
-        }
-        VisionBackend::External {
-            base_url,
-            model,
-            api_key,
-        } => (
-            format!("{}/chat/completions", base_url),
-            model.clone(),
-            Some(api_key.clone()),
-            "外部本地视觉服务",
-        ),
-    };
+    let info = local_runtime::ensure_server(&app).await?;
+    let url = format!("http://127.0.0.1:{}/v1/chat/completions", info.port);
+    let label = "本地视觉模型（llama.cpp）";
 
     let mut parts: Vec<String> = Vec::new();
     for img in prepared {
-        let desc = vision_chat_once(&url, &model, &img, api_key.as_deref(), label).await?;
+        let desc = vision_chat_once(&url, &info.model, &img, label).await?;
         if !desc.is_empty() {
             parts.push(desc);
         }
     }
-    if matches!(backend, VisionBackend::LlamaCpp) {
-        local_runtime::touch(); // 推迟空闲回收
-    }
+    local_runtime::touch(); // 推迟空闲回收
     Ok(parts.join("\n\n"))
 }
 
@@ -6907,10 +6825,9 @@ mod tests {
     use super::{
         chunk_text, clip_output, compute_edits, compute_next_run, delete_file_impl,
         detect_test_framework, diff_lines, extract_redirected_files, format_unified_diff,
-        is_mcp_package, is_placeholder_package, next_daily_naive, normalize_openai_base,
-        npm_search, nth_occurrence, parse_allowed_paths, parse_daily_time, parse_npm_search,
-        path_within_any, resolve_vision_backend, run_shell_command_with, validate_git_operation,
-        EditOp, VisionBackend, VisionSettings, DAY_MS,
+        is_mcp_package, is_placeholder_package, next_daily_naive, npm_search, nth_occurrence,
+        parse_allowed_paths, parse_daily_time, parse_npm_search, path_within_any,
+        run_shell_command_with, use_llama_vision, validate_git_operation, EditOp, DAY_MS,
     };
 
     /// 证明「按字节切」确实会 panic —— 这就是 clip_output 存在的理由。
@@ -6980,63 +6897,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_vision_backend_respects_explicit_choice_and_auto_fallback() {
-        let none = VisionSettings::default();
-        assert_eq!(
-            resolve_vision_backend("llamacpp", false, &none),
-            Some(VisionBackend::LlamaCpp)
-        );
-        assert_eq!(
-            resolve_vision_backend("auto", true, &none),
-            Some(VisionBackend::LlamaCpp)
-        );
-        assert_eq!(resolve_vision_backend("auto", false, &none), None);
-        assert_eq!(resolve_vision_backend("external", false, &none), None);
-
-        let external = VisionSettings {
-            backend: "external".into(),
-            external_base_url: "http://127.0.0.1:8080/v1/".into(),
-            external_model: String::new(),
-            external_api_key: String::new(),
-        };
-        assert_eq!(
-            resolve_vision_backend("external", true, &external),
-            Some(VisionBackend::External {
-                base_url: "http://127.0.0.1:8080/v1".into(),
-                model: "local".into(),
-                api_key: "local".into(),
-            })
-        );
-        // auto：llama.cpp 未就绪时才回落外部服务
-        assert_eq!(
-            resolve_vision_backend("auto", false, &external),
-            Some(VisionBackend::External {
-                base_url: "http://127.0.0.1:8080/v1".into(),
-                model: "local".into(),
-                api_key: "local".into(),
-            })
-        );
-        assert_eq!(
-            resolve_vision_backend("auto", true, &external),
-            Some(VisionBackend::LlamaCpp)
-        );
-    }
-
-    #[test]
-    fn openai_base_gets_v1_suffix_when_missing() {
-        assert_eq!(
-            normalize_openai_base("http://127.0.0.1:8080"),
-            "http://127.0.0.1:8080/v1"
-        );
-        assert_eq!(
-            normalize_openai_base("http://127.0.0.1:8080/"),
-            "http://127.0.0.1:8080/v1"
-        );
-        assert_eq!(
-            normalize_openai_base("http://127.0.0.1:8080/v1/"),
-            "http://127.0.0.1:8080/v1"
-        );
-        assert_eq!(normalize_openai_base(""), "");
+    fn use_llama_vision_respects_explicit_choice_and_auto() {
+        // 显式 llamacpp：即使未就绪也交给调用方报错（不静默降级到别处）
+        assert!(use_llama_vision("llamacpp", false));
+        assert!(use_llama_vision("llamacpp", true));
+        // auto / 空值 / 未知值：就绪才用
+        assert!(use_llama_vision("auto", true));
+        assert!(!use_llama_vision("auto", false));
+        assert!(!use_llama_vision("", false));
+        assert!(!use_llama_vision("unknown", false));
     }
 
     // Phase 3 知识库 RAG：分块纯函数

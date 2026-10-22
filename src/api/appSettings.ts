@@ -93,14 +93,9 @@ export interface AppSettingsPayload {
   fileEditConfirm: boolean;
   /// code-mode：允许模型用 run_code 在可终止的沙箱 Worker 里执行 JS（能力只经工具桥）
   codeModeEnabled?: boolean;
-  /// 本地视觉运行时：auto（默认可就绪就用 llama.cpp）/ llamacpp / external（可选外部服务）
-  localVisionRuntime?: "auto" | "llamacpp" | "external";
-  /// 外部本地推理服务的 OpenAI 兼容 Base URL（可选，如 Strata: http://127.0.0.1:8080/v1）
-  externalVisionBaseUrl?: string;
-  /// 外部本地推理服务的模型名（Strata 可填任意值）
-  externalVisionModel?: string;
-  /// 外部本地推理服务的 API Key（本地服务通常任意值即可）
-  externalVisionApiKey?: string;
+  /// 本地视觉运行时：auto（默认，就绪就用 llama.cpp）/ llamacpp（强制）
+  /// （云端 / 其它 OpenAI 兼容端点统一走 profiles，不在本地模型设置里配置）
+  localVisionRuntime?: "auto" | "llamacpp";
   /// P0-6 预算护栏（元；0/缺省 = 不限）：达到 80% 预警、100% 发送前拦截
   budgetSession?: number;
   budgetDaily?: number;

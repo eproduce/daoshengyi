@@ -1,6 +1,6 @@
 // 本地推理运行时 store（llama.cpp）：
 // 状态探测（llama-server / GGUF 模型）、硬件评估、模型导入（文件 / 目录）与停止。
-// 外部 OpenAI 兼容服务（可选，如 Strata）由设置项配置，不在此 store 管理。
+// 云端 / 其它 OpenAI 兼容端点统一走「API 配置」里的 Profile，不在此 store 管理。
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";

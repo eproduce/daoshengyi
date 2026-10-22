@@ -11,7 +11,7 @@
 | 视觉描述 | `describe_image` → `local_runtime::ensure_server` | 端口 18080，按需启动 + 空闲 120s 回收 |
 | 嵌入（语义检索） | `embed_texts` → `local_runtime::embed_texts` | 端口 18081，`--embedding --pooling mean`，空闲 30s 回收 |
 | 模型导入 | `local_runtime_import_gguf` / `local_runtime_import_dir` | 硬链接优先；按 GGUF 魔数识别 |
-| 外部服务（可选） | `localVisionRuntime = external` | 任何 OpenAI 兼容端点，如 Strata `http://127.0.0.1:8080/v1` |
+| 其它推理端点 | 「设置 → API 配置」新增 Profile | 本地（Strata / LM Studio / vLLM）与云端通用，本地视觉不可用时前端自动使用 |
 
 二进制探测顺序：`<app_data>/runtimes/llama-server` → `/usr/local/bin` → `/opt/homebrew/bin`
 → `/usr/bin` → `which llama-server`。
@@ -27,14 +27,14 @@ llama.cpp 只做推理，不提供模型仓库。当前提供两条零依赖路�
 嵌入模型按文件名识别（`embed` / `bge-` / `gte-` / `e5-`）；投影器按 `mmproj` / `projector` / `clip` 识别。
 未导入嵌入模型时，记忆/知识库检索自动降级为 FTS5 关键词（**绝不返回假向量**）。
 
-## 3. 外部本地推理服务（可选）
+## 3. 其它推理端点（统一走 API 配置）
 
-Strata 等工具在本机提供 OpenAI 兼容 API（Strata 默认 `http://127.0.0.1:8080/v1`，
-模型名与 Key 任意）。在「设置 → 本地模型 → 外部本地推理服务」填入即可：
+本机其它推理服务（Strata / LM Studio / vLLM）与云端视觉模型**不再有单独入口**：
+在「设置 → API 配置」新增一个 OpenAI 兼容 Profile（填 Base URL / Key / 模型名）即可。
 
-- 后端选择 `auto`（默认）：llama.cpp 就绪优先，否则用已配置的外部服务；
-- 后端选择 `external`：强制走外部服务（未配置 Base URL 时明确报错）；
-- 聊天侧也可直接在「API 配置 → 本地服务」新建一个 Profile 复用同一端点。
+- 本地视觉（llama.cpp）可用时优先用它；
+- 本地视觉不可用时，前端 `describeImages` 会自动挑一个**支持图片输入**的 Profile 识别图片；
+- 一套配置同时服务聊天与识图，本地 / 云端一致。
 
 ## 4. 生命周期与内存
 

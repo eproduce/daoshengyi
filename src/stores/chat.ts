@@ -853,7 +853,7 @@ function getMcpToolsPrompt(mode?: ReturnType<typeof getModeById>): string {
     '- **run_code** (app): 在**可终止的沙箱 Worker** 里执行你写的 JavaScript（多步数据处理/批量计算/编排工具调用）。参数 {"code": "JavaScript 代码"}。**代码契约**：整段代码是 async 函数体——可直接 `await`、用 `return` 交回结果，日志用 `console.log(...)`；**调用其它工具**用 `tools.工具名(参数对象)`，如 `const r = await tools.calc({ expression: "1+2" });`，返回该工具的结果字符串。**限制**：① 无文件/网络/系统能力（`fetch`/`XMLHttpRequest`/`importScripts` 被禁用，也没有 `window`/`document`），要读写文件或联网必须走 `tools.write_file(...)`/`tools.fetch_page(...)`；② **不是 Python/shell**（写 `def`/`import` 会语法错误），要跑环境命令用 `run_command`；③ 30 秒超时强制终止；④ 工具调用上限 20 次/次执行。**该工具默认关闭**，未启用时会明确提示用户去「设置 → 权限」打开。\n' +
     '- **fetch_page** (app): 抓取网页 HTML 并转为纯文本返回。特点：快、稳定、无需浏览器；适合获取静态网页正文（新闻、天气、文档、说明等）。**注意**：JS 动态渲染的页面（数据靠脚本加载）、需登录的页面、或遇到反爬拦截（如“安全验证”）时，fetch_page 拿不到内容——此时必须改用浏览器工具（`browser_navigate` 打开 → `browser_evaluate` 提取 / `browser_screenshot` 截图）。**本机环回地址（如 http://localhost:8765/preview.html）可以直接抓取**——用本地静态服务预览生成的页面时，可以直接用 fetch_page 读取内容（环回默认放行），不必因为本地地址而放弃。参数 {"url": "完整网址"}\n' +
     '- **web_search** (app): 网络搜索，返回相关网页标题/链接/摘要（前几条会自动附带正文片段）。特点：适合需要发现多个信息源、获取最新信息、或不确定具体网址时的探索。参数 {"query": "关键词"}。**仅当回答确实需要当前/外部信息，或用户明确要求搜索时才使用**——普通闲聊、纯知识/常识问答、写作、代码、本地文件与文档任务直接用自身知识回答，不要“先搜一遍再答”。**注意：搜索结果摘要常不完整，若需要具体数据/细节/数字，必须对相关结果用 fetch_page 抓取正文获取，禁止只罗列链接让用户自己点开。**\n' +
-    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。需要本地视觉后端就绪（llama.cpp，或设置里配置的外部本地推理服务如 Strata）。\n' +
+    '- **describe_image** (app): 用本地视觉模型描述图片内容。参数 {"path": "本地图片文件路径"}。用于理解截图/图片内容（可配合浏览器截图后使用）。需要本地视觉后端就绪（llama.cpp；也可在「设置 → API 配置」用支持图片的模型）。\n' +
     '- **ocr_image** (app): 用本地 OCR（macOS Vision）提取图片中的文字。参数 {"path": "本地图片文件路径"}。用于从截图/图片提取文字。**注意**：OCR 对等宽数字串（尤其前导零）漏读率高，数位数/辨字形时要再用 image_inspect 交叉验证。\n' +
     '- **image_inspect** (app): 对图片做**确定性像素核验**（非 OCR）：列投影切出字符块 + 每个字形的墨迹量/封闭空洞数/宽高比 + ASCII 点阵。参数 {"path": "图片路径", "region": 可选 {left,top,width,height} 裁剪区, "threshold": 可选灰度阈值, "invert": 可选 true=浅色为字, "mode": "glyphs"|"info"}。**凡是数位数（证书编号/票据号/序列号/条码下方数字）或区分 0-O、1-l 这类相近字形，必须用它交叉验证**，不要只凭 ocr_image 的文本下结论；报告会给出宽度分布，"切出几块"就是几位。\n' +
     '- **vision_inspect** (app): 用 **macOS Vision 原生能力**做视觉检查（离线、零模型下载、毫秒级）：图像分类、人脸/人体/人体姿势的**数量与像素位置**、动物、条码二维码内容、**视觉显著区域**。参数 {"path": "图片路径", "max_labels": 可选，默认 8}。**分工**：image_inspect 管像素细节（数位数/辨字形）；本工具管「图里有什么、在哪」；describe_image 是本地小模型（30–120 秒且会幻觉）——**要数量/位置/是否存在优先用本工具**，需要语义描述时先用它定位、**裁出局部**再交 describe_image。返回的像素框与 image_inspect 的 region 同坐标系，可直接核验。**检测不到 ≠ 不存在**（小目标/极端角度会漏检）。\n' +
@@ -1468,6 +1468,16 @@ function isVagueBody(s: string): boolean {
       sc,
     ) || /无关|与问题不相关/.test(sc)
   );
+}
+
+/// 挑一个「可能支持图片输入」的配置用于识图回退：非 DeepSeek（它不支持视觉）且填了地址。
+/// 本地 OpenAI 兼容服务（Strata / LM Studio / vLLM）通常不校验 Key，所以 **不要求 apiKey**；
+/// 发请求时仅在确实填了 Key 的情况下带 Authorization 头。
+function pickVisionProfile<T extends { baseUrl: string }>(list: T[]): T | undefined {
+  return list.find((p) => {
+    const base = (p.baseUrl || "").toLowerCase();
+    return !!base && !base.includes("deepseek");
+  });
 }
 
 // ── 系统通知：任务完成 / 最终产物就绪 ─────────────────────────────────────
@@ -3077,8 +3087,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         pendingViewImages.push(dataUrl);
         return `✅ 已把图片加入上下文（${path}）：你将在**下一轮**直接看到该图，无需再调用 describe_image/ocr_image 猜内容。`;
       }
-      // 非多模态模型（DeepSeek 等）看不到图：优先用**已配置的云端视觉档**（非 DeepSeek 且有 Key）——快且准
-      const vision = store.profiles.find((p) => p.apiKey && !p.baseUrl.includes("deepseek"));
+      // 非多模态模型（DeepSeek 等）看不到图：优先用**已配置的视觉档**（任意非 DeepSeek 端点，
+      // 本地或云端都行；本地服务通常不需要 Key）——快且准
+      const vision = pickVisionProfile(store.profiles);
       if (vision) {
         try {
           const dataUrl = await invoke<string>("read_image_data_url", { path });
@@ -3088,7 +3099,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  Authorization: `Bearer ${vision.apiKey}`,
+                  ...(vision.apiKey ? { Authorization: `Bearer ${vision.apiKey}` } : {}),
                 },
                 body: JSON.stringify({
                   model: vision.model,
@@ -3128,7 +3139,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `1. ocr_image（path=${path}）：macOS 原生 OCR，秒级返回，读截图里的文字最可靠；\n` +
         `2. browser_evaluate：读 document.body.innerText，核验页面文本内容；\n` +
         `3. describe_image（path=${path}）：本地视觉模型，**实测 30–120 秒**且可能描述失真/幻觉，确需画面描述时才用。\n` +
-        `4. 若上面都不可用（本地视觉后端尚未就绪）：请提示用户在「设置 → 本地模型」里装好 llama.cpp 并导入带投影器的多模态模型（或在设置里配置外部本地推理服务，如 Strata），就绪后再重试。\n` +
+        `4. 若上面都不可用（本地视觉后端尚未就绪）：请提示用户在「设置 → 本地模型」里装好 llama.cpp 并导入带投影器的多模态模型，或在「设置 → API 配置」添加一个支持图片输入的模型，就绪后再重试。\n` +
         `图片已保存：${path}（用户可自行查看）。不要凭猜测断言渲染是否正常。`
       );
     }
@@ -5386,8 +5397,8 @@ export const useChatStore = defineStore("chat", () => {
     if (semantic) parts.push(`[图片内容描述：]\n${semantic}`);
     if (parts.length > 0) return parts.join("\n\n");
 
-    // 3) 回退：找一个有视觉能力的 API（非 DeepSeek，已配 Key）
-    const visionProfile = profiles.value.find((p) => p.apiKey && !p.baseUrl.includes("deepseek"));
+    // 3) 回退：找一个可能支持视觉的 API 配置（非 DeepSeek；本地服务通常不需要 Key）
+    const visionProfile = pickVisionProfile(profiles.value);
     if (!visionProfile) return "";
 
     const baseUrl = visionProfile.baseUrl.replace(/\/+$/, "");
@@ -5398,7 +5409,7 @@ export const useChatStore = defineStore("chat", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${visionProfile.apiKey}`,
+            ...(visionProfile.apiKey ? { Authorization: `Bearer ${visionProfile.apiKey}` } : {}),
           },
           body: JSON.stringify({
             model: visionProfile.model,

@@ -18,8 +18,8 @@
 - **前端**：`stores/ollama.ts` → `stores/localRuntime.ts`；设置页「本地模型」重做
   （导入文件/目录、运行时状态、硬件评估）；菜单 `open-ollama` → `open-local`；
   引导横幅与提示词移除回退口径。
-- **可选的 Strata**：新增「外部本地推理服务」——任意 OpenAI 兼容端点
-  （Strata 默认 `http://127.0.0.1:8080/v1`，自动补 `/v1`）；API 配置页新增「本地服务」预设。
+- **本地/云端端点统一走 API 配置**：不再在「本地模型」里维护第二套 Base URL/Key/模型名
+  （与 API 配置重复）；本地视觉不可用时前端自动选用支持图片输入的 Profile。
 - 文档：`docs/OLLAMA_EXIT_PLAN.md` → `docs/LOCAL_RUNTIME.md`（改写为现行架构）。
 
 ### 2. HTML 结果生成技能（answer_html）
@@ -71,7 +71,17 @@
   主题切换只变色不重播；`?motion=off` 直接终态；新增 Rust 单测
   `chart_script_keeps_entry_animation_alive`。
 
-### 5. 验证
+### 5. 去掉重复的「外部推理服务」入口（2026-10-22 用户反馈）
+- 「设置 → 本地模型」删除「外部本地推理服务」卡片（Base URL / 模型名 / API Key + Strata 预设）
+  与 `localVisionRuntime = external` 取值——它与「API 配置」重复。
+- 「API 配置」也删除「本地服务」预设按钮：新增配置仍用 `＋`，任意 OpenAI 兼容端点（本地或云端）通用。
+- Rust 清理：`VisionSettings` / `VisionBackend::External` / `normalize_openai_base` / 三个
+  `externalVision*` 设置字段；`describe_image` 只走 llama.cpp，未就绪时明确提示去 API 配置。
+- 识图回退放宽：`pickVisionProfile` 不再要求 `apiKey`（本地服务通常不校验），仅在填了 Key 时带
+  Authorization 头 —— 本地 Strata / LM Studio 与云端模型一套配置即可。
+- 旧设置里的 `localVisionRuntime = "external"` 按 `auto` 处理（不会报错）。
+
+### 6. 验证
 - `cargo test --lib`：352 项全绿（新增图表解析/option/注入/离线自检等 12 项）；
   `cargo clippy --all-targets` 0 warning；`cargo fmt --check` 通过。
 - `npm test`：55 文件 / 715 项全绿；`vue-tsc --noEmit`、ESLint、Prettier 通过。

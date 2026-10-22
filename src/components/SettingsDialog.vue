@@ -448,30 +448,11 @@ function saveCodeMode() {
   updateSettings({ codeModeEnabled: codeModeEnabled.value });
 }
 
-// 本地视觉运行时：auto（默认 llama.cpp 就绪就用）/ llamacpp / external（可选外部服务）
-const localVisionRuntime = ref<"auto" | "llamacpp" | "external">(
-  getSettings().localVisionRuntime ?? "auto",
-);
-const externalVisionBaseUrl = ref(getSettings().externalVisionBaseUrl ?? "");
-const externalVisionModel = ref(getSettings().externalVisionModel ?? "");
-const externalVisionApiKey = ref(getSettings().externalVisionApiKey ?? "");
+// 本地视觉运行时：auto（默认 llama.cpp 就绪就用）/ llamacpp（强制）
+const localVisionRuntime = ref<"auto" | "llamacpp">(getSettings().localVisionRuntime ?? "auto");
 function saveLocalVisionRuntime() {
-  updateSettings({
-    localVisionRuntime: localVisionRuntime.value,
-    externalVisionBaseUrl: externalVisionBaseUrl.value.trim(),
-    externalVisionModel: externalVisionModel.value.trim(),
-    externalVisionApiKey: externalVisionApiKey.value.trim(),
-  });
+  updateSettings({ localVisionRuntime: localVisionRuntime.value });
   void localRuntime.refreshRuntime();
-}
-
-/// 填入 Strata 的默认端点（OpenAI 兼容；模型名可任意）
-function applyStrataPreset() {
-  localVisionRuntime.value = "external";
-  externalVisionBaseUrl.value = "http://127.0.0.1:8080/v1";
-  externalVisionModel.value = "strata";
-  externalVisionApiKey.value = "local";
-  saveLocalVisionRuntime();
 }
 
 /// 选择本地 GGUF 文件导入（多选）
@@ -813,18 +794,6 @@ function startNew() {
   isNew.value = true;
 }
 
-/// 新建「本地推理服务」配置（可选）：Strata 默认 http://127.0.0.1:8080/v1，
-/// 任意 Key、任意模型名即可用；LM Studio / vLLM 等按各自端口填写。
-function startNewLocal() {
-  startNew();
-  editingProfile.value.name = "本地服务";
-  editingProfile.value.baseUrl = "http://127.0.0.1:8080/v1";
-  editingProfile.value.apiKey = "local";
-  editingProfile.value.model = "strata";
-  editingProfile.value.thinkingEnabled = false;
-  editingProfile.value.maxTokens = 2048;
-}
-
 function handleSave() {
   if (isNew.value) {
     chatStore.addProfile({ ...editingProfile.value });
@@ -892,13 +861,6 @@ async function handleDelete() {
               </button>
               <button class="profile-tab profile-tab--add" title="新建配置" @click="startNew">
                 ＋
-              </button>
-              <button
-                class="profile-tab profile-tab--add profile-tab--local"
-                title="添加本地推理服务（Strata / LM Studio / vLLM 等 OpenAI 兼容端点，可选）"
-                @click="startNewLocal"
-              >
-                本地服务
               </button>
             </div>
 
@@ -1071,7 +1033,7 @@ async function handleDelete() {
           <!-- MCP 服务器管理 -->
           <div v-show="activeTab === 'mcp'"><McpSettings /></div>
 
-          <!-- 本地视觉模型管理（llama.cpp；外部 OpenAI 兼容服务可选） -->
+          <!-- 本地视觉模型管理（llama.cpp） -->
           <div v-show="activeTab === 'local'" class="local-panel">
             <h3><Cpu :size="17" /> 本地视觉模型</h3>
             <p class="local-desc">
@@ -1086,7 +1048,6 @@ async function handleDelete() {
                 <select v-model="localVisionRuntime" @change="saveLocalVisionRuntime">
                   <option value="auto">自动（推荐：llama.cpp 就绪就用它）</option>
                   <option value="llamacpp">仅 llama.cpp</option>
-                  <option value="external">外部本地推理服务（可选）</option>
                 </select>
                 <span v-if="localRuntime.visionReady" class="runtime-badge runtime-badge--ok"
                   >llama.cpp 已就绪</span
@@ -1134,47 +1095,14 @@ async function handleDelete() {
                 导入采用硬链接（同盘零额外占用、无需重新下载）；目录导入会递归 3 层，并识别无
                 <code>.gguf</code> 后缀的 GGUF 文件。
               </p>
+              <p class="runtime-card__hint">
+                需要本机其它推理服务（Strata / LM Studio / vLLM）或云端视觉模型？到
+                <b>「API 配置」</b>新增一个 OpenAI
+                兼容配置即可（本地与云端通用）；本地视觉不可用时会自动使用它识别图片。
+              </p>
               <p v-if="localRuntime.runtimeMsg" class="runtime-card__msg">
                 {{ localRuntime.runtimeMsg }}
               </p>
-            </div>
-
-            <!-- 外部本地推理服务：可选（如 Strata / LM Studio / vLLM，均提供 OpenAI 兼容端点） -->
-            <div class="runtime-card">
-              <div class="runtime-card__title">🔌 外部本地推理服务（可选）</div>
-              <p class="runtime-card__hint">
-                已在本机运行 Strata 等 OpenAI 兼容服务时，可让本地视觉复用它，无需再装模型。 Strata
-                默认：<code>http://127.0.0.1:8080/v1</code>，模型名与 API Key 可填任意值。
-              </p>
-              <div class="runtime-card__grid runtime-card__grid--form">
-                <label>
-                  Base URL
-                  <input
-                    v-model="externalVisionBaseUrl"
-                    placeholder="http://127.0.0.1:8080/v1"
-                    @change="saveLocalVisionRuntime"
-                  />
-                </label>
-                <label>
-                  模型名
-                  <input
-                    v-model="externalVisionModel"
-                    placeholder="strata"
-                    @change="saveLocalVisionRuntime"
-                  />
-                </label>
-                <label>
-                  API Key
-                  <input
-                    v-model="externalVisionApiKey"
-                    placeholder="local（本地服务通常任意值）"
-                    @change="saveLocalVisionRuntime"
-                  />
-                </label>
-              </div>
-              <div class="runtime-card__row">
-                <button class="btn-secondary" @click="applyStrataPreset()">填入 Strata 预设</button>
-              </div>
             </div>
 
             <div v-if="localRuntime.hw" class="hw-card">
@@ -1964,9 +1892,6 @@ async function handleDelete() {
 .profile-tab--add {
   font-size: 18px;
   padding: 4px 12px;
-}
-.profile-tab--local {
-  font-size: 12px;
 }
 
 .form-group {

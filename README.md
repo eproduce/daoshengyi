@@ -19,7 +19,7 @@
 ### 🤖 智能对话
 - **流式输出** — Rust SSE 流式渲染，分块不丢字，逐字显示
 - **深度思考展示** — 展开/折叠模型的推理过程（reasoning_content）
-- **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点；本地推理服务（llama.cpp / Strata 等）可选接入
+- **多模型 Profile** — DeepSeek 默认，可配置任意 OpenAI 兼容端点（本地 Strata / LM Studio、云端模型同一套配置）
 - **多模型路由** — 按任务类型（对话 / 编程 / 摘要）自动选用不同 Profile
 - **日期防幻觉** — 自动注入当天日期，回答“今天/今年”类问题不胡诌
 - **缓存命中率统计** — 解析模型 `usage.prompt_cache_hit/miss_tokens`，顶栏实时显示 `缓存 xx%`
@@ -109,8 +109,6 @@
   预编译 Tailwind 工具类与长文目录；单文件离线
 - **语义检索** — 用本地嵌入 GGUF（如 nomic-embed-text）；未导入时**降级为关键词检索**
   （不会因此中断对话，但**绝不返回假向量**）
-- **外部本地推理服务（可选）** — 已在本机运行 Strata / LM Studio / vLLM 时，可把视觉请求指向
-  其 OpenAI 兼容端点（如 `http://127.0.0.1:8080/v1`），无需再装模型
 - 设置 → 本地模型 → 「本地运行时」卡片可看实时状态（二进制/模型/服务/嵌入）与导入明细
 
 ### 🔒 安全与体验
@@ -156,7 +154,7 @@
 | 后端能力 | reqwest、tokio、SQLite（rusqlite）、AES-256-GCM、portable-pty、tokio-tungstenite |
 | 工作流 | VueFlow（DAG 可视化工作流） |
 | Markdown | marked + highlight.js + KaTeX（数学公式） |
-| 本地运行时 | **llama.cpp**（识图 + 嵌入，按需启停）；外部 OpenAI 兼容服务可选 |
+| 本地运行时 | **llama.cpp**（识图 + 嵌入，按需启停）；其它端点走 API 配置 |
 | 本地 OCR | macOS Vision（`ocr_tool.swift`） |
 | 原生视觉检测 | macOS Vision（同一侧车：分类/人脸/人体/姿势/动物/条码/显著区域 + 图像特征指纹） |
 | 图标 | lucide-vue-next |
@@ -170,7 +168,7 @@
 - **Rust ≥ 1.98**（`rust-toolchain.toml` 固定版本，rustup 会自动装好；升级时要同步改 ci.yml / build-macos.yml）
 - **macOS / Windows / Linux**
 - 可选：**llama.cpp**（`brew install llama.cpp`）—— 装了才能用本地识图/嵌入；
-  不装时可用线上 API，或把视觉请求指向已有的外部本地推理服务
+  不装时用「API 配置」里的任意模型（本地或云端）
 
 ### 安装依赖
 
@@ -232,8 +230,8 @@ git tag v1.0.0-alpha.2 && git push origin v1.0.0-alpha.2   # → 自动打包并
    扫描一个已有模型目录（递归 3 层、无 `.gguf` 后缀按魔数识别；导入走硬链接，不额外占盘）
 2. 语义检索再导入一个嵌入 GGUF（如 `nomic-embed-text`）；未导入时自动降级为关键词检索
 3. 想立即归还内存就点「立即停止运行时」（下次识图会自动再拉起）
-4. 已在本机跑 **Strata**（`http://127.0.0.1:8080/v1`）或其他 OpenAI 兼容服务时，
-   可在同一页选「外部本地推理服务」并一键填入 Strata 预设，无需再装 llama.cpp
+4. 想用本机其它推理服务（Strata / LM Studio / vLLM）或云端视觉模型？到「设置 → API 配置」
+   新增一个 OpenAI 兼容配置即可；本地视觉不可用时会自动用它识别图片
 
 > 本地运行时按需启停：进程退出即归还内存，空闲不常驻；推理速度取决于本机 CPU/GPU。
 
