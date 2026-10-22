@@ -158,7 +158,12 @@
 还不够自然时，按投入排序：`edge-tts`（0 成本）→ `Piper / Kokoro-zh`（离线）→ 云端神经 TTS（MiniMax / 火山 / Azure / ElevenLabs，支持 SSML 情绪与语速）→ 本地克隆（CosyVoice2 / GPT-SoVITS，需 GPU、首响慢）。
 
 > **2026-10-22 复核**：用户复听后仍觉机械，已另出专项方案 `docs/VOICE_NATURALNESS_PLAN.md`
-> （根因诊断 + 引擎矩阵 + Provider/流水线/缓存/打断架构 + P1~P5 排期）。
+> （根因诊断 + 引擎矩阵 + Provider/流水线/缓存/打断架构 + P0~P5 排期），原始调研报告见
+> `docs/VOICE_ENGINE_RESEARCH_2026-10-22.md`。三条实测纠偏：
+> ① 中文 **Premium 音色本就存在**（`tingting.premium` 625MB，`state=1` 未下载）——
+> 不换引擎、只需下载即可质变；
+> ② **Kokoro int8 在 Intel x86 上比 fp32 慢 3 倍**（RTF 1.70 vs 0.52），离线首选改为 MeloTTS（MIT，RTF 0.25）；
+> ③ `say` 的**退出码恒为 0**，用它判断成败无效。
 > 另：`index.crates.io` 现已可访问（实测 200），旧结论「必须先配镜像」作废。
 
 ---

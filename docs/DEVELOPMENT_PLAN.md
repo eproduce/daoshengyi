@@ -477,10 +477,15 @@ worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护�
 - 设置页引擎预设：Edge 神经语音（晓晓/云希，免费联网）、Piper（离线）；克隆类仍走 `{ref}`。
 - 零新依赖；真机对比：同一段 44 字，`say -r 210` 8.92s / 晓晓 8.66s / 云希 8.98s。
 
-**后续（P1~P5，见 `docs/VOICE_NATURALNESS_PLAN.md`）**：用户复听仍觉机械 → 根因是 compact 音源与
-"整段一次性合成"，不是语速。计划：**P1** Provider 抽象 + Edge 一等公民 + 磁盘缓存（1 人日）→
-**P2** 句子流水线 + 播放队列 + 可打断（1）→ **P4** 本地 Kokoro-zh int8（121MB）离线兜底（1~1.5）→
-**P3** Azure SSML 风格 / OpenAI 指令式语气（1）→ **P5** 真流式（可选）。
+**后续（P0~P5，见 `docs/VOICE_NATURALNESS_PLAN.md`）**：用户复听仍觉机械 → 调研确认根因是
+compact 音源与"整段一次性合成"，不是语速；且中文 **Premium 音色本就存在**（tingting 625MB，
+`state=1` 未下载）。计划：**P0** 用户下载 Premium + edge 对照（0）→ **P1** `AVSpeechSynthesizer`
+常驻侧车（干掉 2s 启动、可精确 stop、音色质量检测，1 人日）→ **P2** 句子流水线 + 缓存 + 打断（1）→
+**P3** 本地 MeloTTS（MIT，RTF 0.25）离线兜底（1~1.5）→ **P4** Azure `express-as` 风格（1）→
+**P5** 真流式（可选）。
+
+> 实测纠偏：Kokoro int8 在 Intel x86 上比 fp32 **慢 3 倍**（RTF 1.70 vs 0.52），故离线首选
+> MeloTTS 而非 Kokoro；Matcha（非商用数据集）/ Piper（License Unknown）有许可风险。
 
 ## 4. 计划功能（借鉴 Hermes-CN-Desktop，按优先级）
 

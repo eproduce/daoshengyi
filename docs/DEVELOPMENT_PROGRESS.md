@@ -48,6 +48,24 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
 - `npm test`：55 文件 / 715 项全绿；`vue-tsc --noEmit`、ESLint、Prettier、`cargo fmt --check` 通过。
 - 同文本三段音频（`say -r 210` / 晓晓 / 云希）已实机生成并对比。
 
+### 6. 复听仍机械 → 二次调研与专项方案（同日）
+用户二次反馈「语速和语气还是很机械，达不到正常的交互标准」。调研后确认**根因是 compact 音源 +
+整段一次性合成，不是语速**，并修正了两条初稿结论：
+
+- **中文 Premium 音色确实存在，只是没下载**：读
+  `com_apple_MobileAsset_VoiceServicesVocalizerVoice.xml` → 中文 3 条全是 `.premium`
+  （tingting 625MB / meijia 665MB / sinji 326MB，`state=1` 未下载）。下载后不换引擎就能质变。
+- **Kokoro int8 在 Intel 上比 fp32 慢 3 倍**（RTF 1.70 vs 0.52~0.65，sherpa-onnx int8 算子在 x86
+  走反量化、无 VNNI）→ 离线首选改为 **MeloTTS（MIT，RTF 0.25，44.1kHz）**。
+- **`say` 的退出码恒为 0**（`say -v 不存在的音色` 仍 exit 0 并按默认音色出声）→ 现有
+  `speak()` 的 `exit_code != 0` 判断永远不成立，属待修缺陷（已记入方案 §5）。
+- 本地模型 RTF 实测（6 线程）：matcha 0.06 / piper 0.05 / MeloTTS 0.25 / Kokoro fp32 0.52 / int8 1.70。
+- 产出：`docs/VOICE_NATURALNESS_PLAN.md`（诊断 + 引擎矩阵 + Provider/流水线/缓存/打断架构 + P0~P5）、
+  `docs/VOICE_ENGINE_RESEARCH_2026-10-22.md`（原始调研报告与复现命令）。
+- 顺带修 bug：Edge 预设原为 `edge-tts …`，`pip --user` 的脚本在 `~/Library/Python/x.y/bin`，
+  **Finder 启动的 GUI 应用 PATH 里没有该目录** → 改为 `python3 -m edge_tts …`（实测 2.96s 落盘）。
+- `index.crates.io` 复核可访问（200）→ 「必须先配镜像」旧结论作废。
+
 ---
 
 ## 2026-10-21（移除 Ollama + HTML 报告升级为 ECharts）

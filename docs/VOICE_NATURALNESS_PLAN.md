@@ -1,28 +1,35 @@
 # 语音自然度：诊断与优化方案（2026-10-22）
 
-> 背景：上一版（1.0.0-alpha.13）把语速、句末停顿、口语化清洗做完了，用户复听后仍反馈
+> 背景：1.0.0-alpha.13 做完语速 / 句末停顿 / 口语化清洗后，用户复听仍反馈
 > 「语速和语气还是很机械，达不到正常的交互标准」。
 > 本文回答三件事：**① 到底哪里机械（有实测）② 有哪些可选引擎（本机可行性）③ 怎么改才真正自然（分阶段）**。
 >
-> 配套：`VOICE_IO_RESEARCH.md`（选型总览）、`VOICE_INTERACTION_PLAN.md`（输入侧排期）。
+> 完整调研原始报告（含全部复现命令与来源链接）：`VOICE_ENGINE_RESEARCH_2026-10-22.md`。
 
 ---
 
 ## 0. 结论先行
 
-**机械的根因不是语速，是音源。** 调语速只是让机械的声音说得快一点。
+**机械的根因不是语速，是音源 + 整段合成。** 调语速只是让机械的声音说得快一点。
 
-1. **音源**：系统 `say` 的中文音色全是 Apple 的 **compact**（拼接式、F0 平坦），
-   Enhanced / Premium 没装；`say -v '?'` 的 19 个中文里 16 个还是趣味变体。任何参数都救不回来。
-2. **合成方式**：现状是「一整段 ≤80 字 → 一次合成 → 播完」，没有句间衔接、没有预取，
-   首响固定 2.2~2.5s，听起来是「播报」而不是「说话」。
-3. **表达力**：没有风格/情绪控制，问句、感叹、提醒都是同一个调。
+按「自然度 × 本机可行性」排序（**已用实测数据修正初稿结论**）：
 
-**最短路径（今天就能听出差别，0 行代码）**：把 `surface_tts_command` 指到 Edge 神经语音
-（`edge-tts`），设置页已内置预设。**实测端到端 2.07s、音色是神经网络合成，与系统 compact 不是一个档次。**
+| 顺位 | 方案 | 为什么 | 代价 |
+| :-: | :--- | :--- | :--- |
+| 🥇 | **Apple Tingting Premium（625MB）+ 常驻 `AVSpeechSynthesizer` 侧车** | 零成本、一次性下载、之后全离线；Premium 是神经音色（体积约为 compact 的 100 倍）；侧车能干掉 `say` 每次 **2.0~2.3s** 的进程启动 | 需用户手动下载；韵律控制弱（无 style） |
+| 🥈 | **Azure `zh-CN-XiaoxiaoNeural` + `mstts:express-as` 风格** | 中文第一梯队；20 种 style（`chat`/`chat-casual`/`assistant` 正好适配 Agent）；流式首包 200~400ms | 联网 + Key；$15/百万字符（**每万汉字约 ¥0.11**） |
+| 🥉 | **MeloTTS（sherpa-onnx 进程内，MIT）** | 离线兜底；本机实测 **RTF 0.25 / 44.1kHz**，7 字 186ms、27 字 615ms | 模型 197MB；韵律中等，无情感控制 |
+| 备选 | `edge-tts`（晓晓） | 免费、热连接首包 **0.35~0.7s**，音色与 Azure 同源 | **非官方接口（ToS 灰色）**，只能当可选开关 + 降级链 |
+| 别用 | Kokoro-82M-zh（本机） | **int8 量化在 x86 上比 fp32 慢 3 倍**（RTF 1.70 vs 0.52~0.65），27 字句要 3.2~10.4s | 达不到对话级延迟 |
+| 别用 | 本地克隆（CosyVoice2/3、IndexTTS、F5、Spark、GPT-SoVITS） | 全需 GPU；GPT-SoVITS 的 M4 CPU 模式 RTF 0.526，本机估计 1.5~3（慢于实时） | 无 GPU 不可行 |
 
-**目标形态（1~2 人日）**：Provider 抽象 + **句子流水线**（边合成边播、首句先响）+ 磁盘缓存 +
-随时打断 + 引擎自动降级。这是"正常交互标准"的工程底座，与换哪个引擎无关。
+**两条与直觉相反、但已实测的事实**：
+
+1. **Kokoro int8 在 Intel 上更慢**：sherpa-onnx 的 int8 算子在 x86 走反量化路径、无 VNNI 加速
+   → 210MB int8 RTF **1.70**，而 311MB fp32 RTF **0.52~0.65**。Intel Mac 必须用 fp32，
+   但即便如此，27 字也要 3.2~3.5s，「按句流式」勉强可用、不适合连续对话。
+2. **`say` 的退出码恒为 0**：实测 `say -v 不存在的音色` 仍 exit 0 并按默认音色出声。
+   现有 `speak()` 用 `exit_code != 0` 判失败 —— **这个判断永远不成立**，音色配置错了会静默走默认音色。
 
 ---
 
@@ -30,64 +37,62 @@
 
 | # | 现象 | 证据（本机实测） | 影响 |
 | :-: | :--- | :--- | :--- |
-| 1 | 音源是 compact | `say -v '?'` 共 180 个音色，中文 19 个，其中 16 个是 `Eddy/Flo/Grandma…` 变体；真人是 Tingting / Meijia / Sinji，均无 `(Enhanced)` 标记（`~/Library/Speech/Voices` 为空 = 未下载增强音色） | 音色本身无 F0 起伏，**决定性因素** |
-| 2 | 语速虽可调，但全局恒定 | 同一句：默认 175 词/分 4.10s，`-r 240` 3.17s（−18%） | 只是"快慢"，不产生语调起伏 |
-| 3 | 只有句末停顿 | `[[slnc]]` 在 `，` 后完全无效（音频时长一模一样），只有 `。！？` 后生效 | 句内没有呼吸与重音 |
-| 4 | 一次性整段合成 | 单次 `say` 有 ≈2.2~2.5s 固定开销（与字数无关） | 首响恒定 2s+，且无法边生成边念 |
-| 5 | 无风格/情绪 | `surface_tts_command` 只有 `{text}/{out}/{ref}`，没有 style 概念 | 问句、提醒、结论同一个调 |
-| 6 | 只念摘要 ≤80 字 | `SPEAK_MAX_CHARS = 80`（`display-ir.ts`） | 没有连续对话的语流 |
+| 1 | 音源是 compact | `say -v '?'` 共 180 个音色，中文 19 个，其中 16 个是 `Eddy/Flo/Grandma…` 变体；真人 Tingting / Meijia / Sinji 均为 compact（`~/Library/Speech/Voices` 为空 = 未下载增强音色） | 音色本身无 F0 起伏，**决定性因素** |
+| 2 | 系统其实提供 Premium，只是没装 | 读 `com_apple_MobileAsset_VoiceServicesVocalizerVoice.xml`：中文 3 条，全是 `.premium` —— tingting **625.0MB** / meijia 664.6MB / sinji 325.8MB，`state=1`（未下载） | **不换引擎就能质变**，只需下载 |
+| 3 | 语速虽可调，但全局恒定 | 同一句 175 词/分 4.10s，`-r 240` 3.17s（−18%） | 只是"快慢"，不产生语调起伏 |
+| 4 | 只有句末停顿 | `[[slnc]]` 在 `，` 后完全无效（音频时长一模一样），只有 `。！？` 后生效 | 句内没有呼吸与重音 |
+| 5 | **整段一次性合成** | 单次 `say` 固定开销 **2.0~2.3s**（7 字短句 2.12/1.98/2.31s，与字数无关） | 首响恒定 2s+，无法边生成边念 |
+| 6 | 无风格/情绪 | 模板只有 `{text}/{out}/{ref}`，没有 style 概念 | 问句、提醒、结论同一个调 |
+| 7 | 只念 ≤80 字摘要 | `SPEAK_MAX_CHARS = 80`（`display-ir.ts`） | 没有连续对话的语流 |
 
-> 第 4、6 条不是 bug，是**架构选择**：现在的语音是"回合结束后播一句结论"。
+> 第 5、7 条不是 bug，是**架构选择**：现在的语音是"回合结束后播一句结论"。
 > 要做"正常交互"，必须变成"**句子级流式**"。
 
 ---
 
-## 2. 候选引擎（本机可行性已核）
+## 2. 候选引擎（本机实测）
 
-### 2.1 本机实测数据（2026-10-22，i7-9750H / 16GB / 无 GPU）
+### 2.1 延迟实测（i7-9750H / 16GB / 无 GPU，macOS 26.7.2）
 
-| 引擎 | 首字节 / 首响 | 端到端（19 字） | 4 句 63 字 | 结论 |
+| 引擎 / 模式 | 首响 | 说明 |
+| :--- | :--- | :--- |
+| `say -r 210`（现状） | 2.0~2.3s（进程启动） | 合成本身极快，**都是启动开销** |
+| `edge-tts` CLI（冷启动） | 2.0~3.3s | 每次新起 python + 新建 WebSocket |
+| `edge-tts` 热连接（流式 API） | **0.35~0.7s** | 拆成常驻侧车才拿得到 |
+| 4 句 63 字 edge：串行 | 首句 2.4s，全部 12.2s | 每句各起一次连接 |
+| 4 句 63 字 edge：流水线 | **首句 2.4s**，全部 5.7s | 首句合成完即播、其余并发预取 |
+| MeloTTS（本地） | 7 字 186ms / 27 字 615ms | RTF 0.25 |
+| Kokoro fp32（本地） | 7 字 ~1.0s / 27 字 ~3.3s | RTF 0.52~0.65 |
+
+### 2.2 本地模型对比（sherpa-onnx 1.13.8，6 线程）
+
+| 模型 | 体积 | 采样率 | RTF | 7 字首响 | 许可 | 结论 |
+| :--- | :-: | :-: | :-: | :-: | :--- | :--- |
+| **MeloTTS zh_en** | 197 MB | **44.1 kHz** | **0.25** | 186 ms | ✅ MIT | **离线首选** |
+| matcha-icefall-zh-baker | 95 MB | 22.05 kHz | 0.06 | 161 ms | ⚠️ 数据集仅非商用 | 商用需替换 |
+| piper zh_CN-huayan-medium | 79 MB | 22.05 kHz | 0.05 | 58 ms | ⚠️ "License: Unknown" | 商用高风险 |
+| Kokoro multi-lang v1.1 **fp32** | 311 MB | 24 kHz | 0.52~0.65 | ~1.0 s | ✅ Apache-2.0 | 勉强，不适合对话 |
+| Kokoro multi-lang v1.1 **int8** | 210 MB | 24 kHz | **1.70** ❌ | 3.0 s | ✅ Apache-2.0 | **Intel 上别用** |
+| vits-icefall-zh-aishell3 | 209 MB | 8 kHz | 0.03 | 70 ms | — | 音质太差，仅作速度基线 |
+
+### 2.3 云服务（查证，价格以官网为准）
+
+| 服务 | 免费额度 | 价格量级 | 风格控制 | 备注 |
 | :--- | :--- | :--- | :--- | :--- |
-| 系统 `say -r 210`（现状） | 合成完才播 ≈2.2s | 2.2s | ≈2.5s（一整段） | 机械 |
-| `edge-tts`（晓晓 `+8%`） | **1.6~3.3s** | **2.07s** | 串行 12.2s / **流水线首句 2.4s、全部 5.7s** | 可用，需联网 |
-| Kokoro-82M-zh ONNX int8 | 未测（模型需下载，121MB） | — | — | 离线首选，见 §2.3 |
+| **Azure Speech** | 神经音色 50 万字符/月 | S1 **$15/百万字符**（HD $22） | ✅ `mstts:express-as` 20 种 style | 中文第一梯队，Agent 场景最合适 |
+| 阿里云 CosyVoice | 每模型 1 万字符（90 天） | ¥1.5/万字符（v3.5-plus） | 指令式 instruct | 国内节点低延迟 |
+| 火山引擎（豆包语音） | 2 万字符 + 15 次训练 | ¥6.5/万字符 | 部分 | 多音色/方言 |
+| MiniMax | — | ¥3.5/万字符（2.8-hd） | 参数式（语调/语速/音量） | — |
+| OpenAI `gpt-4o-mini-tts` | — | ≈ $0.015/分钟 | ✅ 自然语言 `instructions` | 中文支持，但官方注明音色为英文优化 |
+| ElevenLabs | 10k credits/月 | ≈ $180/百万字符 | 部分（audio tags） | 单价最高 |
 
-其他实测：`edge-tts` 支持 `--rate` / `--pitch` / `--volume`；同一句 `+0%` 4.73s、`+8%` 4.37s、`+15%` 4.10s
-（神经音色的语速调节是"放慢/加快语流"，不是把音素拉伸，所以听起来仍然自然）。
+### 2.4 工程前提（已复核）
 
-### 2.2 方案对比
-
-| 方案 | 自然度 | 延迟 | 成本 | 离线 | 许可/风险 | 本机可行性 |
-| :--- | :-: | :-: | :--- | :-: | :--- | :--- |
-| 系统 `say`（compact，现状） | ★★ | ★★★★★ | 0 | ✅ | 系统内置 | ✅ 已在用，天花板低 |
-| Apple Enhanced / Premium 音色 | ★★★☆ | ★★★★★ | 0 | ✅ | 系统内置，**需手动下载** | ⚠️ 只能人工在「系统设置 → 辅助功能 → 朗读内容 → 系统声音 → 管理声音」下载；本机未装 |
-| **`edge-tts`（Edge 神经语音）** | ★★★★☆ | ★★★★ | 0 | ❌ 联网 | 非官方接口，ToS 灰色 | ✅ **已实测通过**（8 个 zh-CN 音色） |
-| **Azure Speech（官方，同源音色 + SSML 风格）** | ★★★★★ | ★★★★☆ | 免费额度后按字符计费 | ❌ | 官方 API，需订阅 Key | ✅ reqwest 现成，零新依赖可接 |
-| OpenAI `gpt-4o-mini-tts` | ★★★★☆ | ★★★★ | 按 token/分钟计费 | ❌ | 官方，支持"用 XX 语气"指令 | ✅ 同上 |
-| MiniMax / 火山 / 阿里 CosyVoice API | ★★★★★ | ★★★★★（国内节点） | 按字符计费 | ❌ | 官方，需实名/Key | ✅ 同上 |
-| **本地 Kokoro-82M-zh（ONNX int8 121MB）** | ★★★★ | ★★★（CPU 推理） | 0 | ✅ | Apache-2.0 | ✅ `onnxruntime` 有 macOS x86_64 轮子 |
-| 本地 Piper `zh_CN-huayan-medium`（60MB，另有 chaowen / xiao_ya 两个中文音色） | ★★★ | ★★★★★ | 0 | ✅ | MIT | ✅ 官方有 macOS x64 预编译二进制 |
-| sherpa-onnx 内置中文模型（Melo 159MB / Matcha 72MB / Kokoro-v1.1 348MB） | ★★★☆~★★★★ | ★★★☆ | 0 | ✅ | Apache-2.0 | ✅ crate `sherpa-onnx = "1.13.8"` 可取（见 §2.3） |
-| 本地克隆 CosyVoice2 / IndexTTS-2 / GPT-SoVITS / F5-TTS | ★★★★★ | ★（CPU 上 RTF≫1） | 0 | ✅ | 各异 | ❌ 无 GPU，不适合实时播报 |
-
-> 价格只给量级、**以各家官网为准**（本机无订阅，未实测计费）。
-> 需要"官方 + 强表达力"时，Azure 是性价比与合规的平衡点：音色与 Edge 同源（晓晓/云希），
-> 但支持 `mstts:express-as style="chat|calm|cheerful|sad|angry|serious|affectionate…"`
-> 与 `prosody rate/pitch/volume`，这是"语气"唯一能真正被控制的路径。
-
-### 2.3 关键前提已变（实测，推翻旧结论）
-
-`VOICE_INTERACTION_PLAN.md` 里写着「本机 `index.crates.io` 不可达，新增 Rust 依赖前必须先配镜像」。
-**2026-10-22 实测已可访问**：
-
-```
-https://index.crates.io/config.json                     → 200
-https://static.crates.io/crates/serde/...               → 200
-cargo search sherpa-onnx                                → sherpa-onnx = "1.13.8"
-```
-
-→ 本地神经 TTS（`sherpa-onnx` / `ort`）**不再需要用户改 `~/.cargo/config.toml`**，只受"首次下载模型"约束
-（Kokoro-zh int8 **121MB**、Piper 中文 **60MB**、Melo **159MB**、Matcha **72MB**）。
+- **`index.crates.io` 现已可访问**（实测 200，`cargo search sherpa-onnx` 正常）→
+  `VOICE_INTERACTION_PLAN.md` 里"必须先配 `~/.cargo/config.toml` 镜像"的结论**作废**。
+- sherpa-onnx v1.13.8 提供 **macOS x86_64 预编译**（`-shared-lib` 10.0MB / `-shared` 22.8MB），
+  也有 universal2 版本；Rust 侧可用 crate `sherpa-rs 0.6.8` 或 `ort 2.0.0-rc.15`。
+  官方示例只覆盖 ASR，TTS 需自己接（sidecar 或 FFI）。
 
 ---
 
@@ -103,31 +108,30 @@ present() ──► plan.speechText ──► 句子切分（。！？；+ 超�
                                         │ 保持顺序
                                         ▼
                               ┌──────────────────┐
-                              │ 播放队列（单实例）│──► afplay / AVAudioPlayer
+                              │ 播放队列（单实例）│──► AVAudioPlayer / afplay
                               └──────────────────┘
                                         │
                      新回合 / 热键 / 静音 ─┴─► 立即 kill 播放 + 清空队列
 ```
 
-**四个关键设计**
+**按优先级路由（含失败回退）**
 
-1. **Provider 抽象**（Rust `enum SpeechProvider`）：
-   `System` / `Edge` / `Azure` / `OpenAi` / `Local(onnx)` / `Custom(模板)`。
-   每个 provider 只做一件事：`synthesize(text, params) -> audio_path`。
-   **降级链**：`配置的 provider → 本地 → say`，任何一步超时/失败都不静默（回执写明原因）。
-2. **句子流水线**：首句合成完立刻播，其余并发预取（实测把 63 字从 12.2s 压到首句 2.4s 可听）。
-   这是"像人在说话"的核心，与引擎无关。
-3. **缓存**：`任务完成`、`已完成`、`测试通过` 这类短句复用率极高，命中即 0 延迟。
-4. **可打断**：任何新回合/热键/静默都 `kill` 当前播放。**不能打断的语音不算交互。**
+```
+1) Apple Premium（AVSpeechSynthesizer 侧车，离线，零成本）   ← 有 Premium 就默认走它
+2) MeloTTS / sherpa-onnx（离线兜底，MIT）
+3) Azure Xiaoxiao + style（联网增强，用于"重要播报"）
+✗ edge-tts：仅作可选实验开关（合规风险）
+✗ 系统 say：仅当上面都不可用时的最后兜底
+```
 
 **表达力参数（按 provider 能力降级）**
 
-| 参数 | Azure | Edge | 本地 Kokoro | say |
-| :--- | :--- | :--- | :--- | :--- |
-| 语速 | `prosody rate` | `--rate` | `speed` | `-r` |
-| 音高 | `prosody pitch` | `--pitch` | 不支持 | `[[pbas]]` |
-| 风格/情绪 | `mstts:express-as` | ✗ | ✗ | ✗ |
-| 句内停顿 | SSML `<break>` | ✗ | ✗ | `[[slnc]]`（仅句末有效） |
+| 参数 | Apple Premium | Azure | MeloTTS | edge | say |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 语速 | `rate` | `prosody rate` | `speed` | `--rate` | `-r` |
+| 音高 | 弱 | `prosody pitch` | ✗ | `--pitch` | `[[pbas]]` |
+| 风格/情绪 | ✗ | ✅ `express-as` 20 种 | ✗ | ✗ | ✗ |
+| 真流式 | ✅ PCM 回调 | ✅ WebSocket | ✅ 进程内 | ✅（需常驻连接） | ✗ |
 
 ---
 
@@ -135,13 +139,17 @@ present() ──► plan.speechText ──► 句子切分（。！？；+ 超�
 
 | 阶段 | 内容 | 人日 | 前置 | 验收（真机） |
 | :-: | :--- | :-: | :--- | :--- |
-| **P1** | Provider 抽象 + **Edge 一等公民**（自动探测 `edge-tts`、音色/语速/音高下拉、未安装时给安装指引）+ 磁盘缓存 | 1 | 无（已实测） | 设置页选「晓晓」→ 试听 → 与实际播报同一条路；断网时报错清楚且自动降级 say |
-| **P2** | **句子流水线 + 播放队列 + 打断** | 1 | P1 | 4 句回复：首句 ≤2.5s 出声；新回合 300ms 内静音；无重叠播放 |
-| **P3** | 官方云 provider（Azure SSML 风格 / OpenAI `gpt-4o-mini-tts` 指令式） | 1 | Key | 「用轻松的语气念结论」能听出差异；失败回退 P1 |
-| **P4** | 本地离线 provider（Kokoro-zh int8 121MB 或 Piper 60MB），做成兜底默认 | 1~1.5 | 一次性模型下载（需用户同意） | 断网可用；CPU 占用 <30%；首响 ≤3s |
-| **P5**（可选） | 真流式（Edge WebSocket / Azure streaming）：边生成边播，首响 ≤1s | 2~3 | P2 | 朗读中可直接打断并追问 |
+| **P0**（用户 2 分钟，零代码） | 下载 Tingting Premium + 设置页选 edge 晓晓做对照 | 0 | 联网 625MB | A/B 听出差别 |
+| **P1** | **`speak_tool.swift` 侧车**（`AVSpeechSynthesizer`）：干掉 2s 启动、拿 PCM 流、可精确 stop；音色质量检测（`say -v '?'` 的 `(Premium)` 后缀）+ 未安装时深链引导 | 1 | 无 | 首响 ≤300ms；朗读中 100ms 内停止；Premium 未装时提示可点 |
+| **P2** | **句子流水线 + 播放队列 + 磁盘缓存 + 打断**（引擎无关的底座） | 1 | P1 | 4 句回复首句 ≤2.5s 出声；新回合 300ms 内静音；无重叠播放 |
+| **P3** | 本地离线 provider：MeloTTS（MIT，RTF 0.25）走 sherpa-onnx sidecar/FFI | 1~1.5 | 197MB 模型下载 | 断网可用；CPU <30%；27 字句 ≤700ms |
+| **P4** | 云 provider：Azure `express-as`（`chat` / `assistant` / `calm`）+ `prosody` | 1 | Key | 「用轻松的语气念结论」能听出差异；失败回退 P1 |
+| **P5**（可选） | 真流式：Azure WebSocket / edge 常驻连接，边生成边播 | 2~3 | P2 | 首响 ≤1s；朗读中可直接打断并追问 |
 
-**建议顺序**：P1（今天，效果立竿见影）→ P2（交互底座）→ P4（离线兜底，去掉联网依赖）→ P3（表达力上限）→ P5。
+**建议顺序**：P0（立刻听出差别）→ **P1 + P2**（交互底座，2 人日）→ P3（离线兜底）→ P4（表达力上限）→ P5。
+
+> 注意：P1 的侧车不只是"为 Premium 服务"。**`say` 的 2s 启动开销本身就是交互硬伤**，
+> 换任何本地引擎都建议走常驻进程。
 
 ---
 
@@ -149,38 +157,52 @@ present() ──► plan.speechText ──► 句子切分（。！？；+ 超�
 
 | 风险 | 影响 | 对策 |
 | :--- | :--- | :--- |
-| `edge-tts` 是非官方接口 | 可能随时失效 / ToS 灰色 | 只作为**可选** provider，不作为唯一出口；P4 离线兜底；需要合规就换 Azure（同音色） |
-| 联网 = 文本出本机 | 隐私 | 明确开关 + 文案提示；静默模式/勿扰时段照旧生效；离线用户默认走本地 |
-| 云服务计费不可控 | 花钱 | 复用现有**预算护栏**；语音侧加"每日播报字符数"上限 |
-| 本地模型体积 | 安装包变大 / 首次下载慢 | 模型不打进 dmg，首次使用时按需下载（带进度/校验/可取消），失败自动回退 say |
-| CPU 抢占（i7-9750H 6 核） | 与 LLM 流式抢核 | 合成并发限 2；本地模型限线程数；短句优先 |
-| 流水线让语音"抢跑" | 与 HUD 淡出不同步 | 复用呈现协议 `sync` 单元（P-A6）：语音与浮层同起同收 |
+| **`say` 退出码恒为 0** | 音色名写错会静默用默认音色，用户以为改了没生效 | P1 起改用侧车实时状态；短期在 `speak()` 里校验音色是否在 `say -v '?'` 列表内 |
+| Apple Premium 需手动下载 | 没下载就仍是 compact | 启动/设置页检测 `state`，给深链接 `x-apple.systempreferences:com.apple.preference.universalaccess?SpeakableItems` |
+| `edge-tts` 非官方接口 | 随时可能失效 / ToS 灰色 | 只作可选开关，不做默认；P3 提供离线兜底 |
+| 联网 = 文本出本机 | 隐私 | 明确开关 + 文案；静默模式/勿扰时段照旧生效；默认走本地 |
+| 云服务计费 | 花钱 | 复用预算护栏；语音侧加"每日播报字符数"上限 |
+| 模型体积 | 安装包变大 | 模型不打进 dmg，首次按需下载（进度/校验/可取消），失败回退 |
+| CPU 抢占（6 核） | 与 LLM 流式抢核 | 合成并发限 2；本地模型限线程；短句优先 |
+| 流水线"抢跑" | 与 HUD 淡出不同步 | 复用呈现协议 `sync` 单元（P-A6）：语音与浮层同起同收 |
+| 许可：Matcha 非商用 / Piper 未标注 | 商用合规 | 商用走 MeloTTS（MIT）或 Kokoro（Apache-2.0，接受其延迟） |
 
 ---
 
 ## 6. 现在就能做的三件事（2 分钟，不改代码）
 
-1. `python3 -m pip install --user edge-tts`
-2. 设置 → 通知与呈现 → 自定义音色 → 选预设「Edge 神经语音 · 晓晓」，点「试听」
-3. 想更像真人：语速 `+8%`~`+12%`（神经音色对语速不敏感），音色在 晓晓/晓伊/云希/云健/云扬 里挑
+1. **下载中文 Premium 音色**：系统设置 → 辅助功能 → 朗读内容 → 系统声音 → 管理声音 →
+   中文（中国大陆）→ 勾选「婷婷（Premium）」（625MB，一次性，之后离线）。
+2. **对照测试 edge**（本机已装好 `edge-tts`）：设置 → 通知与呈现 → 自定义音色 → 预设
+   「Edge 神经语音 · 晓晓」→ 试听。
+3. 二选一留下更喜欢的那个；两个都嫌不够，就等 P1~P4。
 
-对比音频（同文本，本机生成，见会话文件 `tts-v2/`）：
-`say-Tingting-210.aiff`（现状）、`zh-CN-XiaoxiaoNeural.mp3`、`zh-CN-XiaoyiNeural.mp3`、
+对比音频（同文本 63 字，本机生成，见会话文件 `tts-v2/`）：
+`say-Tingting-210.aiff`（现状 compact）、`zh-CN-XiaoxiaoNeural.mp3`、`zh-CN-XiaoyiNeural.mp3`、
 `zh-CN-YunxiNeural.mp3`、`zh-CN-YunjianNeural.mp3`、`zh-CN-YunyangNeural.mp3`。
 
 ---
 
-## 7. 附录：本次实测方法
+## 7. 附录：实测方法与关键命令
 
 ```bash
-# 系统音色与增强包状态
-say -v '?' | grep -E 'zh_CN|zh_TW|zh_HK'
-ls ~/Library/Speech/Voices          # 空 = 未下载 Enhanced/Premium
+# ① 系统音色与可下载的 Premium 资产
+say -v '?' | grep -E 'zh_|cmn'          # 已安装（带 (Enhanced)/(Premium) 后缀才是高质量档）
+ls ~/Library/Speech/Voices              # 空 = 未下载增强音色
+plutil -p /System/Library/AssetsV2/com_apple_MobileAsset_VoiceServicesVocalizerVoice/*.xml \
+  | grep -i -A2 premium                 # 3 条中文 .premium（625/665/326 MB）
 
-# 首字节 / 端到端（edge 流式 API）
-edge_tts.Communicate(text, voice, rate="+8%").stream()   # 记录首个 audio chunk 时刻
+# ② say 的退出码靠不住（配置错也 exit 0）
+say -v 根本不存在 -o /tmp/x.aiff -- "测试"; echo "exit=$?"   # → exit=0
 
-# 现有模板机制直连 Edge（无需改代码，验证可行性）
-edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% \
-         --text '{text}' --write-media '{out}'          # 实测 2.07s 落盘，afplay 正常
+# ③ 首字节 / 端到端（edge 流式 API）
+python3 -c "...edge_tts.Communicate(text, voice, rate='+8%').stream()..."  # 记录首个 audio chunk
+
+# ④ 走现有模板机制直连 edge（无需改代码，已验证）
+python3 -m edge_tts --voice zh-CN-XiaoxiaoNeural --rate=+8% \
+        --text '{text}' --write-media '{out}'            # 实测 2.07~2.96s 落盘，afplay 正常
+
+# ⑤ 本地模型 RTF（sherpa-onnx 1.13.8，6 线程）
+#   matcha-icefall-zh-baker / vits-melo-tts-zh_en / vits-piper-zh_CN-huayan-medium /
+#   kokoro-{int8,fp32}-multi-lang-v1_1
 ```
