@@ -145,6 +145,10 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   安装到 `/Applications/道生一.app`（回滚点 `道生一.app.old-2327`）；DMG：
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.13_x64.dmg`；启动正常
   （进程存活、`Info.plist` = 1.0.0-alpha.13、产物内已含语速 / 句末停顿 / 引擎预设文案）。
+- **打包 1.0.0-alpha.14**（Edge 预设 PATH 修正 + 语音自然度方案）：`npm run tauri build` 成功
+  （release 2m02s）；按新约定**不再备份旧版本**，直接 `rm -rf` + `ditto` 覆盖
+  `/Applications/道生一.app`；DMG：`道生一_1.0.0-alpha.14_x64.dmg`（12M）；启动正常，
+  已确认产物内预设为 `python3 -m edge_tts …`。
 
 ---
 
