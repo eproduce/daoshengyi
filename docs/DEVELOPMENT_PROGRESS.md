@@ -172,7 +172,8 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   安装到 `/Applications/道生一.app`（回滚点 `道生一.app.old-2327`）；DMG：
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.13_x64.dmg`；启动正常
   （进程存活、`Info.plist` = 1.0.0-alpha.13、产物内已含语速 / 句末停顿 / 引擎预设文案）。
-- **打包 1.0.0-alpha.15**（语速回调 -10% / say 190 + 旧预设迁移）：直接覆盖安装（不备份），
+- **打包 1.0.0-alpha.15**（语速回调 -10% / say 190 + 旧预设迁移）：直接覆盖安装（不备份），（含 `load_app_settings` 的迁移回写；release 重编 4m24s，bundle 复用缓存）
+
   DMG `道生一_1.0.0-alpha.15_x64.dmg`；启动后**实测库里已迁移**
   （`surfaceTtsCommand` 含 `--rate=-10%`、`surfaceSpeechRate=190`）。
 - **打包 1.0.0-alpha.14**（Edge 预设 PATH 修正 + 语音自然度方案）：`npm run tauri build` 成功
