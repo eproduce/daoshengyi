@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "daoshengyi"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 dependencies = [
  "aes",
  "aes-gcm",
