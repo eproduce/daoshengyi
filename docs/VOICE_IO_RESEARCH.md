@@ -136,6 +136,25 @@
 
 **推荐路径**：TTS 先用 macOS 原生（今天就能听），把"自然度"这一非阻塞项推迟，等 STT 闭环跑通后再评估 Kokoro-zh（质量提升明显、体积可控）。
 
+#### 4.5.1 「语气/语速不自然」的落地处理（2026-10-22）
+
+实测（本机 macOS 26 / Tingting）：
+
+- `say` 默认语速 ≈175 词/分，同一句 4.10s；`-r 240` → 3.17s，明显更接近日常语速；
+- `[[slnc N]]` **只在句末标点后生效**（`。` 后 +N 精确到毫秒；`，` 后完全无效，音频时长一模一样）；
+- 精品音色要单独下载：`say -v '?'` 里带 `(Enhanced)` / `(Premium)` 的才是神经音色。本机目前只有 compact 的婷婷 / 美佳 / 善怡 —— **这是"机器味"的最大来源**。
+
+因此先做三件不换引擎的事：
+
+1. 设置里加**语速**（`surfaceSpeechRate`，0 = 系统默认，推荐 200–240）与**句末停顿**（`surfaceSpeechPause`，默认开，句末 +220ms）；
+2. 朗读前统一「口语化」清洗（`surface::naturalize_speech`）：代码块 →「（代码略）」、链接只念文字、裸 URL →「链接」、去 markdown/emoji、`→ × ℃ =` 等转中文说法；同时**剥掉正文里的 `[[slnc …]]`**，避免不可信文本反过来控制语音引擎；
+3. 设置页给**引擎预设**（一键填 `surface_tts_command`，试听与实际播报同一条路）：
+   - `edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}`（免费、需联网，自然度性价比最高）；
+   - `piper`（完全离线）；
+   - 克隆类（GPT-SoVITS / CosyVoice）继续走现有 `{ref}` 机制。
+
+还不够自然时，按投入排序：`edge-tts`（0 成本）→ `Piper / Kokoro-zh`（离线）→ 云端神经 TTS（MiniMax / 火山 / Azure / ElevenLabs，支持 SSML 情绪与语速）→ 本地克隆（CosyVoice2 / GPT-SoVITS，需 GPU、首响慢）。
+
 ---
 
 ## 五、对比矩阵（以本机可构建性为第一裁决列）

@@ -180,6 +180,13 @@ pub struct AppSettings {
     /// 环境层：语音音色（`say -v` 的名字；空 = 系统默认）
     #[serde(default)]
     pub surface_speech_voice: String,
+    /// 环境层：系统音色语速（`say -r`，词/分；0 = 跟随系统）。默认 210——
+    /// Apple 的 175 对中文偏拖，200–240 更接近日常语速
+    #[serde(default = "default_speech_rate")]
+    pub surface_speech_rate: u32,
+    /// 环境层：句末补停顿（默认开）——`say` 自带的句间停顿很短，长句听起来像连珠炮
+    #[serde(default = "default_true")]
+    pub surface_speech_pause: bool,
     /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
     #[serde(default)]
     pub surface_silent: bool,
@@ -239,6 +246,11 @@ fn default_recall_limit() -> i64 {
     6
 }
 
+/// 中文默认语速：系统 175 偏拖，210 更接近日常说话（用户可在设置里调回 0 = 跟随系统）
+fn default_speech_rate() -> u32 {
+    210
+}
+
 fn default_approval_mode() -> String {
     "manual".to_string()
 }
@@ -294,6 +306,8 @@ impl Default for AppSettings {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
+            surface_speech_rate: 210,
+            surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
             surface_tts_command: String::new(),
@@ -571,6 +585,8 @@ mod tests {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
+            surface_speech_rate: 210,
+            surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
             surface_tts_command: String::new(),
@@ -647,6 +663,8 @@ mod tests {
             surface_hud: true,
             surface_speech: false,
             surface_speech_voice: String::new(),
+            surface_speech_rate: 210,
+            surface_speech_pause: true,
             surface_silent: false,
             surface_auto_finish: true,
             surface_tts_command: String::new(),
@@ -675,18 +693,38 @@ mod tests {
         v["sandboxNetwork"] = json!("loopback-only");
         v["codeModeEnabled"] = json!(true);
         v["customSkillDirs"] = json!(["/tmp/my-skills"]);
+        v["surfaceSpeechRate"] = json!(220);
+        v["surfaceSpeechPause"] = json!(false);
 
         let s: AppSettings = serde_json::from_value(v).unwrap();
         assert_eq!(s.sandbox_mode, "workspace-write");
         assert_eq!(s.sandbox_network, "loopback-only");
         assert!(s.code_mode_enabled);
         assert_eq!(s.custom_skill_dirs, vec!["/tmp/my-skills".to_string()]);
+        assert_eq!(s.surface_speech_rate, 220);
+        assert!(!s.surface_speech_pause);
 
         let back = serde_json::to_value(&s).unwrap();
         assert_eq!(back["sandboxMode"], "workspace-write");
         assert_eq!(back["sandboxNetwork"], "loopback-only");
         assert_eq!(back["codeModeEnabled"], true);
         assert_eq!(back["customSkillDirs"], json!(["/tmp/my-skills"]));
+        assert_eq!(back["surfaceSpeechRate"], 220);
+        assert_eq!(back["surfaceSpeechPause"], false);
+    }
+
+    #[test]
+    fn speech_rate_defaults_to_natural_speed() {
+        // 旧数据里没有这两个键 → 不能退回 175 的拖沓默认，也不能丢掉句末停顿
+        let mut v = serde_json::to_value(AppSettings::default()).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("surfaceSpeechRate");
+        obj.remove("surfaceSpeechPause");
+
+        let s: AppSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s.surface_speech_rate, default_speech_rate());
+        assert_eq!(s.surface_speech_rate, 210);
+        assert!(s.surface_speech_pause);
     }
 
     #[test]

@@ -135,6 +135,10 @@ export interface AppSettingsPayload {
   surfaceSpeech: boolean;
   /// 环境层：语音音色（`say -v` 的名字；空 = 系统默认）
   surfaceSpeechVoice: string;
+  /// 环境层：系统音色语速（`say -r`，词/分；0 = 系统默认）；默认 175 偏拖，中文 200–240 更像真人
+  surfaceSpeechRate: number;
+  /// 环境层：句末补停顿（默认开）——`say` 的句间停顿很短，长句像连珠炮
+  surfaceSpeechPause: boolean;
   /// 环境层：静默模式（默认关）——打开后只钉回会话，不出声、不冒层
   surfaceSilent: boolean;
   /// 环境层：任务结束时自动把结论呈到桌面（默认开）——模型不一定记得调 present，宿主兜一次
@@ -186,6 +190,8 @@ let cache: AppSettingsPayload = {
   surfaceHud: true,
   surfaceSpeech: false,
   surfaceSpeechVoice: "",
+  surfaceSpeechRate: 210,
+  surfaceSpeechPause: true,
   surfaceSilent: false,
   surfaceAutoFinish: true,
   surfaceTtsCommand: "",

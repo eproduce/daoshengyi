@@ -610,10 +610,52 @@ function saveNotify() {
 const surfaceHud = ref(getSettings().surfaceHud !== false);
 const surfaceSpeech = ref(!!getSettings().surfaceSpeech);
 const surfaceSpeechVoice = ref(getSettings().surfaceSpeechVoice ?? "");
+/** 0 = 跟随系统默认（Apple 约 175 词/分，中文偏拖） */
+const surfaceSpeechRate = ref<number>(getSettings().surfaceSpeechRate ?? 0);
+const surfaceSpeechPause = ref(getSettings().surfaceSpeechPause !== false);
+const speechRateLabel = computed(() =>
+  surfaceSpeechRate.value > 0 ? `${surfaceSpeechRate.value} 词/分` : "系统默认",
+);
 const surfaceSilent = ref(!!getSettings().surfaceSilent);
 const surfaceAutoFinish = ref(getSettings().surfaceAutoFinish !== false);
 const surfaceTtsCommand = ref(getSettings().surfaceTtsCommand ?? "");
 const surfaceTtsReference = ref(getSettings().surfaceTtsReference ?? "");
+/** 引擎预设：系统 `say` 的自然度上限就那样，换引擎才是「语气自然」的根本解 */
+interface TtsPreset {
+  id: string;
+  label: string;
+  template: string;
+  hint: string;
+}
+const TTS_PRESETS: TtsPreset[] = [
+  {
+    id: "edge-xiaoxiao",
+    label: "Edge 神经语音 · 晓晓（女声，最接近真人）",
+    template: "edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}",
+    hint: "免费、需联网。先安装：python3 -m pip install --user edge-tts。晓晓的句调最自然；语速用 --rate=+8%（可改 +0% / +15%）。",
+  },
+  {
+    id: "edge-yunxi",
+    label: "Edge 神经语音 · 云希（男声）",
+    template: "edge-tts --voice zh-CN-YunxiNeural --rate=+6% --text {text} --write-media {out}",
+    hint: "同上，需先安装 edge-tts；云希偏年轻，云健（YunjianNeural）更沉稳。",
+  },
+  {
+    id: "piper",
+    label: "Piper 中文（完全离线，体积小）",
+    template:
+      "printf '%s' {text} | piper --model ~/piper/zh_CN-huayan-medium.onnx --output_file {out}",
+    hint: "先安装 piper 并下载 zh_CN-huayan-medium 模型；离线、不联网，自然度明显好于系统 say。",
+  },
+];
+const ttsPreset = ref("");
+const ttsPresetHint = computed(() => TTS_PRESETS.find((p) => p.id === ttsPreset.value)?.hint ?? "");
+function applyTtsPreset() {
+  const preset = TTS_PRESETS.find((p) => p.id === ttsPreset.value);
+  if (!preset) return;
+  surfaceTtsCommand.value = preset.template;
+  saveSurface();
+}
 /** 勿扰时段（两个都填才生效；支持跨零点） */
 const surfaceQuietStart = ref(getSettings().surfaceQuietStart ?? "");
 const surfaceQuietEnd = ref(getSettings().surfaceQuietEnd ?? "");
@@ -694,6 +736,8 @@ function saveSurface() {
     surfaceHud: surfaceHud.value,
     surfaceSpeech: surfaceSpeech.value,
     surfaceSpeechVoice: surfaceSpeechVoice.value.trim(),
+    surfaceSpeechRate: surfaceSpeechRate.value,
+    surfaceSpeechPause: surfaceSpeechPause.value,
     surfaceSilent: surfaceSilent.value,
     surfaceAutoFinish: surfaceAutoFinish.value,
     surfaceTtsCommand: surfaceTtsCommand.value.trim(),
@@ -1633,12 +1677,66 @@ async function handleDelete() {
                   那是机器怪声，念中文没法听。
                 </template>
               </span>
+              <label style="margin-top: 16px">语速</label>
+              <div style="display: flex; gap: 10px; align-items: center">
+                <input
+                  v-model.number="surfaceSpeechRate"
+                  type="range"
+                  min="140"
+                  max="320"
+                  step="10"
+                  style="flex: 1"
+                  @change="saveSurface"
+                />
+                <span class="form-hint" style="margin: 0; min-width: 72px">
+                  {{ speechRateLabel }}
+                </span>
+                <button
+                  v-if="surfaceSpeechRate > 0"
+                  class="settings-reset-btn"
+                  @click="
+                    surfaceSpeechRate = 0;
+                    saveSurface();
+                  "
+                >
+                  跟随系统
+                </button>
+              </div>
+              <span class="form-hint">
+                系统默认约 175 词/分，中文听起来偏拖；推荐 200–240。拖动后点「试听」立刻对比。
+              </span>
+              <label
+                class="memory-config__toggle"
+                style="
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 8px;
+                  cursor: pointer;
+                  margin-top: 10px;
+                "
+              >
+                <input v-model="surfaceSpeechPause" type="checkbox" @change="saveSurface" />
+                <span>句末自然停顿（长句不再像连珠炮）</span>
+              </label>
+              <span class="form-hint">
+                想要系统音色更自然：系统设置 → 辅助功能 → 朗读内容 → 系统声音 → 管理声音，下载
+                「婷婷 / 美佳」的增强（Premium）版本，回来点「重新扫描音色」。
+              </span>
               <div style="display: flex; gap: 8px; margin-top: 8px">
                 <button class="settings-reset-btn" @click="previewVoice">试听</button>
                 <button class="settings-reset-btn" @click="loadVoices">重新扫描音色</button>
               </div>
 
               <label style="margin-top: 16px">自定义音色（用自己的声音）</label>
+              <div style="display: flex; gap: 8px; margin-bottom: 8px">
+                <select v-model="ttsPreset" class="form-select" @change="applyTtsPreset">
+                  <option value="">从预设填入引擎命令（系统 say 的自然度有上限）…</option>
+                  <option v-for="p in TTS_PRESETS" :key="p.id" :value="p.id">
+                    {{ p.label }}
+                  </option>
+                </select>
+              </div>
+              <span v-if="ttsPresetHint" class="form-hint">{{ ttsPresetHint }}</span>
               <textarea
                 v-model="surfaceTtsCommand"
                 class="form-textarea"

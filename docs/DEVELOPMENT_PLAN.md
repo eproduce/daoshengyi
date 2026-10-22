@@ -2,6 +2,9 @@
 
 > 本文件是**当前可执行的开发计划**（现状 + 积压 + 待办功能），配套《开发进度》`DEVELOPMENT_PROGRESS.md` 记录已完成工作，愿景方向见 `ROADMAP.md`。
 >
+> **2026-10-22 更新**：语音播报自然度（语速 / 句末停顿 / 口语化清洗 / 引擎预设），
+> 详见 `DEVELOPMENT_PROGRESS.md` 同日条目与 `VOICE_IO_RESEARCH.md` §4.5.1。
+>
 > **最后更新：2026-08-31**（08-29~30 新增：浏览器工具路由容错、表格竖线渲染修复 + 系统提示引导、设置面板下拉框统一、停止按钮线性图标、货币 `$` 转义 + KaTeX LRU 缓存、**可视化工作流拖拽新增修复（WKWebView mouse 事件实现 + 节点影像/画布高亮 + 共享色板统一图例与节点颜色）**；已与代码核对：P-A1~P-A9/P-A12、P-M1~P-M4 全部完成；§4 A~H 全部落地；§3 长期记忆补全；Phase 3 知识库 RAG + 语义向量、可视化工作流（含条件分支/代码节点）+ Phase 5 系统托盘落地；**08-31 新增 §3.12 Codex 能力整合计划**——深度研究 `openai/codex` 开源代码，产出 `docs/CODEX_CAPABILITY_ANALYSIS.md`（能力全景 + 差距矩阵 + 11 项技能归纳定义卡 + 落地路线）；**第一批落地：S1 命令执行策略引擎（execpolicy 规则文件替代正则黑名单）、S2 项目指令发现（AGENTS.md/道生一.md 自动注入）；**09-02 新增 §3.13 OpenClaw 能力整合计划**——深研 `openclaw/openclaw`（388k star）+ ClawHub 插件市场，产出 `docs/OPENCLAW_CAPABILITY_ANALYSIS.md`（架构差距矩阵 + 借鉴落地优先级 P1~P10），原则「模仿机制、不抄袭实现」，首批 O1 智能上下文压缩 / O2 SSRF 防护 / O3 会话级工具集；**同日预研官方技能库（ClawHub 5400+/27 类），产出 `docs/OPENCLAW_SKILLS_INTEGRATION.md` 并补充 7 个精选技能（commit-msg / pr-summary / academic-research / rss-brief / session-wrap-up / secrets-scan / knowledge-notes）到 `src/data/skills-catalog.ts`，待明早 10:00 开发启动后实测与落地 §3.13 首批**）
 
 ---
@@ -453,6 +456,7 @@ worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护�
 | **P-A5** | 结构化回执 + HUD `id` 去重 | 0.5 | P-A1 | ⬜ |
 | **P-A6** | **协同呈现**：呈现单元 + 浮层存活绑定朗读 + 串行语音队列与抢占 | 1 | P-A1 | ⬜ |
 | **P-A7** | `speak_tool.swift`（`AVSpeechSynthesizer` 侧车）：真实进度 / 精确打断 / 低首响 | 1 | P-A6 | ⬜ |
+| **V-TTS** | **语音自然度**：语速（默认 210 词/分）/ 句末停顿 / 口语化清洗 / 引擎预设（Edge·Piper） | 0.5 | 无 | ✅ 2026-10-22 |
 | **V-0** | 语音前置：cargo 稀疏镜像 + `Info.plist` 麦克风说明 + `voice` 骨架 + 真实电平 | 0.5~1 | **用户同意改 `~/.cargo/config.toml`** | ⬜ |
 | **V-1** | Push-to-Talk 闭环：SenseVoice + 标点 + 模型准备状态机；**转写进草稿不自动发** | 2~3 | V-0 + 首次下载模型 | ⬜ |
 | **V-2** | **连续语音对话**（半双工回合制、一键全停、静默超时释放麦克风） | 1~2 | V-1 | ⬜ |
@@ -464,6 +468,14 @@ worktree 用临时仓库验证（创建/忽略生效/独立改动/删除保护�
 - **首响延迟 ≈2.8s** → 要更好的同步/打断**只能上侧车**（不是音质问题，是延迟与回调问题）。
 
 **建议顺序**：P-A1~A3（今天可做，零依赖）→ V-0/V-1（卡在镜像与模型下载）→ V-2 + P-A6（连续对话 + 同步呈现）→ V-3。
+
+**2026-10-22 已落地（V-TTS，用户反馈「语气/语速不自然」）**：
+- 语速可调（`surfaceSpeechRate`，**默认 210 词/分**，0 = 跟随系统）+ 句末 220ms 停顿
+  （实测 `[[slnc]]` 只在 `。！？` 后生效，`，` 后无效）；
+- 朗读前口语化清洗（`surface::naturalize_speech`）：去 markdown / URL / emoji、符号转口语、
+  缺标点补 `。`，并剥离正文里的 `[[slnc …]]`（不可信文本不能控制引擎）；
+- 设置页引擎预设：Edge 神经语音（晓晓/云希，免费联网）、Piper（离线）；克隆类仍走 `{ref}`。
+- 零新依赖；真机对比：同一段 44 字，`say -r 210` 8.92s / 晓晓 8.66s / 云希 8.98s。
 
 ## 4. 计划功能（借鉴 Hermes-CN-Desktop，按优先级）
 

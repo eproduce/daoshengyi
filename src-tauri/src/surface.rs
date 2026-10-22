@@ -79,6 +79,8 @@ impl ExecuteOptions {
             voice: voice
                 .or_else(|| Some(settings.surface_speech_voice.clone()))
                 .filter(|v| !v.trim().is_empty()),
+            rate: settings.surface_speech_rate,
+            pauses: settings.surface_speech_pause,
             silent: settings.surface_silent,
             tts_command: Some(settings.surface_tts_command.clone())
                 .filter(|c| !c.trim().is_empty()),
@@ -95,6 +97,10 @@ pub struct ExecuteOptions {
     pub allow_speech: bool,
     /// 语音音色（`say -v` 的名字；空 = 系统默认）
     pub voice: Option<String>,
+    /// 系统音色语速（`say -r`；0 = 系统默认）
+    pub rate: u32,
+    /// 句末补停顿（只有系统 `say` 认识 `[[slnc]]`；自定义引擎的文本不动）
+    pub pauses: bool,
     /// 静默模式：只钉回会话（会写进总结，便于解释「为什么什么都没发生」）
     pub silent: bool,
     /// **自定义音色**：命令模板（空 = 用系统 `say`）。占位符见 `render_tts_command`
@@ -148,6 +154,176 @@ pub fn sanitize_speech(text: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.chars().take(MAX_SPEECH_CHARS).collect())
+}
+
+/// 句末停顿（毫秒）。`say` 在 `。！？` 后只留极短的空隙，长句连着念像机关枪。
+/// **只加在句末**：实测 `[[slnc]]` 跟在 `，` 后面会被 `say` 直接忽略（音频时长一模一样）。
+const SENTENCE_PAUSE_MS: u32 = 220;
+
+/// 朗读文本的「口语化」清洗。
+///
+/// 前端 `cleanForSpeech` 已经洗过一遍，但这里是**最后一道门**：模型输出、工具结果、
+/// 自定义引擎都可能绕过前端。要解决三类「念出来不像人话」的噪音：
+/// 1. markdown / URL / emoji —— `say` 会念出「星号星号」「h-t-t-p-s」；
+/// 2. 符号 —— `→` `×` `℃` 会被跳过或念错；
+/// 3. 模型夹带的 `[[slnc 60000]]` —— 正文不该能控制语音引擎。
+pub fn naturalize_speech(text: &str) -> String {
+    let mut s = strip_code_fences(text);
+    s = strip_markdown_links(&s);
+    s = replace_urls(&s);
+    s = strip_inline_commands(&s);
+
+    let mut out = String::with_capacity(s.len());
+    let mut prev_pause = false;
+    for c in s.chars() {
+        match c {
+            '*' | '_' | '`' | '#' | '>' | '~' => continue,
+            '…' => {
+                if !prev_pause {
+                    out.push('，');
+                    prev_pause = true;
+                }
+                continue;
+            }
+            '→' => out.push_str("到"),
+            '←' => out.push_str("从"),
+            '×' => out.push_str("乘以"),
+            '÷' => out.push_str("除以"),
+            '=' => out.push_str("等于"),
+            '&' => out.push('和'),
+            '℃' => out.push_str("摄氏度"),
+            '°' => out.push('度'),
+            '～' => out.push('到'),
+            '\u{3000}' => out.push(' '),
+            c if is_emoji_char(c) => continue,
+            c => out.push(c),
+        }
+        prev_pause = matches!(c, '，' | '、' | '。' | '；' | '：');
+    }
+
+    let cleaned = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    let mut done = cleaned.to_string();
+    // 没有句末标点时 `say` 会一路平到底（也不会有收尾的下降语调）
+    if done.chars().last().is_some_and(char::is_alphanumeric) {
+        done.push('。');
+    }
+    done
+}
+
+/// 句末补停顿（`say` 的内联指令）。**只给系统 `say` 用**——
+/// 自定义引擎会把 `[[slnc]]` 当正文念出来。
+pub fn add_sentence_pauses(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + chars.len() / 4);
+    for (i, c) in chars.iter().enumerate() {
+        out.push(*c);
+        if i + 1 < chars.len() && matches!(c, '。' | '！' | '？' | '!' | '?') {
+            out.push_str("[[slnc ");
+            out.push_str(&SENTENCE_PAUSE_MS.to_string());
+            out.push_str("]]");
+        }
+    }
+    out
+}
+
+fn strip_code_fences(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("```") {
+        out.push_str(&rest[..start]);
+        out.push_str("（代码略）");
+        let after = &rest[start + 3..];
+        match after.find("```") {
+            Some(end) => rest = &after[end + 3..],
+            None => rest = "",
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_markdown_links(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(open) = rest.find('[') {
+        let label_end = rest[open + 1..].find(']').map(|i| open + 1 + i);
+        let Some(label_end) = label_end else { break };
+        let after = &rest[label_end + 1..];
+        let Some(inner) = after.strip_prefix('(') else {
+            out.push_str(&rest[..open + 1]);
+            rest = &rest[open + 1..];
+            continue;
+        };
+        let Some(paren_end) = inner.find(')') else {
+            out.push_str(&rest[..open + 1]);
+            rest = &rest[open + 1..];
+            continue;
+        };
+        out.push_str(&rest[..open]);
+        let label = &rest[open + 1..label_end];
+        // 图片语法 `![alt](url)`：前面那个 `!` 不该念成感叹句
+        if out.ends_with('!') {
+            out.pop();
+        }
+        out.push_str(if label.trim().is_empty() {
+            "链接"
+        } else {
+            label
+        });
+        rest = &inner[paren_end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn replace_urls(input: &str) -> String {
+    const SUFFIXES: [char; 9] = ['，', '。', '；', '！', '？', '、', '）', ')', '》'];
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let start = ["http://", "https://", "www."]
+            .iter()
+            .filter_map(|p| lower.find(p))
+            .min();
+        let Some(start) = start else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str("链接");
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || SUFFIXES.contains(&c))
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out
+}
+
+fn strip_inline_commands(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("[[") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("]]") {
+            Some(end) => rest = &rest[start + 2 + end + 2..],
+            None => rest = "",
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn is_emoji_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0xFE00..=0xFE0F | 0x200D
+    )
 }
 
 /// 组装 `say` 的参数。
@@ -488,9 +664,24 @@ pub async fn speak(
         .map(str::trim)
         .filter(|t| !t.is_empty());
 
+    // 先口语化（两类引擎都受益）；空串说明整句都是念不出来的噪音 → 退回原文
+    let natural = {
+        let n = naturalize_speech(text);
+        if n.is_empty() {
+            text.to_string()
+        } else {
+            n
+        }
+    };
+
     let Some(template) = template else {
         // 系统音色：一条命令、零依赖、离线
-        let argv = say_argv(text, opts.voice.as_deref(), None);
+        let say_text = if opts.pauses {
+            add_sentence_pauses(&natural)
+        } else {
+            natural.clone()
+        };
+        let argv = say_argv(&say_text, opts.voice.as_deref(), Some(opts.rate));
         let out =
             crate::run_wrapped_argv(&db, &home, "say", argv, SAY_TIMEOUT_SECS, "surface_speech")
                 .await?;
@@ -502,7 +693,7 @@ pub async fn speak(
             ));
         }
         return Ok(Spoken {
-            text: text.to_string(),
+            text: natural,
             seconds: None,
             notes: Vec::new(),
         });
@@ -522,7 +713,7 @@ pub async fn speak(
         String::new()
     };
     let reference = opts.tts_reference.clone().unwrap_or_default();
-    let cmd = render_tts_command(template, text, &out_path, &reference);
+    let cmd = render_tts_command(template, &natural, &out_path, &reference);
     // 沙箱不介入：这是用户显式配置的引擎，它要写模型缓存/输出文件；
     // 等同“用户自己在终端跑”，但仍然带着代理注入与超时清理（run_shell_command_with 的统一行为）。
     let gen =
@@ -534,7 +725,7 @@ pub async fn speak(
     if !writes_file {
         // 引擎自己出声（比如它内部调了 afplay）—— 我们不播、也不假装知道时长
         return Ok(Spoken {
-            text: text.to_string(),
+            text: natural,
             seconds: None,
             notes: vec!["自定义引擎自行播放（命令模板里没有 {out}）".to_string()],
         });
@@ -560,7 +751,7 @@ pub async fn speak(
         ));
     }
     Ok(Spoken {
-        text: text.to_string(),
+        text: natural,
         seconds,
         notes: Vec::new(),
     })
@@ -721,6 +912,47 @@ mod tests {
         let long = "啊".repeat(MAX_SPEECH_CHARS + 50);
         let out = sanitize_speech(&long).expect("应有输出");
         assert_eq!(out.chars().count(), MAX_SPEECH_CHARS);
+    }
+
+    #[test]
+    fn naturalize_speech_strips_markdown_urls_and_emoji() {
+        let out = naturalize_speech("**完成**：见 [文档](https://example.com/a) ✅");
+        assert!(!out.contains('*'), "{out}");
+        assert!(out.contains("完成"), "{out}");
+        assert!(out.contains("文档"), "{out}");
+        assert!(!out.contains("http"), "{out}");
+        assert!(!out.contains('✅'), "{out}");
+    }
+
+    #[test]
+    fn naturalize_speech_turns_symbols_into_spoken_words() {
+        assert_eq!(naturalize_speech("3 → 5 × 2"), "3 到 5 乘以 2。");
+        assert_eq!(naturalize_speech("25℃"), "25摄氏度。");
+    }
+
+    #[test]
+    fn naturalize_speech_strips_inline_speech_commands() {
+        // 正文来源不可信：不能让它把 say 拖进 60 秒静音
+        assert_eq!(
+            naturalize_speech("好的[[slnc 60000]]完成了"),
+            "好的完成了。"
+        );
+    }
+
+    #[test]
+    fn naturalize_speech_keeps_terminal_punctuation() {
+        assert_eq!(naturalize_speech("完成了。"), "完成了。");
+        assert_eq!(naturalize_speech("完成了"), "完成了。");
+    }
+
+    #[test]
+    fn sentence_pauses_only_follow_sentence_end() {
+        // 实测：`say` 会忽略逗号后的 slnc，只有句末才有效
+        assert_eq!(
+            add_sentence_pauses("第一句。第二句，第三句！"),
+            "第一句。[[slnc 220]]第二句，第三句！"
+        );
+        assert_eq!(add_sentence_pauses("只有一句。"), "只有一句。");
     }
 
     #[test]

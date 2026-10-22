@@ -2,7 +2,51 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-21**
+> **最后更新：2026-10-22**
+
+---
+
+## 2026-10-22（语音播报自然度：语速/停顿可调 + 口语化清洗 + 引擎预设）
+
+### 背景
+用户真机试听后的反馈：「语音语气感觉不够自然，语速也要自然点」。这不是 bug，是三件事叠出来的：
+compact 音色、固定 175 词/分、句间几乎无停顿。
+
+### 1. 先量清楚，再改
+
+| 测什么 | 结果 |
+| :--- | :--- |
+| `say` 默认语速 | 同一句 4.10s；`-r 240` → 3.17s（`-r` 真实生效） |
+| `[[slnc N]]` 的位置 | `。` 后精确 +N 毫秒；**`，` 后完全无效**（音频时长一模一样） |
+| 本机中文音色 | 只有 compact 的 Tingting / Meijia / Sinji；`(Enhanced)/(Premium)` 未下载 —— 机器味的主因 |
+
+### 2. 语速与停顿成为设置项
+- `settings` 新增 `surfaceSpeechRate`（`say -r`；**默认 210**，0 = 跟随系统）与
+  `surfaceSpeechPause`（默认开）；`ExecuteOptions` 带上 `rate` / `pauses`，
+  `speak()` 组装 `say -v <voice> -r <rate> -- <text>`。
+- 停顿只在**句末**补 220ms（`[[slnc 220]]`）—— 实测逗号后无效，所以不加；自定义引擎的文本不动
+  （它们会把 `[[slnc]]` 当正文念出来）。
+- 设置页「通知与呈现」加语速滑块 + 句末停顿开关 + 「跟随系统」。
+
+### 3. 朗读文本口语化（最后一道门）
+- `surface::naturalize_speech`：代码块→「（代码略）」、链接只念文字、裸 URL→「链接」、
+  去掉 markdown / emoji、`→ × ÷ = & ℃ ° ～` 转中文说法、省略号转停顿、缺句末标点时补 `。`。
+- **安全**：剥掉正文里的 `[[slnc …]]` —— 模型输出不可信，不能反过来控制语音引擎。
+- 前端 `cleanForSpeech` 管展示层；Rust 这层管「模型 / 工具结果 / 自定义引擎都绕不过」。
+
+### 4. 换引擎才是根本解（预设一键填）
+- 设置页新增引擎预设，直接填 `surface_tts_command`：
+  - Edge 神经语音「晓晓 / 云希」（免费、联网）：`edge-tts --voice zh-CN-XiaoxiaoNeural --rate=+8% --text {text} --write-media {out}`；
+  - Piper 中文（完全离线）；
+  - GPT-SoVITS / CosyVoice 继续走现有 `{ref}` 克隆机制。
+- 本机实测（同一段 44 字）：`say -r 210` 8.92s / 晓晓 8.66s / 云希 8.98s —— 语速可比，
+  差别在句调与连贯度。
+
+### 5. 验证
+- `cargo test --lib surface::`：26 passed（新增口语化 4 项 + 停顿 1 项）；
+  `cargo test --lib settings::tests`：7 passed（前后端键往返 + 默认语速回退）。
+- `npm test`：55 文件 / 715 项全绿；`vue-tsc --noEmit`、ESLint、Prettier、`cargo fmt --check` 通过。
+- 同文本三段音频（`say -r 210` / 晓晓 / 云希）已实机生成并对比。
 
 ---
 
