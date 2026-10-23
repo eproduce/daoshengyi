@@ -185,8 +185,8 @@ pub fn naturalize_speech(text: &str) -> String {
                 }
                 continue;
             }
-            '→' => out.push_str("到"),
-            '←' => out.push_str("从"),
+            '→' => out.push('到'),
+            '←' => out.push('从'),
             '×' => out.push_str("乘以"),
             '÷' => out.push_str("除以"),
             '=' => out.push_str("等于"),
@@ -195,6 +195,15 @@ pub fn naturalize_speech(text: &str) -> String {
             '°' => out.push('度'),
             '～' => out.push('到'),
             '\u{3000}' => out.push(' '),
+            // 换行在中文里是「断句」而不是空格：`鹅，鹅，鹅\n曲项向天歌` 读成空格会在句中硬塞停顿，
+            // 读成逗号才是吟诵的节奏。前一字符已有标点就原样保留。
+            '\n' | '\r' => {
+                if !prev_pause && out.chars().last().is_some_and(is_cjk) {
+                    out.push('，');
+                    prev_pause = true;
+                }
+                continue;
+            }
             c if is_emoji_char(c) => continue,
             c => out.push(c),
         }
@@ -202,7 +211,8 @@ pub fn naturalize_speech(text: &str) -> String {
     }
 
     let cleaned = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cleaned = cleaned.trim();
+    let cleaned = collapse_repeated_single_chars(cleaned.trim());
+    let cleaned = drop_cjk_spaces(&cleaned);
     if cleaned.is_empty() {
         return String::new();
     }
@@ -226,6 +236,75 @@ pub fn add_sentence_pauses(text: &str) -> String {
             out.push_str(&SENTENCE_PAUSE_MS.to_string());
             out.push_str("]]");
         }
+    }
+    out
+}
+
+/// 纯汉字（不含标点）。
+fn is_han(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+}
+
+/// 「鹅，鹅，鹅」→「鹅鹅鹅」：**同一个字被逗号/顿号隔开重复三次以上**时，逐字念会一顿一顿。
+/// 吟诵和口语都是连着念的（实测 7.32s → 6.38s，少掉的正是两处硬停顿）。
+/// 只对**单字**重复生效：「猫，狗，鸟」这种并列不动。
+fn collapse_repeated_single_chars(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if is_han(chars[i]) {
+            let mut j = i + 1;
+            let mut count = 1;
+            loop {
+                let mut k = j;
+                while k < chars.len() && matches!(chars[k], '，' | '、' | ' ') {
+                    k += 1;
+                }
+                if k < chars.len() && k > j && chars[k] == chars[i] {
+                    j = k + 1;
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+            if count >= 3 {
+                for _ in 0..count {
+                    out.push(chars[i]);
+                }
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 汉字或中文标点。用于判断「这里需不需要真正的词间空格」——
+/// 中文没有词间空格，模型/markdown 残留的空格在 TTS 里会变成**实打实的停顿**
+/// （实测「鹅 鹅 鹅」3.96s vs「鹅鹅鹅」3.05s，多出来的 0.9s 就是三处硬停顿）。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x3000..=0x303F | 0xFF00..=0xFFEF)
+}
+
+/// 去掉**两侧都是中文**的空格；中英之间、英文之间、数字之间的空格保留。
+fn drop_cjk_spaces(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    for (i, c) in chars.iter().enumerate() {
+        if *c == ' ' {
+            let prev = chars[..i].iter().rev().find(|x| **x != ' ');
+            let next = chars[i + 1..].iter().find(|x| **x != ' ');
+            if let (Some(p), Some(n)) = (prev, next) {
+                if is_cjk(*p) && is_cjk(*n) {
+                    continue;
+                }
+            }
+        }
+        out.push(*c);
     }
     out
 }
@@ -409,7 +488,10 @@ pub async fn execute(
     let mut spoke: Option<String> = None;
     let mut speech_notes: Vec<String> = Vec::new();
     if wants_speech {
-        match sanitize_speech(&plan.speech_text) {
+        // 先口语化再清洗：`sanitize_speech` 会把换行压成空格，而中文换行是**断句**
+        // （顺序反了，`鹅，鹅，鹅\n曲项向天歌` 就变成句中硬停顿）
+        let prepared = naturalize_speech(&plan.speech_text);
+        match sanitize_speech(&prepared) {
             None => notes.push("语音文本为空或不可读，跳过播报".into()),
             Some(text) => match speak(app, &text, &opts).await {
                 Ok(sp) => {
@@ -796,7 +878,8 @@ pub async fn preview_voice(
     voice: String,
     text: String,
 ) -> Result<String, String> {
-    let spoken = sanitize_speech(&text).ok_or_else(|| "试听文本为空或不可读".to_string())?;
+    let prepared = naturalize_speech(&text);
+    let spoken = sanitize_speech(&prepared).ok_or_else(|| "试听文本为空或不可读".to_string())?;
     let settings = crate::load_app_settings(app.state(), app.state())
         .map_err(|e| format!("读取设置失败：{e}"))?;
     let opts =
@@ -922,6 +1005,54 @@ mod tests {
         assert!(out.contains("文档"), "{out}");
         assert!(!out.contains("http"), "{out}");
         assert!(!out.contains('✅'), "{out}");
+    }
+
+    #[test]
+    fn repeated_single_chars_collapse_but_parallel_items_do_not() {
+        // 「鹅，鹅，鹅」逐字念会一顿一顿；吟诵是连读
+        assert_eq!(naturalize_speech("鹅，鹅，鹅"), "鹅鹅鹅。");
+        assert_eq!(naturalize_speech("好，好，好。"), "好好好。");
+        // 不同字的并列必须原样保留（否则意思就变了）
+        assert_eq!(naturalize_speech("猫，狗，鸟。"), "猫，狗，鸟。");
+        assert_eq!(
+            naturalize_speech("第一，第二，第三。"),
+            "第一，第二，第三。"
+        );
+        // 只重复两次不动（「走，走开」不是重复吟诵）
+        assert_eq!(naturalize_speech("走，走开。"), "走，走开。");
+    }
+
+    #[test]
+    fn naturalize_speech_drops_spaces_between_chinese_chars() {
+        // 模型/markdown 残留的空格在 TTS 里是**停顿**：实测「鹅 鹅 鹅」3.96s vs「鹅鹅鹅」3.05s
+        assert_eq!(naturalize_speech("鹅 鹅 鹅"), "鹅鹅鹅。");
+        assert_eq!(naturalize_speech("曲项 向天歌"), "曲项向天歌。");
+        // 中英之间、数字与单位之间的空格要保留
+        assert_eq!(naturalize_speech("用 Rust 写"), "用 Rust 写。");
+        assert_eq!(naturalize_speech("共 3 个文件"), "共 3 个文件。");
+    }
+
+    #[test]
+    fn naturalize_before_sanitize_keeps_recitation_rhythm() {
+        // execute() 的顺序：naturalize（换行→逗号）再 sanitize（压空白/截断）。
+        // 反了就会把换行压成空格，`say`/edge 会在句中硬停顿。
+        let raw = "鹅，鹅，鹅\n曲项向天歌。\n白毛浮绿水，\n红掌拨清波。";
+        let prepared = naturalize_speech(raw);
+        let spoken = sanitize_speech(&prepared).expect("应有输出");
+        assert_eq!(spoken, "鹅鹅鹅，曲项向天歌。白毛浮绿水，红掌拨清波。");
+        assert!(!spoken.contains(' '), "汉字之间不该有空格：{spoken}");
+    }
+
+    #[test]
+    fn naturalize_speech_turns_newlines_into_recitation_pauses() {
+        // 换行在中文里是断句：不加标点会变成句中的硬停顿（`say` 会念得一顿一顿）
+        // 三个「鹅」被逗号隔开 → collapse 规则先收成「鹅鹅鹅」（吟诵不该一顿一顿）
+        assert_eq!(
+            naturalize_speech("鹅，鹅，鹅\n曲项向天歌\n白毛浮绿水"),
+            "鹅鹅鹅，曲项向天歌，白毛浮绿水。"
+        );
+        // 行尾已有标点时不重复添加
+        assert_eq!(naturalize_speech("第一句。\n第二句。"), "第一句。第二句。");
     }
 
     #[test]
