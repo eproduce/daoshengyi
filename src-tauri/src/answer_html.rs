@@ -58,6 +58,8 @@ pub struct AnswerHtmlResult {
     pub chart_engine: String,
     /// 是否内联了 Tailwind CSS
     pub tailwind: bool,
+    /// 是否注入了轻量动效层（阅读进度条 + 面板入场 + hover）
+    pub motion: bool,
     /// 渲染后的离线自检提示（外部资源引用等；空 = 没问题）
     pub warnings: Vec<String>,
 }
@@ -307,124 +309,18 @@ pub fn resolve_out_path(
     Ok(artifact_root(home).join(file_name))
 }
 
-/// 常见 LaTeX 命令名（用于识别草稿里的公式源码；渲染器不含数学引擎，必须提前拦下）
-pub const LATEX_COMMANDS: &[&str] = &[
-    "frac",
-    "sqrt",
-    "sum",
-    "prod",
-    "int",
-    "oint",
-    "partial",
-    "nabla",
-    "psi",
-    "Psi",
-    "phi",
-    "Phi",
-    "hbar",
-    "alpha",
-    "beta",
-    "gamma",
-    "Gamma",
-    "delta",
-    "Delta",
-    "lambda",
-    "Lambda",
-    "mu",
-    "nu",
-    "sigma",
-    "Sigma",
-    "omega",
-    "Omega",
-    "theta",
-    "Theta",
-    "pi",
-    "rho",
-    "tau",
-    "times",
-    "cdot",
-    "pm",
-    "le",
-    "leq",
-    "ge",
-    "geq",
-    "ne",
-    "neq",
-    "approx",
-    "equiv",
-    "propto",
-    "sim",
-    "infty",
-    "to",
-    "rightarrow",
-    "leftarrow",
-    "Rightarrow",
-    "langle",
-    "rangle",
-    "vec",
-    "hat",
-    "dot",
-    "ddot",
-    "mathbf",
-    "mathrm",
-    "mathbb",
-    "mathcal",
-    "text",
-    "left",
-    "right",
-    "begin",
-    "end",
-    "otimes",
-    "oplus",
-    "quad",
-    "qquad",
-    "matrix",
-    "pmatrix",
-    "cases",
-];
-
-/// 草稿里的 LaTeX 数学源码（返回人读的描述；空 = 没发现）。
+/// 把 LaTeX 的两种定界符归一成渲染器认的 `$…$` / `$$…$$`。
 ///
-/// **为什么要在渲染前拦**：内置渲染器（上游 am.mjs）不含 KaTeX/MathJax，也不认美元符公式
-/// —— 写进去就是原样显示成 `$E=h\nu$` 这种源码，用户看到一堆反斜杠与美元符。
-/// 2026-10-08 实测：模型首版就是这样出的页，自己 grep 渲染器后改用 Unicode 才修好。
-/// 拦下来 + 给出改写范例，比渲完再让用户看坏页面便宜得多（也省一轮重渲的 token）。
-pub fn latex_hits(markdown: &str) -> Vec<String> {
-    let mut hits: Vec<String> = Vec::new();
-    let dollars = markdown.matches('$').count();
-    if dollars >= 2 {
-        hits.push(format!("美元符包裹的公式（{dollars} 个美元符）"));
-    }
-    if markdown.contains("\\(") || markdown.contains("\\[") {
-        hits.push("反斜杠括号公式（\\( … \\) 或 \\[ … \\]）".to_string());
-    }
-    let mut cmds: Vec<&str> = Vec::new();
-    for c in LATEX_COMMANDS {
-        if markdown.contains(&format!("\\{c}")) && !cmds.contains(c) {
-            cmds.push(c);
-        }
-    }
-    if !cmds.is_empty() {
-        let list = cmds
-            .iter()
-            .map(|c| format!("\\{c}"))
-            .collect::<Vec<_>>()
-            .join("、");
-        hits.push(format!("LaTeX 命令：{list}"));
-    }
-    hits
-}
-
-/// LaTeX 命中时的可读错误（带 Unicode 改写范例）
-pub fn latex_error(hits: &[String]) -> String {
-    format!(
-        "草稿里有 LaTeX 数学源码（{}），但内置渲染器**不含数学引擎**（无 KaTeX/MathJax）\
-         —— 直接写会被原样显示成源码（用户看到一堆反斜杠和美元符）。\n\
-         请改写后重试：用 **Unicode 记号**直接写公式，例如 ψ、ħ、∂、Σ、Δ、∇、√、⊗、⟨ψ|、|ψ|²、10⁻¹²、x²、aₙ、≥ ≤ ≈ ≠ ∝ ∞ → ⇒；\n\
-         薛定谔方程写成：iħ ∂ψ/∂t = Ĥψ；能量量子写成：E = hν；不确定关系写成：Δx·Δp ≥ ħ/2。\n\
-         （确实需要保留源码时可放进 ```text 代码块；但不要用美元符/反斜杠包裹。）",
-        hits.join("；")
-    )
+/// 背景（2026-10-28 升级到 am.mjs 0.5.10）：渲染器**已经带数学引擎**（Temml → MathML，离线），
+/// 认 `$…$` 与 `$$…$$`。但它不认 `\(…\)` / `\[…\]` —— 实测会输出空的 `<math>`，
+/// 也就是公式**静默消失**。模型两种写法都会用，所以在宿主侧做一次无歧义的归一，
+/// 比在提示词里反复叮嘱「只许用美元符」更可靠。
+///
+/// 只改**成对**出现的情形（先块级后行内），不碰孤立的 `$`（价格、shell 变量）。
+pub fn normalize_math_delimiters(md: &str) -> String {
+    let mut out = md.replace("\\[", "$$").replace("\\]", "$$");
+    out = out.replace("\\(", "$").replace("\\)", "$");
+    out
 }
 
 /// 探测一个 node 可执行文件的版本（跑 `<bin> --version`）
@@ -1524,12 +1420,14 @@ pub fn expand_chart_blocks(
     let mut body = String::new();
     let mut in_chart = false;
     let mut specs: Vec<ChartSpec> = Vec::new();
+    let mut open_line = String::new();
     for line in markdown.lines() {
         let trimmed = line.trim();
         if !in_chart {
             if trimmed.starts_with("```chart") {
                 in_chart = true;
                 body.clear();
+                open_line = line.to_string();
             } else {
                 out.push_str(line);
                 out.push('\n');
@@ -1537,7 +1435,21 @@ pub fn expand_chart_blocks(
             continue;
         }
         if trimmed == "```" {
-            let spec = parse_chart_block(&body).map_err(|e| format!("图表块解析失败：{e}"))?;
+            // 两种图表语法都收：宿主语法（type/labels/series → ECharts）与上游 0.5.x 的表格语法
+            // （`chart bar unit=ms` + `| p50 | p95` 行 → 渲染器自带的 SVG 图表）。
+            // 判据很简单：解析失败但内容里有 `|`，就当成上游语法原样放行 —— 而不是报错让模型重写。
+            let spec = match parse_chart_block(&body) {
+                Ok(spec) => spec,
+                Err(_) if body.contains('|') => {
+                    out.push_str(&open_line);
+                    out.push('\n');
+                    out.push_str(&body);
+                    out.push_str("```\n");
+                    in_chart = false;
+                    continue;
+                }
+                Err(e) => return Err(format!("图表块解析失败：{e}")),
+            };
             if use_echarts {
                 let idx = specs.len();
                 out.push_str("```html\n");
@@ -1581,6 +1493,57 @@ pub fn pick_template(markdown: &str, explicit: Option<&str>) -> String {
 /// 是否需要 Tailwind：显式参数优先；缺省时检测草稿里是否有 `class="..."`。
 pub fn wants_tailwind(markdown: &str, explicit: Option<bool>) -> bool {
     explicit.unwrap_or_else(|| markdown.contains("class=\"") || markdown.contains("class='"))
+}
+
+/// 轻量动效层（约 3 KB，**不引 GSAP**）。
+///
+/// 为什么不是 GSAP：参考样本用 ECharts + GSAP + ScrollTrigger 全量内联，单页 1.2 MB，
+/// 打印/邮件/PDF 场景直接退化。这里只要三件真正被感知的东西：
+/// ① 顶部阅读进度条（信息，不是装饰）② 面板滚动入场（错峰 40ms）③ hover 轻微抬升。
+/// 全部由 CSS + 一个 IIFE 完成；**没有 JS 时面板照常可见**（动效类由 JS 加），
+/// 尊重 `prefers-reduced-motion`，`@media print` 里全部还原成静态。
+pub fn inject_motion(html: &str) -> String {
+    let css = r#"<style id="dsy-motion">
+#dsy-progress{position:fixed;top:0;left:0;height:2px;width:0;background:var(--accent,#c0704a);z-index:9999;pointer-events:none;transition:width .12s linear}
+.am-panel{transition:box-shadow .22s ease,border-color .22s ease}
+.am-panel:hover{box-shadow:0 10px 30px rgba(0,0,0,.10)}
+html.dsy-motion .am-panel{opacity:0;transform:translateY(12px);transition:opacity .5s cubic-bezier(.22,.61,.36,1),transform .5s cubic-bezier(.22,.61,.36,1)}
+html.dsy-motion .am-panel.dsy-in{opacity:1;transform:none}
+@media (prefers-reduced-motion: reduce){html.dsy-motion .am-panel{opacity:1;transform:none;transition:none}}
+@media print{#dsy-progress{display:none}html.dsy-motion .am-panel{opacity:1!important;transform:none!important}}
+</style>"#;
+    let js = r#"<script id="dsy-motion-js">
+(function(){var d=document,root=d.documentElement;
+var bar=d.createElement('div');bar.id='dsy-progress';d.body.appendChild(bar);
+var raf=0;function upd(){raf=0;var h=d.documentElement.scrollHeight-window.innerHeight;
+bar.style.width=(h>0?Math.min(1,window.scrollY/h)*100:0)+'%';}
+window.addEventListener('scroll',function(){if(!raf)raf=requestAnimationFrame(upd);},{passive:true});
+window.addEventListener('resize',upd,{passive:true});upd();
+var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+var ps=[].slice.call(d.querySelectorAll('.am-panel'));
+if(reduce||!('IntersectionObserver' in window)||!ps.length)return;
+root.classList.add('dsy-motion');
+ps.forEach(function(p,i){p.style.transitionDelay=Math.min(i,6)*40+'ms';});
+var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('dsy-in');io.unobserve(e.target);}});},{rootMargin:'0px 0px -8% 0px',threshold:0.05});
+ps.forEach(function(p){io.observe(p);});
+window.addEventListener('beforeprint',function(){ps.forEach(function(p){p.classList.add('dsy-in');});});
+})();
+</script>"#;
+    let mut out = html.to_string();
+    // 进度条与入场动效都靠 body 末尾的脚本挂；样式进 head
+    if !out.contains("id=\"dsy-motion\"") {
+        if let Some(i) = out.rfind("</head>") {
+            out.insert_str(i, &format!("{css}\n"));
+        } else {
+            out = format!("{css}\n{out}");
+        }
+        if let Some(i) = out.rfind("</body>") {
+            out.insert_str(i, &format!("{js}\n"));
+        } else {
+            out.push_str(&js);
+        }
+    }
+    out
 }
 
 /// 把预编译 Tailwind CSS 内联进 `<head>`（工具类带 `!important`，可覆盖页面样式）。
@@ -1640,13 +1603,9 @@ pub async fn answer_html(
     if md.is_empty() {
         return Err("answer_html 需要 markdown 参数（页面的 Markdown 草稿）".to_string());
     }
-    // 渲染器不含数学引擎：LaTeX 必须在这里拦下（否则页面上会原样显示源码）
-    let latex = latex_hits(md);
-    if !latex.is_empty() {
-        let msg = latex_error(&latex);
-        let _ = db.log_tool_call("answer_html", "latex-precheck", &msg, true, 0);
-        return Err(msg);
-    }
+    // 数学：渲染器（0.5.10 起）带 Temml，认 `$…$` / `$$…$$`；这里把反斜杠定界符归一过去
+    let normalized = normalize_math_delimiters(md);
+    let md = normalized.as_str();
 
     let original_md = md;
     // ```chart 围栏块 → ECharts 占位节点（模型不需要手算坐标）；
@@ -1847,6 +1806,17 @@ pub async fn answer_html(
         }
     }
 
+    // 轻量动效层：阅读进度条 + 面板入场 + hover（无 GSAP，约 3 KB）
+    {
+        let html = std::fs::read_to_string(&out).unwrap_or_default();
+        if !html.is_empty() {
+            let patched = inject_motion(&html);
+            if let Err(e) = std::fs::write(&out, patched) {
+                eprintln!("[answer_html] 注入动效层失败（不影响页面本身）：{e}");
+            }
+        }
+    }
+
     let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
     let warnings = std::fs::read_to_string(&out)
         .map(|html| offline_warnings(&html))
@@ -1875,6 +1845,7 @@ pub async fn answer_html(
         charts: chart_count,
         chart_engine: chart_engine.to_string(),
         tailwind: tailwind_ok,
+        motion: true,
         warnings,
     })
 }
@@ -2004,20 +1975,18 @@ mod tests {
     }
 
     #[test]
-    fn latex_source_is_detected_before_rendering() {
-        // 渲染器无数学引擎：美元符公式 / 反斜杠括号 / 常见命令都要能识别
-        assert!(!latex_hits("电磁场满足 $E = mc^2$ 的关系").is_empty());
-        assert!(!latex_hits("写成 \\(x^2\\) 更清楚").is_empty());
-        assert!(!latex_hits("薛定谔方程 \\frac{\\partial}{\\partial t}").is_empty());
-        assert!(!latex_hits("能量子 \\hbar\\omega").is_empty());
-        // 正常草稿（含单个货币美元符、普通反斜杠转义）不能被误伤
-        assert!(latex_hits("价格是 5$ 一件（促销）").is_empty());
-        assert!(latex_hits("用 \\n 表示换行，用 \\d 表示数字").is_empty());
-        assert!(latex_hits("## 面板\n普通中文段落，含 ψ 与 ħ 这类 Unicode 记号。").is_empty());
-        // 错误文案要给出可执行的改写范例
-        let msg = latex_error(&latex_hits("$x$"));
-        assert!(msg.contains("Unicode"));
-        assert!(msg.contains("iħ ∂ψ/∂t"));
+    fn math_delimiters_are_normalized_for_temml() {
+        // 0.5.10 起渲染器带 Temml（MathML），但只认 $…$ / $$…$$。
+        // 反斜杠定界符实测会输出空 <math>（公式静默消失），所以宿主归一化。
+        assert_eq!(normalize_math_delimiters("行内 \\(x^2\\)"), "行内 $x^2$");
+        assert_eq!(normalize_math_delimiters("块级 \\[a+b\\]"), "块级 $$a+b$$");
+        // 已经是美元符的不要动
+        assert_eq!(normalize_math_delimiters("质能 $E=mc^2$"), "质能 $E=mc^2$");
+        // 普通反斜杠转义不要误伤
+        assert_eq!(
+            normalize_math_delimiters("用 \\n 表示换行"),
+            "用 \\n 表示换行"
+        );
     }
 
     #[test]
@@ -2074,7 +2043,9 @@ mod tests {
         let md = "结论：可以集成。\n\n\
                   ## 集成链路\n```flow\nA -> B: 技能指令\nB -> C: am CLI 渲染\n```\n\n\
                   ## 数据图表\n```chart\ntype: bar\ntitle: 性能对比\nunit: ms\nlabels: 旧, 新\nseries: 耗时 = 120, 45\n```\n\n\
-                  ## 关键事实\n| 项目 | 值 | 状态 |\n| --- | --- | --- |\n| CLI | 471 KB 单文件 | ok 零依赖 |\n";
+                  ## 数学\n质能关系 $E = mc^2$，块级：\n\n$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$\n\n\
+                  ## 实体关系\n```er TB\n*User\n  id PK\n  email string UK\nOrder\n  id PK\n  user_id FK -> User\n```\n\n\
+                  ## 关键事实\n| 项目 | 值 | 状态 |\n| --- | --- | --- |\n| CLI | 单文件零依赖 | ok |\n";
         let (md, specs) = expand_chart_blocks(md, true).unwrap();
         assert_eq!(specs.len(), 1);
         std::fs::write(&draft, build_draft(&md, Some("端到端渲染自检"), Some("zh"))).unwrap();
@@ -2103,6 +2074,11 @@ mod tests {
             html.contains("data-dsy-chart"),
             "图表应渲染为 ECharts 占位节点"
         );
+        // 0.5.10 起：数学 → MathML，ER 图 → SVG（升级前这两样都渲染不出来）
+        assert!(html.contains("<math"), "公式应渲染成 MathML");
+        assert!(html.contains("am-er"), "ER 图应渲染");
+        let moved = inject_motion(&html);
+        assert!(moved.contains("dsy-motion-js"), "应注入轻量动效层");
         // 真内联 ECharts + 初始化脚本后，页面仍是单文件离线
         let echarts = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2334,6 +2310,36 @@ mod tests {
         let (expanded, _) = expand_chart_blocks(md, true).unwrap();
         assert!(expanded.contains("class=\"dsy-echart\""));
         assert!(!wants_tailwind(md, None));
+    }
+
+    #[test]
+    fn upstream_table_chart_syntax_passes_through_to_the_renderer() {
+        // 上游 0.5.x 的图表语法（表格）不该被宿主解析器拒掉 —— 原样交给渲染器画 SVG
+        let md = "## 图\n```chart bar unit=ms\n       | p50 | p95\n* Redis     | 12  | 40\n```\n";
+        let (out, specs) = expand_chart_blocks(md, true).unwrap();
+        assert!(specs.is_empty(), "表格语法不应进 ECharts 通道");
+        assert!(out.contains("```chart bar unit=ms"), "围栏行要原样保留");
+        assert!(out.contains("| p50 | p95"), "内容要原样保留");
+    }
+
+    #[test]
+    fn inject_motion_adds_progress_and_reveal_without_breaking_offline() {
+        let html = "<html><head><title>t</title></head><body><section class=\"am-panel\">x</section></body></html>";
+        let out = inject_motion(html);
+        assert!(out.contains("dsy-progress"), "应有阅读进度条");
+        assert!(out.contains("IntersectionObserver"), "应滚动入场");
+        assert!(out.contains("requestAnimationFrame"), "进度条更新应节流");
+        assert!(out.contains("prefers-reduced-motion"), "必须尊重减少动效");
+        assert!(out.contains("@media print"), "打印时还原成静态");
+        // 动效类由 JS 添加：没有 JS 时面板照常可见（opacity:0 必须挂在 html.dsy-motion 下）
+        assert!(
+            out.contains("html.dsy-motion .am-panel{opacity:0"),
+            "隐藏规则必须被 .dsy-motion 门控"
+        );
+        assert!(offline_warnings(&out).is_empty(), "不得引入外部资源");
+        // 幂等：重复注入不叠加
+        let twice = inject_motion(&out);
+        assert_eq!(twice.matches("dsy-motion-js").count(), 1);
     }
 
     #[test]

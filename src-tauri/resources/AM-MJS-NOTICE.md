@@ -7,11 +7,17 @@
 | :--- | :--- |
 | 上游仓库 | <https://github.com/QingYunA/answer-me-with-html> |
 | 上游文件 | `skills/answer-me-with-html/scripts/am.mjs` |
-| 上游版本 | `0.4.15`（`node am.mjs --version`） |
-| 上游 commit | `d0add7ec67fd51704321ec0295ede1563f8297be`（2026-10-08） |
-| 拉取日期 | 2026-10-08 |
-| 字节数 | 482,049 |
-| SHA-256 | `c1fbbc9bfea2855ea654f1d453da372b2a2d3f62cb19eae77461ab0a7a7493cb` |
+| 上游版本 | `0.5.10`（`node am.mjs --version`） |
+| 上游 commit | `f82dd6dce3ca95b0e565f8cffaf5eba23f4c995f`（2026-10-26） |
+| 拉取日期 | 2026-10-28 |
+| 字节数 | 981,515 |
+| SHA-256 | `5e08fda8e976927b16596624cf605e5aadd77828ee690a412b5a9a96584d4f2c` |
+
+> **0.4.15 → 0.5.10 升级（2026-10-28）**：这次跳 12 个版本，拿回了上游这 18 天加的东西 ——
+> `$…$` / `$$…$$` 数学（Temml → MathML，离线）、原生 `chart` 组件（SVG）、`er` 实体关系图、
+> `:::` 块语法（VitePress/Docusaurus 写法）、主题目录、文字缩放、doc 目录轨、一次列出全部草稿错误，
+> 以及 `patch` / `video` / `serve` / `theme` / `lint` 子命令。我们这侧仍只用 `render`
+> （图表的 ECharts 注入仍在宿主侧做，见下文），所以升级是行为兼容的。
 | 许可证 | MIT |
 
 ## 许可证（MIT，原文摘要）
