@@ -291,7 +291,6 @@ pub async fn voice_models_prepare(app: AppHandle, force: bool) -> Result<String,
         return Ok("正在准备中".to_string());
     }
     let shared = state.shared.clone();
-    drop(state);
     tauri::async_runtime::spawn(async move {
         let result = prepare_models(&shared, force).await;
         if let Err(e) = result {
@@ -1252,8 +1251,10 @@ mod tests {
             } else if id == b"data" {
                 let end = (body + size).min(bytes.len());
                 let samples = bytes[body..end]
-                    .chunks_exact(2)
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
                     .collect::<Vec<f32>>();
                 // 多声道就地取首声道（模型只在 16k 单声道上训练）
                 let mono = if channels > 1 {
