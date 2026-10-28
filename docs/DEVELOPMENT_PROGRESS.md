@@ -2,7 +2,96 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-22**
+> **最后更新：2026-10-28**
+
+---
+
+## 2026-10-28（语音输入「耳朵」：按住说话 + 连续语音对话）
+
+### 背景
+「嘴」已经通了（`speech` 出口 + 语速/停顿 + 引擎预设）。这一轮补 `docs/VOICE_INTERACTION_PLAN.md`
+的**阶段 0 / 1 / 2**：把声音**听进来**。选型沿用既有结论 —— 官方 `sherpa-onnx` crate
+（Silero VAD + SenseVoice + CT-Transformer 标点），**不引入云端**：录音与识别全在本机。
+
+### 1. 架构：音频与推理全在 Rust，前端只收事件
+
+`src-tauri/src/voice.rs`（新增，约 1200 行）：
+
+| 环节 | 实现 | 关键决定 |
+| :--- | :--- | :--- |
+| 采集 | `cpal` 0.18，默认输入设备，F32/I16/I32/U16/I8 全支持 | 采集线程**常驻**，麦克风按需打开 —— 不是为了省启动时间，是为了「设备只在聆听时亮灯」 |
+| 重采样 | `sherpa_onnx::LinearResampler` → 16k 单声道 | SenseVoice / Silero 的要求 |
+| 判停 | Silero VAD（仅连续模式） | push-to-talk 有明确的松手边界，不需要 VAD（也就没有误判） |
+| 识别 | SenseVoice int8（中/英/日/韩/粤，`auto` 语种 + ITN） | 2 线程、CPU —— 再多会和 LLM 流式输出抢 CPU |
+| 标点 | CT-Transformer zh-en int8 | SenseVoice 输出不带标点，草稿里没标点几乎不可用 |
+| 释放 | 空闲 5 分钟卸掉识别器（几百 MB） | 常驻内存换不来什么，用户一天可能只用几次 |
+
+- 事件：`voice://state`（相位/设备/模型）、`voice://level`（**真实 RMS**，50ms 一次）、
+  `voice://final`（文本 + wav + 模式 + 时长）、`voice://error`、`voice://model`（下载进度）、
+  `voice://idle`（静音超时 / 取消）、`voice://speaking`（TTS 起止，由 `surface::speak` 发）。
+- 波形是**实测电平**（`rms_and_peak`），不是假动画 —— 用户靠它判断「到底有没有收到声音」。
+- 每轮落一份 16k/16bit 单声道 `last.wav`（复听、回归素材），格式自己拼头，不引依赖。
+
+### 2. 三条硬约束（都不是偏好）
+
+1. **`voice_enabled` 默认关**：没开不出现麦克风按钮、不注册快捷键。隐私红线必须是**可见地**成立；
+2. **`idle` / `speaking` 不开麦**：朗读时外放会被自己的麦克风听见 → 误触发。真 AEC 属于阶段 3，
+   在那之前老老实实半双工（连续模式：说完就收麦，念完再开）；
+3. **一键全停**：窗口内 `Esc` + 全局 `⌘⇧V`。Rust 侧 `stop_speech_now()` 对正在念的 `say`/`afplay`
+   发 SIGTERM 并置 `SPEECH_CANCELLED`，阻止「合成完再播放」的后续步骤再出声 —— 没有这个标志位，
+   自定义引擎（先合成后播放）在按停后还会接着响。
+
+### 3. 连续语音对话的状态机（阶段 2）
+
+```
+idle --热键/按钮--> listening --静音800ms(VAD)--> thinking(识别) --进草稿--> (自动发送*)
+                                                     |
+                            speaking(朗读) <----------+  --念完--> listening（窗口内自动回）
+listening --静默10s--> idle（关麦）       任意时刻 Esc/热键 --> 全停（停播报+丢本轮+关麦）
+```
+
+- `*` 自动发送**只有一条路径**：用户在设置里显式打开「连续对话时自动发送」。
+  其余情况（按住说话）一律只进草稿，可改、可撤销。
+- 语音不绕过任何护栏：预算、回合上限、危险命令审批、静默开关照旧。
+- 全局热键在 **Rust 侧**处理（窗口可能没有焦点）：按下 = 开始聆听（正在听/在识别则改为全停；
+  正在朗读则先静音），松开 = 结束本轮并转写。只在语音开启时注册。
+- 中英混说的拼接做了边界处理（`utils/voice.ts::appendTranscript`）：汉字之间不加空格，
+  中英之间加空格 —— 否则「先跑npm test」或「hello 世界」会拼错。
+
+### 4. 模型不进安装包（首次使用下载）
+
+- 三个来源（实测 200 + 字节数与代码常量**逐字节一致**）：SenseVoice 163,002,883 B、
+  标点 64,717,756 B、Silero VAD 643,854 B；归档内文件名与 `ASR_MODEL` / `ASR_TOKENS` /
+  `PUNCT_MODEL` 的路径契约一致（单测钉住）。
+- 下载 → `.part` → rename → `tar` + `bzip2` 解包（**不依赖系统 tar**）→ 落到
+  `~/Library/Application Support/com.daoshengyi.app/models/voice/`；进度经 `voice://model` 推送，
+  设置页轮询状态直到就绪（Rust 侧是后台任务，不阻塞 IPC）。
+- 支持手动放置（设置页显示目录并能一键打开）。
+
+### 5. UI
+
+- 输入框：麦克风按钮（**按住说话**，聆听时红点脉冲 + 电平柱）、「连续对话」pill（再点 = 全停）。
+- 设置 → 通知与呈现 → **语音输入（耳朵）**：总开关、模型状态/下载/覆盖/打开目录、
+  麦克风权限（用 `AVCaptureDevice.authorizationStatusForMediaType` 读 TCC，拒绝时给系统设置路径）、
+  说完判定（400~1500ms）、会话窗口（5~30s）、自动发送、全局快捷键。
+- `Info.plist` 加 `NSMicrophoneUsageDescription`（缺了会被系统**直接终止进程**，不是弹窗拒绝）。
+- `appSettings` 新增 `settingsRevision`：缓存对象不是响应式的，设置页改完开关要让输入框的
+  麦克风按钮立刻出现/消失。
+
+### 6. 验证
+
+- `cargo test --lib voice::`：7 项（6 passed + 1 ignored 真机自检）；`cargo test --lib settings::tests`：9 项；
+  `cargo check` / `cargo fmt --check` 通过。
+- 真机识别自检 `voice::tests::live_transcribe_returns_text_with_punctuation`（ignored）：
+  加载真实模型 + 自带 `test_wavs/zh.wav` 转写，断言出字且带标点。
+- `npm test`：56 文件 / 724 项全绿（新增 `tests/test-voice.test.ts` 9 项：草稿拼接/电平映射/相位文案/权限提示）；
+  `vue-tsc --noEmit`、ESLint、Prettier 通过。
+- **打包 1.0.0-alpha.17** 并覆盖安装到 `/Applications/道生一.app`；启动正常（前端挂载、
+  `models/voice` 目录已创建、`Info.plist` 含麦克风用途说明，二进制内已含 sherpa-onnx 与模型 URL）。
+
+### 7. 未做 / 已知限制
+- 阶段 2b（语音与浮层的**同步编排**）未做；唤醒词、热词偏置、AEC 属于阶段 3。
+- 首次启用需下载约 220MB 模型（网络慢时设置页给进度与「重新下载」；已支持中断续传式重下）。
 
 ---
 
@@ -184,6 +273,10 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   安装到 `/Applications/道生一.app`（回滚点 `道生一.app.old-2327`）；DMG：
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.13_x64.dmg`；启动正常
   （进程存活、`Info.plist` = 1.0.0-alpha.13、产物内已含语速 / 句末停顿 / 引擎预设文案）。
+- **打包 1.0.0-alpha.17**（语音输入「耳朵」）：`npm run tauri build` 成功（release 6m20s）；
+  直接 `rm -rf` + `ditto` 覆盖安装 `/Applications/道生一.app`（不备份）；DMG
+  `道生一_1.0.0-alpha.17_x64.dmg`；启动正常（`Info.plist` = alpha.17，含
+  `NSMicrophoneUsageDescription`；`models/voice` 目录已建；应用体积 33M → 61M，sherpa-onnx 静态链接）。
 - **打包 1.0.0-alpha.16**（中文朗读节奏修复）：直接覆盖安装；DMG
   `道生一_1.0.0-alpha.16_x64.dmg`；启动正常（`Info.plist` = alpha.16，产物含新清洗规则）。
 - **打包 1.0.0-alpha.15**（语速回调 -10% / say 190 + 旧预设迁移）：直接覆盖安装（不备份）；
