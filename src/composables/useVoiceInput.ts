@@ -131,6 +131,9 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
         const p = e.payload;
         if (!p?.text) return;
         error.value = "";
+        // 连续模式且「不自动发送」时，Rust 说完就收麦了 —— 继续显示「连续对话中」会骗人
+        // （用户以为还在听，其实设备已关）。
+        if (p.mode === "continuous" && !getSettings().voiceAutoSend) continuous.value = false;
         opts.onFinal?.(p.text, p.mode || mode.value);
       }),
     );
@@ -149,23 +152,44 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
       await listenWithRetry<{ stage: string }>("voice://speaking", (e) => {
         const stage = e.payload?.stage;
         ttsSpeaking.value = stage === "start";
-        // 半双工：念完且在连续会话里 → 自动回到聆听（用户不用再按键）
-        if (stage === "end") scheduleResume();
+        if (stage === "start") {
+          // 半双工：刚开始出声就不能继续听（外放会被自己听见）
+          cancelResume();
+          if (continuous.value && listening.value) void invoke("voice_cancel");
+          return;
+        }
+        // 念完 → 回到聆听（用户不用再按键）
+        scheduleResume();
       }),
     );
     await refresh();
   }
 
-  /** 连续会话里「念完 → 回到聆听」。延迟 260ms 让 afplay/say 真正释放音频设备 */
-  function scheduleResume() {
-    if (resumeTimer) clearTimeout(resumeTimer);
+  function cancelResume() {
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+      resumeTimer = null;
+    }
+  }
+
+  /** 连续会话里「念完 → 回到聆听」。延迟让 afplay/say 真正释放音频设备 */
+  function scheduleResume(delayMs = 260) {
+    cancelResume();
     resumeTimer = setTimeout(() => {
       resumeTimer = null;
       if (disposed || !continuous.value) return;
       if (!getSettings().voiceAutoSend) return;
-      if (active.value) return;
+      if (active.value || busy.value) return;
       void start("continuous").catch(() => undefined);
-    }, 260);
+    }, delayMs);
+  }
+
+  /** 一轮对话结束（且没在朗读）时接着听。TTS 关掉时没有任何 speaking 事件，
+   *  只能由「回合结束」这个信号把会话续上 —— 否则默认配置下连续对话只能问一句。 */
+  function resumeAfterTurn() {
+    if (!continuous.value) return;
+    if (ttsSpeaking.value) return;
+    scheduleResume(600);
   }
 
   async function start(which: "ptt" | "continuous") {
@@ -288,6 +312,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     holdStart,
     holdEnd,
     toggleContinuous,
+    resumeAfterTurn,
     stopSpeech,
     stopAll,
     dispose,

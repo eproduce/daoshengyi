@@ -244,7 +244,9 @@ impl VoiceState {
     /// 开始采集（与前端 `voice_start` 同一条路径，快捷键不另开一套）。
     pub fn start(&self, mode: &str, idle_timeout_ms: u64, silence_ms: u32) -> Result<(), String> {
         if !self.shared.models_status().asr {
-            return Err("语音模型还没准备好".to_string());
+            return Err(
+                "语音模型还没准备好（设置 → 通知与呈现 → 语音输入 → 下载模型）".to_string(),
+            );
         }
         self.shared.last_error_clear();
         self.send(Cmd::Start {
@@ -291,7 +293,7 @@ pub async fn voice_models_prepare(app: AppHandle, force: bool) -> Result<String,
     let shared = state.shared.clone();
     drop(state);
     tauri::async_runtime::spawn(async move {
-        let result = prepare_models(&shared).await;
+        let result = prepare_models(&shared, force).await;
         if let Err(e) = result {
             shared.set_error(&format!("模型准备失败：{e}"));
         }
@@ -355,7 +357,7 @@ pub fn voice_start(
     };
     state.shared.last_error_clear();
     if !state.shared.models_status().asr {
-        return Err("语音模型还没准备好（设置 → 语音里点「下载模型」）".to_string());
+        return Err("语音模型还没准备好（设置 → 通知与呈现 → 语音输入 → 下载模型）".to_string());
     }
     state.send(Cmd::Start {
         mode: mode.to_string(),
@@ -483,14 +485,49 @@ impl Asr {
             return text;
         }
         match &self.punct {
-            Some(p) => p
-                .add_punctuation(&text)
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(text),
+            Some(p) => {
+                let punctuated = p
+                    .add_punctuation(&text)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(text);
+                tidy_punctuation(&punctuated)
+            }
             None => text,
         }
     }
+}
+
+/// 收拢重复标点、去掉开头的标点与标点前的空格。
+///
+/// 为什么要这一步（实测，不是洁癖）：标点模型会在**已有句末标点**之后再补一个 ——
+/// 自带 `test_wavs/zh.wav` 的真实输出是「开饭时间早上9点至下午5点。。」。
+/// 多一个句号不只是难看：它会进草稿、进消息，还会让 TTS 多停一拍。
+pub fn tidy_punctuation(text: &str) -> String {
+    const END: &[char] = &['。', '！', '？', '.', '!', '?'];
+    const ANY: &str = "，。！？、；：,.;:!?";
+    let mut out: Vec<char> = Vec::with_capacity(text.chars().count());
+    for ch in text.chars() {
+        if let Some(&prev) = out.last() {
+            // 连续两个句末标点（含中英混写）→ 只留第一个
+            if END.contains(&prev) && END.contains(&ch) {
+                continue;
+            }
+            // 同一种标点重复（「，，」「、、」）
+            if prev == ch && ANY.contains(ch) {
+                continue;
+            }
+            // 标点前的空格：中文里永远是错位的
+            if ANY.contains(ch) && prev == ' ' {
+                out.pop();
+            }
+        } else if ANY.contains(ch) {
+            // 开头没有意义
+            continue;
+        }
+        out.push(ch);
+    }
+    out.into_iter().collect::<String>().trim().to_string()
 }
 
 /// 去掉模型可能带出的控制标记（`<|zh|><|NEUTRAL|>` 之类）与多余空白。
@@ -948,10 +985,20 @@ fn emit_model(shared: &Shared, id: &str, phase: &str, received: u64, total: u64,
     );
 }
 
-async fn prepare_models(shared: &Shared) -> Result<(), String> {
+async fn prepare_models(shared: &Shared, force: bool) -> Result<(), String> {
     let dir = shared.dir.clone();
     let downloads = dir.join(".downloads");
     std::fs::create_dir_all(&downloads).map_err(|e| format!("建下载目录失败：{e}"))?;
+    if force {
+        // 覆盖时必须先删：下面的 download/extract 都以「文件够大就跳过」判定，
+        // 不删的话「重新下载」按钮点了等于没点（真实踩过的坑）。
+        emit_model(shared, "all", "reset", 0, 0, "清理旧模型");
+        for rel in [ASR_MODEL, ASR_TOKENS, VAD_MODEL, PUNCT_MODEL] {
+            let _ = std::fs::remove_file(dir.join(rel));
+        }
+        let _ = std::fs::remove_dir_all(&downloads);
+        std::fs::create_dir_all(&downloads).map_err(|e| format!("建下载目录失败：{e}"))?;
+    }
     let client = reqwest::Client::builder()
         .user_agent("daoshengyi/voice")
         .build()
@@ -1120,6 +1167,25 @@ mod tests {
     }
 
     #[test]
+    fn tidy_punctuation_collapses_model_duplicates() {
+        // 真实输出：标点模型在已有「。」后再补一个
+        assert_eq!(
+            tidy_punctuation("开饭时间早上9点至下午5点。。"),
+            "开饭时间早上9点至下午5点。"
+        );
+        assert_eq!(tidy_punctuation("，，你好"), "你好");
+        assert_eq!(tidy_punctuation("你好 。世界"), "你好。世界");
+        assert_eq!(tidy_punctuation("好！？"), "好！");
+        // 中英混写：`.!` 也只留第一个
+        assert_eq!(tidy_punctuation("done.! next"), "done. next");
+        // 正常的不该被动
+        assert_eq!(
+            tidy_punctuation("道生一，看看今天改了哪些文件？"),
+            "道生一，看看今天改了哪些文件？"
+        );
+    }
+
+    #[test]
     fn write_wav_i16_writes_valid_header_and_payload() {
         let dir = tmp("wav");
         let path = dir.join("a.wav");
@@ -1199,7 +1265,9 @@ mod tests {
                     samples
                 };
                 if rate != 16000 {
-                    return Err(format!("wav 采样率 {rate} 不是 16kHz（测试素材需自行转换）"));
+                    return Err(format!(
+                        "wav 采样率 {rate} 不是 16kHz（测试素材需自行转换）"
+                    ));
                 }
                 if bits != 16 {
                     return Err(format!("wav 位深 {bits} 不是 16bit"));

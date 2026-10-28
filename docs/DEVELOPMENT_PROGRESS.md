@@ -66,7 +66,9 @@ listening --静默10s--> idle（关麦）       任意时刻 Esc/热键 --> 全�
 - 下载 → `.part` → rename → `tar` + `bzip2` 解包（**不依赖系统 tar**）→ 落到
   `~/Library/Application Support/com.daoshengyi.app/models/voice/`；进度经 `voice://model` 推送，
   设置页轮询状态直到就绪（Rust 侧是后台任务，不阻塞 IPC）。
-- 支持手动放置（设置页显示目录并能一键打开）。
+- 支持手动放置（设置页显示目录并能一键打开）。本次装机就是**手动放置**验证的（本机到 GitHub
+  只有 ~50KB/s，163MB 下了 20 分钟；应用内下载器本身未端到端跑过，但三个 URL / 字节数 / 归档内
+  文件名都已实测一致，解包用 `tar`+`bzip2` 两条依赖都只是标准读取）。
 
 ### 5. UI
 
@@ -80,10 +82,14 @@ listening --静默10s--> idle（关麦）       任意时刻 Esc/热键 --> 全�
 
 ### 6. 验证
 
-- `cargo test --lib voice::`：7 项（6 passed + 1 ignored 真机自检）；`cargo test --lib settings::tests`：9 项；
+- `cargo test --lib voice::`：8 项（7 passed + 1 ignored 真机自检）；`cargo test --lib settings::tests`：9 项；
   `cargo check` / `cargo fmt --check` 通过。
-- 真机识别自检 `voice::tests::live_transcribe_returns_text_with_punctuation`（ignored）：
-  加载真实模型 + 自带 `test_wavs/zh.wav` 转写，断言出字且带标点。
+- **真机识别实测**（`voice::tests::live_transcribe_returns_text_with_punctuation`，ignored 手动跑）：
+  下载真实模型 → 自带 `test_wavs/zh.wav`（5.59s）→ **431ms 出字，RTF 0.08**（i7 / CPU 2 线程），
+  输出「开饭时间早上9点至下午5点。」。
+- 这一步抓到一个真 bug：**标点模型会在已有句号后再补一个**（`…下午5点。。`），
+  会进草稿/消息并让 TTS 多停一拍 → 新增 `tidy_punctuation`（收拢重复标点、去行首标点、
+  去标点前空格）+ 5 条单测（用真实输出钉住）。
 - `npm test`：56 文件 / 724 项全绿（新增 `tests/test-voice.test.ts` 9 项：草稿拼接/电平映射/相位文案/权限提示）；
   `vue-tsc --noEmit`、ESLint、Prettier 通过。
 - **打包 1.0.0-alpha.17** 并覆盖安装到 `/Applications/道生一.app`；启动正常（前端挂载、
@@ -91,7 +97,8 @@ listening --静默10s--> idle（关麦）       任意时刻 Esc/热键 --> 全�
 
 ### 7. 未做 / 已知限制
 - 阶段 2b（语音与浮层的**同步编排**）未做；唤醒词、热词偏置、AEC 属于阶段 3。
-- 首次启用需下载约 220MB 模型（网络慢时设置页给进度与「重新下载」；已支持中断续传式重下）。
+- 首次启用需下载约 220MB 模型（网络慢时设置页给进度与「重新下载」；重下是整包重来，不做断点续传）。
+- 本机已预置模型（`models/voice/`，301MB，**不进安装包**），装好即可用。
 
 ---
 
@@ -274,7 +281,8 @@ compact 音色、固定 175 词/分、句间几乎无停顿。
   `src-tauri/target/release/bundle/dmg/道生一_1.0.0-alpha.13_x64.dmg`；启动正常
   （进程存活、`Info.plist` = 1.0.0-alpha.13、产物内已含语速 / 句末停顿 / 引擎预设文案）。
 - **打包 1.0.0-alpha.17**（语音输入「耳朵」）：`npm run tauri build` 成功（release 6m20s）；
-  直接 `rm -rf` + `ditto` 覆盖安装 `/Applications/道生一.app`（不备份）；DMG
+  直接 `rm -rf` + `ditto` 覆盖安装 `/Applications/道生一.app`（不备份）；模型按
+  `models/voice/{sense-voice,punct}` 布局预置（301MB，不进安装包，装好即可用）；DMG
   `道生一_1.0.0-alpha.17_x64.dmg`；启动正常（`Info.plist` = alpha.17，含
   `NSMicrophoneUsageDescription`；`models/voice` 目录已建；应用体积 33M → 61M，sherpa-onnx 静态链接）。
 - **打包 1.0.0-alpha.16**（中文朗读节奏修复）：直接覆盖安装；DMG

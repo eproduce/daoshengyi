@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, nextTick, onUnmounted } from "vue";
 import type { ImageAttachment, FileAttachment, ApiProfile } from "@/types";
 import { v4 as uuidv4 } from "@/stores/uuid";
 import { useChatStore } from "@/stores/chat";
@@ -773,6 +773,16 @@ function onVoiceEscape(e: KeyboardEvent) {
     void voice.stopAll();
   }
 }
+
+// 一轮对话结束 → 连续会话接着听。
+// 为什么需要这条：TTS 默认是关的，关掉后根本不会有 `voice://speaking` 事件，
+// 光靠「念完再听」的钩子会让连续对话在一句话之后就断掉。
+watch(
+  () => props.disabled,
+  (busy, wasBusy) => {
+    if (wasBusy && !busy) voice.resumeAfterTurn();
+  },
+);
 </script>
 
 <template>
