@@ -866,7 +866,13 @@ async fn speak_inner(
         crate::run_shell_command_with(&cmd, Some(&home), Some(TTS_TIMEOUT_SECS), None).await?;
     if gen.exit_code != 0 {
         let err: String = gen.stderr.trim().chars().take(200).collect();
-        return Err(format!("自定义语音命令退出码 {}（{err}）", gen.exit_code));
+        // 「换了引擎就没声音」是最常见的求助：错误里必须直接给出**退回去的那一步**，
+        // 否则用户只会看到一串 shell 报错，不知道该去点哪个按钮。
+        return Err(format!(
+            "自定义语音命令退出码 {}（{err}）—— 引擎可能没安装或路径不对；\
+             可在「设置 → 人机交互 → 自定义音色」点「改回系统 say」先用回 macOS 自带语音",
+            gen.exit_code
+        ));
     }
     if !writes_file {
         // 引擎自己出声（比如它内部调了 afplay）—— 我们不播、也不假装知道时长
@@ -877,7 +883,10 @@ async fn speak_inner(
         });
     }
     if !std::path::Path::new(&out_path).exists() {
-        return Err(format!("自定义引擎没有产出音频文件：{out_path}"));
+        return Err(format!(
+            "自定义引擎没有产出音频文件（{out_path}）—— 命令里含 {{out}} 时引擎必须真的写出这个文件；\
+             可在「设置 → 人机交互 → 自定义音色」点「改回系统 say」"
+        ));
     }
     if speech_cancelled() {
         return Err("已停止播报".to_string());

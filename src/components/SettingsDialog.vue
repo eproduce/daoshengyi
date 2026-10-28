@@ -635,6 +635,14 @@ interface TtsPreset {
 }
 const TTS_PRESETS: TtsPreset[] = [
   {
+    id: "system",
+    label: "系统 say（macOS 自带，零依赖）—— 默认",
+    template: "",
+    // 这条必须排第一：换了引擎没声音时，用户要能一键回到「一定有声」的状态。
+    // 之前只有三个「换引擎」选项、没有「退回去」的选项，选了 piper 就等于掉进坑里。
+    hint: "清空自定义命令 = 用 macOS 自带 say（一定有声、离线、零安装）。改引擎后没声音，先点这里退回。",
+  },
+  {
     id: "edge-xiaoxiao",
     label: "Edge 神经语音 · 晓晓（女声，最接近真人）",
     // 用 `python3 -m edge_tts` 而不是裸 `edge-tts`：pip --user 装出来的脚本在
@@ -653,9 +661,11 @@ const TTS_PRESETS: TtsPreset[] = [
   {
     id: "piper",
     label: "Piper 中文（完全离线，体积小）",
+    // 同样走 `python3 -m piper`：pip 装出来的 `piper` 在 ~/Library/Python/x.y/bin，
+    // GUI 应用（Finder 启动）的 PATH 里没有这个目录 —— 与 edge-tts 是同一个坑。
     template:
-      "printf '%s' {text} | piper --model ~/piper/zh_CN-huayan-medium.onnx --output_file {out}",
-    hint: "先安装 piper 并下载 zh_CN-huayan-medium 模型；离线、不联网，自然度明显好于系统 say。",
+      "printf '%s' {text} | python3 -m piper --model ~/piper/zh_CN-huayan-medium.onnx --output_file {out}",
+    hint: "先安装并下载模型：python3 -m pip install --user piper-tts，模型放到 ~/piper/zh_CN-huayan-medium.onnx（可从 HuggingFace rhasspy/piper-voices 下载）。没装就是「没声音」——点上面第一条可随时退回系统 say。",
   },
 ];
 const ttsPreset = ref("");
@@ -665,6 +675,23 @@ function applyTtsPreset() {
   if (!preset) return;
   surfaceTtsCommand.value = preset.template;
   saveSurface();
+  void flushSettings();
+}
+/** 当前引擎的一行人话（用户最先想知道的就是「现在到底用谁在念」） */
+const ttsEngineLabel = computed(() => {
+  const cmd = surfaceTtsCommand.value.trim();
+  if (!cmd) return "系统 say（macOS 自带）";
+  const head = cmd.split(/\s+/).slice(0, 2).join(" ");
+  return `自定义：${head}…`;
+});
+/** 一键退回系统 say（同时清掉命令，避免「以为改了其实没改」） */
+function useSystemTts() {
+  surfaceTtsCommand.value = "";
+  surfaceTtsReference.value = "";
+  saveSurface();
+  void flushSettings().then(() => {
+    voicePreviewMsg.value = "已改回系统 say —— 点「试听」确认有声";
+  });
 }
 /** 勿扰时段（两个都填才生效；支持跨零点） */
 const surfaceQuietStart = ref(getSettings().surfaceQuietStart ?? "");
@@ -1889,13 +1916,26 @@ async function handleDelete() {
               <label style="margin-top: 16px">自定义音色（用自己的声音）</label>
               <div style="display: flex; gap: 8px; margin-bottom: 8px">
                 <select v-model="ttsPreset" class="form-select" @change="applyTtsPreset">
-                  <option value="">从预设填入引擎命令（系统 say 的自然度有上限）…</option>
+                  <option value="">换引擎（系统 say 的自然度有上限）…</option>
                   <option v-for="p in TTS_PRESETS" :key="p.id" :value="p.id">
                     {{ p.label }}
                   </option>
                 </select>
               </div>
               <span v-if="ttsPresetHint" class="form-hint">{{ ttsPresetHint }}</span>
+              <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px">
+                <span class="form-hint" style="margin: 0">
+                  当前引擎：<strong>{{ ttsEngineLabel }}</strong>
+                </span>
+                <button
+                  v-if="surfaceTtsCommand.trim()"
+                  class="settings-reset-btn"
+                  title="清空自定义命令，回到 macOS 自带的 say（一定有声）"
+                  @click="useSystemTts"
+                >
+                  改回系统 say
+                </button>
+              </div>
               <textarea
                 v-model="surfaceTtsCommand"
                 class="form-textarea"
