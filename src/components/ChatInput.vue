@@ -705,7 +705,7 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 //
 // 为什么麦克风按钮默认不出现：设置里 `voiceEnabled` 默认关。常驻的麦克风图标会让人
 // 怀疑在偷听；「不录音」这件事必须**可见地**成立（idle 时 Rust 侧已关设备）。
-// 打开方式：设置 → 通知与呈现 → 语音输入。
+// 打开方式：设置 → 人机交互 → 语音输入。
 // 为什么包一层 computed：设置的缓存对象本身不是响应式的，`settingsRevision` 才是信号。
 // 把它和快照放进同一个 computed，开关一变（设置页刚点完）按钮立刻出现/消失。
 const voiceSettings = computed(() => ({
@@ -727,6 +727,7 @@ const {
   active: voiceActive,
   bars: voiceBars,
   phaseText: voicePhaseText,
+  hint: voiceHint,
 } = voice;
 const voiceTitle = computed(() => {
   if (voiceContinuous.value) return "连续对话进行中 —— 点击全停（停播报 + 丢弃本轮 + 关麦）";
@@ -748,21 +749,42 @@ function onVoiceFinal(text: string, mode: string) {
   }
 }
 
+// 按住说话：必须**按住纽扣本身**才算数，而且不能因为按钮挪动而中断。
+// 真实踩过的坑（用户反馈「永远到不到最短时长」）：电平条原先用 v-if，一听就出现，
+// 把 flex:1 的输入框挤窄 → 麦克风按钮向左挪 ~30px → 指针离开按钮触发 mouseleave
+// → 立刻结束录音（0.0s，永远「太短了」）。三条修正缺一不可：
+//   1. 电平条**常驻占位**（只有可见性变化，不改变布局）；
+//   2. 用 pointer capture：指针滑出按钮也不丢事件，松手才算结束；
+//   3. 按得太短（<300ms，基本是点了一下）直接取消，不弹错误框。
 let micPressed = false;
-async function onMicDown() {
+let micPressedAt = 0;
+async function onMicDown(e: PointerEvent) {
   if (voiceContinuous.value) {
     await voice.stopAll();
     return;
   }
   micPressed = true;
+  micPressedAt = Date.now();
+  try {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* 不支持捕获的旧环境：退回普通鼠标行为 */
+  }
   await voice.holdStart();
 }
 async function onMicUp() {
   if (!micPressed) return;
   micPressed = false;
+  const held = Date.now() - micPressedAt;
+  if (held < 300) {
+    // 只是点了一下：当成取消，别让「太短了」变成每次误触都要关的弹窗
+    await voice.abortTurn();
+    return;
+  }
   await voice.holdEnd();
 }
-function onMicLeave() {
+/** 指针被系统抢走（切窗口/触控板手势）：按松手处理，不能把麦克风挂在开着的状态 */
+function onMicCancel() {
   if (micPressed) void onMicUp();
 }
 
@@ -773,6 +795,16 @@ function onVoiceEscape(e: KeyboardEvent) {
     void voice.stopAll();
   }
 }
+
+// 打开语音时预热识别模型：首次加载要 1~2 秒，若不预热，这 1 秒会从「按住」的时间里扣掉
+// （表现就是按下后很久才进聆听，松手时音频不足 0.3 秒）。
+watch(
+  voiceEnabled,
+  (on) => {
+    if (on) void voice.warmup();
+  },
+  { immediate: true },
+);
 
 // 一轮对话结束 → 连续会话接着听。
 // 为什么需要这条：TTS 默认是关的，关掉后根本不会有 `voice://speaking` 事件，
@@ -847,6 +879,8 @@ watch(
       </div>
     </div>
 
+    <!-- 语音输入的行内提示（不弹窗：误触/太短不该打断打字） -->
+    <div v-if="voiceHint" class="ci-voice-hint">{{ voiceHint }}</div>
     <!-- 输入行 -->
     <div class="ci-wrap" :class="{ 'ci-wrap--busy': disabled }">
       <textarea
@@ -895,22 +929,26 @@ watch(
           'ci-mic--continuous': voiceContinuous,
         }"
         :title="voiceTitle"
-        @mousedown.prevent="onMicDown"
-        @mouseup.prevent="onMicUp"
-        @mouseleave="onMicLeave"
+        @pointerdown.prevent="onMicDown"
+        @pointerup.prevent="onMicUp"
+        @pointercancel="onMicCancel"
       >
         <Mic :size="15" />
       </button>
       <span
-        v-if="voiceListening || voiceTranscribing"
         class="ci-level"
-        :class="{ 'ci-level--busy': voiceTranscribing }"
+        :class="{
+          'ci-level--live': voiceListening || voiceTranscribing,
+          'ci-level--busy': voiceTranscribing,
+        }"
         :title="voicePhaseText"
       >
         <i
           v-for="(h, i) in voiceBars"
           :key="i"
-          :style="{ height: `${Math.max(8, Math.round(h * 100))}%` }"
+          :style="{
+            height: `${Math.max(8, Math.round((voiceListening ? h : 0) * 100))}%`,
+          }"
         />
       </span>
       <!-- 上下文用量指示（估算已用/模型总量），位于停止/发送按钮左侧 -->
@@ -1716,7 +1754,19 @@ watch(
   align-items: flex-end;
   gap: 2px;
   height: 20px;
+  /* 宽度恒定：一出现就占位，避免把 flex 输入框挤窄 → 麦克风按钮被推走 → 松手判成「太短」 */
+  width: 21px;
   padding: 0 2px;
+  visibility: hidden;
+}
+.ci-level--live {
+  visibility: visible;
+}
+/* 语音输入的行内提示：低干扰，3 秒自动消失 */
+.ci-voice-hint {
+  padding: 2px 4px 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 .ci-level i {
   display: block;

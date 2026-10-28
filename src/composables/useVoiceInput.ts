@@ -64,6 +64,8 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
   /** TTS 正在出声（半双工：此时不开麦） */
   const ttsSpeaking = ref(false);
   const error = ref("");
+  /** 非阻塞提示（如「按住说话」）：不用弹窗打断，3 秒后自动消失 */
+  const hint = ref("");
   /** 正在执行开始/停止命令（防止连点开出两条流） */
   const busy = ref(false);
   /** 连续对话模式进行中（用户显式开启，静音超时自动结束） */
@@ -89,6 +91,17 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
   function report(message: string) {
     error.value = message;
     opts.onError?.(message);
+  }
+
+  let hintTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 轻提示：只在输入框旁显示一行字，不弹窗（误触/太短属于操作噪音，不是错误） */
+  function flashHint(message: string) {
+    hint.value = message;
+    if (hintTimer) clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      hint.value = "";
+      hintTimer = null;
+    }, 3000);
   }
 
   function applyStatus(next: VoiceStatus) {
@@ -138,8 +151,12 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
       }),
     );
     off(
-      await listenWithRetry<{ message: string }>("voice://error", (e) => {
-        if (e.payload?.message) report(e.payload.message);
+      await listenWithRetry<{ message: string; short?: boolean }>("voice://error", (e) => {
+        const p = e.payload;
+        if (!p?.message) return;
+        // 「太短」是操作提示，不是故障：弹窗会变成每次误触都要点一下的负担
+        if (p.short) flashHint(p.message);
+        else report(p.message);
       }),
     );
     off(
@@ -196,7 +213,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     if (busy.value) return;
     const settings = getSettings();
     if (!settings.voiceEnabled) {
-      report("语音输入未开启（设置 → 通知与呈现 → 语音输入）");
+      report("语音输入未开启（设置 → 人机交互 → 语音输入）");
       return;
     }
     if (ttsSpeaking.value) await stopSpeech();
@@ -229,6 +246,30 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
       await invoke("voice_stop");
     } catch (e) {
       report(String(e));
+    }
+  }
+
+  /** 放弃本轮（按得太短 / 误触）：关麦、丢音频，不弹错误框 */
+  async function abortTurn() {
+    try {
+      await invoke("voice_cancel");
+    } catch {
+      /* 已经空闲 */
+    }
+    phase.value = "idle";
+    rms.value = 0;
+    speechDetected.value = false;
+    flashHint("按住麦克风说话，说完再松手");
+  }
+
+  /** 预热识别模型（首次加载要 1~2s，别让这 1 秒吃掉用户按住的那一秒） */
+  async function warmup() {
+    if (status.value?.asr_loaded) return;
+    if (!modelsReady.value) return;
+    try {
+      await invoke("voice_warmup");
+    } catch (e) {
+      console.warn("[voice] 预热失败:", e);
     }
   }
 
@@ -272,6 +313,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
   async function dispose() {
     disposed = true;
     if (resumeTimer) clearTimeout(resumeTimer);
+    if (hintTimer) clearTimeout(hintTimer);
     for (const off of unlisteners) {
       try {
         off();
@@ -307,8 +349,11 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     permission,
     permissionNote,
     bars,
+    hint,
     init,
     refresh,
+    warmup,
+    abortTurn,
     holdStart,
     holdEnd,
     toggleContinuous,

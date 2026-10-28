@@ -6847,6 +6847,7 @@ pub fn run() {
             voice::voice_start,
             voice::voice_stop,
             voice::voice_cancel,
+            voice::voice_warmup,
             cancel_stream,
             list_models,
             touch_fact,

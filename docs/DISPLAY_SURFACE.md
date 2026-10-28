@@ -16,7 +16,7 @@
 | `src-tauri/src/hud.rs` | `present()` 推 IR 给 HUD（事件 + 可补拉）；AppKit 自证与取证 |
 | `src/components/HudOverlay.vue`（新，取代 spike 占位组件） | IR 的**渲染端**：有内容画内容、没内容画自检胶囊 |
 | `src/data/builtin-tools.ts` / `builtin-params.ts` / `src/stores/chat.ts` / `roles-catalog.ts` | 内置工具 `present` 的四处接线 + 角色工具集 |
-| `src/api/appSettings.ts` / `src-tauri/src/settings.rs` / `SettingsDialog.vue` | 4 个环境层开关 + 音色下拉（含示例）+「试听」+「试一下」；集中在**独立页签「通知与呈现」** |
+| `src/api/appSettings.ts` / `src-tauri/src/settings.rs` / `SettingsDialog.vue` | 4 个环境层开关 + 音色下拉（含示例）+「试听」+「试一下」；集中在**独立页签「人机交互」**（原「通知与呈现」） |
 
 ## 2. 数据流
 
@@ -125,7 +125,7 @@
 ### 5.1 设置放在哪（一次 UX 纠正）
 
 这四个开关原本塞在**「快捷键」页**里 —— 用户的原话是「设置为啥要放在快捷键那里」。
-现在它们有自己的页签：**设置 → 界面与运行 → 通知与呈现**（内含「系统通知」+
+现在它们有自己的页签：**设置 → 界面与运行 → 人机交互**（原「通知与呈现」）（内含「系统通知」+
 「桌面浮层与语音」）。
 
 理由：快捷键页回答的是"怎么**触发**"，而通知/浮层/语音回答的是"结果怎么**送达**"，

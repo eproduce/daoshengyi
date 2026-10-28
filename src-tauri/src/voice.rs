@@ -144,6 +144,21 @@ impl Shared {
         self.emit_state();
     }
 
+    /// 「说得太短」：带 `short: true`，前端只显示一行提示，**不弹窗**
+    /// （误触一次就弹一个对话框，比没识别出来更烦）。
+    fn set_short_press(&self, seconds: f32) {
+        let message = format!("只录到 {seconds:.1} 秒 —— 按住麦克风，说完再松手");
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.last_error = message.clone();
+        }
+        let _ = self.app.emit(
+            EVENT_ERROR,
+            serde_json::json!({ "message": message, "short": true }),
+        );
+        self.emit_state();
+    }
+
     fn set_error(&self, message: &str) {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -190,6 +205,8 @@ enum Cmd {
     },
     Stop,
     Cancel,
+    /// 只加载识别模型，不开麦（预热：首次加载 1~2s，别让这段吃掉用户按住的那一秒）
+    Warmup,
 }
 
 pub struct VoiceState {
@@ -244,9 +261,7 @@ impl VoiceState {
     /// 开始采集（与前端 `voice_start` 同一条路径，快捷键不另开一套）。
     pub fn start(&self, mode: &str, idle_timeout_ms: u64, silence_ms: u32) -> Result<(), String> {
         if !self.shared.models_status().asr {
-            return Err(
-                "语音模型还没准备好（设置 → 通知与呈现 → 语音输入 → 下载模型）".to_string(),
-            );
+            return Err("语音模型还没准备好（设置 → 人机交互 → 语音输入 → 下载模型）".to_string());
         }
         self.shared.last_error_clear();
         self.send(Cmd::Start {
@@ -267,6 +282,10 @@ impl VoiceState {
 
     pub fn cancel(&self) -> Result<(), String> {
         self.send(Cmd::Cancel)
+    }
+
+    pub fn warmup(&self) -> Result<(), String> {
+        self.send(Cmd::Warmup)
     }
 }
 
@@ -356,7 +375,7 @@ pub fn voice_start(
     };
     state.shared.last_error_clear();
     if !state.shared.models_status().asr {
-        return Err("语音模型还没准备好（设置 → 通知与呈现 → 语音输入 → 下载模型）".to_string());
+        return Err("语音模型还没准备好（设置 → 人机交互 → 语音输入 → 下载模型）".to_string());
     }
     state.send(Cmd::Start {
         mode: mode.to_string(),
@@ -376,6 +395,16 @@ pub fn voice_stop(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
 #[tauri::command]
 pub fn voice_cancel(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
     state.send(Cmd::Cancel)
+}
+
+/// 预热：只把识别模型读进内存，不开麦（模型没准备好时静默跳过）。
+#[tauri::command]
+pub fn voice_warmup(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
+    if !state.shared.models_status().asr {
+        return Ok(());
+    }
+    state.shared.last_error_clear();
+    state.warmup()
 }
 
 impl Shared {
@@ -831,6 +860,19 @@ fn worker_loop(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) {
                 shared.set_phase("idle");
                 asr_used = Instant::now();
             }
+            Ok(Cmd::Warmup) => {
+                if asr.is_none() {
+                    match Asr::load(&shared.dir) {
+                        Ok(a) => {
+                            asr = Some(a);
+                            shared.asr_loaded.store(true, Ordering::Relaxed);
+                            shared.emit_state();
+                        }
+                        Err(e) => shared.set_error(&e),
+                    }
+                }
+                asr_used = Instant::now();
+            }
             Ok(Cmd::Cancel) => {
                 session = None;
                 shared.set_phase("idle");
@@ -927,7 +969,7 @@ fn finish_session(shared: &Shared, s: &mut Session, asr: Option<&Asr>) {
     }
     let seconds = s.samples.len() as f32 / SAMPLE_RATE as f32;
     if seconds < MIN_SPEECH_SECS {
-        shared.set_error(&format!("太短了（{seconds:.1}s），按住说话至少 0.3 秒"));
+        shared.set_short_press(seconds);
         return;
     }
     let wav_path = shared.dir.join("last.wav");

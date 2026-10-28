@@ -54,6 +54,7 @@ import {
   ListChecks,
   History,
   Bell,
+  MonitorSmartphone,
   Terminal as TerminalIcon,
   Palette,
   Mic,
@@ -130,9 +131,10 @@ const SETTINGS_GROUPS: {
     label: "界面与运行",
     tabs: [
       { id: "appearance", label: "外观", icon: Palette },
-      // 通知与桌面呈现曾经塞在「快捷键」页里（用户反馈“为啥放那儿”）——
-      // 它们回答的是「结果怎么送达」，与快捷键不是一回事，单独一页。
-      { id: "surface", label: "通知与呈现", icon: Bell },
+      // 这一页回答的是「机器怎么把结果交给人、人又怎么把话交给机器」：
+      // 系统通知 / 桌面浮层 / 语音播报 / 语音输入 —— 都是**人与机器之间的通道**。
+      // （早先叫「通知与呈现」，只覆盖了「机器→人」那一半；加了「耳朵」之后名字就不够用了。）
+      { id: "surface", label: "人机交互", icon: MonitorSmartphone },
       { id: "shortcuts", label: "快捷键", icon: Keyboard },
       { id: "stats", label: "用量统计", icon: ChartColumn },
       { id: "health", label: "诊断", icon: Stethoscope },
@@ -1727,7 +1729,7 @@ async function handleDelete() {
             </button>
           </div>
 
-          <!-- 通知与呈现：系统通知 / 桌面浮层 / 语音播报（之前错放在「快捷键」页里） -->
+          <!-- 人机交互：系统通知 / 桌面浮层 / 语音播报 / 语音输入 -->
           <div v-show="activeTab === 'surface'">
             <h3><Bell :size="17" /> 系统通知</h3>
             <p class="local-desc">
