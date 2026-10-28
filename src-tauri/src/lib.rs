@@ -36,6 +36,7 @@ mod skill_pack;
 mod ssrf;
 mod surface;
 mod trash;
+mod voice;
 // 与 `use_llama_vision`（本地 VLM 后端选择）无关：
 // 这里是 macOS Vision 框架的原生检测能力（分类/人脸/人体/姿势/动物/条码/显著区域）
 mod vision_native;
@@ -4140,6 +4141,23 @@ pub(crate) async fn run_wrapped_argv(
     timeout_secs: u64,
     audit_tool: &str,
 ) -> Result<CommandOutput, String> {
+    run_wrapped_argv_tracked(db, cwd, prog, argv, timeout_secs, audit_tool, None).await
+}
+
+/// 同上，但把子进程 PID 写进 `pid_slot`（0 = 无）。
+///
+/// 用途只有一个：**语音播报要能被"一键全停"打断**。`say` 一句话几秒，用户按热键
+/// 必须立刻静音；没有 PID 就只能等它念完。别的调用方不需要 PID，仍走上面那个入口。
+pub(crate) async fn run_wrapped_argv_tracked(
+    db: &Database,
+    cwd: &str,
+    prog: &str,
+    argv: Vec<String>,
+    timeout_secs: u64,
+    audit_tool: &str,
+    pid_slot: Option<&std::sync::atomic::AtomicI32>,
+) -> Result<CommandOutput, String> {
+    use std::sync::atomic::Ordering;
     use tokio::io::AsyncReadExt;
     let start = std::time::Instant::now();
     let audit_args = format!("{} {}", prog, argv.join(" "));
@@ -4163,6 +4181,9 @@ pub(crate) async fn run_wrapped_argv(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动 {} 失败: {}", prog, e))?;
+    if let Some(slot) = pid_slot {
+        slot.store(child.id().unwrap_or(0) as i32, Ordering::SeqCst);
+    }
     let mut out_pipe = child.stdout.take().ok_or("无法获取 stdout")?;
     let mut err_pipe = child.stderr.take().ok_or("无法获取 stderr")?;
     let timeout = std::time::Duration::from_secs(timeout_secs);
@@ -4178,7 +4199,7 @@ pub(crate) async fn run_wrapped_argv(
     })
     .await;
     let duration = start.elapsed().as_millis() as i64;
-    match result {
+    let out = match result {
         Ok((st, o, e)) => {
             let stdout = String::from_utf8_lossy(&o).to_string();
             let stderr = String::from_utf8_lossy(&e).to_string();
@@ -4212,7 +4233,11 @@ pub(crate) async fn run_wrapped_argv(
                 created_files: Vec::new(),
             })
         }
+    };
+    if let Some(slot) = pid_slot {
+        slot.store(0, Ordering::SeqCst);
     }
+    out
 }
 
 /// Git 操作（编程 Agent：提交/推送/拉取/diff/状态/日志等）。
@@ -5914,6 +5939,85 @@ static SHORTCUTS: std::sync::OnceLock<
     >,
 > = std::sync::OnceLock::new();
 
+/// 语音快捷键（按住说话 / 一键全停）：**独立**一个槽位，只在语音输入开启时注册。
+/// 单独放置的理由：它的语义是「按下开始、松开结束」（按住说话），与上面两个一次性触发的
+/// 快捷键不同，handler 里要区别对待 Pressed / Released。
+static VOICE_SHORTCUT: std::sync::OnceLock<
+    std::sync::Mutex<Option<tauri_plugin_global_shortcut::Shortcut>>,
+> = std::sync::OnceLock::new();
+
+/// 注册（或注销）语音快捷键。`enabled = false` 时只注销 —— 没开语音不该占着全局键位。
+fn apply_voice_shortcut_impl(
+    app: &tauri::AppHandle,
+    enabled: bool,
+    shortcut: &str,
+) -> Result<(), String> {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    let gs = app.global_shortcut();
+    let slot = VOICE_SHORTCUT.get_or_init(|| std::sync::Mutex::new(None));
+    if let Some(old) = slot.lock().unwrap().take() {
+        let _ = gs.unregister(old);
+    }
+    if !enabled {
+        return Ok(());
+    }
+    let parsed = Shortcut::from_str(shortcut)
+        .unwrap_or_else(|_| Shortcut::from_str(settings::DEFAULT_SHORTCUT_VOICE).unwrap());
+    if gs.register(parsed).is_err() {
+        return Err(format!(
+            "语音快捷键 {shortcut} 注册失败（可能被其它应用占用）"
+        ));
+    }
+    *slot.lock().unwrap() = Some(parsed);
+    Ok(())
+}
+
+/// 运行时应用语音快捷键（设置页开启语音 / 改键后立即生效）
+#[tauri::command]
+fn apply_voice_shortcut(
+    app: tauri::AppHandle,
+    enabled: bool,
+    shortcut: Option<String>,
+) -> Result<(), String> {
+    let shortcut = shortcut
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| settings::DEFAULT_SHORTCUT_VOICE.to_string());
+    apply_voice_shortcut_impl(&app, enabled, &shortcut)
+}
+
+/// 语音热键动作：按下 = 开始聆听 / 全停；松开 = 结束本轮并转写。
+///
+/// 三条判定都在这里，前端不参与（窗口可能根本没焦点）：
+/// - 已经在听/在识别 → 按下就是**全停**（停播报 + 丢弃本轮 + 关麦）；
+/// - 正在朗读 → 先静音再开麦（半双工：外放被自己的麦克风听见会误触发）；
+/// - 其余 → 开始按住说话。
+fn voice_hotkey(app: &tauri::AppHandle, pressed: bool) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<voice::VoiceState>() else {
+        return;
+    };
+    let phase = state.phase();
+    if pressed {
+        if phase == "listening" || phase == "thinking" || phase == "transcribing" {
+            surface::stop_speech_now();
+            let _ = state.cancel();
+            return;
+        }
+        surface::stop_speech_now();
+        if let Err(e) = state.start(
+            "ptt",
+            voice::DEFAULT_SESSION_WINDOW_MS,
+            voice::DEFAULT_SILENCE_MS,
+        ) {
+            eprintln!("[voice] 热键开始失败：{e}");
+            let _ = app.emit("voice://error", serde_json::json!({ "message": e }));
+        }
+    } else if phase == "listening" {
+        let _ = state.stop();
+    }
+}
+
 /// 注册全局快捷键（解析失败回退默认），并记录当前注册句柄供重新注册。
 fn register_global_shortcuts(app: &tauri::AppHandle, toggle: &str, new_chat: &str) {
     use std::str::FromStr;
@@ -6431,6 +6535,18 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     use tauri_plugin_global_shortcut::ShortcutState;
+                    // 语音热键是「按住说话」语义：Pressed / Released 都要处理，必须先于下面的
+                    // 「只认 Pressed」提前返回，否则松手永远收不到 → 麦克风一直开着。
+                    if let Some(v) = VOICE_SHORTCUT
+                        .get()
+                        .and_then(|m| m.lock().ok())
+                        .and_then(|g| *g)
+                    {
+                        if shortcut == &v {
+                            voice_hotkey(app, event.state() == ShortcutState::Pressed);
+                            return;
+                        }
+                    }
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
@@ -6488,6 +6604,8 @@ pub fn run() {
             app.manage(SleepGuard(std::sync::Mutex::new(None)));
             // IM 网关共享状态（后台任务与前端 im_status 共用）
             app.manage(im::ImGatewayState::shared());
+            // 语音输入（耳朵）：采集线程常驻、按需开麦；模型按需下载到应用数据目录
+            app.manage(voice::VoiceState::new(app.handle().clone()));
 
             // 定时任务调度线程：每 30 秒检查一次到点任务并执行（/bin/sh -c，300 秒超时）。
             // 每次循环用独立数据库连接（SQLite WAL 支持多连接并发）。
@@ -6620,18 +6738,29 @@ pub fn run() {
             // 全局快捷键（Phase 5）：注册后即使应用在后台/隐藏也能通过按键唤起。
             // 从设置读取自定义快捷键（未配置/解析失败回退默认）；注册失败（被占用）仅记录日志。
             {
-                let (toggle, new_chat) = {
+                let (toggle, new_chat, voice_on, voice_key) = {
                     let db = app.state::<Database>();
                     let cipher = app.state::<settings::SecretCipher>();
                     match load_app_settings(db, cipher) {
-                        Ok(s) => (s.global_shortcut_toggle, s.global_shortcut_new_chat),
+                        Ok(s) => (
+                            s.global_shortcut_toggle,
+                            s.global_shortcut_new_chat,
+                            s.voice_enabled,
+                            s.global_shortcut_voice,
+                        ),
                         Err(_) => (
                             settings::DEFAULT_SHORTCUT_TOGGLE.to_string(),
                             settings::DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+                            false,
+                            settings::DEFAULT_SHORTCUT_VOICE.to_string(),
                         ),
                     }
                 };
                 register_global_shortcuts(app.handle(), &toggle, &new_chat);
+                // 语音键只在语音输入开启时占位（默认关）
+                if let Err(e) = apply_voice_shortcut_impl(app.handle(), voice_on, &voice_key) {
+                    eprintln!("[shortcut] {e}");
+                }
             }
 
             // 环境层（HUD）spike 钩子：只有设置了 DAOSHENGYI_HUD_SPIKE 才会创建 HUD 窗口，
@@ -6702,12 +6831,22 @@ pub fn run() {
             save_app_settings,
             load_app_settings,
             apply_global_shortcuts,
+            apply_voice_shortcut,
             hud::hud_spike,
             hud::hud_note,
             hud::hud_last_ir,
             surface::surface_present,
             surface::list_say_voices,
             surface::preview_voice,
+            surface::surface_stop_speech,
+            voice::voice_status,
+            voice::voice_models_status,
+            voice::voice_models_prepare,
+            voice::voice_open_models_dir,
+            voice::voice_open_settings,
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_cancel,
             cancel_stream,
             list_models,
             touch_fact,

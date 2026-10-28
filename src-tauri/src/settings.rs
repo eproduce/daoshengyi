@@ -115,6 +115,10 @@ pub struct AppSettings {
     /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
     #[serde(default = "default_shortcut_new_chat")]
     pub global_shortcut_new_chat: String,
+    /// 全局快捷键：按住说话 / 一键全停（默认 CommandOrControl+Shift+V）。
+    /// **只在语音输入开启时注册** —— 没开语音却占着一个全局键位是纯粹的骚扰。
+    #[serde(default = "default_shortcut_voice")]
+    pub global_shortcut_voice: String,
     /// IM 网关配置（钉钉/飞书/企微）。敏感字段（token/secret）随整个对象整体加密落盘
     #[serde(default)]
     pub im_config: serde_json::Value,
@@ -208,6 +212,19 @@ pub struct AppSettings {
     /// 环境层：勿扰时段止（支持跨零点，如 22:30–08:00）
     #[serde(default)]
     pub surface_quiet_end: String,
+    /// 语音输入（耳朵）总开关（默认**关**）——常驻录音是隐私红线，必须显式开启
+    #[serde(default)]
+    pub voice_enabled: bool,
+    /// 连续语音对话：转写后**自动提交**（默认关）。
+    /// 这是全项目唯一会自动发消息的路径，必须由用户显式打开。
+    #[serde(default)]
+    pub voice_auto_send: bool,
+    /// 说完判定：VAD 静音毫秒（400~1500，默认 800）
+    #[serde(default = "default_voice_silence_ms")]
+    pub voice_silence_ms: u32,
+    /// 会话窗口：说完/念完后多久没说话就收麦（5000~30000，默认 10000）
+    #[serde(default = "default_voice_session_window_ms")]
+    pub voice_session_window_ms: u32,
 }
 
 /// 旧版内置语音预设 → 新默认（逐字匹配，用户手改过的模板一律不动）。
@@ -248,6 +265,8 @@ pub fn migrate_legacy_speech_presets(settings: &mut AppSettings) {
 
 pub const DEFAULT_SHORTCUT_TOGGLE: &str = "CommandOrControl+Shift+Space";
 pub const DEFAULT_SHORTCUT_NEW_CHAT: &str = "CommandOrControl+Shift+K";
+/// 语音：按住说话（连续对话进行中则是「一键全停」）
+pub const DEFAULT_SHORTCUT_VOICE: &str = "CommandOrControl+Shift+V";
 pub const DEFAULT_BROWSER_ENGINE: &str = "auto";
 /// 命令沙箱的网络策略默认值：`allow`（不限）——保持历史行为，不因升级而忽然断网
 pub const DEFAULT_SANDBOX_NETWORK: &str = "allow";
@@ -270,6 +289,10 @@ fn default_shortcut_new_chat() -> String {
     DEFAULT_SHORTCUT_NEW_CHAT.to_string()
 }
 
+fn default_shortcut_voice() -> String {
+    DEFAULT_SHORTCUT_VOICE.to_string()
+}
+
 fn default_browser_engine() -> String {
     DEFAULT_BROWSER_ENGINE.to_string()
 }
@@ -285,6 +308,14 @@ fn default_recall_limit() -> i64 {
 /// 中文默认语速：系统 175 偏拖、240 偏赶，190 听得清（用户可调回 0 = 跟随系统）
 fn default_speech_rate() -> u32 {
     190
+}
+
+fn default_voice_silence_ms() -> u32 {
+    800
+}
+
+fn default_voice_session_window_ms() -> u32 {
+    10_000
 }
 
 fn default_approval_mode() -> String {
@@ -324,6 +355,7 @@ impl Default for AppSettings {
             sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            global_shortcut_voice: DEFAULT_SHORTCUT_VOICE.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
@@ -350,6 +382,10 @@ impl Default for AppSettings {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            voice_enabled: false,
+            voice_auto_send: false,
+            voice_silence_ms: default_voice_silence_ms(),
+            voice_session_window_ms: default_voice_session_window_ms(),
         }
     }
 }
@@ -603,6 +639,7 @@ mod tests {
             sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            global_shortcut_voice: DEFAULT_SHORTCUT_VOICE.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
@@ -629,6 +666,10 @@ mod tests {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            voice_enabled: false,
+            voice_auto_send: false,
+            voice_silence_ms: default_voice_silence_ms(),
+            voice_session_window_ms: default_voice_session_window_ms(),
         };
         cipher.encrypt_settings(&mut settings).unwrap();
         assert_ne!(settings.profiles[0].api_key, "sk-secret", "落盘应为密文");
@@ -681,6 +722,7 @@ mod tests {
             sandbox_network: default_sandbox_network(),
             global_shortcut_toggle: DEFAULT_SHORTCUT_TOGGLE.to_string(),
             global_shortcut_new_chat: DEFAULT_SHORTCUT_NEW_CHAT.to_string(),
+            global_shortcut_voice: DEFAULT_SHORTCUT_VOICE.to_string(),
             im_config: serde_json::json!({}),
             browser_engine: DEFAULT_BROWSER_ENGINE.to_string(),
             ssrf_deny_private: true,
@@ -707,6 +749,10 @@ mod tests {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            voice_enabled: false,
+            voice_auto_send: false,
+            voice_silence_ms: default_voice_silence_ms(),
+            voice_session_window_ms: default_voice_session_window_ms(),
         };
         cipher.decrypt_settings(&mut settings).unwrap();
         assert_eq!(settings.profiles[0].api_key, "sk-legacy-plain");

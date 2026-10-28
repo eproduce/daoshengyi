@@ -1,6 +1,6 @@
 [package]
 name = "daoshengyi"
-version = "1.0.0-alpha.16"
+version = "1.0.0-alpha.17"
 description = "道生一 AI Agent 桌面客户端"
 authors = ["you"]
 edition = "2021"
@@ -50,8 +50,16 @@ snap = "1"
 # 图片解码/缩放：本地视觉模型输入前压缩（像素数直接决定本地推理耗时）
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
+# 语音输入（耳朵）：cpal 采集 → Silero VAD → SenseVoice 识别 → 标点模型。
+# sherpa-onnx 走官方 crate（静态链接预编译原生库，构建时从 GitHub Releases 取，约 20MB）；
+# 模型**不进安装包**，首次使用时下载并解包（`tar` + `bzip2`，故不依赖系统 tar）。
+cpal = "0.18"
+sherpa-onnx = "2.0"
+tar = "0.4"
+bzip2 = "0.4"
+
 # HUD spike：回读 NSWindow 真实状态（ignoresMouseEvents / isOpaque / level / styleMask …）。
 # 这个 crate 本来就在依赖树里（tauri 的传递依赖），这里只是提为直接依赖 —— 因此**无需联网**
-# 也能解析（本机 crates.io 不可达，新增陌生依赖必须先配稀疏镜像）。仅 macOS 编译。
+# 也能解析（新增陌生依赖仍需能访问 crates.io / 稀疏镜像）。仅 macOS 编译。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

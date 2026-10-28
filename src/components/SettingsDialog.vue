@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, type Component } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, type Component } from "vue";
 import { useChatStore } from "@/stores/chat";
 import { useLocalRuntimeStore } from "@/stores/localRuntime";
 import type { ApiProfile } from "@/types";
@@ -22,6 +22,8 @@ import { useTheme } from "@/composables/useTheme";
 import { themePrefHint, themePrefLabel, resolveTheme, type ThemePref } from "@/utils/theme";
 import type { HookRuleShape, SandboxNetwork } from "@/api/appSettings";
 import { askConfirm, notify } from "@/utils/dialog";
+import { permissionHint } from "@/utils/voice";
+import { listenWithRetry } from "@/utils/event-listen";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
 import HealthPanel from "./HealthPanel.vue";
@@ -54,6 +56,8 @@ import {
   Bell,
   Terminal as TerminalIcon,
   Palette,
+  Mic,
+  Download,
 } from "lucide-vue-next";
 
 type SettingsTabId =
@@ -666,6 +670,154 @@ const surfaceQuietEnd = ref(getSettings().surfaceQuietEnd ?? "");
 /** 自定义引擎的试听文本（引擎不看系统示例句，自己给一句） */
 const surfaceTtsPreviewText = ref("");
 const surfaceTestResult = ref("");
+
+// ── 语音输入（耳朵）──
+//
+// 与「语音播报」相反的方向：这里是**听**。两条硬约束决定了这里的默认值：
+// 1. `voiceEnabled` 默认关 —— 常驻录音是隐私红线，必须用户显式开；
+// 2. `voiceAutoSend` 默认关 —— 自动提交是唯一会「替你发消息」的路径，也必须显式开。
+const voiceEnabled = ref(!!getSettings().voiceEnabled);
+const voiceAutoSend = ref(!!getSettings().voiceAutoSend);
+const voiceSilenceMs = ref<number>(getSettings().voiceSilenceMs ?? 800);
+const voiceSessionWindowMs = ref<number>(getSettings().voiceSessionWindowMs ?? 10_000);
+const voiceShortcut = ref(getSettings().globalShortcutVoice || "CommandOrControl+Shift+V");
+const voiceShortcutMsg = ref("");
+function saveVoice() {
+  updateSettings({
+    voiceEnabled: voiceEnabled.value,
+    voiceAutoSend: voiceAutoSend.value,
+    voiceSilenceMs: voiceSilenceMs.value,
+    voiceSessionWindowMs: voiceSessionWindowMs.value,
+    globalShortcutVoice: voiceShortcut.value.trim() || "CommandOrControl+Shift+V",
+  });
+  // 快捷键注册只在 Rust 侧：开启语音 / 改键后立刻生效（关掉时注销，不占键位）
+  void flushSettings()
+    .then(() =>
+      invoke("apply_voice_shortcut", {
+        enabled: voiceEnabled.value,
+        shortcut: voiceShortcut.value.trim() || null,
+      }),
+    )
+    .then(() => {
+      voiceShortcutMsg.value = voiceEnabled.value
+        ? `已注册：${voiceShortcut.value.trim() || "CommandOrControl+Shift+V"}（按住说话，连续对话中按下 = 全停）`
+        : "语音输入已关闭，快捷键已注销";
+    })
+    .catch((e) => {
+      voiceShortcutMsg.value = String(e);
+    });
+}
+
+interface VoiceModelsStatus {
+  asr: boolean;
+  vad: boolean;
+  punct: boolean;
+  dir: string;
+}
+interface VoiceStatusPayload {
+  phase: string;
+  permission: string;
+  device: string;
+  models: VoiceModelsStatus;
+  last_error: string;
+  asr_loaded: boolean;
+}
+interface VoiceModelProgress {
+  id: string;
+  phase: string;
+  received: number;
+  total: number;
+  message: string;
+}
+
+const voiceStatus = ref<VoiceStatusPayload | null>(null);
+const voicePrepareMsg = ref("");
+const voicePreparing = ref(false);
+const voiceProgress = ref<VoiceModelProgress | null>(null);
+const voiceReady = computed(() => !!voiceStatus.value?.models.asr);
+const voicePermission = computed(() => voiceStatus.value?.permission ?? "unknown");
+const voicePermissionNote = computed(() => permissionHint(voicePermission.value));
+const voiceModelsDir = computed(() => voiceStatus.value?.models.dir ?? "");
+const voiceProgressPct = computed(() => {
+  const p = voiceProgress.value;
+  if (!p || !p.total) return 0;
+  return Math.min(100, Math.round((p.received / p.total) * 100));
+});
+const voiceProgressText = computed(() => {
+  const p = voiceProgress.value;
+  if (!p) return "";
+  if (p.phase === "download") {
+    const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+    return `下载 ${p.id}：${mb(p.received)} / ${mb(p.total)} MB（${voiceProgressPct.value}%）`;
+  }
+  return `${p.id}：${p.message || p.phase}`;
+});
+
+let unlistenVoiceModel: (() => void) | null = null;
+async function refreshVoiceStatus() {
+  try {
+    voiceStatus.value = await invoke<VoiceStatusPayload>("voice_status");
+  } catch (e) {
+    console.warn("[voice] 读取状态失败:", e);
+  }
+}
+async function prepareVoiceModels(force = false) {
+  if (voicePreparing.value) return;
+  voicePreparing.value = true;
+  voicePrepareMsg.value = force ? "重新下载模型…" : "准备模型…";
+  voiceProgress.value = null;
+  try {
+    // Rust 侧是后台任务（下载几百 MB 不能阻塞 IPC），所以这里轮询状态 + 听进度事件
+    voicePrepareMsg.value = await invoke<string>("voice_models_prepare", { force });
+    const deadline = Date.now() + 20 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 900));
+      await refreshVoiceStatus();
+      if (voiceReady.value) {
+        voicePrepareMsg.value = "模型已就绪，可以开始语音输入了";
+        break;
+      }
+      const err = voiceStatus.value?.last_error;
+      if (err) {
+        voicePrepareMsg.value = err;
+        break;
+      }
+    }
+    if (!voiceReady.value && voicePrepareMsg.value !== voiceStatus.value?.last_error) {
+      voicePrepareMsg.value = "等待模型就绪超时（网络很慢？可重新点「下载模型」续传）";
+    }
+  } catch (e) {
+    voicePrepareMsg.value = `模型准备失败：${String(e)}`;
+  } finally {
+    voicePreparing.value = false;
+    voiceProgress.value = null;
+  }
+}
+async function openVoiceModelsDir() {
+  try {
+    const dir = await invoke<string>("voice_open_models_dir");
+    voicePrepareMsg.value = `已打开模型目录：${dir}`;
+  } catch (e) {
+    voicePrepareMsg.value = `打开目录失败：${String(e)}`;
+  }
+}
+async function openMicPrivacySettings() {
+  try {
+    await invoke("voice_open_settings");
+  } catch (e) {
+    void notify(`打开系统设置失败：${String(e)}`, "warning");
+  }
+}
+onMounted(async () => {
+  unlistenVoiceModel = await listenWithRetry<VoiceModelProgress>("voice://model", (e) => {
+    if (e.payload) voiceProgress.value = e.payload;
+  });
+  await refreshVoiceStatus();
+});
+onUnmounted(() => {
+  unlistenVoiceModel?.();
+  unlistenVoiceModel = null;
+});
 
 // ── 音色列表：**由系统提供**（不同机器装的语音包不同，写死必然过时）──
 //
@@ -1774,6 +1926,147 @@ async function handleDelete() {
               </div>
               <p v-if="voicePreviewMsg" class="form-hint">{{ voicePreviewMsg }}</p>
               <p v-if="voicesError" class="form-hint notif-warn">{{ voicesError }}</p>
+            </div>
+
+            <h3 style="margin-top: 26px"><Mic :size="17" /> 语音输入（耳朵）</h3>
+            <p class="local-desc">
+              按住输入框旁的麦克风说话，识别结果**进草稿、不自动发送**（可改、可撤销）。
+              音频与识别全在本机（SenseVoice 离线模型），麦克风只在「聆听」时打开，
+              空闲与朗读期间一律关闭 —— 可以 `lsof` 或系统指示点验证。
+            </p>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="voiceEnabled" type="checkbox" @change="saveVoice" />
+                <span>启用语音输入（默认关；不开启时输入框旁不会出现麦克风）</span>
+              </label>
+            </div>
+
+            <div v-if="voiceEnabled" class="form-group">
+              <label>识别模型</label>
+              <span class="form-hint">
+                {{
+                  voiceReady
+                    ? "✅ 已就绪（SenseVoice + 标点模型）"
+                    : "❌ 未就绪 —— 首次使用需要下载约 220MB（模型不进安装包）"
+                }}
+                <template v-if="voiceModelsDir">
+                  <br />目录：<code>{{ voiceModelsDir }}</code>
+                </template>
+              </span>
+              <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap">
+                <button
+                  class="settings-reset-btn"
+                  :disabled="voicePreparing"
+                  @click="prepareVoiceModels(false)"
+                >
+                  <Download :size="13" />
+                  {{ voicePreparing ? "准备中…" : voiceReady ? "检查 / 补齐模型" : "下载模型" }}
+                </button>
+                <button
+                  class="settings-reset-btn"
+                  :disabled="voicePreparing"
+                  @click="prepareVoiceModels(true)"
+                >
+                  重新下载（覆盖）
+                </button>
+                <button class="settings-reset-btn" @click="openVoiceModelsDir">打开模型目录</button>
+              </div>
+              <span v-if="voiceProgress" class="form-hint">{{ voiceProgressText }}</span>
+              <span v-else-if="voicePreparing" class="form-hint">{{ voicePrepareMsg }}</span>
+              <span v-else-if="voicePrepareMsg" class="form-hint">{{ voicePrepareMsg }}</span>
+              <span class="form-hint">
+                也可以手动放置：把
+                <code>sherpa-onnx-sense-voice-*-int8.tar.bz2</code> 解包到上面的目录， 识别模型放进
+                <code>sense-voice/</code>、标点模型放进 <code>punct/</code>。
+              </span>
+            </div>
+
+            <div v-if="voiceEnabled" class="form-group">
+              <label>全局快捷键（按住说话 / 一键全停）</label>
+              <div style="display: flex; gap: 8px; align-items: center">
+                <input
+                  v-model="voiceShortcut"
+                  placeholder="CommandOrControl+Shift+V"
+                  @change="saveVoice"
+                />
+                <button
+                  class="settings-reset-btn"
+                  @click="
+                    voiceShortcut = 'CommandOrControl+Shift+V';
+                    saveVoice();
+                  "
+                >
+                  恢复默认
+                </button>
+              </div>
+              <span class="form-hint">
+                应用在后台也能用：**按住**开始聆听、松手转写；连续对话进行中按下 = 全停 （停播报 +
+                丢弃本轮 + 关麦）。窗口在前台时 Esc 也是全停。
+                <template v-if="voiceShortcutMsg"><br />{{ voiceShortcutMsg }}</template>
+              </span>
+            </div>
+
+            <div v-if="voiceEnabled" class="form-group">
+              <label>麦克风权限</label>
+              <span class="form-hint">
+                {{ voicePermission === "authorized" ? "✅ 已允许" : `❌ ${voicePermission}` }}
+              </span>
+              <p v-if="voicePermissionNote" class="form-hint">{{ voicePermissionNote }}</p>
+              <button
+                class="settings-reset-btn"
+                style="margin-top: 8px"
+                @click="openMicPrivacySettings"
+              >
+                打开系统「麦克风」设置
+              </button>
+            </div>
+
+            <div v-if="voiceEnabled" class="form-group">
+              <label>说完判定（静音 {{ voiceSilenceMs }} ms）</label>
+              <input
+                v-model.number="voiceSilenceMs"
+                type="range"
+                min="400"
+                max="1500"
+                step="50"
+                @change="saveVoice"
+              />
+              <span class="form-hint">
+                只影响连续对话：静音超过这个时长就算「说完了」。太短会把换气当断句，
+                太长像卡住；800ms 是实测最平衡的值。
+              </span>
+              <label style="margin-top: 16px">
+                会话窗口（{{ Math.round(voiceSessionWindowMs / 1000) }} 秒）
+              </label>
+              <input
+                v-model.number="voiceSessionWindowMs"
+                type="range"
+                min="5000"
+                max="30000"
+                step="1000"
+                @change="saveVoice"
+              />
+              <span class="form-hint">
+                连续对话里，念完之后的这么久内还可以直接说话（不用再按键）；超时自动收麦。
+              </span>
+            </div>
+
+            <div v-if="voiceEnabled" class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="voiceAutoSend" type="checkbox" @change="saveVoice" />
+                <span>连续对话时自动发送识别结果（默认关）</span>
+              </label>
+              <span class="form-hint">
+                这是整个应用**唯一会自动提交消息**的路径：开启后「连续对话」模式说得清楚就直接发出，
+                不再停在草稿里。其余情况（按住说话）一律只进草稿。语音不绕过任何护栏：
+                预算、回合上限、危险命令审批、静默开关照旧生效。
+              </span>
             </div>
 
             <div class="form-group">

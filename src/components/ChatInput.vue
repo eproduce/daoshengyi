@@ -6,13 +6,15 @@ import { useChatStore } from "@/stores/chat";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
-import { Settings, Folder, Clock } from "lucide-vue-next";
+import { Settings, Folder, Clock, Mic, AudioLines } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
 import { notify } from "@/utils/dialog";
 import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
 import { MODES } from "@/data/modes-catalog";
 import { PERSONAS } from "@/data/personas-catalog";
-import { getSettings, updateSettings } from "@/api/appSettings";
+import { getSettings, updateSettings, settingsRevision } from "@/api/appSettings";
+import { useVoiceInput } from "@/composables/useVoiceInput";
+import { appendTranscript } from "@/utils/voice";
 import {
   normalizeWorkspace,
   workspaceLabel,
@@ -195,7 +197,7 @@ function applyPreset(p: PermissionPreset) {
   approvalMode.value = w.approvalMode;
 }
 
-defineProps<{ disabled: boolean; placeholder?: string }>();
+const props = defineProps<{ disabled: boolean; placeholder?: string }>();
 
 function handleSend() {
   const text = inputText.value.trim();
@@ -656,11 +658,15 @@ onMounted(async () => {
   nextTick(() => textareaRef.value?.focus());
   document.addEventListener("click", onDocClick);
   window.addEventListener("resize", onWindowResize);
+  window.addEventListener("keydown", onVoiceEscape);
+  await voice.init();
   await setupNativeDragDrop();
 });
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("keydown", onVoiceEscape);
+  void voice.dispose();
   unlistenDrag?.();
 });
 
@@ -694,6 +700,79 @@ function fmtCtx(n: number) {
 }
 
 const effortLabels: Record<string, string> = { low: "低", high: "高", max: "最大" };
+
+// ── 语音输入（耳朵）──
+//
+// 为什么麦克风按钮默认不出现：设置里 `voiceEnabled` 默认关。常驻的麦克风图标会让人
+// 怀疑在偷听；「不录音」这件事必须**可见地**成立（idle 时 Rust 侧已关设备）。
+// 打开方式：设置 → 通知与呈现 → 语音输入。
+// 为什么包一层 computed：设置的缓存对象本身不是响应式的，`settingsRevision` 才是信号。
+// 把它和快照放进同一个 computed，开关一变（设置页刚点完）按钮立刻出现/消失。
+const voiceSettings = computed(() => ({
+  revision: settingsRevision.value,
+  settings: getSettings(),
+}));
+const voiceEnabled = computed(() => !!voiceSettings.value.settings.voiceEnabled);
+const voiceAutoSend = computed(() => !!voiceSettings.value.settings.voiceAutoSend);
+const voice = useVoiceInput({
+  onFinal: (text, mode) => onVoiceFinal(text, mode),
+  onError: (message) => void notify(message, "warning"),
+});
+// 模板只解包 setup 顶层的 ref，`voice.listening` 这种嵌套属性不会 —— 所以摊平
+const {
+  listening: voiceListening,
+  transcribing: voiceTranscribing,
+  ttsSpeaking: voiceTtsSpeaking,
+  continuous: voiceContinuous,
+  active: voiceActive,
+  bars: voiceBars,
+  phaseText: voicePhaseText,
+} = voice;
+const voiceTitle = computed(() => {
+  if (voiceContinuous.value) return "连续对话进行中 —— 点击全停（停播报 + 丢弃本轮 + 关麦）";
+  if (voiceTranscribing.value) return `${voicePhaseText.value}…`;
+  if (voiceListening.value) return "正在聆听 —— 松开转写（Esc 取消）";
+  if (voiceTtsSpeaking.value) return "正在播放语音 —— 按住说话会先静音再开麦";
+  return "按住说话（转写进草稿，不自动发送）";
+});
+
+/** 转写结果落地：进草稿 → （仅连续对话 + 用户显式开启时才）自动提交 */
+function onVoiceFinal(text: string, mode: string) {
+  inputText.value = appendTranscript(inputText.value, text);
+  nextTick(() => {
+    autoResize();
+    textareaRef.value?.focus();
+  });
+  if (mode === "continuous" && voiceAutoSend.value && canSend() && !props.disabled) {
+    handleSend();
+  }
+}
+
+let micPressed = false;
+async function onMicDown() {
+  if (voiceContinuous.value) {
+    await voice.stopAll();
+    return;
+  }
+  micPressed = true;
+  await voice.holdStart();
+}
+async function onMicUp() {
+  if (!micPressed) return;
+  micPressed = false;
+  await voice.holdEnd();
+}
+function onMicLeave() {
+  if (micPressed) void onMicUp();
+}
+
+/** Esc = 一键全停（应用在前台时的热键；全局快捷键见设置里的语音项） */
+function onVoiceEscape(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (voiceActive.value || voiceTtsSpeaking.value || voiceContinuous.value) {
+    void voice.stopAll();
+  }
+}
 </script>
 
 <template>
@@ -795,6 +874,35 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
           <span class="ci-slash-desc">{{ c.desc }}</span>
         </div>
       </div>
+      <!-- 语音输入（按住说话）：波形来自真实 RMS 事件，不是假动画 -->
+      <button
+        v-if="voiceEnabled"
+        class="ci-mic"
+        :class="{
+          'ci-mic--on': voiceListening,
+          'ci-mic--busy': voiceTranscribing,
+          'ci-mic--tts': voiceTtsSpeaking,
+          'ci-mic--continuous': voiceContinuous,
+        }"
+        :title="voiceTitle"
+        @mousedown.prevent="onMicDown"
+        @mouseup.prevent="onMicUp"
+        @mouseleave="onMicLeave"
+      >
+        <Mic :size="15" />
+      </button>
+      <span
+        v-if="voiceListening || voiceTranscribing"
+        class="ci-level"
+        :class="{ 'ci-level--busy': voiceTranscribing }"
+        :title="voicePhaseText"
+      >
+        <i
+          v-for="(h, i) in voiceBars"
+          :key="i"
+          :style="{ height: `${Math.max(8, Math.round(h * 100))}%` }"
+        />
+      </span>
       <!-- 上下文用量指示（估算已用/模型总量），位于停止/发送按钮左侧 -->
       <span
         v-if="chatStore.activeConversation"
@@ -1133,6 +1241,21 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
             />
           </svg>
           <span>附件</span>
+        </button>
+        <!-- 连续语音对话（免按键）：念完自动回到聆听；再点 = 全停 -->
+        <button
+          v-if="voiceEnabled"
+          class="ci-pill"
+          :class="{ active: voiceContinuous }"
+          :title="
+            voiceContinuous
+              ? '连续对话中：说完自动识别（不自动发送）、念完自动回到聆听；静音超时自动收麦。点击全停'
+              : '开始连续语音对话（一次开启，多轮问答不用再按键）'
+          "
+          @click="voice.toggleContinuous()"
+        >
+          <AudioLines :size="13" />
+          <span>{{ voiceContinuous ? "连续对话中" : "连续对话" }}</span>
         </button>
         <input
           ref="attachInputRef"
@@ -1522,6 +1645,101 @@ const effortLabels: Record<string, string> = { low: "低", high: "高", max: "�
 }
 .ci-stop:active {
   transform: scale(0.94);
+}
+
+/* ── 语音输入（耳朵）──
+   麦克风按钮只在设置开启后出现；聆听时红点 + 真实电平柱（数据来自 `voice://level`）。 */
+.ci-mic {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+.ci-mic:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 正在聆听：红色 + 呼吸圈（用户必须一眼看出「麦克风是开的」） */
+.ci-mic--on {
+  color: #fff;
+  background: var(--danger-color);
+  border-color: var(--danger-color);
+  animation: ciMicPulse 1.6s ease-in-out infinite;
+}
+.ci-mic--busy {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+  background: transparent;
+  animation: none;
+}
+/* TTS 正在出声：半双工，按住会先静音再开麦 —— 用低饱和提示，不做成「可用」的样子 */
+.ci-mic--tts {
+  color: var(--text-secondary);
+  border-style: dashed;
+}
+.ci-mic--continuous {
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+}
+@keyframes ciMicPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+.ci-level {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 20px;
+  padding: 0 2px;
+}
+.ci-level i {
+  display: block;
+  width: 3px;
+  min-height: 2px;
+  border-radius: 2px;
+  background: var(--danger-color);
+  transition: height 0.08s linear;
+}
+.ci-level--busy i {
+  background: var(--accent-color);
+  animation: ciLevelDots 1s ease-in-out infinite;
+}
+.ci-level--busy i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.ci-level--busy i:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.ci-level--busy i:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.ci-level--busy i:nth-child(5) {
+  animation-delay: 0.48s;
+}
+@keyframes ciLevelDots {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* 上下文用量指示（发送/停止按钮左侧） */

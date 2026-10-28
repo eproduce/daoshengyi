@@ -17,7 +17,8 @@
 //! [`execute`] —— 否则「验过的」就不是「会跑的那份」。
 
 use serde::Deserialize;
-use tauri::Manager;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use tauri::{Emitter, Manager};
 
 /// 语音文本上限。前端已截断，这里是最后一道门 —— `say` 念 200 字要 40 秒以上，
 /// 一个失控的长文本会把语音队列堵住。
@@ -26,6 +27,12 @@ pub const MAX_SPEECH_CHARS: usize = 200;
 const SAY_TIMEOUT_SECS: u64 = 30;
 /// 演示开关：推一份固定的展示 IR，用来**不调模型**地验完整条呈现链路，验收/回归时用
 pub const ENV_DEMO: &str = "DAOSHENGYI_HUD_DEMO";
+
+/// 正在出声的子进程 PID（0 = 没有）。只服务于「一键全停」——
+/// 连续对话里用户按热键必须**立刻**静音，不能等它把这句念完。
+static SPEECH_PID: AtomicI32 = AtomicI32::new(0);
+/// 用户已按停：后续步骤（合成完再播放）不得再开始出声。
+static SPEECH_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// 协议登记的**全部出口名**（与前端 `SURFACE_CAPABILITIES` 一致，由契约测试钉住）。
 ///
@@ -738,6 +745,53 @@ pub async fn speak(
     text: &str,
     opts: &ExecuteOptions,
 ) -> Result<Spoken, String> {
+    // 每次播报重置取消位：上一次的「停」不该影响下一次
+    SPEECH_CANCELLED.store(false, Ordering::SeqCst);
+    let _ = app.emit(
+        crate::voice::EVENT_SPEAKING,
+        serde_json::json!({ "stage": "start" }),
+    );
+    let result = speak_inner(app, text, opts).await;
+    let _ = app.emit(
+        crate::voice::EVENT_SPEAKING,
+        serde_json::json!({ "stage": "end", "ok": result.is_ok() }),
+    );
+    result
+}
+
+fn speech_cancelled() -> bool {
+    SPEECH_CANCELLED.load(Ordering::SeqCst)
+}
+
+/// 一键全停：停掉正在念的那句（前端再配合停流式输出与浮层）。
+/// 返回 `true` 表示确实有一个播报进程被终止。
+///
+/// 独立成普通函数是因为**全局语音快捷键在 Rust 侧**处理：按下热键时要先静音，
+/// 不该再绕一圈 IPC 去调命令。
+pub fn stop_speech_now() -> bool {
+    SPEECH_CANCELLED.store(true, Ordering::SeqCst);
+    let pid = SPEECH_PID.swap(0, Ordering::SeqCst);
+    if pid > 0 {
+        // SIGTERM 而非 SIGKILL：让 say 自己收尾（否则可能留下半句音频缓冲）
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+#[tauri::command]
+pub fn surface_stop_speech() -> bool {
+    stop_speech_now()
+}
+
+async fn speak_inner(
+    app: &tauri::AppHandle,
+    text: &str,
+    opts: &ExecuteOptions,
+) -> Result<Spoken, String> {
     let db = app.state::<crate::db::Database>();
     let home = home_dir();
     let template = opts
@@ -764,9 +818,19 @@ pub async fn speak(
             natural.clone()
         };
         let argv = say_argv(&say_text, opts.voice.as_deref(), Some(opts.rate));
-        let out =
-            crate::run_wrapped_argv(&db, &home, "say", argv, SAY_TIMEOUT_SECS, "surface_speech")
-                .await?;
+        let out = crate::run_wrapped_argv_tracked(
+            &db,
+            &home,
+            "say",
+            argv,
+            SAY_TIMEOUT_SECS,
+            "surface_speech",
+            Some(&SPEECH_PID),
+        )
+        .await?;
+        if speech_cancelled() {
+            return Err("已停止播报".to_string());
+        }
         if out.exit_code != 0 {
             return Err(format!(
                 "say 退出码 {}（{}）",
@@ -815,16 +879,23 @@ pub async fn speak(
     if !std::path::Path::new(&out_path).exists() {
         return Err(format!("自定义引擎没有产出音频文件：{out_path}"));
     }
+    if speech_cancelled() {
+        return Err("已停止播报".to_string());
+    }
     let seconds = afinfo_seconds(&db, &home, &out_path).await;
-    let play = crate::run_wrapped_argv(
+    let play = crate::run_wrapped_argv_tracked(
         &db,
         &home,
         "afplay",
         vec![out_path.clone()],
         PLAY_TIMEOUT_SECS,
         "surface_speech_play",
+        Some(&SPEECH_PID),
     )
     .await?;
+    if speech_cancelled() {
+        return Err("已停止播报".to_string());
+    }
     if play.exit_code != 0 {
         return Err(format!(
             "afplay 退出码 {}（{}）",

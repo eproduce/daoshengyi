@@ -5,7 +5,12 @@
 // 内部 debounce 合并写回 Rust，避免两个 store 各自写盘互相覆盖。
 
 import { invoke } from "@tauri-apps/api/core";
+import { ref } from "vue";
 import type { ApiProfile } from "@/types";
+
+/** 设置变更计数。缓存对象本身不是响应式的，组件要订阅设置变化（如语音开关决定是否显示麦克风按钮）
+ *  就 watch 这个 ref —— 比把整个缓存塞进 reactive 更小、也不会让 Rust 端的结构体耦合到 Vue。 */
+export const settingsRevision = ref(0);
 
 /** 命令沙箱的网络策略（与 Rust `sandbox::NetworkPolicy` 对齐） */
 export type SandboxNetwork = "allow" | "loopback-only" | "deny";
@@ -114,6 +119,8 @@ export interface AppSettingsPayload {
   globalShortcutToggle: string;
   /// 全局快捷键：新建对话（默认 CommandOrControl+Shift+K）
   globalShortcutNewChat: string;
+  /// 全局快捷键：按住说话 / 一键全停（默认 CommandOrControl+Shift+V；仅语音开启时注册）
+  globalShortcutVoice: string;
   /// Puppeteer 浏览器内核选择：auto（默认浏览器优先）/ chrome / edge / chromium / brave
   browserEngine: string;
   /// O2 SSRF 防护：是否拒绝抓取内网/保留地址（fetch_page 等出站请求前校验，默认 true）
@@ -151,6 +158,14 @@ export interface AppSettingsPayload {
   /// 环境层：勿扰时段（`"22:30"`；两个都填才生效，支持跨零点）
   surfaceQuietStart: string;
   surfaceQuietEnd: string;
+  /// 语音输入（耳朵）总开关（默认**关**）：常驻录音是隐私红线，必须显式开启
+  voiceEnabled: boolean;
+  /// 连续语音对话：转写后**自动提交**（默认关）——全项目唯一会自动发消息的路径
+  voiceAutoSend: boolean;
+  /// 说完判定：VAD 静音毫秒（400~1500，默认 800）
+  voiceSilenceMs: number;
+  /// 会话窗口：说完/念完后多久没说话就收麦（5000~30000，默认 10000）
+  voiceSessionWindowMs: number;
 }
 
 let cache: AppSettingsPayload = {
@@ -180,6 +195,7 @@ let cache: AppSettingsPayload = {
   imConfig: {},
   globalShortcutToggle: "CommandOrControl+Shift+Space",
   globalShortcutNewChat: "CommandOrControl+Shift+K",
+  globalShortcutVoice: "CommandOrControl+Shift+V",
   browserEngine: "auto",
   ssrfDenyPrivate: true,
   ssrfAllowLoopback: true,
@@ -198,6 +214,10 @@ let cache: AppSettingsPayload = {
   surfaceTtsReference: "",
   surfaceQuietStart: "",
   surfaceQuietEnd: "",
+  voiceEnabled: false,
+  voiceAutoSend: false,
+  voiceSilenceMs: 800,
+  voiceSessionWindowMs: 10_000,
 };
 let loaded = false;
 let loading: Promise<AppSettingsPayload> | null = null;
@@ -220,6 +240,7 @@ export function initSettings(): Promise<AppSettingsPayload> {
       }
     }
     loaded = true;
+    settingsRevision.value++;
     return cache;
   })();
   return loading;
@@ -235,6 +256,7 @@ export async function reloadSettings(): Promise<AppSettingsPayload> {
   if (!isTauri()) return cache;
   try {
     cache = await invoke<AppSettingsPayload>("load_app_settings");
+    settingsRevision.value++;
   } catch (e) {
     console.warn("[道生一] 重新加载设置失败:", e);
   }
@@ -262,6 +284,7 @@ function persistNow(): Promise<void> {
 /// 语音开关）会踩空——命令读到的是旧值。这种场景请先 `await flushSettings()`。
 export function updateSettings(patch: Partial<AppSettingsPayload>) {
   cache = { ...cache, ...patch };
+  settingsRevision.value++;
   if (!isTauri()) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
