@@ -741,6 +741,12 @@ impl Session {
             return;
         }
         let (rms, peak) = rms_and_peak(&mono16);
+        // VAD 必须真的被喂音频（真实 bug：早先漏了这句 —— 连续模式下 VAD 永远「没听到人说话」，
+        // 既不产出一轮识别，又只会在会话窗口到期后关麦；表现就是「打开连续对话不说话、
+        // 然后它自己关掉」）。
+        if let Some(vad) = &self.vad {
+            vad.accept_waveform(&mono16);
+        }
         self.samples.extend_from_slice(&mono16);
         // 最多留 60s，避免长会话把内存吃掉（识别只需要当前话轮）
         let cap = SAMPLE_RATE as usize * 60;
@@ -1320,6 +1326,53 @@ mod tests {
             pos = body + size + (size & 1);
         }
         Err("wav 里没有 data 块".to_string())
+    }
+
+    /// 真机 VAD 自检（默认忽略）：证明 **连续模式的判停真的会切出语音段**。
+    /// 这条是回归测试 —— 曾经漏了 `accept_waveform`，VAD 永远收不到音频，
+    /// 连续对话既不转写也不会自己结束（只会在窗口到期后关麦）。
+    #[test]
+    #[ignore = "需要模型目录（DAOSHENGYI_VOICE_MODEL_DIR）与一段 16kHz wav"]
+    fn live_vad_segments_speech_from_wav() {
+        let dir = PathBuf::from(
+            std::env::var("DAOSHENGYI_VOICE_MODEL_DIR")
+                .expect("请设置 DAOSHENGYI_VOICE_MODEL_DIR 指向模型目录"),
+        );
+        let wav = std::env::var("DAOSHENGYI_VOICE_WAV")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dir.join("zh.wav"));
+        let samples = read_wav_i16_mono(&wav).expect("读取测试 wav");
+        let config = sherpa_onnx::VadModelConfig {
+            silero_vad: sherpa_onnx::SileroVadModelConfig {
+                model: Some(dir.join(VAD_MODEL).to_string_lossy().to_string()),
+                threshold: 0.5,
+                min_silence_duration: 0.8,
+                min_speech_duration: 0.25,
+                window_size: 512,
+                max_speech_duration: 30.0,
+            },
+            sample_rate: SAMPLE_RATE,
+            num_threads: 1,
+            provider: Some("cpu".to_string()),
+            debug: false,
+            ..Default::default()
+        };
+        let vad = sherpa_onnx::VoiceActivityDetector::create(&config, 30.0).expect("VAD 加载");
+        // 生产路径是「设备回调给多少喂多少」，这里也按 512 窗喂
+        for chunk in samples.chunks(512) {
+            vad.accept_waveform(chunk);
+        }
+        vad.flush();
+        let mut segments = 0;
+        let mut seconds = 0.0f32;
+        while let Some(seg) = vad.front() {
+            seconds += seg.samples().len() as f32 / SAMPLE_RATE as f32;
+            segments += 1;
+            vad.pop();
+        }
+        eprintln!("[live-vad] 切出 {segments} 段，共 {seconds:.2}s");
+        assert!(segments >= 1, "VAD 没切出任何语音段（音频没喂进去？）");
+        assert!(seconds > 1.0, "切出的语音只有 {seconds:.2}s，太短");
     }
 
     /// 真机识别自检（默认忽略：要联网下 220MB 模型）。

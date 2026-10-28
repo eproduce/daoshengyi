@@ -8,11 +8,11 @@ import { invoke } from "@tauri-apps/api/core";
 import SkillManager from "./SkillManager.vue";
 import { Settings, Folder, Clock, Mic, AudioLines } from "lucide-vue-next";
 import { fileTypeIcon } from "@/utils/file-icons";
-import { notify } from "@/utils/dialog";
+import { askConfirm, notify } from "@/utils/dialog";
 import { estimateMessageTokens, modelContextWindowTokens } from "@/utils/tokens";
 import { MODES } from "@/data/modes-catalog";
 import { PERSONAS } from "@/data/personas-catalog";
-import { getSettings, updateSettings, settingsRevision } from "@/api/appSettings";
+import { flushSettings, getSettings, updateSettings, settingsRevision } from "@/api/appSettings";
 import { useVoiceInput } from "@/composables/useVoiceInput";
 import { appendTranscript } from "@/utils/voice";
 import {
@@ -796,6 +796,37 @@ function onVoiceEscape(e: KeyboardEvent) {
   }
 }
 
+/**
+ * 点「连续对话」：这是**免按键多轮**，它的前提是「识别完自动发送」——
+ * 否则识别结果只进草稿，草稿没人发，麦克风又在说完后关闭，用户只会看到
+ * 「按钮自己关了、也没转写」。所以这里把前提讲清楚并当场打开（用户点这个按钮
+ * 本身就是明确意愿；但自动发送是隐私敏感的，仍要用一次确认把它说破）。
+ */
+async function onContinuousClick() {
+  if (voiceContinuous.value) {
+    await voice.stopAll();
+    return;
+  }
+  if (!voiceAutoSend.value) {
+    const ok = await askConfirm(
+      "连续对话 = 说完自动识别并发送、念完自动回到聆听，多轮不用按键。\n\n" +
+        "它需要开启「连续对话时自动发送识别结果」——这是全应用唯一会自动替你发消息的路径。\n\n" +
+        "现在开启并开始连续对话？",
+      "info",
+    );
+    if (!ok) {
+      void notify(
+        "连续对话需要「自动发送」才能多轮进行；只想手动确认就按住麦克风说话（结果进草稿）。",
+        "info",
+      );
+      return;
+    }
+    updateSettings({ voiceAutoSend: true });
+    await flushSettings();
+  }
+  await voice.startContinuous();
+}
+
 // 打开语音时预热识别模型：首次加载要 1~2 秒，若不预热，这 1 秒会从「按住」的时间里扣掉
 // （表现就是按下后很久才进聆听，松手时音频不足 0.3 秒）。
 watch(
@@ -1302,7 +1333,7 @@ watch(
                 ? '开始连续语音对话：说完自动识别并发送，念完自动回到聆听（设置里可关「自动发送」）'
                 : '开始连续语音对话（识别结果进草稿、不自动发送；设置 → 人机交互里可开自动发送）'
           "
-          @click="voice.toggleContinuous()"
+          @click="onContinuousClick"
         >
           <AudioLines :size="13" />
           <span>{{ voiceContinuous ? "连续对话中" : "连续对话" }}</span>

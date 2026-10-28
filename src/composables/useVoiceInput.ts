@@ -161,8 +161,12 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     );
     off(
       await listenWithRetry<{ reason: string; dropped: number }>("voice://idle", (e) => {
-        // 会话窗口到期：Rust 已关麦（这是预期行为，不是错误）
-        if (e.payload?.reason === "silence") continuous.value = false;
+        // 会话窗口到期：Rust 已关麦（这是预期行为，不是错误）。
+        // 但用户看不到「为什么它自己关了」—— 给一行提示，比静默消失好。
+        if (e.payload?.reason === "silence") {
+          continuous.value = false;
+          flashHint("静音超时，已自动关麦；点「连续对话」可重新开始");
+        }
       }),
     );
     off(
@@ -273,13 +277,18 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     }
   }
 
+  /** 开始连续对话（免按键多轮）。调用方负责先确认「自动发送」是否已开。 */
+  async function startContinuous() {
+    await start("continuous");
+  }
+
   /** 连续对话（免按键）：再点一次 = 全停 */
   async function toggleContinuous() {
     if (continuous.value || active.value) {
       await stopAll();
       return;
     }
-    await start("continuous");
+    await startContinuous();
   }
 
   async function stopSpeech() {
@@ -357,6 +366,7 @@ export function useVoiceInput(opts: UseVoiceInputOptions = {}) {
     holdStart,
     holdEnd,
     toggleContinuous,
+    startContinuous,
     resumeAfterTurn,
     stopSpeech,
     stopAll,
