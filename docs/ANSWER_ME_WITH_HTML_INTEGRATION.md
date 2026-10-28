@@ -374,3 +374,44 @@ series: 占比 = 38, 27, 21, 14
 - 真机 e2e（`cargo test --lib answer_html::tests::real_render -- --ignored`）：
   同一份草稿里同时含 flow + ECharts 图表 + 数学 + ER 图 → 渲染成功，
   产物含 `data-dsy-chart`、`<math>`、`am-er`、`dsy-motion-js`，且 `offline_warnings` 为空。
+
+---
+
+## 12. 2026-10-28（续）：图表「只用一种类型」+ 升级当天踩到的 CSP 坑
+
+### 12.1 「一页只有一个图表类型」的根因在提示词
+
+`answer_html` 的图表能力本身是全的（bar/line/area/pie/donut/scatter/radar/gauge/heatmap/funnel +
+任意 ECharts option JSON），但**工具描述只列了型别，没教怎么选**，模型于是保守地全用 `bar`。
+三处改动：
+
+1. **选型表**（写进工具描述）：趋势→line/area；分类对比→bar；占比→pie/donut；
+   **规模+增速→combo**；相关性→scatter；多维评分→radar；完成度→gauge；二维矩阵→heatmap；转化→funnel。
+2. **新增 `type: combo`**：第一个 series 画柱（量），其余画线（率/趋势）—— 报告里最常见的
+   「规模 + 增速」同图，此前只能手写 option JSON。
+3. **硬性多样性要求**：一页 ≥2 张图时，除非数据形状相同，**不许全用同一种**；
+   报告类草稿要求「每个有数据的板块至少 1 张图，全页至少 2 种类型」。
+
+### 12.2 升级到 0.5.10 当天踩到的坑：严格 CSP 把注入脚本拦掉了
+
+0.5.10 的页面自带一条 CSP：
+
+```
+default-src 'none'; script-src 'sha256-TPSD…' 'sha256-lPqF…'; style-src 'unsafe-inline'; …
+```
+
+`script-src` 只放行**它自己**两个内联脚本的 sha256。我们注入的 ECharts 初始化脚本与动效脚本
+**不在名单里** → 浏览器直接拦掉（控制台：
+`Executing inline script violates the following Content Security Policy directive`）。
+表现非常有欺骗性：**页面不报错、只是图表空白、动效没有** —— 差点被当成「升级没效果」。
+
+- 修复：`patch_csp_for_inline_scripts` 扫描页面里所有不带 `src` 的 `<script>`，
+  算 `sha256 → base64` 追加进 `script-src`（保留原有哈希、去重、幂等）。
+  不用 `'unsafe-inline'` —— 那等于把上游「页面自带 CSP」的设计废掉。
+- 旧版本（0.4.15）产物没有 CSP，该函数对无 CSP 的页面原样返回，向后兼容。
+
+### 12.3 视觉验收（Chromium 实测）
+
+`render_chart_gallery_with_mixed_types`（ignored）在**一页**里放 line / donut / combo / heatmap / gauge
+五张图，产物 1.18 MB（ECharts 内联），逐屏截图确认：折线双系列、环形图带百分比标注、
+热力图带视觉映射条、仪表盘带指针与数值、CSP 无告警 —— 混排成立。

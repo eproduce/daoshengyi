@@ -413,6 +413,9 @@ pub enum ChartKind {
     Gauge,
     Heatmap,
     Funnel,
+    /// 柱 + 线混排：第一个系列画柱（量），其余画线（率/趋势）——
+    /// 行业报告里「规模 + 增速」这种最常见的组合，此前只能手写 option JSON。
+    Combo,
     /// 直接写 ECharts option JSON（覆盖所有高级图表）
     Custom,
 }
@@ -463,10 +466,11 @@ fn parse_kind(value: &str) -> Result<ChartKind, String> {
         "gauge" => ChartKind::Gauge,
         "heatmap" => ChartKind::Heatmap,
         "funnel" => ChartKind::Funnel,
+        "combo" | "mixed" => ChartKind::Combo,
         "option" => ChartKind::Custom,
         other => {
             return Err(format!(
-                "type 不支持 `{other}`（可用 bar/line/area/pie/donut/scatter/radar/gauge/heatmap/funnel/option）"
+                "type 不支持 `{other}`（可用 bar/line/area/pie/donut/scatter/radar/gauge/heatmap/funnel/combo/option）"
             ))
         }
     })
@@ -642,6 +646,7 @@ fn kind_name(kind: &ChartKind) -> &'static str {
         ChartKind::Gauge => "gauge",
         ChartKind::Heatmap => "heatmap",
         ChartKind::Funnel => "funnel",
+        ChartKind::Combo => "combo",
         ChartKind::Custom => "custom",
     }
 }
@@ -695,11 +700,16 @@ pub fn build_echarts_option(spec: &ChartSpec) -> Result<serde_json::Value, Strin
     );
 
     match spec.kind {
-        ChartKind::Bar | ChartKind::Line | ChartKind::Area | ChartKind::Scatter => {
+        ChartKind::Bar
+        | ChartKind::Line
+        | ChartKind::Area
+        | ChartKind::Scatter
+        | ChartKind::Combo => {
             let series: Vec<serde_json::Value> = spec
                 .series
                 .iter()
-                .map(|s| {
+                .enumerate()
+                .map(|(idx, s)| {
                     let mut v = serde_json::json!({
                         "name": s.name,
                         "data": s.values,
@@ -707,10 +717,18 @@ pub fn build_echarts_option(spec: &ChartSpec) -> Result<serde_json::Value, Strin
                     let ty = match spec.kind {
                         ChartKind::Bar => "bar",
                         ChartKind::Line | ChartKind::Area => "line",
+                        // 组合图：第一个系列 = 柱（量），其余 = 线（率/趋势）
+                        ChartKind::Combo => {
+                            if idx == 0 {
+                                "bar"
+                            } else {
+                                "line"
+                            }
+                        }
                         _ => "scatter",
                     };
                     v["type"] = serde_json::json!(ty);
-                    if spec.kind == ChartKind::Bar {
+                    if spec.kind == ChartKind::Bar || (spec.kind == ChartKind::Combo && idx == 0) {
                         v["barMaxWidth"] = serde_json::json!(30);
                         v["itemStyle"] = serde_json::json!({ "borderRadius": [3, 3, 0, 0] });
                         v["label"] = serde_json::json!({
@@ -720,6 +738,11 @@ pub fn build_echarts_option(spec: &ChartSpec) -> Result<serde_json::Value, Strin
                         if spec.stack {
                             v["stack"] = serde_json::json!("total");
                         }
+                    }
+                    if spec.kind == ChartKind::Combo && idx > 0 {
+                        v["smooth"] = serde_json::json!(true);
+                        v["symbolSize"] = serde_json::json!(6);
+                        v["lineStyle"] = serde_json::json!({ "width": 2.2 });
                     }
                     if spec.kind == ChartKind::Line || spec.kind == ChartKind::Area {
                         v["smooth"] = serde_json::json!(true);
@@ -1227,7 +1250,7 @@ fn nice_step(range: f64, target: usize) -> f64 {
 pub fn render_chart_svg(spec: &ChartSpec) -> Result<String, String> {
     if !matches!(
         spec.kind,
-        ChartKind::Bar | ChartKind::Line | ChartKind::Area
+        ChartKind::Bar | ChartKind::Line | ChartKind::Area | ChartKind::Combo
     ) {
         return Err(format!(
             "ECharts 运行时缺失，无法渲染 {:?} 图表（仅 bar/line/area 可回退 SVG）",
@@ -1546,6 +1569,118 @@ window.addEventListener('beforeprint',function(){ps.forEach(function(p){p.classL
     out
 }
 
+/// 给页面的 CSP 补上我们注入的内联脚本的哈希。
+///
+/// 0.5.10 起渲染器会写一条严格的 `<meta http-equiv="Content-Security-Policy">`：
+/// `script-src` 里只有**它自己**两个脚本的 sha256。我们注入的 ECharts 初始化脚本与动效脚本
+/// 不在名单里 → 被浏览器直接拦掉（图表画不出来、动效全失效，控制台一串
+/// "Executing inline script violates the following Content Security Policy directive"）。
+/// 实测（2026-10-28，Chromium）：升级当天就踩到，且**页面看起来"只是有点素"**，很难联想到 CSP。
+///
+/// 做法：扫描页面里所有**不带 `src`** 的内联 `<script>`，算 sha256 → base64，
+/// 追加进 `script-src`（已有的保留，重复的去掉）。开放 `'unsafe-inline'` 会把上游的
+/// 「页面自带 CSP」设计废掉，所以走哈希。
+pub fn patch_csp_for_inline_scripts(html: &str) -> String {
+    let Some(meta_start) = find_ci(html, "http-equiv=\"content-security-policy\"") else {
+        return html.to_string();
+    };
+    // 定位所在的 <meta ...> 标签
+    let tag_start = html[..meta_start].rfind("<meta").unwrap_or(0);
+    let Some(tag_end_rel) = html[meta_start..].find('>') else {
+        return html.to_string();
+    };
+    let tag_end = meta_start + tag_end_rel;
+    let tag = &html[tag_start..=tag_end];
+    let Some(content_at) = find_ci(tag, "content=\"") else {
+        return html.to_string();
+    };
+    let content_start = tag_start + content_at + "content=\"".len();
+    let Some(content_len) = html[content_start..tag_end].find('"') else {
+        return html.to_string();
+    };
+    let mut csp = html[content_start..content_start + content_len].to_string();
+
+    // 收集内联脚本哈希
+    let mut hashes: Vec<String> = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel) = find_ci(&html[cursor..], "<script") {
+        let start = cursor + rel;
+        let Some(open_end_rel) = html[start..].find('>') else {
+            break;
+        };
+        let open_end = start + open_end_rel;
+        let open_tag = &html[start..=open_end];
+        let body_start = open_end + 1;
+        let Some(close_rel) = find_ci(&html[body_start..], "</script>") else {
+            break;
+        };
+        let body = &html[body_start..body_start + close_rel];
+        cursor = body_start + close_rel + "</script>".len();
+        if find_ci(open_tag, "src=").is_some() || body.trim().is_empty() {
+            continue;
+        }
+        hashes.push(sha256_csp_hash(body));
+    }
+    if hashes.is_empty() {
+        return html.to_string();
+    }
+
+    // 合并进 script-src（没有这条指令就补一条）
+    let existing: Vec<String> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|d| d.to_ascii_lowercase().starts_with("script-src"))
+        .flat_map(|d| {
+            d.split_whitespace()
+                .skip(1)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut merged: Vec<String> = Vec::new();
+    for h in existing.iter().chain(hashes.iter()) {
+        if !merged.iter().any(|m| m == h) {
+            merged.push(h.clone());
+        }
+    }
+    let directive = format!("script-src {}", merged.join(" "));
+    let mut parts: Vec<String> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .collect();
+    match parts
+        .iter()
+        .position(|d| d.to_ascii_lowercase().starts_with("script-src"))
+    {
+        Some(i) => parts[i] = directive,
+        None => parts.push(directive),
+    }
+    csp = parts.join("; ");
+
+    let mut out = String::with_capacity(html.len() + csp.len());
+    out.push_str(&html[..content_start]);
+    out.push_str(&csp);
+    out.push_str(&html[content_start + content_len..]);
+    out
+}
+
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.to_ascii_lowercase().find(needle)
+}
+
+/// CSP 的哈希写法：`'sha256-<base64(sha256(body))>'`
+fn sha256_csp_hash(body: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(body.as_bytes());
+    let digest = h.finalize();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(digest);
+    format!("'sha256-{b64}'")
+}
+
 /// 把预编译 Tailwind CSS 内联进 `<head>`（工具类带 `!important`，可覆盖页面样式）。
 pub fn inject_tailwind(html: &str, css: &str) -> String {
     let block = format!("<style id=\"dsy-tailwind\">{css}</style>\n");
@@ -1806,11 +1941,12 @@ pub async fn answer_html(
         }
     }
 
-    // 轻量动效层：阅读进度条 + 面板入场 + hover（无 GSAP，约 3 KB）
+    // 轻量动效层 + CSP 放行：注入的内联脚本必须补进页面自带的 CSP 白名单，
+    // 否则浏览器会直接拦掉（图表空白、动效失效，页面「看起来只是有点素」）。
     {
         let html = std::fs::read_to_string(&out).unwrap_or_default();
         if !html.is_empty() {
-            let patched = inject_motion(&html);
+            let patched = patch_csp_for_inline_scripts(&inject_motion(&html));
             if let Err(e) = std::fs::write(&out, patched) {
                 eprintln!("[answer_html] 注入动效层失败（不影响页面本身）：{e}");
             }
@@ -2102,7 +2238,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **图表画廊（真机，默认忽略）**：一页里放齐多种图表类型，用来看「混排」是否真的成立。
+    /// 跑法：`cargo test --lib answer_html::tests::render_chart_gallery -- --ignored --nocapture`
+    /// 产物路径会打印出来，可直接在浏览器打开肉眼验收。
+    #[tokio::test]
+    #[ignore]
+    async fn render_chart_gallery_with_mixed_types() {
+        let cli = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(CLI_FILE);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let Some((node, _)) = locate_node(&home).await else {
+            eprintln!("跳过：本机没有 Node ≥ {MIN_NODE_MAJOR}");
+            return;
+        };
+        let md = "结论：同一页里应当按数据形状混用图表。\n\n\
+            ## 趋势\n```chart\ntype: line\ntitle: 月度出货\nunit: 万台\nlabels: 7月, 8月, 9月, 10月\nseries: 国内 = 42, 45, 48, 51\nseries: 出口 = 18, 21, 23, 27\n```\n\n\
+            ## 构成\n```chart\ntype: donut\ntitle: 收入构成\nunit: %\nlabels: 云, 广告, 硬件\nseries: 占比 = 46, 32, 22\n```\n\n\
+            ## 双指标\n```chart\ntype: combo\ntitle: 规模与增速\nlabels: Q1, Q2, Q3, Q4\nseries: 营收 = 12, 15, 18, 22\nseries: 增速 = 8.2, 9.1, 7.4, 6.8\n```\n\n\
+            ## 矩阵\n```chart\ntype: heatmap\ntitle: 时段热度\nlabels: 早, 午, 晚\nseries: 工作日 = 3, 8, 6\nseries: 周末 = 7, 9, 9\n```\n\n\
+            ## 单指标\n```chart\ntype: gauge\ntitle: 目标完成度\nunit: %\nseries: 完成 = 78\n```\n";
+        let (expanded, specs) = expand_chart_blocks(md, true).unwrap();
+        assert_eq!(specs.len(), 5, "应有 5 张图");
+        let kinds: Vec<&str> = specs.iter().map(|s| kind_name(&s.kind)).collect();
+        assert_eq!(kinds, vec!["line", "donut", "combo", "heatmap", "gauge"]);
+
+        let dir = std::env::temp_dir().join(format!("ds-am-gallery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let draft = dir.join("g.md");
+        let out = dir.join("gallery.html");
+        std::fs::write(&draft, build_draft(&expanded, Some("图表画廊"), Some("zh"))).unwrap();
+        let args = render_args_with(&cli, &draft, &out, Some("doc"), None);
+        let envs = vec![(
+            "AM_HOME".to_string(),
+            dir.join("am-home").to_string_lossy().to_string(),
+        )];
+        let (stdout, stderr, code) = run_render(
+            &node,
+            &args,
+            None,
+            &cfg("off", None),
+            RENDER_TIMEOUT_SECS,
+            &envs,
+        )
+        .await
+        .expect("渲染进程应能启动");
+        assert_eq!(code, 0, "渲染应成功：{stdout}\n{stderr}");
+        let html = std::fs::read_to_string(&out).unwrap();
+        let echarts = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join(ECHARTS_FILE),
+        )
+        .unwrap();
+        let patched = patch_csp_for_inline_scripts(&inject_motion(
+            &inject_echarts(&html, &specs, &echarts).unwrap(),
+        ));
+        assert!(
+            patched.contains("script-src 'sha256-") && patched.matches("'sha256-").count() > 2,
+            "CSP 应放行注入的脚本（否则图表/动效被浏览器拦掉）"
+        );
+        let gallery = std::env::temp_dir().join("dsy-chart-gallery.html");
+        std::fs::write(&gallery, &patched).unwrap();
+        eprintln!(
+            "[gallery] 产物：{}（{} 字节）",
+            gallery.display(),
+            patched.len()
+        );
+        assert_eq!(
+            patched.matches("data-dsy-chart=\"").count(),
+            5,
+            "5 张图各一个挂载点"
+        );
+        assert!(patched.contains("dsy-motion-js"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // --- 图表块（```chart → ECharts / 回退 SVG） ---
+
+    #[test]
+    fn combo_chart_draws_first_series_as_bar_rest_as_line() {
+        let spec = parse_chart_block(
+            "type: combo\ntitle: 规模与增速\nlabels: Q1, Q2, Q3\nseries: 营收 = 12, 15, 18\nseries: 增速 = 8.2, 9.1, 7.4",
+        )
+        .unwrap();
+        let o = build_echarts_option(&spec).unwrap();
+        let series = o["series"].as_array().expect("series 数组");
+        assert_eq!(series[0]["type"], "bar", "第一个系列应是柱（量）");
+        assert_eq!(series[1]["type"], "line", "其余系列应是线（率）");
+        assert_eq!(o["__dsy"]["kind"], "combo");
+    }
 
     #[test]
     fn chart_block_parses_bar_with_multiple_series() {
@@ -2149,6 +2374,10 @@ mod tests {
 
     #[test]
     fn chart_block_supports_all_documented_types() {
+        assert!(
+            parse_chart_block("type: combo\nlabels: A,B\nseries: a = 1, 2\nseries: b = 3, 4")
+                .is_ok()
+        );
         for (raw, want) in [
             ("bar", ChartKind::Bar),
             ("line", ChartKind::Line),
@@ -2320,6 +2549,23 @@ mod tests {
         assert!(specs.is_empty(), "表格语法不应进 ECharts 通道");
         assert!(out.contains("```chart bar unit=ms"), "围栏行要原样保留");
         assert!(out.contains("| p50 | p95"), "内容要原样保留");
+    }
+
+    #[test]
+    fn csp_gets_hashes_for_injected_inline_scripts() {
+        let html = "<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'sha256-AAA='; style-src 'unsafe-inline'\"></head><body><script>console.log(1)</script></body></html>";
+        let out = patch_csp_for_inline_scripts(html);
+        assert!(
+            out.contains("script-src 'sha256-AAA=' 'sha256-"),
+            "应保留原有哈希并追加"
+        );
+        assert_eq!(out.matches("'sha256-").count(), 2, "一个内联脚本一个哈希");
+        // 幂等：再跑一次不重复追加
+        let twice = patch_csp_for_inline_scripts(&out);
+        assert_eq!(twice.matches("'sha256-").count(), 2);
+        // 没有 CSP 的页面原样返回（老版本渲染器的产物）
+        let plain = "<html><body><script>x</script></body></html>";
+        assert_eq!(patch_csp_for_inline_scripts(plain), plain);
     }
 
     #[test]

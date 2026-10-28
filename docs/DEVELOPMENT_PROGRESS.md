@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-10-28（answer_html：图表多样性 + 0.5.10 的 CSP 陷阱）
+
+用户反馈「图表不够多元化，一页只用了一种」。查证：能力是全的，**提示词没教怎么选**。
+
+- **选型表进工具描述**：趋势→line/area、分类对比→bar、占比→pie/donut、**规模+增速→combo**、
+  相关性→scatter、多维评分→radar、完成度→gauge、矩阵→heatmap、转化→funnel；
+  并加**硬性多样性要求**（一页 ≥2 张图时除形状相同外不许全用同一种；报告类每板块至少 1 图）。
+- **新增 `type: combo`**：第一个 series 画柱（量）、其余画线（率/趋势）—— 此前只能手写 option JSON。
+- **踩到 0.5.10 的 CSP 陷阱**：页面自带 `script-src 'sha256-…'`（只放行它自己的两个脚本），
+  我们注入的 ECharts 初始化与动效脚本**被浏览器直接拦掉**（不报错、只是图表空白 + 无动效，
+  极具欺骗性）。新增 `patch_csp_for_inline_scripts`：给所有内联 `<script>` 算 sha256 并追加进
+  `script-src`（保留原哈希、去重、幂等；不用 `'unsafe-inline'`）。
+- **视觉验收**：一页混排 line / donut / combo / heatmap / gauge（`render_chart_gallery_with_mixed_types`，
+  ignored），Chromium 逐屏截图确认五种图都正确渲染、CSP 无告警。
+- 单测 32 项通过（新增 combo、CSP 哈希、动效注入等）。
+
+---
+
 ## 2026-10-28（answer_html：升级 0.4.15 → 0.5.10 + 轻量动效层）
 
 用户对比后问「我们的产物为什么没人家的动态效果好，细节也没有」。查证：**确实漏了 12 个版本**。
