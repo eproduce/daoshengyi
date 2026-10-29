@@ -396,8 +396,10 @@ export function parseDisplayIr(
 
 /** 构造收尾呈现的输入（宿主在任务结束时给出） */
 export interface FinishSummaryInput {
-  /** 纯文本结论（已去 markdown/代码块） */
+  /** 纯文本结论（已去 markdown/代码块）——浮层正文用（会截到 220 字） */
   text: string;
+  /** 播报用全文（不截断）：短则整段念完，长则由 `finishSpeech` 退回顾述 */
+  speechSource?: string;
   /** 本轮用到的工具数：0 = 纯问答 */
   toolCount: number;
   /** 计划进度（有则用于标题与副文） */
@@ -422,7 +424,8 @@ export function buildFinishIr(input: FinishSummaryInput): DisplayIr {
   const isTask = input.toolCount > 0;
   const text = str(input.text, 220) ?? "";
   const withProgress = hasPlan ? `${done}/${input.planTotal} 步 · ${text}` : text;
-  const speech = cleanForSpeech(firstSentence(text) ?? text);
+  // 播报用**全文**（浮层只放摘要）：短回复整段念完，长回复退回顾述。
+  const speech = finishSpeech(input.speechSource ?? text);
 
   return {
     v: PRESENT_PROTOCOL_VERSION,
@@ -464,7 +467,8 @@ export function shouldSpeak(ir: DisplayIr): { speak: boolean; text: string; reas
   if (!SPEAKABLE_KINDS.includes(ir.kind)) {
     return { speak: false, text, reason: `${ir.kind} 属于「看」的内容（表格/代码/图表），不念` };
   }
-  if (text.length > SPEAK_MAX_CHARS) {
+  const cap = ir.source === "host" ? FINISH_SPEECH_MAX : SPEAK_MAX_CHARS;
+  if (text.length > cap) {
     return {
       speak: false,
       text,
@@ -552,11 +556,13 @@ function flowLines(ir: DisplayIr): string[] | undefined {
 /** 语音要念的文本：优先 `speech`，其次标题，最后正文首句；并清掉念不出来的东西 */
 export function speechTextOf(ir: DisplayIr): string {
   const candidate = ir.speech ?? ir.title ?? firstSentence(ir.body.text ?? "") ?? "";
-  return cleanForSpeech(candidate);
+  // 宿主收尾的 IR 是「结果概述」，允许更长（见 FINISH_SPEECH_MAX）；模型给的展示单元仍按 120 字
+  const limit = ir.source === "host" ? FINISH_SPEECH_MAX : IR_LIMITS.speech;
+  return cleanForSpeech(candidate, limit);
 }
 
 /** 去掉 markdown 记号/换行——`say` 会把它们念出来（`**` 念成"星号星号"） */
-export function cleanForSpeech(text: string): string {
+export function cleanForSpeech(text: string, limit: number = IR_LIMITS.speech): string {
   return text
     .replace(/```[\s\S]*?```/g, "（代码略）")
     .replace(/`([^`]*)`/g, "$1")
@@ -564,7 +570,55 @@ export function cleanForSpeech(text: string): string {
     .replace(/[*_~#>]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, IR_LIMITS.speech);
+    .slice(0, limit);
+}
+
+/**
+ * 宿主收尾播报的上限。
+ *
+ * 用户的诉求很具体（2026-10-29）：「一个回复只播一次；要么是简略但相对完整的概述，
+ * 要么就把对话框里的结果念完」。所以宿主这条路径**不受 80 字限制**——600 字以内整段读完
+ * （中文约 2 分钟，是「想听结果」的人能接受的量级），超过才退回概述。
+ */
+export const FINISH_SPEECH_MAX = 600;
+
+/**
+ * 决定收尾播报念什么：
+ * - `raw` 清洗后 ≤ FINISH_SPEECH_MAX → **整段念完**（用户要的「完整读完结果」）；
+ * - 超长 → 取前 2~3 句（≤140 字）作概述，并明说「详细内容在对话里」。
+ * 两条都保证以句末标点收尾（否则 `say` 会念成半句话）。
+ */
+export function finishSpeech(raw: string, maxChars: number = FINISH_SPEECH_MAX): string {
+  const full = cleanForSpeech(raw, Number.MAX_SAFE_INTEGER);
+  if (!full) return "";
+  const endPunct = /[。！？.!?…]$/;
+  if (full.length <= maxChars) return endPunct.test(full) ? full : `${full}。`;
+
+  const summaryLimit = 140;
+  const sentences = full.match(/[^。！？.!?\n]+[。！？.!?]?/g) ?? [full];
+  let out = "";
+  for (const s of sentences) {
+    if (out.length + s.length > summaryLimit) break;
+    out += s;
+  }
+  if (!out) out = full.slice(0, summaryLimit);
+  if (!endPunct.test(out)) out += "。";
+  return `${out}详细内容在对话里。`;
+}
+
+/**
+ * 同一回复**只播一次**：把「过程中 present 的播报」从计划里摘掉，
+ * 让位给回合结束的统一概述（`presentTurnFinished`）。
+ * 只在用户开着「自动收尾呈现」时摘——关掉它的人仍按原来的即时播报走。
+ */
+export function deferSpeechToTurnEnd<T extends SurfacePlan>(plan: T, autoFinish: boolean): T {
+  if (!autoFinish || !plan.surfaces.includes("speech")) return plan;
+  return {
+    ...plan,
+    surfaces: plan.surfaces.filter((s) => s !== "speech"),
+    speechText: "",
+    reasons: [...plan.reasons, "播报延后到回合结束统一念一次（避免同一回复念两遍）"],
+  };
 }
 
 function firstSentence(text: string): string | undefined {
@@ -673,7 +727,10 @@ export function planSurfaces(irRaw: DisplayIr, ctx: SurfaceContext): SurfacePlan
     );
   }
 
-  if (ir.priority === "secondary") {
+  // 宿主在回合结束时自己生成的「结果概述」：secondary 只表示**不冒浮层**，
+  // 不该把语音一起静音 —— 用户开着语音就是为了听结果（2026-10-29 用户反馈）。
+  const hostFinish = ir.source === "host";
+  if (ir.priority === "secondary" && !hostFinish) {
     reasons.push("priority=secondary：只进会话，不打扰");
     return done();
   }
@@ -691,7 +748,9 @@ export function planSurfaces(irRaw: DisplayIr, ctx: SurfaceContext): SurfacePlan
     return done();
   }
 
-  if (ctx.hudEnabled) {
+  if (ir.priority === "secondary") {
+    reasons.push("priority=secondary：不冒浮层（语音仍可播报结果）");
+  } else if (ctx.hudEnabled) {
     surfaces.push("hud");
     reasons.push("已推送到桌面浮层");
   } else {

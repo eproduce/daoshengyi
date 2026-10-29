@@ -82,7 +82,12 @@ import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
 import { initSettings, updateSettings, getSettings, reloadSettings } from "@/api/appSettings";
-import { parseDisplayIr, planSurfaces, buildFinishIr } from "@/utils/display-ir";
+import {
+  parseDisplayIr,
+  planSurfaces,
+  buildFinishIr,
+  deferSpeechToTurnEnd,
+} from "@/utils/display-ir";
 import { discoverProjectInstructions } from "@/utils/agents-md";
 import {
   executeWorkflow,
@@ -888,7 +893,7 @@ function getMcpToolsPrompt(mode?: ReturnType<typeof getModeById>): string {
     '\n- **code_nav** (app): **语义级代码导航**（走本机语言服务器 LSP）：跳定义 / 找引用 / 找实现 / 悬停类型 / 文件符号 / 工作区符号 / **编译诊断** / 重命名**预览**。参数 {"action": "servers | definition | references | implementation | hover | symbols | workspace_symbols | diagnostics | rename", "root": "项目根目录绝对路径", "path": "文件绝对路径", "line": 行号(1 起算), "character": 列号(1 起算、按字符数), "query": "workspace_symbols 关键词", "new_name": "rename 新名字", "server": "可选指定服务器 id", "wait_ms": "可选等待毫秒"}。**使用时机**：要「准」的答案（定义在哪 / 谁在引用 / 有没有编译错 / 这行类型是什么）时用它；code_search 给的是「相关片段」，两者互补。' +
     '\n- **worktree** (app): **并行隔离**——给子代理/并行任务各建一个 git worktree（同一仓库的独立工作副本，落在 `<repo>/.daoshengyi/worktrees/<name>`、分支 `dsy/<name>`、已自动本地忽略）。参数 {"action": "create | list | remove", "repo": "仓库目录绝对路径", "name": "create 副本名", "base_ref": "create 基于哪个 ref", "path": "remove 要删的副本路径", "force": "remove 有未提交改动时需 true"}。**使用时机**：多个子代理要同时改代码时先各自 create 副本，改完用 git diff 对比再合并。' +
     '\n- **github_pr** (app): **GitHub PR 工作流**（封装本机 gh CLI）：pr_list / pr_view / pr_create / pr_comment / pr_diff / pr_checks / auth_status。参数 {"action": "...", "cwd": "仓库目录", "number": 可选 PR 号, "title": "pr_create 标题", "body": "正文", "base": "目标分支", "limit": "pr_list 条数"}。**不提供 merge / close**（不可逆操作交给用户决定）。' +
-    '\n- **present** (app): **把结果直接呈现在用户桌面上**（环境层，默认出口）：桌面浮层卡片 / 需要时语音念一句 / 产物页。参数 {"kind": "card|metric|chart|kv|timeline|table|callout|code|page", "title": "一句话结论", "body": {...}}。**调用即呈现**（不必填 priority；只有“只想留痕、不想打扰”时才填 secondary）。**语音不用你操心**：宿主会自己挑值得念的念（一句话结论/关键数字），表格/代码/图表只在浮层上看；想指定就写 speech。**正文仍要写在回复里**（浮层会淡出，会话才是留痕）。' +
+    '\n- **present** (app): **把结果直接呈现在用户桌面上**（环境层，默认出口）：桌面浮层卡片 / 需要时语音念一句 / 产物页。参数 {"kind": "card|metric|chart|kv|timeline|table|callout|code|page", "title": "一句话结论", "body": {...}}。**调用即呈现**（不必填 priority；只有“只想留痕、不想打扰”时才填 secondary）。**语音不用你操心**：宿主在**回合结束**统一播报一次（整段念完或概述），过程中不要反复 present 期望它念（一句话结论/关键数字），表格/代码/图表只在浮层上看；想指定就写 speech。**正文仍要写在回复里**（浮层会淡出，会话才是留痕）。' +
     "\n- **code_roots** (app): 列出已索引的项目目录。参数 {}。**使用时机**：不确定哪些项目已建语义索引时调用。" +
     '\n- **kb_create** (app): **创建命名知识库**（在对话中建立一个知识库名，空库注册后即可被 kb_list 列出）。参数 {"kb_name": "知识库名，如「个人」"}。**使用时机**：用户要求「创建/新建一个叫 XX 的知识库」时，先调用本工具建库。' +
     '\n- **kb_add** (app): 向知识库**录入一段文本/文档内容**（自动分块 + 关键词索引；本地嵌入模型可用时叠加语义向量）。参数 {"kb_name": "知识库名", "source": "来源/文档名（如 笔记.md）", "text": "要录入的完整文本内容"}。**使用时机**：用户给你一段文字/笔记要求「存进 XX 知识库」时调用；内容在文件里可先 read_file 读取再录入。' +
@@ -952,7 +957,7 @@ function getMcpToolsPrompt(mode?: ReturnType<typeof getModeById>): string {
     "\n\n## 桌面呈现（present）使用要点\n" +
     "- **这是“让用户一眼看到结果”的默认出口**：想呈现就调它，**不必填 priority**；只有“只想留个痕、别打扰”时才填 `secondary`。\n" +
     "- **正文照常写在回复里，present 只是额外出口**：浮层会淡出、语音念完就过，**会话才是留痕**。不要用它替代回答，也不要把已说清的内容再复述一遍（标题 + 一句话就够）。\n" +
-    "- **语音不用你操心**：用户开了语音总闸时，**宿主自己判断哪条值得念**（一句话结论/关键数字会念；表格、代码、图表、长文只在浮层上看，念出来没意义）。想指定念什么就写 `speech`。\n" +
+    "- **语音不用你操心**：用户开了语音总闸时，宿主**每个回复只播一次**（短回复整段读完，长回复念概述，其余在对话里看）。过程中调 present 只上浮层、不出声 —— 不要为了「让它念」而反复 present。想指定浮层卡片念什么可写 `speech`（收尾那条仍以宿主概述为准）。\n" +
     "- **只放一眼能看完的东西**：标题 + 一句话（或一个关键数字/一张小图）。整段报告请用 answer_html（kind=page 只负责提示走产物页）。\n" +
     "- **工具结果会告诉你实际出口与原因**（为什么没弹、为什么没出声）——如与预期不符，按结果里的原因处理，不要盲目重试。\n" +
     "\n\n## HTML 讲解页（answer_html）使用要点\n" +
@@ -1539,6 +1544,8 @@ function presentTurnFinished(content: string, toolCount: number): void {
     const plan = useChatStore().taskPlan;
     const ir = buildFinishIr({
       text: plain,
+      // 播报用**全文**：短回复整段读完，长回复由 finishSpeech 退回顾述
+      speechSource: content,
       toolCount,
       planDone: plan ? plan.steps.filter((s) => s.status === "done").length : undefined,
       planTotal: plan ? plan.steps.length : undefined,
@@ -4072,8 +4079,11 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       };
       const { ir, issues } = parseDisplayIr({ kind, title, priority, life, speech, body });
       const plan = planSurfaces(ir, surfaceContext());
+      // 同一个回复**只播一次**：开了「收尾自动呈现」时，过程中的 present 只上浮层不发声，
+      // 播报让给回合结束的那一次统一概述（否则用户会听到两段，实测反馈「同一回复播两遍」）。
+      const spoken = deferSpeechToTurnEnd(plan, getSettings().surfaceAutoFinish !== false);
       const summary = await invoke<string>("surface_present", {
-        payload: { ir: plan.ir, plan },
+        payload: { ir: spoken.ir, plan: spoken },
       });
       // 解析时的降级原因要如实带回：模型才知道自己哪一项没被接受
       return issues.length ? `${summary}\n（解析提示：${issues.join("；")}）` : summary;

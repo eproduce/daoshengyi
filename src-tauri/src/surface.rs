@@ -20,11 +20,19 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use tauri::{Emitter, Manager};
 
-/// 语音文本上限。前端已截断，这里是最后一道门 —— `say` 念 200 字要 40 秒以上，
-/// 一个失控的长文本会把语音队列堵住。
-pub const MAX_SPEECH_CHARS: usize = 200;
-/// `say` 超时：正常一句话几秒；卡住时不该拖住整轮对话
+/// 语音文本上限（最后一道门）。
+///
+/// 600 字 ≈ 2 分钟语音：这是「把对话框里的结果读完」的量级（2026-10-29 用户明确要的），
+/// 再长就该退回概述（前端 `finishSpeech` 已经这么做了），否则会长期占住语音通道。
+pub const MAX_SPEECH_CHARS: usize = 600;
+/// `say` 超时打底：正常一句话几秒；卡住时不该拖住整轮对话
 const SAY_TIMEOUT_SECS: u64 = 30;
+
+/// `say` 的实际超时：打底 30s + 每 4 个字符 1 秒（中文实测约 4.9 字/秒，留足余量）。
+/// 固定 30s 会把 600 字的收尾播报**中途掐断**。
+fn say_timeout_for(text: &str) -> u64 {
+    SAY_TIMEOUT_SECS + (text.chars().count() as u64) / 4
+}
 /// 演示开关：推一份固定的展示 IR，用来**不调模型**地验完整条呈现链路，验收/回归时用
 pub const ENV_DEMO: &str = "DAOSHENGYI_HUD_DEMO";
 
@@ -823,7 +831,7 @@ async fn speak_inner(
             &home,
             "say",
             argv,
-            SAY_TIMEOUT_SECS,
+            say_timeout_for(&say_text),
             "surface_speech",
             Some(&SPEECH_PID),
         )

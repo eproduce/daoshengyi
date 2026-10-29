@@ -25,6 +25,7 @@ import {
   parseDisplayIr,
   parseRefs,
   planSurfaces,
+  deferSpeechToTurnEnd,
   shouldSpeak,
   speechTextOf,
   supportsKind,
@@ -336,10 +337,53 @@ describe("本轮收尾自动呈现：宿主兜底，但必须低打扰", () => {
     expect(ir.body.text!.length).toBeLessThanOrEqual(221);
   });
 
-  it("要念的是首句而不是整段（语音不是念报告）", () => {
+  it("短回复整段念完（用户要的「把对话框里的结果读完」）", () => {
     const ir = buildFinishIr({ text: "三份邮件已回复。其余待办见正文。", toolCount: 2 });
-    expect(ir.speech).toBe("三份邮件已回复。");
-    expect(ir.speech!.length).toBeLessThanOrEqual(IR_LIMITS.speech);
+    expect(ir.speech).toBe("三份邮件已回复。其余待办见正文。");
+  });
+
+  it("超长回复退回概述：≤140 字 + 明确说「详细内容在对话里」", () => {
+    // 必须超过 FINISH_SPEECH_MAX(600) 才走概述
+    const long = `${"甲".repeat(80)}。${"乙".repeat(80)}。${"丙".repeat(700)}。`;
+    const ir = buildFinishIr({ text: long.slice(0, 220), speechSource: long, toolCount: 1 });
+    expect(ir.speech!.length).toBeLessThanOrEqual(160);
+    expect(ir.speech).toContain("详细内容在对话里");
+    expect(ir.speech!.endsWith("。")).toBe(true);
+  });
+
+  it("播报用全文而不是浮层那 220 字摘要", () => {
+    const full = "第一段结论。".repeat(30); // 180 字，超过 220 的字数在 HUD 会被截
+    const ir = buildFinishIr({ text: full.slice(0, 220), speechSource: full, toolCount: 1 });
+    expect(ir.body.text!.length).toBeLessThanOrEqual(221);
+    expect(ir.speech!.length).toBeGreaterThan(100);
+  });
+
+  it("宿主收尾即使 secondary 也要能播报（语音 ≠ 浮层）", () => {
+    const finish = buildFinishIr({ text: "三份邮件已回复。", toolCount: 0 });
+    expect(finish.priority).toBe("secondary"); // 纯问答不冒浮层
+    const plan = planSurfaces(finish, ctx({ speechEnabled: true, hudEnabled: true }));
+    expect(plan.surfaces).toContain("speech");
+    expect(plan.surfaces).not.toContain("hud");
+    // 模型自己的 secondary 展示单元仍然「只进会话」
+    const modelUnit = planSurfaces(
+      ir({ priority: "secondary", title: "x" }),
+      ctx({ speechEnabled: true }),
+    );
+    expect(modelUnit.surfaces).not.toContain("speech");
+  });
+
+  it("同一回复只播一次：过程中 present 的播报让位给收尾概述", () => {
+    const modelPlan = planSurfaces(
+      ir({ title: "关键数字", body: { text: "今天涨了两个点" } }),
+      ctx({ speechEnabled: true }),
+    );
+    expect(modelPlan.surfaces).toContain("speech");
+    const deferred = deferSpeechToTurnEnd(modelPlan, true);
+    expect(deferred.surfaces).not.toContain("speech");
+    expect(deferred.speechText).toBe("");
+    expect(deferred.reasons.join()).toContain("延后到回合结束");
+    // 关掉收尾自动呈现的人保持原样（即时播报）
+    expect(deferSpeechToTurnEnd(modelPlan, false).surfaces).toContain("speech");
   });
 
   it("收尾 IR 在每个出口都能渲染（沿用降级不变量）", () => {
