@@ -121,6 +121,21 @@ describe("renderMarkdownLink / renderLocalFileLink：链接 HTML", () => {
   });
 });
 
+describe("renderMarkdownLink：模型给的 `[标题](file:///…)` 必须变成可点击链接", () => {
+  it("file:// 链接被改造成 .local-file-link，data-path 是纯路径", () => {
+    const html = renderMarkdownLink(
+      "file:///Users/wanghuan/Documents/道生一产物/晚报.html",
+      "晚报",
+    );
+    expect(html).toContain('class="local-file-link"');
+    expect(decodeURIComponent(/data-path="([^"]+)"/.exec(html)?.[1] || "")).toBe(
+      "/Users/wanghuan/Documents/道生一产物/晚报.html",
+    );
+    // href 仍是真实 file://（悬停/复制可用），但点击由 class 拦截走 open_file
+    expect(html).toContain('href="file:///Users/');
+  });
+});
+
 describe("LOCAL_FILE_RE：正文里的裸 file:// 地址也要能链接化", () => {
   it("file:///abs 被识别为本地文件，前缀不计入路径", () => {
     const text = "产物：file:///Users/wanghuan/Documents/道生一产物/晚报.html 请查收";
