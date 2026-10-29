@@ -96,7 +96,7 @@ marked.setOptions({ breaks: true, gfm: true });
 // 不能用 lookbehind —— 旧 Safari 内核不支持，模块加载即 SyntaxError 白屏）。
 // URL（https://... 等外链路径，如 /finance.sina.com.cn/.../x.sh）前导是 / 或 :，
 // 落在 [\w\/:] 内 → 前缀组不匹配 → 不误判为本地文件。URL 由 marked gfm autolink 正常渲染。
-import { LOCAL_FILE_RE } from "@/utils/local-file-re";
+import { LOCAL_FILE_RE, localPathFromHref } from "@/utils/local-file-re";
 import { renderLocalFileLink, renderMarkdownLink } from "@/utils/local-file-link";
 
 function linkifyLocalPaths(s: string): string {
@@ -228,6 +228,29 @@ const streamingText = computed(() =>
 // - 本地文件链接（local-file-link）→ 用系统默认应用打开（如 Excel/Numbers 打开 CSV）
 // - 普通 web 链接（http/https/mailto/tel）→ 在系统默认浏览器打开，
 //   避免 webview 内导航外链导致卡住/白屏（Tauri webview 不应导航外部 URL）
+/// 打开本地文件（存在性先校验，再交给系统默认应用；HTML 产物会进默认浏览器）
+async function openLocalFile(path: string, line?: number) {
+  // 点击时二次校验：文件可能已被清理（临时截图），或路径被模型改写/编造。
+  // 存在才打开，避免触发 open_file 报「退出码非零」这类误导性错误。
+  let exists = false;
+  try {
+    exists = await invoke<boolean>("file_exists", { path });
+  } catch {
+    exists = false;
+  }
+  if (!exists) {
+    await notify(
+      `文件不存在：${path}\n（可能是临时文件已被清理，或路径被改写——请以系统给出的真实保存路径为准）`,
+    );
+    return;
+  }
+  try {
+    await invoke("open_file", { path, ...(line ? { line } : {}) });
+  } catch (err) {
+    await notify(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+  }
+}
+
 async function onContentClick(e: MouseEvent) {
   const link = (e.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null;
   if (!link) return;
@@ -239,25 +262,22 @@ async function onContentClick(e: MouseEvent) {
     const path = decodeURIComponent(link.getAttribute("data-path") || "");
     const line = link.getAttribute("data-line") || "";
     if (!path) return;
-    // 点击时二次校验：文件可能已被清理（临时截图），或路径被模型改写/编造。
-    // 存在才打开，避免触发 open_file 报「退出码非零」这类误导性错误。
-    let exists = false;
-    try {
-      exists = await invoke<boolean>("file_exists", { path });
-    } catch {
-      exists = false;
-    }
-    if (!exists) {
-      await notify(
-        `文件不存在：${path}\n（可能是临时文件已被清理，或路径被改写——请以系统给出的真实保存路径为准）`,
-      );
+    await openLocalFile(path, line ? Number(line) : undefined);
+    return;
+  }
+
+  // file:// 兜底：链接没被改造成 .local-file-link（例如正文里的原始 HTML `<a>`）时，
+  // 也要能用系统默认应用打开，而不是让 webview 去导航（表现为「点了没反应」）。
+  const fileHref = link.getAttribute("href") || "";
+  if (/^file:\/\//i.test(fileHref)) {
+    e.preventDefault();
+    e.stopPropagation();
+    const target = localPathFromHref(fileHref);
+    if (!target) {
+      await notify(`无法识别的本地文件地址：${fileHref}`);
       return;
     }
-    try {
-      await invoke("open_file", { path, ...(line ? { line: Number(line) } : {}) });
-    } catch (err) {
-      await notify(`打开文件失败: ${err instanceof Error ? err.message : String(err)}`, "error");
-    }
+    await openLocalFile(target);
     return;
   }
 

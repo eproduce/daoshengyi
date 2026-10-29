@@ -1429,7 +1429,9 @@ fn fmt_size(b: u64) -> String {
 /// 防止 agent 在回复文本中编造不存在的文件路径，导致点击后打开失败）
 #[tauri::command]
 fn file_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
+    // 支持 `~/…`（模型常写这种）——不展开的话点击会误报「文件不存在」
+    let expanded = expand_user_path(&path).unwrap_or(path);
+    std::path::Path::new(&expanded).exists()
 }
 
 /// 读取本地图片为 data URL（供内置 `view_image` 工具把图片放进模型上下文）。
@@ -1475,6 +1477,8 @@ fn read_image_data_url(path: String) -> Result<String, String> {
 /// 传 line 时优先尝试 VSCode CLI `code --goto path:line` 定位到行（符号跳转），失败回退系统打开。
 #[tauri::command]
 fn open_file(path: String, line: Option<i64>) -> Result<(), String> {
+    // `~` 不会被系统 `open` 展开，先换成绝对路径
+    let path = expand_user_path(&path).unwrap_or(path);
     // 有行号：尝试 VSCode CLI 跳行（code 未安装时 status() 返回 Err → 回退系统打开）
     if let Some(l) = line {
         let goto = format!("{}:{}", path, l);

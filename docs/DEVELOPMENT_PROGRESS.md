@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-10-29（产物 HTML 点不开：模型给的是 `file://` URI）
+
+用户实测「产物 HTML 无法点击打开」。查消息库看到模型实际写的是
+`[行业晚报](file:///Users/…/晚报.html)` —— 而我们的识别只认 `/abs/...`：
+
+- `localPathFromHref` 首行就要求 `raw.startsWith("/")` → `file://` 直接返回 null；
+- 于是 marked 渲染出的 `<a href="file://…">` 没被改造成 `.local-file-link`，
+  点击落到 webview 的「导航」分支（Tauri 里就是**点了没反应**）。
+- 附带：`~/` 路径此前也不认（裸文本会被链接化，但 `file_exists("~/…")` 必然 false →
+  误报「文件不存在」）。
+
+修复（三层，任何一层单独生效都能打开）：
+1. `localPathFromHref` 支持 `file://`（含 `file://localhost`、百分号编码、fragment）与 `~/`；
+2. `LOCAL_FILE_RE` 增加 `file:\/\/` 前缀分支 —— 正文里**裸贴**的 file URI 也能链接化
+   （前缀不计入路径，链接文字仍是文件名）；
+3. `onContentClick` 增加 `file://` 兜底分支（原始 HTML `<a>` 也走 open_file）；
+   同时 Rust 的 `file_exists` / `open_file` 展开 `~/`。
+
+测试：`tests/test-local-file-link.test.ts` 新增 6 条（file:// 各种形态、localhost、
+`file://server/…` 拒绝、裸 file:// 链接化、~/ 保留）。全量 724 → 730 项。
+
+---
+
 ## 2026-10-28（answer_html：图表多样性 + 0.5.10 的 CSP 陷阱）
 
 用户反馈「图表不够多元化，一页只用了一种」。查证：能力是全的，**提示词没教怎么选**。

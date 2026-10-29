@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { localPathFromHref } from "../src/utils/local-file-re";
+import { LOCAL_FILE_RE, localPathFromHref } from "../src/utils/local-file-re";
 import { renderLocalFileLink, renderMarkdownLink } from "../src/utils/local-file-link";
 
 /**
@@ -38,12 +38,28 @@ describe("localPathFromHref：Markdown 链接 href → 本地绝对文件路径"
     expect(localPathFromHref("mailto:a@b.com")).toBeNull();
   });
 
-  it("排除无扩展名 / 未知扩展名 / 非绝对路径 / 空值", () => {
+  it("排除无扩展名 / 未知扩展名 / 相对路径 / 空值", () => {
     expect(localPathFromHref("/tmp/a/b")).toBeNull();
     expect(localPathFromHref("/tmp/a/b.unknownext")).toBeNull();
-    expect(localPathFromHref("~/Documents/a.html")).toBeNull();
     expect(localPathFromHref("")).toBeNull();
     expect(localPathFromHref("a/b.html")).toBeNull();
+  });
+
+  it("`file://` URI 与 `~/` 也算本地文件（2026-10-29 实测：模型把产物写成 file:// 链接）", () => {
+    expect(localPathFromHref("file:///Users/wanghuan/Documents/道生一产物/晚报.html")).toBe(
+      "/Users/wanghuan/Documents/道生一产物/晚报.html",
+    );
+    expect(localPathFromHref("file://localhost/tmp/a.html")).toBe("/tmp/a.html");
+    // 百分号编码的 file://（模型常 encodeURI 后再拼）
+    expect(
+      localPathFromHref("file:///Users/wanghuan/Documents/%E9%81%93%E7%94%9F%E4%B8%80/x.html"),
+    ).toBe("/Users/wanghuan/Documents/道生一/x.html");
+    // file:// + fragment
+    expect(localPathFromHref("file:///tmp/a.html#top")).toBe("/tmp/a.html");
+    // `~/` 路径本身就是本地文件（Rust 侧 file_exists/open_file 会展开 ~）
+    expect(localPathFromHref("~/Documents/a.html")).toBe("~/Documents/a.html");
+    // 远程 file:// 主机不认（只接受 localhost）
+    expect(localPathFromHref("file://server/share/a.html")).toBeNull();
   });
 
   it("带空格或已含其它正文的 href 不算纯路径", () => {
@@ -102,5 +118,24 @@ describe("renderMarkdownLink / renderLocalFileLink：链接 HTML", () => {
     expect(html).toContain('href="#"');
     expect(html).toContain('title="~/Documents/a.html"');
     expect(html).toContain(`data-path="${encodeURIComponent("~/Documents/a.html")}"`);
+  });
+});
+
+describe("LOCAL_FILE_RE：正文里的裸 file:// 地址也要能链接化", () => {
+  it("file:///abs 被识别为本地文件，前缀不计入路径", () => {
+    const text = "产物：file:///Users/wanghuan/Documents/道生一产物/晚报.html 请查收";
+    const m = [...text.matchAll(LOCAL_FILE_RE)];
+    expect(m).toHaveLength(1);
+    expect(m[0][2]).toBe("/Users/wanghuan/Documents/道生一产物/晚报.html");
+    const idx = (m[0].index ?? 0) + (m[0][1] ?? "").length;
+    expect(text.slice(idx, idx + 6)).toBe("/Users");
+  });
+
+  it("普通绝对路径与 ~/ 仍然照旧", () => {
+    // 注意：带 g 的正则用 String.match 只返回整串（没有捕获组），必须用 matchAll
+    const abs = [..."/tmp/a/b.html".matchAll(LOCAL_FILE_RE)];
+    expect(abs[0]?.[2]).toBe("/tmp/a/b.html");
+    const tilde = [..."见 ~/Documents/a.html".matchAll(LOCAL_FILE_RE)];
+    expect(tilde[0]?.[2]).toBe("~/Documents/a.html");
   });
 });
