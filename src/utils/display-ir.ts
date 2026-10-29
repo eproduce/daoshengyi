@@ -613,11 +613,17 @@ export function finishSpeech(raw: string, maxChars: number = FINISH_SPEECH_MAX):
  */
 export function deferSpeechToTurnEnd<T extends SurfacePlan>(plan: T, autoFinish: boolean): T {
   if (!autoFinish || !plan.surfaces.includes("speech")) return plan;
+  return dropSpeech(plan, "播报延后到回合结束统一念一次（避免同一回复念两遍）");
+}
+
+/** 只摘掉语音出口（浮层/留痕不动），并把原因记进 `reasons` 便于排查「为什么没念」 */
+export function dropSpeech<T extends SurfacePlan>(plan: T, reason: string): T {
+  if (!plan.surfaces.includes("speech")) return plan;
   return {
     ...plan,
     surfaces: plan.surfaces.filter((s) => s !== "speech"),
     speechText: "",
-    reasons: [...plan.reasons, "播报延后到回合结束统一念一次（避免同一回复念两遍）"],
+    reasons: [...plan.reasons, reason],
   };
 }
 

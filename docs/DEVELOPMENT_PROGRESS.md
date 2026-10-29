@@ -28,9 +28,13 @@
 - 提示词同步：告诉模型「宿主每回复只播一次，不要为了让它念而反复 present」。
 
 ### 验证
-`tests/test-display-ir.test.ts` 新增 5 条：短回复整段念、长回复退回顾述（≤140 + 「详细内容在对话里」）、
-播报用全文而非浮层 220 字摘要、宿主 secondary 仍可播报而模型 secondary 不播报、`deferSpeechToTurnEnd`
-只摘 speech 不动 hud。全量 732 项通过；`cargo test --lib surface::` 30 项通过。
+`tests/test-display-ir.test.ts` 新增 6 条：短回复整段念、长回复退回顾述（≤140 + 「详细内容在对话里」）、
+播报用全文而非浮层 220 字摘要、宿主 secondary 仍可播报而模型 secondary 不播报、
+`deferSpeechToTurnEnd` / `dropSpeech` 只摘 speech 不动 hud。全量 733 项通过；
+`cargo test --lib surface::` 30 项通过。
+
+**兜底去重（alpha.22）**：`presentTurnFinished` 记住上一段播报（文本 + 时间戳），
+**同一段话 10 秒内只念一次** —— 重试、重复收尾、异常重入都不会再让同一句播两遍（仍保留浮层）。
 
 ---
 

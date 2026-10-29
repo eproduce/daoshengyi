@@ -26,6 +26,7 @@ import {
   parseRefs,
   planSurfaces,
   deferSpeechToTurnEnd,
+  dropSpeech,
   shouldSpeak,
   speechTextOf,
   supportsKind,
@@ -384,6 +385,19 @@ describe("本轮收尾自动呈现：宿主兜底，但必须低打扰", () => {
     expect(deferred.reasons.join()).toContain("延后到回合结束");
     // 关掉收尾自动呈现的人保持原样（即时播报）
     expect(deferSpeechToTurnEnd(modelPlan, false).surfaces).toContain("speech");
+  });
+
+  it("dropSpeech 只摘语音出口，浮层/留痕保持", () => {
+    const plan = planSurfaces(
+      ir({ title: "结论", body: { text: "今天涨了两个点" } }),
+      ctx({ speechEnabled: true, hudEnabled: true }),
+    );
+    expect(plan.surfaces).toEqual(expect.arrayContaining(["session", "hud", "speech"]));
+    const dropped = dropSpeech(plan, "同一段话刚念过");
+    expect(dropped.surfaces).toContain("hud");
+    expect(dropped.surfaces).not.toContain("speech");
+    expect(dropped.speechText).toBe("");
+    expect(dropped.reasons.join()).toContain("同一段话刚念过");
   });
 
   it("收尾 IR 在每个出口都能渲染（沿用降级不变量）", () => {

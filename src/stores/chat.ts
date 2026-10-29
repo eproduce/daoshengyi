@@ -87,6 +87,7 @@ import {
   planSurfaces,
   buildFinishIr,
   deferSpeechToTurnEnd,
+  dropSpeech,
 } from "@/utils/display-ir";
 import { discoverProjectInstructions } from "@/utils/agents-md";
 import {
@@ -1535,6 +1536,10 @@ function notifyTurnFinished(content: string, toolCount: number): void {
 ///
 /// 低打扰：纯问答只进会话（`buildFinishIr` 给 secondary）；其余上浮层。
 /// （不再用「主窗口是否前台」当门禁：“用户盯着屏幕时反而什么都看不到”是错的 —— 浮层的本职就是“一眼看到结果”。）
+/** 同一段话刚念过（重试 / 重复收尾）就不再念：10 秒窗口足够挡住重复，又不影响正常新回复 */
+const SPEECH_DEDUPE_WINDOW_MS = 10_000;
+let lastSpokenSpeech: { text: string; at: number } | null = null;
+
 function presentTurnFinished(content: string, toolCount: number): void {
   try {
     if (stopRequested) return; // 用户主动停止 ≠ 完成，不误报
@@ -1550,7 +1555,20 @@ function presentTurnFinished(content: string, toolCount: number): void {
       planDone: plan ? plan.steps.filter((s) => s.status === "done").length : undefined,
       planTotal: plan ? plan.steps.length : undefined,
     });
-    const surfacePlan = planSurfaces(ir, surfaceContext());
+    let surfacePlan = planSurfaces(ir, surfaceContext());
+    // 兜底去重：同一段话 10 秒内只念一次（防重试/重复收尾把同一句念两遍）
+    const speech = ir.speech ?? "";
+    const now = Date.now();
+    const duplicate =
+      !!speech &&
+      !!lastSpokenSpeech &&
+      lastSpokenSpeech.text === speech &&
+      now - lastSpokenSpeech.at < SPEECH_DEDUPE_WINDOW_MS;
+    if (duplicate) {
+      surfacePlan = dropSpeech(surfacePlan, "同一段话刚念过，跳过重复播报");
+    } else if (speech && surfacePlan.surfaces.includes("speech")) {
+      lastSpokenSpeech = { text: speech, at: now };
+    }
     // 只剩会话一个出口就不必惊动 Rust（省一次 IPC）
     if (surfacePlan.surfaces.length <= 1) return;
     // 发的是**生效后的 IR**（plan.ir 已施加源策略：后台来源强制自动淡出）
