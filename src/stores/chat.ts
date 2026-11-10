@@ -72,7 +72,7 @@ function flushPendingViewImages(msgs: AgentMsg[]): void {
   });
 }
 import { getRoleById, roleAllowedToolNames } from "@/data/roles-catalog";
-import { parsePersistedTools } from "@/utils/tool-summary";
+import { composeAssistantContent, parsePersistedTools } from "@/utils/tool-summary";
 import { queueRemoveAt, queueTakeAt } from "@/utils/message-queue";
 import { resolveWorkspace } from "@/utils/workspace";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
@@ -1032,7 +1032,7 @@ function getMcpToolsPrompt(mode?: ReturnType<typeof getModeById>): string {
     "\n\n## 文件导出规范（重要）\n" +
     "需要把内容保存为本地文件（如 CSV 考勤表、报告、脚本等）时，**必须真实调用内置 write_file 工具（server 填 `app`）**，由应用真实写盘并校验。\n" +
     '- **调用方式只有一种**：在回复中输出 `<tool_call>{"server":"app","tool":"write_file","arguments":{"path":"...","content":"..."}}</tool_call>`。\n' +
-    "- **严禁在回复正文中模拟工具调用过程**：禁止以 `### 🔧 调用工具`、`<details>参数</details>`、`✅ 工具结果` 等卡片形式假装已调用工具或已写入文件——那只是文本，不会真正写盘。\n" +
+    "- **严禁在回复正文中模拟工具调用过程**（用卡片式文本假装已调用/已写入）——那只是文本，不会真正写盘。\n" +
     "- **只有 write_file 真实返回的路径才可引用**：最终回复**必须原样引用**工具返回的真实绝对路径，禁止改写文件名、目录或编造路径。\n" +
     "- **若未真实调用并成功写入，禁止给出任何文件路径**，也不要声称「已写入」或「已导出」，可如实说明无法保存文件。\n" +
     "- **如实报告文件数量**：生成了几个文件就引用几个（每个都是 write_file 真实返回的路径）；**禁止声称「已生成 N 份 / 两个版本」除非确实写入了 N 个文件**。若确实写了多个文件（如 HTML 版 + CSV 版），必须把每个文件的真实路径都列出来，不能只说一份。\n" +
@@ -4356,7 +4356,7 @@ function getRoleToolsPrompt(allowed: string[]): string {
     "\n## 工具调用唯一格式（极重要）\n" +
     "需要调用工具时，**唯一方式**是在回复正文中输出工具调用标记：\n" +
     '<tool_call>{"server":"app","tool":"工具名","arguments":{...}}</tool_call>\n' +
-    "- **绝对禁止**写「### 🔧 调用工具」等卡片文本假装已调用工具——那只是文本，不会执行。\n" +
+    "- **不要**在正文里用卡片文本假装调用工具——那只是文本，不会执行。\n" +
     "- 工具调用必须成对包含开/闭标记，JSON 必须是合法对象且含 tool 与 arguments；系统会自动执行并把**真实结果**回填给你。\n" +
     "\n## 你被允许使用的内置工具（server 填 `app`）\n" +
     (lines || "- （本角色暂无可用工具，请直接基于推理给出结论，不要调用其它工具）") +
@@ -6296,6 +6296,14 @@ export const useChatStore = defineStore("chat", () => {
               `### 🌐 联网搜索\n\n**查询**：\`${autoQuery}\`\n\n` +
                 `<details><summary>共 ${results.length} 条结果</summary>\n\n${list}\n\n</details>`,
             );
+            // 结构化记录（正文已不再拼卡片，只有这里是唯一留存）
+            toolCards.push({
+              name: "web_search",
+              server: "app",
+              status: "done",
+              argsPreview: `{"query":${JSON.stringify(autoQuery)}}`,
+              resultPreview: list.slice(0, 300),
+            });
           } else {
             streamingContent.value = `🌐 联网搜索「${autoQuery}」未找到结果，继续回答...`;
           }
@@ -7576,15 +7584,11 @@ export const useChatStore = defineStore("chat", () => {
             "\n\n💡 当前模型可能不支持图片输入。请在「设置 → API 配置」中添加支持视觉能力的模型（如 OpenAI、Gemini、Qwen-VL 等），或切换到支持图片的模型。";
         }
         dbg(`[sendMessage] 外层错误: ${msg}`);
-        // 修复：工具已执行过（streamingContent 被工具卡片占用、非空）时，错误分支
-        // `|| '[错误]'` 不触发、错误被静默吞掉 → 用户只看到工具卡片没有最终答案。
-        // 这里始终把错误以可见形式拼进 toolChain，确保任何中断都对用户可见。
-        if (toolChain.length > 0) {
-          toolChain.push(`> ❌ 回复生成中断: ${flattenCardText(msg)}`);
-          streamingContent.value = ""; // 清空，让 finally 只拼 toolChain（含错误卡片）
-        } else {
-          streamingContent.value = streamingContent.value || `[错误] ${msg}`;
-        }
+        // 中断必须**可见**：错误直接写进正文（以前塞进 toolChain、靠「卡片拼在最前」才显示，
+        // 那条拼接已经取消，所以这里必须写正文，否则错误会被静默吞掉）。
+        const note = `> ❌ 回复生成中断: ${flattenCardText(msg)}`;
+        const partial = streamingContent.value.trim();
+        streamingContent.value = partial ? `${partial}\n\n${note}` : note;
       }
     } finally {
       activeStreamRequestId = null; // 本轮结束，清除当前流式 request_id
@@ -7592,14 +7596,11 @@ export const useChatStore = defineStore("chat", () => {
         `[sendMessage] finally: toolChain=${toolChain.length}，streamingContent=${streamingContent.value.length}，reasoning=${streamingReasoning.value.length}`,
       );
       unlistenFns.forEach((f) => f());
-      // 流式兜底：剥离模型口头输出的工具调用 JSON；工具卡片（toolChain）逐段拼在最前
+      // 流式兜底：剥离模型口头输出的工具调用 JSON。
+      // **正文只放最终答案**：工具卡片不再拼进 content（那会被下一轮原样发给模型，
+      // 导致它模仿出伪卡片）；显示与导出统一从 `message.tools` 派生。
       const finalText = stripToolJson(streamingContent.value);
-      assistantMsg.content =
-        toolChain.length > 0
-          ? finalText
-            ? toolChain.join("\n\n") + "\n\n" + finalText
-            : toolChain.join("\n\n")
-          : finalText;
+      assistantMsg.content = composeAssistantContent(finalText, toolCards.length);
       if (toolCards.length > 0) assistantMsg.tools = toolCards;
       assistantMsg.reasoning_content = streamingReasoning.value || undefined;
       assistantMsg.duration = Number(((Date.now() - startTime) / 1000).toFixed(1));

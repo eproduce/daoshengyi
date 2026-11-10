@@ -1563,7 +1563,7 @@ window.addEventListener('beforeprint',function(){ps.forEach(function(p){p.classL
         if let Some(i) = out.rfind("</body>") {
             out.insert_str(i, &format!("{js}\n"));
         } else {
-            out.push_str(&js);
+            out.push_str(js);
         }
     }
     out

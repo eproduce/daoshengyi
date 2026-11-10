@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-11-10（P0-1 收官：工具卡片不再进模型上下文 + 修掉导出死锁）
+
+对 DSH 的差距复盘里，`STRUCTURAL_GAP_ANALYSIS` 的 **P0-1「模型可见即已记录」**仍是最贵的一条：
+轮末把 UI 卡片（`### 🔧 调用工具` + `<details>`）拼进 `assistantMsg.content`，而下一轮又把
+`content` 原样发给模型 → **模型在历史里看到「自己」写过卡片，就当成合法写法模仿**
+（伪卡片 → 工具不执行 → 回复中断），只能靠提示词反复压制（纯 token 成本，且不是保证）。
+
+### 改法：一份数据，三个消费方各自投影
+| 消费方 | 从哪读 |
+| :--- | :--- |
+| 发给模型的 `content` | **只有最终答案**（`composeAssistantContent`） |
+| 界面折叠组 | `message.tools`（结构化的那一份） |
+| 导出 Markdown | `db.rs::render_tool_cards(tools)` 现场派生 |
+
+- `chat.ts`：`assistantMsg.content = composeAssistantContent(finalText, toolCards.length)`；
+  中断错误改为**直接写正文**（原先塞进 `toolChain`、靠「卡片拼在最前」才显示出来 —— 拼接取消后就再也看不见了）。
+- 自动联网搜索那张卡原先只进 `toolChain`，现在同时写 `toolCards`（否则记录会整个消失）。
+- 提示词三处重复的「禁止写卡片」收敛为一处；文件导出规范里的卡片 markup 罗列删掉（不再给模型提供模仿样本）。
+- 老数据不受影响：`stripToolCardsForDisplay` 仍能从正文反解卡片；有 `tools` 时以结构化记录为准。
+
+### 顺带修掉一个真死锁（导出功能一直是坏的）
+写导出端到端测试时发现 `export_conversation` **持锁期间调用 `get_messages`**，而后者也要
+`self.conn.lock()` —— `std::sync::Mutex` 不可重入 → **导出 Markdown/JSON 永不返回**（UI 一直转圈）。
+现改为锁只覆盖「读对话头」那一小段。这条此前没人发现，因为导出路径没有任何测试。
+
+### 验证
+- 新增：`composeAssistantContent` 4 条、源文本契约 2 条（`chat.ts` 不得 `toolChain.join(`、
+  中断错误必须写正文）、`render_tool_cards` 2 条、导出端到端 1 条（正文干净 + tools 有记录 →
+  Markdown 仍含卡片、JSON 仍含结构化字段）。
+- `npm test`：**739 项全绿**；`cargo test --lib db::tests::` 30 项全绿（修死锁前后对比：
+  修复前该测试**永久挂住**，正是死锁的证据）。
+
+---
+
 ## 2026-10-29（语音重复播报：同一回复念两遍 → 每回复只播一次）
 
 用户实测：同一个 agent 回复，语音**播了两遍**；而且只是片段。诉求是「要么一句简略但相对完整的概述，

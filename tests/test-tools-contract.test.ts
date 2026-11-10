@@ -34,6 +34,30 @@ const SOURCES = import.meta.glob("../src/**/*.{ts,vue}", {
 }) as Record<string, string>;
 
 const chatSrc = SOURCES["../src/stores/chat.ts"] ?? "";
+
+/**
+ * 不变量：「模型可见即已记录」的**前半句** —— 正文里不许有 UI 卡片。
+ *
+ * 2026-11-10 修复前的真实故障：轮末把 `toolChain`（`### 🔧 调用工具` + `<details>`）拼进
+ * `assistantMsg.content`，而下一轮又把 `content` 原样发给模型 → 模型在历史里看到「自己」
+ * 写过卡片，就当成合法写法模仿（伪卡片 → 工具不执行 → 回复中断），只能靠提示词反复压制。
+ *
+ * 修好后卡片只存在于两处：UI 折叠组（读 `message.tools`）与导出（`db.rs::render_tool_cards`
+ * 从 `tools` 派生）。这条测试钉住「不再拼回去」——这是**源文本契约**，因为 `chat.ts` 的
+ * sendMessage 依赖 Tauri IPC，无法在单测里跑整轮。
+ */
+describe("正文装配契约：工具卡片不得进入 model-visible 的 content", () => {
+  it("chat.ts 不再把 toolChain 拼进 content", () => {
+    expect(chatSrc).not.toContain("toolChain.join(");
+    expect(chatSrc).toContain("composeAssistantContent(finalText");
+  });
+
+  it("中断错误写进正文（而不是塞进 toolChain 等拼接）", () => {
+    expect(chatSrc).toContain("回复生成中断");
+    expect(chatSrc).not.toContain("让 finally 只拼 toolChain");
+  });
+});
+
 const detSrc = SOURCES["../src/utils/deterministic-tools.ts"] ?? "";
 const implSrc = `${chatSrc}\n${detSrc}`;
 

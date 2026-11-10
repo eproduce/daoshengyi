@@ -31,6 +31,22 @@ export function stripToolCardsForDisplay(
   return tools && tools.length > 0 ? stripToolCards(body) : body;
 }
 
+/**
+ * 轮末正文装配：`content` **只放模型该看到的内容**（最终答案），工具卡片走 `message.tools`。
+ *
+ * 为什么必须分开（2026-11-10）：此前把 UI 卡片（`### 🔧 调用工具` + `<details>`）拼进正文，
+ * 这同一份文本有三个消费方 —— 显示、导出、**发给模型的历史**。于是模型在历史里看到「自己」
+ * 写过卡片，就把它当成合法写法来模仿，产出伪卡片（工具不执行、回复中断），只能靠提示词反复
+ * 压制（纯 token 成本，且不是保证）。分开之后：显示与导出都从 `tools` 派生，模型只看到答案。
+ *
+ * 空正文兜底：只跑了工具、没给结论时，正文至少要有一句人话（空 assistant 消息对上游 API 也不安全）。
+ */
+export function composeAssistantContent(finalText: string, toolCount: number): string {
+  const text = (finalText || "").trim();
+  if (text) return text;
+  return toolCount > 0 ? "（本轮执行了工具，未给出文字结论）" : "";
+}
+
 export interface ToolSummary {
   count: number;
   /** 去重后的工具名，如 `web_search ×2、fetch_page、+1` */

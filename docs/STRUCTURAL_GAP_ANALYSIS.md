@@ -14,7 +14,7 @@
 
 | # | 机制 | 现状 | 差距 | 优先级 |
 | --- | --- | --- | --- | --- |
-| 1 | UI 呈现与模型可见内容分离 | ❌ 卡片文本写进 `content`，`content` 直接发给模型 | 模型模仿出自己的伪卡片（**已在你们日志中发生**）+ token 重复 | **P0** |
+| 1 | UI 呈现与模型可见内容分离 | ✅ **已修（2026-11-10）**：`content` 只放最终答案；卡片存 `messages.tools`，显示与导出都由它派生 | 伪卡片故障根因消失（不再依赖提示词压制）+ 每轮省掉重复 token | ~~P0~~ 完成 |
 | 2 | 会话状态的可追加日志 | ❌ Pinia 可变数组 + 整表覆盖写 | 崩溃丢数据、压缩状态不落库、无法回放 | **P0** |
 | 3 | 未知数据默认拒绝 + 版本号 | ❌ 无版本号；解析失败丢整批会话 | 一次坏数据 = 整库会话从界面消失 | **P0** |
 | 4 | 模型可见行为的回归测试 | ❌ 38 个测试文件无一 import `chat.ts` | 改提示词/工具格式零保护 | **P1** |
@@ -24,7 +24,18 @@
 
 ---
 
-## P0-1 工具卡片既污染了模型上下文，又没能持久化
+## P0-1 工具卡片既污染了模型上下文，又没能持久化 —— ✅ 已修（2026-11-10）
+
+> **落地结果**：`composeAssistantContent`（[tool-summary.ts](/Users/wanghuan/op/daoshengyi/src/utils/tool-summary.ts)）
+> 让 `content` 只放最终答案；卡片只存 `messages.tools`；显示读 `tools`，导出由 `db.rs::render_tool_cards`
+> 从 `tools` 派生（**单一数据源，不存第二份文本**）；提示词里三处重复的「禁止写卡片」收敛为一处。
+> 同时暴露并修掉一个真死锁：`export_conversation` 持锁期间调用 `get_messages`（同一把
+> 不可重入 `Mutex`）→ **导出命令永不返回**；现改为锁只覆盖读对话头那一小段。
+> 不变量由测试钉住：`tests/test-tools-contract.test.ts`（`chat.ts` 不得 `toolChain.join(`）
+> + `tests/test-tool-summary.test.ts`（`composeAssistantContent`）+
+> `db.rs::export_markdown_includes_cards_derived_from_tools_column`（端到端导出）。
+
+### 原分析（保留）
 
 同一根因的两个症状，是本次分析里最值得先做的一条。
 

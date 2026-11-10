@@ -1,5 +1,6 @@
 import { it, expect, describe } from "vitest";
 import {
+  composeAssistantContent,
   summarizeTools,
   stripToolCards,
   stripToolCardsForDisplay,
@@ -243,5 +244,26 @@ describe("读回持久化的工具卡 parsePersistedTools", () => {
     const got = parsePersistedTools(raw);
     expect(got?.[0].status).toBe("error");
     expect(got?.[0].error).toBe("exit=1");
+  });
+});
+
+describe("composeAssistantContent：正文只放模型该看到的内容（2026-11-10 不变量）", () => {
+  it("只返回最终答案，绝不拼接工具卡片", () => {
+    const out = composeAssistantContent("结论：已完成，产物在 ~/Documents/道生一产物/x.html", 3);
+    expect(out).toBe("结论：已完成，产物在 ~/Documents/道生一产物/x.html");
+    expect(out).not.toContain("### 🔧");
+    expect(out).not.toContain("<details>");
+  });
+
+  it("去首尾空白（避免空正文 + 换行卡住 isVagueBody）", () => {
+    expect(composeAssistantContent("  答案  \n", 0)).toBe("答案");
+  });
+
+  it("只跑了工具没给结论时给一句人话（空 assistant 消息对上游 API 不安全）", () => {
+    expect(composeAssistantContent("", 2)).toBe("（本轮执行了工具，未给出文字结论）");
+  });
+
+  it("既没正文也没工具 → 空串（不是凭空的占位）", () => {
+    expect(composeAssistantContent("", 0)).toBe("");
   });
 });

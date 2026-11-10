@@ -674,10 +674,68 @@ impl Database {
 
     // --- 导出 ---
 
+    /// 把落库的结构化工具卡（`messages.tools`）渲染回 Markdown 卡片，供**导出**保留完整过程。
+    ///
+    /// 为什么导出时才渲染：正文（`content`）已不再拼工具卡片 —— 那份文本会被下一轮原样发给模型，
+    /// 导致模型模仿出「伪卡片」（工具不执行、回复中断）。所以卡片只在两个地方出现：
+    /// UI 的折叠分组（读 `tools`）与导出（这个函数）。**单一数据源，不存第二份文本。**
+    ///
+    /// 容错：`tools` 为空/坏 JSON/非数组 → 返回空串（导出退化为纯正文，不报错）。
+    pub fn render_tool_cards(tools_json: &str) -> String {
+        let Ok(serde_json::Value::Array(items)) =
+            serde_json::from_str::<serde_json::Value>(tools_json)
+        else {
+            return String::new();
+        };
+        let mut out = String::new();
+        for item in items {
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                continue;
+            }
+            let status = item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("done");
+            if status == "error" {
+                let err = item
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未知错误");
+                out.push_str(&format!("> ❌ 工具调用失败: `{err}`\n\n"));
+                continue;
+            }
+            out.push_str(&format!("### 🔧 调用工具：`{name}`\n\n"));
+            if let Some(args) = item.get("argsPreview").and_then(|v| v.as_str()) {
+                if !args.trim().is_empty() {
+                    out.push_str(&format!(
+                        "<details><summary>参数</summary>\n\n```json\n{args}\n```\n\n</details>\n"
+                    ));
+                }
+            }
+            if let Some(res) = item.get("resultPreview").and_then(|v| v.as_str()) {
+                if !res.trim().is_empty() {
+                    out.push_str(&format!(
+                    "<details><summary>✅ 工具结果</summary>\n\n```\n{res}\n```\n\n</details>\n"
+                ));
+                }
+            }
+            out.push('\n');
+        }
+        out.trim_end().to_string()
+    }
+
     pub fn export_conversation(&self, conv_id: &str, format: &str) -> Result<String, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let conv: ConvRow = conn
-            .query_row(
+        // 锁只在读对话头这一小段里持有：紧接着的 `get_messages` 自己也要 `conn.lock()`，
+        // 而 std::sync::Mutex **不可重入** —— 一直握着会直接**死锁**（导出命令永不返回，
+        // UI 一直转圈）。2026-11-10 由导出的端到端测试暴露。
+        let conv: ConvRow = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
                 "SELECT id, title, model, created_at, updated_at, workspace FROM conversations WHERE id=?1",
                 params![conv_id],
                 |row| {
@@ -691,7 +749,8 @@ impl Database {
                     })
                 },
             )
-            .map_err(|e| format!("对话不存在: {}", e))?;
+            .map_err(|e| format!("对话不存在: {}", e))?
+        };
 
         let messages = self.get_messages(conv_id)?;
 
@@ -719,7 +778,23 @@ impl Database {
             } else {
                 "\u{1f9e0} 助手"
             };
-            md.push_str(&format!("### {}\n\n{}\n\n", role, m.content));
+            // 工具过程由结构化记录派生（正文里已不含卡片）
+            let cards = m
+                .tools
+                .as_deref()
+                .map(Self::render_tool_cards)
+                .filter(|s| !s.is_empty());
+            let body = match &cards {
+                Some(c) => {
+                    if m.content.trim().is_empty() {
+                        c.clone()
+                    } else {
+                        format!("{c}\n\n{}", m.content)
+                    }
+                }
+                None => m.content.clone(),
+            };
+            md.push_str(&format!("### {}\n\n{}\n\n", role, body));
             if let Some(ref r) = m.reasoning_content {
                 md.push_str(&format!(
                     "<details><summary>思考过程</summary>\n\n{}\n\n</details>\n\n",
@@ -2150,6 +2225,74 @@ pub struct KbInfo {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn render_tool_cards_rebuilds_process_from_structured_record() {
+        // 导出保留「完整过程」的唯一来源：messages.tools（正文里已不含卡片）
+        let raw = r#"[
+          {"name":"web_search","server":"app","status":"done","argsPreview":"{\"query\":\"金价\"}","resultPreview":"5 条结果"},
+          {"name":"run_command","server":"app","status":"error","error":"exit=1"}
+        ]"#;
+        let md = Database::render_tool_cards(raw);
+        assert!(md.contains("### 🔧 调用工具：`web_search`"), "{md}");
+        assert!(md.contains("<details><summary>参数</summary>"), "{md}");
+        assert!(
+            md.contains("<details><summary>✅ 工具结果</summary>"),
+            "{md}"
+        );
+        assert!(md.contains("> ❌ 工具调用失败: `exit=1`"), "{md}");
+    }
+
+    #[test]
+    fn render_tool_cards_tolerates_bad_data() {
+        // 坏数据/空数据不得让导出失败（宁可退化成纯正文）
+        assert_eq!(Database::render_tool_cards(""), "");
+        assert_eq!(Database::render_tool_cards("not json"), "");
+        assert_eq!(Database::render_tool_cards("{}"), "");
+        assert_eq!(
+            Database::render_tool_cards(r#"[{"server":"app"}]"#),
+            "",
+            "无 name 的条目应跳过"
+        );
+    }
+
+    #[test]
+    fn export_markdown_includes_cards_derived_from_tools_column() {
+        // 端到端：正文干净 + tools 有记录 → 导出的 Markdown 仍然保留完整过程
+        let (dir, db) = tmp_db();
+        let conv = ConvRow {
+            id: "c1".into(),
+            title: "导出测试".into(),
+            model: "test".into(),
+            created_at: 0,
+            updated_at: 0,
+            workspace: None,
+        };
+        let msg = MsgRow {
+            id: "m1".into(),
+            conversation_id: "c1".into(),
+            role: "assistant".into(),
+            content: "最终答案：已生成报告。".into(),
+            reasoning_content: None,
+            images: None,
+            attachments: None,
+            timestamp: 0,
+            tokens: None,
+            duration: None,
+            cost: None,
+            tools: Some(
+                r#"[{"name":"answer_html","server":"app","status":"done","argsPreview":"{\"title\":\"x\"}","resultPreview":"ok"}]"#
+                    .into(),
+            ),
+        };
+        db.save_conversation(&conv, &[msg]).unwrap();
+        let md = db.export_conversation("c1", "md").unwrap();
+        assert!(md.contains("### 🔧 调用工具：`answer_html`"), "{md}");
+        assert!(md.contains("最终答案：已生成报告。"), "{md}");
+        // JSON 导出保留结构化字段（下游可再渲染）
+        let json = db.export_conversation("c1", "json").unwrap();
+        assert!(json.contains("answer_html"), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     static TEST_PID: AtomicUsize = AtomicUsize::new(0);
 
