@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-11-10（P1：pre-tool 拦截点上线 + 历史卡片兜底剥离）
+
+对上 DSH 复盘里的第二优先级（「散落的判定」收敛成 waterfall 拦截点），这一轮只做**最小可用的一条链**，
+不搬高风险判定。
+
+- 新增 `src/utils/intercepts.ts`：`runPreTool` 按 `order` 升序执行，**deny 立即短路**，
+  `rewrite` 把新参数交给下一环，拦截器抛异常视为放行（一次异常不能把工具系统整体打死）。
+  纯函数 + 配置注入 → 可单测（`tests/test-intercepts.test.ts` 12 条）。
+- 内置两条规则：`disabledToolRule`（工具开关，话术与权限矩阵逐字一致）、
+  `pathWhitelistRule`（路径白名单，`pathArgOf` 由调用方注入，不重复维护参数名表）。
+  `callBuiltinTool` 里原来的两段内联 if 已搬进链上，**行为与话术不变**；`ORDER.approval` 留了槽位。
+- **反向不变量兜底**：`modelVisibleContent` 在请求装配处剥掉**老会话**遗留的 UI 卡片
+  （新数据已不含；显示层早就剥，模型侧此前一直漏）。只有卡片没正文时给一句如实占位。
+
+验证：`npm test` **751 项**（57 文件）全绿；`vue-tsc` / ESLint / Prettier 通过。
+
+---
+
 ## 2026-11-10（P0-1 收官：工具卡片不再进模型上下文 + 修掉导出死锁）
 
 对 DSH 的差距复盘里，`STRUCTURAL_GAP_ANALYSIS` 的 **P0-1「模型可见即已记录」**仍是最贵的一条：

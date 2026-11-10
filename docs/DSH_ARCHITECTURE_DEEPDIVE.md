@@ -34,6 +34,14 @@
 
 ## 三、最有价值的一项：把「散落的判定」收敛成瀑布式拦截点
 
+> **落地进度（2026-11-10）**：`src/utils/intercepts.ts` —— pre-tool 链已上线
+> （`runPreTool`：order 升序 / deny 短路 / rewrite 传递 / 异常不致命），
+> 内置 `disabledToolRule`、`pathWhitelistRule`，`callBuiltinTool` 的两个内联判定已搬进链上
+> （话术逐字不变）。`ORDER` 预留了 `approval` 槽位，下一步把危险命令语义门禁与审批搬进去。
+> 同时补上了**反向不变量** `modelVisibleContent`：发给模型的历史里剥掉老会话遗留的 UI 卡片
+> （显示层早就剥，模型侧此前漏了）。
+> 单测 `tests/test-intercepts.test.ts` 12 条钉住三条 waterfall 语义。
+
 我们现在的 sendMessage 主循环里混着大量**本应可插拔的判定**：模式护栏、`isVagueBody` 空洞判定、
 `hasToolCallIntent` 修正、工具白名单/禁用、路径白名单、审批（manual/smart/yolo）、会话放行、
 审计、hooks、压缩阶梯……每加一条就改主循环，回归风险高（这个文件已经 7000+ 行）。

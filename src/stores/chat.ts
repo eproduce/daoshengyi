@@ -78,6 +78,13 @@ import { resolveWorkspace } from "@/utils/workspace";
 import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes-catalog";
 import { finalizePlanSteps, startNextPendingStep } from "@/utils/task-plan";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
+import {
+  disabledToolRule,
+  modelVisibleContent,
+  pathWhitelistRule,
+  runPreTool,
+} from "@/utils/intercepts";
+import { splitLeadingToolCards } from "@/utils/tool-summary";
 import { routeProfileId } from "@/utils/model-routing";
 import { shouldSkipAutoSearch } from "@/utils/search-gate";
 import { askConfirm, notify } from "@/utils/dialog";
@@ -2167,18 +2174,19 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
   if (normalized.notes.length) {
     await dbg(`[tool-normalize] ${tool}：${normalized.notes.join("；")}`);
   }
-  // P-A7 权限矩阵：工具级开关（内置工具兜底，主入口 callMcpTool 已拦一次）
-  if (isToolDisabled(tool, getSettings().disabledTools ?? [])) {
-    return `⛔ 工具「${tool}」已在权限矩阵中禁用。请改用其它工具，或在「设置 → 权限」中重新启用。`;
-  }
-  // P-A7 权限矩阵：路径白名单——配置了 allowedPaths 时，文件/命令类工具只能访问白名单目录
-  const allowedPaths = getSettings().allowedPaths ?? [];
-  if (allowedPaths.length > 0) {
-    const p = pathArgOf(args);
-    if (p && !isPathAllowed(p, allowedPaths)) {
-      return `⛔ 路径「${p}」不在权限白名单内（允许：${allowedPaths.join("、")}）。请使用白名单内的路径。`;
-    }
-  }
+  // P-A7 权限矩阵：**收敛到 pre-tool 拦截链**（工具开关 → 路径白名单），
+  // 判定与话术不变，只是不再散落成两段内联 if（新增规则 = 往链上注册一个，不动这里）。
+  const preTool = runPreTool(
+    [
+      disabledToolRule(getSettings().disabledTools ?? [], (t) =>
+        isToolDisabled(t, getSettings().disabledTools ?? []),
+      ),
+      pathWhitelistRule(getSettings().allowedPaths ?? [], pathArgOf, isPathAllowed),
+    ],
+    { server: "app", tool, args },
+  );
+  if (!preTool.allowed) return preTool.message;
+  args = preTool.args;
   switch (tool) {
     // ---- 确定性工具集（融合自 DSH 生态：零依赖、不联网、结果可复现）----
     // 统一由一个 case 组分发：这些工具互相独立、无需各自展开分支。
@@ -6492,7 +6500,10 @@ export const useChatStore = defineStore("chat", () => {
             ],
           });
         } else {
-          rustMsgs.push({ role: m.role, content: m.content });
+          // 发给模型的历史必须干净：老会话的 content 里还留着 UI 卡片（新数据已不含），
+          // 不剥的话模型照样会模仿出伪卡片（显示层早已这么做，模型侧此前漏了）。
+          const visible = modelVisibleContent(m, (c) => splitLeadingToolCards(c).body);
+          if (visible) rustMsgs.push({ role: m.role, content: visible });
         }
       });
 
