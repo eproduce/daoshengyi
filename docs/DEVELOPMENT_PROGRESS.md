@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-11-12（又两处「两份拷贝」收敛：编辑确认载荷 / 工作流查找）
+
+继续按「重复实现 = 缺陷温床」的路子扫 `chat.ts`，这一轮找到两处，都不是纯洁癖：
+
+### 1. 文件编辑确认载荷（原先 **4 份**拷贝）
+`apply_patch` / `replace_string` / `insert_string` / `delete_file` 各自手抄八个字段
+（`kind/path/diff/summary/edits/tool/args/rememberLabel`）。**少写一个不会报错**，
+只表现为弹窗少显示一块内容、或「本会话不再确认」静默失效 —— 典型的静默降级。
+现在统一 `utils/edit-confirm.ts::buildEditConfirmRequest`：
+- `kind` 由「有没有预览」推出，不再靠人记；
+- `path` 以**预览返回的**为准（Rust 会做 `~` 展开）；
+- `edits` 原样带上（用户点「应用」后 Rust 用的就是这一份，不能再拼一遍）；
+- 拒绝话术统一（`editRefusalMessage` / `deleteRefusalMessage`）。
+
+### 2. 工作流查找（原先 **2 份**，话术还分叉）
+`workflow_run` 与 `workflow_improve` 各抄一份「id 还是名称」解析；连「找不到」的说法都不同
+（一处带「可先 workflow_list 查看」，一处只有一句「未找到」）—— 模型会挑更省事的那条去试。
+现在统一 `utils/workflow-ops.ts::resolveWorkflow`：纯数字当 id、名称**精确匹配**（不做模糊：
+执行错工作流要白跑一轮 LLM）、解析与校验的错误带工作流名，且**不抛异常**
+（返回 `{ok:false,error}`，调用方当工具错误回给模型，模型才拿得到下一步）。
+
+### 验证
+- 新增 `tests/test-workflow-ops.test.ts` **17 条**（载荷构造 5、名称/id 选择 4、坏 JSON/非法结构 3、解析端到端 5）
+- 源文本契约再加 2 条（不得再手写 `"workflow_get"` 的 id 解析、不得手写确认载荷的 `kind`）
+- `npm test` **808 项**（60 文件）全绿；`vue-tsc` / ESLint / Prettier 通过
+
+---
+
 ## 2026-11-11（请求装配抽成纯函数：模型看到什么终于能测了）
 
 `chat.ts` 7,900 行、零行为测试，而「模型看到什么」正是最该被测的一段。这一轮把请求装配

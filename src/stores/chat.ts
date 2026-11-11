@@ -139,6 +139,14 @@ import { reduceToolResult } from "@/utils/tool-result-reduce";
 import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/danger-rules";
 import { runCommandGate, type ApprovalMode, type CommandGateDeps } from "@/utils/command-gate";
 import {
+  buildEditConfirmRequest,
+  deleteRefusalMessage,
+  editRefusalMessage,
+  type EditConfirmRequest,
+  type EditPreviewResult,
+} from "@/utils/edit-confirm";
+import { resolveWorkflow } from "@/utils/workflow-ops";
+import {
   appendVolatileContext,
   assembleRequest,
   pruneToBudget,
@@ -789,17 +797,7 @@ function resetTurnToolStats(): void {
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
 // 开启「文件编辑需确认」设置后，replace_string/insert_string/delete_file 会先
 // 挂起等待 DiffConfirmDialog 的用户确认（Promise resolve 机制），避免 Agent 静默改文件。
-export interface EditConfirmRequest {
-  kind: "edit" | "delete";
-  path: string;
-  diff?: string; // edit：unified diff 预览
-  summary?: string; // edit：Rust 预览 summary
-  edits?: Record<string, unknown>[]; // edit：待应用的编辑操作（确认后回传）
-  tool: string;
-  args: Record<string, unknown>;
-  /** 会话级权限记忆：勾选后本会话内该工具不再确认的提示文案（可选） */
-  rememberLabel?: string;
-}
+export type { EditConfirmRequest };
 const editConfirm = ref<EditConfirmRequest | null>(null);
 let editConfirmResolver: ((ok: boolean) => void) | null = null;
 /** 触发一次文件编辑确认；返回 true=用户确认应用，false=用户拒绝。 */
@@ -2402,31 +2400,16 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // 让 agent 按名称/ id 执行已保存工作流（与可视化编辑器一致的运行时：LLM→chat_once、工具→callMcpTool）
       const nameOrId = String(args.name ?? args.id ?? "").trim();
       if (!nameOrId) throw new Error("workflow_run 需要 name 参数（工作流名称或 id）");
-      let wf: { id: number; name: string; graph: string } | null = null;
-      if (/^\d+$/.test(nameOrId)) {
-        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
-          id: Number(nameOrId),
-        });
-      } else {
-        const list = await invoke<{ id: number; name: string }[]>("workflow_list");
-        const hit = list.find((x) => x.name === nameOrId);
-        if (hit)
-          wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
-            id: hit.id,
-          });
-      }
-      if (!wf)
-        throw new Error(
-          `未找到工作流「${nameOrId}」，可先 workflow_list 查看已有工作流，或 workflow_create 新建`,
-        );
-      let graph: WorkflowGraph;
-      try {
-        graph = JSON.parse(wf.graph) as WorkflowGraph;
-      } catch {
-        throw new Error("工作流数据损坏，无法解析");
-      }
-      const verr = validateWorkflowGraph(graph);
-      if (verr) throw new Error(`工作流「${wf.name}」不合法：${verr}`);
+      // 查找 + 解析 + 校验收敛到 utils/workflow-ops.ts（原先两份拷贝，连错误话术都分叉）
+      const resolved = await resolveWorkflow(nameOrId, {
+        get: (id) =>
+          invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id }),
+        list: () => invoke<{ id: number; name: string }[]>("workflow_list"),
+        validate: (g) => validateWorkflowGraph(g as WorkflowGraph),
+      });
+      if (!resolved.ok) throw new Error(resolved.error);
+      const wf = resolved.wf;
+      const graph = resolved.graph as WorkflowGraph;
       const external: Record<string, string> = {};
       const input = args.input ?? args.user;
       if (input !== undefined && input !== null && String(input).trim())
@@ -2505,26 +2488,15 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       // Phase 2：基于该工作流最近运行历史（含失败节点轨迹）让 LLM 产出改进图，校验后保存新版本
       const nameOrId = String(args.name ?? args.id ?? "").trim();
       if (!nameOrId) throw new Error("workflow_improve 需要 name 参数（工作流名称或 id）");
-      let wf: { id: number; name: string; graph: string } | null = null;
-      if (/^\d+$/.test(nameOrId)) {
-        wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
-          id: Number(nameOrId),
-        });
-      } else {
-        const list = await invoke<{ id: number; name: string }[]>("workflow_list");
-        const hit = list.find((x) => x.name === nameOrId);
-        if (hit)
-          wf = await invoke<{ id: number; name: string; graph: string } | null>("workflow_get", {
-            id: hit.id,
-          });
-      }
-      if (!wf) throw new Error(`未找到工作流「${nameOrId}」`);
-      let graph: WorkflowGraph;
-      try {
-        graph = JSON.parse(wf.graph) as WorkflowGraph;
-      } catch {
-        throw new Error("工作流数据损坏");
-      }
+      const resolved = await resolveWorkflow(nameOrId, {
+        get: (id) =>
+          invoke<{ id: number; name: string; graph: string } | null>("workflow_get", { id }),
+        list: () => invoke<{ id: number; name: string }[]>("workflow_list"),
+        validate: (g) => validateWorkflowGraph(g as WorkflowGraph),
+      });
+      if (!resolved.ok) throw new Error(resolved.error);
+      const wf = resolved.wf;
+      const graph = resolved.graph as WorkflowGraph;
       const note = String(args.note ?? "").trim();
       // 读取最近运行历史（含失败轨迹）
       let runsText = "（暂无运行记录）";
@@ -3055,21 +3027,21 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         const edits = hunksToEdits(f.hunks);
         // 与 replace_string 相同的人工确认路径（开启「文件编辑需确认」时逐文件预览 diff）
         if (needEditConfirm("apply_patch")) {
-          const preview = await invoke<{ diff: string; summary: string }>("apply_edits", {
+          const preview = await invoke<EditPreviewResult>("apply_edits", {
             path: f.path,
             edits,
             preview: true,
           });
-          const ok = await requestEditConfirm({
-            kind: "edit",
-            path: f.path,
-            diff: preview.diff,
-            summary: preview.summary,
-            edits,
-            tool: "apply_patch",
-            args: { path: f.path, edits },
-            rememberLabel: permitLabel("apply_patch"),
-          });
+          const ok = await requestEditConfirm(
+            buildEditConfirmRequest({
+              tool: "apply_patch",
+              path: f.path,
+              args: { path: f.path, edits },
+              rememberLabel: permitLabel("apply_patch"),
+              preview,
+              edits,
+            }),
+          );
           if (!ok) {
             out.push(`⚠️ 用户拒绝了 ${f.path} 的修改（该文件未改动）`);
             break; // 用户已拒绝：不再继续后续文件，避免连环打扰
@@ -3475,24 +3447,22 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       ];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
       if (needEditConfirm("replace_string")) {
-        const preview = await invoke<{
-          path: string;
-          diff: string;
-          new_len: number;
-          summary: string;
-        }>("apply_edits", { path, edits, preview: true });
-        const ok = await requestEditConfirm({
-          kind: "edit",
+        const preview = await invoke<EditPreviewResult>("apply_edits", {
           path,
-          diff: preview.diff,
-          summary: preview.summary,
           edits,
-          tool: "replace_string",
-          args: { ...args },
-          rememberLabel: permitLabel("replace_string"),
+          preview: true,
         });
-        if (!ok)
-          return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+        const ok = await requestEditConfirm(
+          buildEditConfirmRequest({
+            tool: "replace_string",
+            path,
+            args: { ...args },
+            rememberLabel: permitLabel("replace_string"),
+            preview,
+            edits,
+          }),
+        );
+        if (!ok) return editRefusalMessage(path);
       }
       const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>(
         "apply_edits",
@@ -3521,24 +3491,22 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const edits: Record<string, unknown>[] = [{ op: "insert", anchor, position, text }];
       // P-A4：开启「文件编辑需确认」时先预览 diff，用户确认后才写盘（会话内已允许则直接放行）
       if (needEditConfirm("insert_string")) {
-        const preview = await invoke<{
-          path: string;
-          diff: string;
-          new_len: number;
-          summary: string;
-        }>("apply_edits", { path, edits, preview: true });
-        const ok = await requestEditConfirm({
-          kind: "edit",
+        const preview = await invoke<EditPreviewResult>("apply_edits", {
           path,
-          diff: preview.diff,
-          summary: preview.summary,
           edits,
-          tool: "insert_string",
-          args: { ...args },
-          rememberLabel: permitLabel("insert_string"),
+          preview: true,
         });
-        if (!ok)
-          return `⚠️ 用户拒绝了本次文件编辑（${path}），文件未改动。请与用户确认后再尝试，或改用其它方式。`;
+        const ok = await requestEditConfirm(
+          buildEditConfirmRequest({
+            tool: "insert_string",
+            path,
+            args: { ...args },
+            rememberLabel: permitLabel("insert_string"),
+            preview,
+            edits,
+          }),
+        );
+        if (!ok) return editRefusalMessage(path);
       }
       const res = await invoke<{ path: string; diff: string; new_len: number; summary: string }>(
         "apply_edits",
@@ -3568,14 +3536,15 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       if (!path) throw new Error("delete_file 需要 path 参数");
       // P-A4：开启「文件编辑需确认」时先确认路径，用户确认后才删除（会话内已允许则直接放行）
       if (needEditConfirm("delete_file")) {
-        const ok = await requestEditConfirm({
-          kind: "delete",
-          path,
-          tool: "delete_file",
-          args: { ...args },
-          rememberLabel: permitLabel("delete_file"),
-        });
-        if (!ok) return `⚠️ 用户拒绝了删除文件（${path}），文件未删除。`;
+        const ok = await requestEditConfirm(
+          buildEditConfirmRequest({
+            tool: "delete_file",
+            path,
+            args: { ...args },
+            rememberLabel: permitLabel("delete_file"),
+          }),
+        );
+        if (!ok) return deleteRefusalMessage(path);
       }
       const del = await invoke<string>("delete_file_agent", { path });
       notifyUndoChanged(); // 可撤销（删除）

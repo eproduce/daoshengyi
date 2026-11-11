@@ -52,6 +52,18 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect(chatSrc).toContain("composeAssistantContent(finalText");
   });
 
+  it("工作流查找只有一份实现（不再两处手抄 id/名称解析）", () => {
+    expect(chatSrc).not.toContain('"workflow_get", {\n          id: Number(nameOrId)');
+    expect((chatSrc.match(/resolveWorkflow\(nameOrId/g) ?? []).length).toBe(2);
+    expect(chatSrc).not.toContain("未找到工作流「${nameOrId}」，可先");
+  });
+
+  it("编辑确认只有一份构造（四个工具不再各抄八个字段）", () => {
+    expect((chatSrc.match(/buildEditConfirmRequest\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    // 手写载荷的标志：kind 只能由构造器决定
+    expect(chatSrc).not.toContain('kind: "edit",\n          path');
+  });
+
   it("请求装配只有一份实现（chat.ts 不再内联拼 rustMsgs 历史）", () => {
     // 装配抽到 utils/agent-request.ts 后：主循环只调用，不再自己遍历历史
     expect(chatSrc).not.toContain("histAll.filter");
