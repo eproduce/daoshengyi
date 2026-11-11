@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-11-11（请求装配抽成纯函数：模型看到什么终于能测了）
+
+`chat.ts` 7,900 行、零行为测试，而「模型看到什么」正是最该被测的一段。这一轮把请求装配
+抽到 `src/utils/agent-request.ts`（纯函数），并顺手修掉一个真错位。
+
+### 三条不变量写在一处
+1. **前缀稳定**：system + 历史逐字不变；易变内容（记忆/RAG/时间/续跑提示）只追加到**最后一条 user**
+   —— 进 system 会让提示词缓存每轮失效（成本翻倍）。
+2. **模型可见即已记录**：老会话遗留的 UI 卡片在这里剥掉；空正文的 assistant 消息不发。
+3. **origins 与消息同增同减**：裁剪与「已被摘要覆盖」判定都靠它，两个数组一旦错位就会删错消息。
+
+### 抽出的函数
+- `assembleRequest(history, opts)`：过滤 system/流式 → 最近 N 条窗口 → （可选）压缩摘要 →
+  图片多模态（`supportsImages=false` 时只发文本，避免 DeepSeek 400）→ 卡片剥离 → `{messages, origins, histStart}`
+- `appendVolatileContext(msgs, ctx)`：只动最后一条 user（多模态时追加文本片段）；无 user 时补一条
+- `pruneToBudget({messages, origins, covered, maxChars})`：**两相裁剪** —— 先删「已被摘要覆盖」的最老段，
+  仍超长才退到从最早非 system 删；system 永不删、至少留 2 条
+
+### 顺手修掉的真错位（原实现的 bug）
+原内联代码里 `rustOrig.push(...)` 是**无条件**的，而正文清洗后为空时消息不会 push →
+两个数组错位 → 后续按「摘要覆盖序号」裁剪时会删错消息。现在只在真正 push 时记录 origin。
+
+### 验证
+- 新增 `tests/test-agent-request.test.ts` **18 条**：窗口/顺序/origins 对齐、无 system 不造空、
+  过滤 system 与流式、压缩摘要替代老段、图片双模式（含「DeepSeek 不发 image_url」）、
+  遗留卡片剥离、空正文不占 origins、易变上下文只改最后一条 user（多模态追加）、
+  两相裁剪（覆盖优先 / 粗暴兜底 / system 保底 / 数组等长）
+- 源文本契约：`chat.ts` 不再出现 `histAll.filter`、`[本次补充上下文]`，必须调用
+  `assembleRequest` / `appendVolatileContext` / `pruneToBudget`
+- `npm test` **788 项**（59 文件）全绿；`vue-tsc` / ESLint / Prettier 通过
+
+---
+
 ## 2026-11-11（post-tool 链上线：三条工具结果路径统一后处理）
 
 同一天第二处「两份拷贝」：**工具结果后处理**。

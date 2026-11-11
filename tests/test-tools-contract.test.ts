@@ -52,6 +52,15 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect(chatSrc).toContain("composeAssistantContent(finalText");
   });
 
+  it("请求装配只有一份实现（chat.ts 不再内联拼 rustMsgs 历史）", () => {
+    // 装配抽到 utils/agent-request.ts 后：主循环只调用，不再自己遍历历史
+    expect(chatSrc).not.toContain("histAll.filter");
+    expect(chatSrc).not.toContain("[本次补充上下文]");
+    expect(chatSrc).toContain("assembleRequest(conv.messages");
+    expect(chatSrc).toContain("appendVolatileContext(rustMsgs, volatileCtx)");
+    expect(chatSrc).toContain("pruneToBudget(");
+  });
+
   it("工具结果后处理只有一份实现（原生 / 文本 / 子代理三条路都走 foldToolResult）", () => {
     // 此前文本路径与子代理用的是 truncateToolResult（只脱敏 + 硬截断）：没压缩、中段直接丢
     expect(chatSrc).not.toContain("truncateToolResult");

@@ -138,6 +138,12 @@ import { reduceToolResult } from "@/utils/tool-result-reduce";
 // 危险命令分级判定（吸收自 DSH 生态 safety-net / risk-gate：分级 + 原因 + 误报抑制）
 import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/danger-rules";
 import { runCommandGate, type ApprovalMode, type CommandGateDeps } from "@/utils/command-gate";
+import {
+  appendVolatileContext,
+  assembleRequest,
+  pruneToBudget,
+  totalMsgChars,
+} from "@/utils/agent-request";
 // 工具调用参数自愈（吸收自 DSH 生态 dsh-tool-normalizer：别名/类型/包裹层）
 import { normalizeToolArgs } from "@/utils/tool-arg-normalize";
 import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
@@ -1836,12 +1842,6 @@ const MAX_TOOL_ROUNDS = 240;
 const SKILL_DIRECT_INJECT_MAX_SKILLS = 2;
 const SKILL_DIRECT_INJECT_CHARS = 2000;
 const SKILL_MATCH_MAX_HITS = 2;
-function totalMsgChars(msgs: { role: string; content: unknown }[]): number {
-  return msgs.reduce((sum, m) => {
-    const t = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-    return sum + t.length;
-  }, 0);
-}
 
 /** 调用应用内置工具（fetch_page 网页抓取、web_search 搜索） */
 /// 从用户提问中提取搜索关键词（去标点、去常见请求/疑问/分析词），提升自动搜索相关度。
@@ -6407,61 +6407,23 @@ export const useChatStore = defineStore("chat", () => {
         await maybeAutoCompact(conv, config);
         turnTiming.compaction += Date.now() - tCompact;
       }
-      const maxCtx = config.maxContextMessages || 50;
-      const histAll = conv.messages.filter((m) => m.role !== "system" && !m.streaming);
-      const histStart = Math.max(0, histAll.length - maxCtx);
-      const hist = histAll.slice(histStart);
-      const rustMsgs: AgentMsg[] = [];
-      // O1 智能上下文压缩：记录每条历史对应的原始会话消息序号（用于定位已被摘要覆盖的最老段）
-      const rustOrig: (number | null)[] = [];
-      if (sp) {
-        rustMsgs.push({ role: "system", content: sp });
-        rustOrig.push(null);
-      }
-      // 上下文压缩（融合 Codex 的 new_context_window）：被压缩掉的老历史不再逐条发送，
-      // 改为先注入一段摘要（界面仍保留全部消息，只影响模型可见上下文）。
+      // 请求装配抽到纯函数（`utils/agent-request.ts`）：可单测，且把两条不变量写在一处 ——
+      // ① 前缀稳定（system + 历史逐字不变，易变内容只追加到最后一条 user）；
+      // ② 模型可见即已记录（老会话遗留的 UI 卡片在这里剥掉；空正文不发，且不占 origins 位）。
       const compactBefore = conv.compactBefore ?? 0;
-      const compactSummary = conv.compactSummary ?? "";
-      if (compactBefore > 0 && compactSummary) {
-        rustMsgs.push({
-          role: "user",
-          content: `[已压缩的历史对话摘要（原始消息已从本次请求移除；需要细节可 read_file 已落盘产物）]\n${compactSummary}`,
-        });
-        rustOrig.push(null);
-      }
-      hist.forEach((m, i) => {
-        if (compactBefore > 0 && histStart + i < compactBefore) return; // 已被摘要覆盖，跳过
-        rustOrig.push(histStart + i);
-        // DeepSeek 不支持图片：所有带图片的消息（含历史残留的图片消息）一律只发文本，
-        // 避免收到 image_url 报 400；支持图片的模型才发送多模态。
-        if (m.images?.length && !isDS) {
-          rustMsgs.push({
-            role: m.role,
-            content: [
-              { type: "text", text: m.content },
-              ...m.images.map((img) => ({
-                type: "image_url",
-                image_url: { url: img.base64, detail: "auto" },
-              })),
-            ],
-          });
-        } else {
-          // 发给模型的历史必须干净：老会话的 content 里还留着 UI 卡片（新数据已不含），
-          // 不剥的话模型照样会模仿出伪卡片（显示层早已这么做，模型侧此前漏了）。
-          const visible = modelVisibleContent(m, (c) => splitLeadingToolCards(c).body);
-          if (visible) rustMsgs.push({ role: m.role, content: visible });
-        }
+      const assembled = assembleRequest(conv.messages, {
+        systemPrompt: sp,
+        maxContextMessages: config.maxContextMessages || 50,
+        supportsImages: !isDS, // DeepSeek 不支持图片输入：一律只发文本，避免 400
+        compactBefore,
+        compactSummary: conv.compactSummary ?? "",
+        modelVisibleContent: (m) => modelVisibleContent(m, (c) => splitLeadingToolCards(c).body),
       });
+      const rustMsgs: AgentMsg[] = assembled.messages as AgentMsg[];
+      const rustOrig: (number | null)[] = assembled.origins;
 
-      // 把本次易变上下文追加到最新一条用户消息末尾（不进 system，保证 system+历史前缀稳定可缓存）
-      if (volatileCtx.length > 0) {
-        const lastUser = [...rustMsgs].reverse().find((m) => m.role === "user");
-        if (lastUser && typeof lastUser.content === "string") {
-          lastUser.content = `${lastUser.content}\n\n[本次补充上下文]\n${volatileCtx.join("\n\n")}`;
-        } else {
-          rustMsgs.push({ role: "user", content: `[本次补充上下文]\n${volatileCtx.join("\n\n")}` });
-        }
-      }
+      // 易变上下文只追加到最后一条 user（不进 system：system+历史是缓存前缀，一变就全价重算）
+      appendVolatileContext(rustMsgs, volatileCtx);
 
       // 发送前上下文总长保护 + O1 智能上下文压缩：历史里若残留超大消息
       //（如早期 directory_tree 全量结果被持久化进 SQLite），先尝试删除
@@ -6470,7 +6432,7 @@ export const useChatStore = defineStore("chat", () => {
       // 粗暴裁剪（保底不超模型上限，不因总长超限 break 导致回复中断）。
       const MAX_SEND_CHARS = 1_200_000;
       if (totalMsgChars(rustMsgs) > MAX_SEND_CHARS) {
-        // 收集已被摘要覆盖的原始消息序号（summaries 表：会话自动摘要，落库复用、不重算）
+        // 首先收集「已被自动摘要覆盖」的原始消息序号（摘要已在易变上下文里补偿）
         const covered = new Set<number>();
         try {
           const sums = await invoke<{ msg_range_start: number; msg_range_end: number }[]>(
@@ -6480,29 +6442,10 @@ export const useChatStore = defineStore("chat", () => {
           for (const s of sums)
             for (let i = s.msg_range_start; i <= s.msg_range_end; i++) covered.add(i);
         } catch {
-          /* 忽略 */
+          /* 忽略：拿不到摘要覆盖范围就退化为粗暴裁剪 */
         }
-        // 优先删除已被摘要覆盖的最老段（摘要已在 volatileCtx 补偿，保留其余原文）
-        let pruned = true;
-        while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && pruned && rustMsgs.length > 2) {
-          pruned = false;
-          for (let i = 1; i < rustMsgs.length; i++) {
-            // 0 是 system，保留
-            if (covered.has(rustOrig[i] as number)) {
-              rustMsgs.splice(i, 1);
-              rustOrig.splice(i, 1);
-              pruned = true;
-              break;
-            }
-          }
-        }
-        // 覆盖段删尽仍超长 → 回退粗暴裁剪（从最早非 system 删，保底不超限）
-        while (totalMsgChars(rustMsgs) > MAX_SEND_CHARS && rustMsgs.length > 2) {
-          const idx = rustMsgs.findIndex((m) => m.role !== "system");
-          if (idx === -1) break;
-          rustMsgs.splice(idx, 1);
-          rustOrig.splice(idx, 1);
-        }
+        // 两相裁剪（先删有摘要兜底的，再退到粗暴）见 `pruneToBudget`
+        pruneToBudget({ messages: rustMsgs, origins: rustOrig, covered, maxChars: MAX_SEND_CHARS });
       }
       // 裁剪后重算输入 token（用于费用计算）
       inputTokens = rustMsgs.reduce((sum, m) => {
