@@ -79,10 +79,13 @@ import { getModeById, isToolAllowedByMode, type AgentModeId } from "@/data/modes
 import { finalizePlanSteps, startNextPendingStep } from "@/utils/task-plan";
 import { isToolDisabled, isPathAllowed, pathArgOf } from "@/utils/permissions";
 import {
+  contentReduceRule,
   disabledToolRule,
   modelVisibleContent,
   pathWhitelistRule,
+  runPostTool,
   runPreTool,
+  secretRedactRule,
 } from "@/utils/intercepts";
 import { splitLeadingToolCards } from "@/utils/tool-summary";
 import { routeProfileId } from "@/utils/model-routing";
@@ -1783,15 +1786,13 @@ const TOOL_RESULT_HEAD = 4000;
 const TOOL_RESULT_TAIL = 1200;
 
 /// 同步版截断（子代理循环等不便 await 的场景）：同样先脱敏，避免密钥进入子代理上下文
-function truncateToolResult(result: string): string {
-  const safe = redactSecrets(result).text;
-  if (safe.length <= MAX_TOOL_RESULT_CHARS) return safe;
-  return (
-    `${safe.slice(0, MAX_TOOL_RESULT_CHARS)}` +
-    `\n\n…[工具结果过长已截断（原 ${safe.length} 字符，仅保留前 ${MAX_TOOL_RESULT_CHARS} 字符）。` +
-    `如确需完整内容，请缩小查询范围或用更精准的参数重新调用工具]`
-  );
-}
+/// 后处理链：**脱敏 → 内容感知压缩**（顺序固定，见 `intercepts.POST_ORDER`）。
+/// 原生 tool_calls、文本工具路径、子代理三条路都走这里 —— 此前文本路径只做硬截断，
+/// 既没压缩（上下文白白变大）也没保留中段（信息直接丢）。
+const POST_TOOL_RULES = [
+  secretRedactRule((t) => redactSecrets(t)),
+  contentReduceRule((tool, t) => reduceToolResult(tool, t)),
+];
 
 /// 超长工具结果处理（诊断报告②：单轮上下文预算）：**先脱敏 → 再内容感知压缩 → 最后才考虑落盘**：
 /// ① 脱敏：网页/命令输出常夹带密钥（吸收自 DSH 生态的 secret-guard / dsh-mask），绝不进上下文、日志与落盘；
@@ -1800,8 +1801,9 @@ function truncateToolResult(result: string): string {
 /// ③ 仍超预算：把**脱敏后的完整原文**落盘（`save_tool_output`），回填只留「首 + 尾 + 路径」，
 ///    模型可用 read_file（offset/length）分段取回。既不膨胀上下文，也不丢信息。
 async function foldToolResult(tool: string, result: string): Promise<string> {
-  const safe = redactSecrets(result).text;
-  const reduced = reduceToolResult(tool, safe);
+  const post = runPostTool(POST_TOOL_RULES, { tool }, result);
+  const safe = post.text;
+  const reduced = { text: post.text, notes: post.notes };
   const reduceNote = reduced.notes.length
     ? `\n\n…[工具结果已压缩：${reduced.notes.join("；")}。上面看到的是压缩视图，需要中间细节请用更精确的参数重查]`
     : "";
@@ -4528,7 +4530,8 @@ async function runSubagentLoop(
         msgs.push({
           role: "tool",
           tool_call_id: call.id,
-          content: truncateToolResult(markExternalToolResult(ref.tool, result)) + windDown,
+          content:
+            (await foldToolResult(ref.tool, markExternalToolResult(ref.tool, result))) + windDown,
         });
       }
       continue; // 结果已回填，继续下一轮
@@ -4562,7 +4565,7 @@ async function runSubagentLoop(
       const windDown = round >= maxRounds - 3 ? SUBAGENT_WIND_DOWN_HINT : "";
       msgs.push({
         role: "user",
-        content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。${windDown}`,
+        content: `<tool_result>\n${await foldToolResult(tc.tool, markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续完成子任务，不要重复调用同一工具。${windDown}`,
       });
       continue;
     }
@@ -7280,7 +7283,7 @@ export const useChatStore = defineStore("chat", () => {
               : "";
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n${truncateToolResult(markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
+            content: `<tool_result>\n${await foldToolResult(tc.tool, markExternalToolResult(tc.tool, result))}\n</tool_result>\n\n请基于工具结果继续回答用户的问题。${closingHint}`,
           });
         } catch (e: unknown) {
           if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即退出工具循环，不当作工具失败
@@ -7308,7 +7311,7 @@ export const useChatStore = defineStore("chat", () => {
               : "";
           rustMsgs.push({
             role: "user",
-            content: `<tool_result>\n错误: ${truncateToolResult(err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。${editRetryHint}`,
+            content: `<tool_result>\n错误: ${await foldToolResult(tc.tool, err)}\n</tool_result>\n\n工具调用失败，请直接回答或调整参数重试。${editRetryHint}`,
           });
         }
       }

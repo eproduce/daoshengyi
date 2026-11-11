@@ -161,3 +161,86 @@ export function modelVisibleContent(
   if ((msg.tools?.length ?? 0) > 0) return "（本轮执行了工具，未给出文字结论）";
   return "";
 }
+
+// ── 工具结果的后处理链（post-tool）────────────────────────────────────────────
+//
+// 同样的病：结果后处理原来也有两份实现 —— 原生 tool_calls 走 `foldToolResult`
+// （脱敏 → 内容感知压缩 → 阈值 → 落盘 + 首尾保留），而**文本工具路径与子代理**走
+// `truncateToolResult`（只脱敏 + 硬截断）：压缩没做（上下文白白变大）、中间内容直接丢。
+// 现在统一成一条链，两个调用面都走它。
+
+/** 后处理规则的副作用说明：`notes` 会拼进结果末尾（让模型知道「你看到的是压缩视图」） */
+export interface PostToolRule {
+  id: string;
+  order: number;
+  run(text: string, ctx: { tool: string }): { text: string; notes: string[] };
+}
+
+export interface PostToolOutcome {
+  text: string;
+  notes: string[];
+  applied: string[];
+}
+
+/**
+ * 依次跑后处理规则。与 pre-tool 不同：**不短路**（每一步都是对文本的变换，全都要生效），
+ * 单条规则抛异常则跳过它并继续（不能因为一条脱敏规则崩了就把工具结果吞掉）。
+ */
+export function runPostTool(
+  rules: readonly PostToolRule[],
+  ctx: { tool: string },
+  text: string,
+): PostToolOutcome {
+  const ordered = [...rules].sort((a, b) => a.order - b.order);
+  let out = text;
+  const notes: string[] = [];
+  const applied: string[] = [];
+  for (const r of ordered) {
+    try {
+      const res = r.run(out, ctx);
+      out = res.text;
+      notes.push(...res.notes);
+      applied.push(r.id);
+    } catch {
+      applied.push(`${r.id}(skipped)`);
+    }
+  }
+  return { text: out, notes, applied };
+}
+
+export const POST_ORDER = {
+  /** 脱敏必须最先：后面任何一步都可能把密钥写进日志/落盘 */
+  redact: 10,
+  /** 压缩/折叠 */
+  reduce: 20,
+} as const;
+
+/** 脱敏规则（`redactSecrets` 由调用方注入，保持本模块零依赖） */
+export function secretRedactRule(redact: (t: string) => { text: string; kinds: string[] }) {
+  return {
+    id: "secret-redact",
+    order: POST_ORDER.redact,
+    run: (text: string) => {
+      const r = redact(text);
+      return {
+        text: r.text,
+        // 只说「脱敏了几个」，不说是哪种密钥（避免把类型名当提示泄回去）
+        notes: r.kinds.length ? [`已脱敏 ${r.kinds.length} 类敏感信息`] : [],
+      };
+    },
+  } satisfies PostToolRule;
+}
+
+/** 内容感知压缩规则（`reduceToolResult` 由调用方注入） */
+export function contentReduceRule(
+  reduce: (tool: string, text: string) => { text: string; notes: string[] },
+) {
+  return {
+    id: "content-reduce",
+    order: POST_ORDER.reduce,
+    run: (text: string, ctx: { tool: string }) => {
+      const r = reduce(ctx.tool, text);
+      return { text: r.text, notes: r.notes };
+    },
+  } satisfies PostToolRule;
+}

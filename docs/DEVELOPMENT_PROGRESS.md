@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-11-11（post-tool 链上线：三条工具结果路径统一后处理）
+
+同一天第二处「两份拷贝」：**工具结果后处理**。
+- 原生 tool_calls → `foldToolResult`：脱敏 → 内容感知压缩 → 阈值 → 落盘 + 首尾保留；
+- 文本工具路径与**子代理** → `truncateToolResult`：只脱敏 + 硬截断 ——
+  **不压缩**（重复行/栈帧/通过用例全都进上下文）、**中段直接丢**（只剩前 4000 字符，且没有落盘路径找回）。
+
+### 改法
+- `intercepts.ts` 新增 post-tool 链：`runPostTool`（**不短路**，每步都是文本变换；
+  单条规则抛异常则跳过它继续，不能让一条脱敏规则崩了就吞掉工具结果），
+  `POST_ORDER` 固定「脱敏 → 压缩」（脱敏必须最早，否则后面任何一步都可能把密钥写进日志/落盘），
+  内置 `secretRedactRule` / `contentReduceRule`（依赖注入，保持零依赖、可单测）。
+- `foldToolResult` 改为跑这条链；**6 个调用点**（原生 2 + 文本 2 + 子代理 2）全部统一，
+  `truncateToolResult` 删除。文本/子代理路径顺带获得：内容感知压缩、超长结果落盘 + 首尾保留 + 「用
+  read_file 取回」的指路。
+
+### 验证
+- `tests/test-intercepts.test.ts` 新增 4 条（脱敏先于压缩、压缩说明外带、规则异常跳过、空链原样）；
+- `tests/test-tools-contract.test.ts` 新增源文本契约：`chat.ts` 不得出现 `truncateToolResult`，
+  且 `foldToolResult(` 调用点 ≥7（定义 1 + 调用 6）—— 防止以后有人又加一条「轻量截断」旁路。
+- `npm test` **770 项**（58 文件）全绿；`vue-tsc` / ESLint / Prettier 通过。
+
+---
+
 ## 2026-11-11（命令门禁去重 + 修掉 `/run` 的 forbidden 漏洞）
 
 继续「散落判定收敛」：这一轮搬的是**安全判定**，而且搬的过程里发现一个真漏洞。

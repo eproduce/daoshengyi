@@ -41,6 +41,11 @@
 > 同时补上了**反向不变量** `modelVisibleContent`：发给模型的历史里剥掉老会话遗留的 UI 卡片
 > （显示层早就剥，模型侧此前漏了）。
 > 单测 `tests/test-intercepts.test.ts` 12 条钉住三条 waterfall 语义。
+>
+> **2026-11-11 追加**：① 命令门禁收敛为 `utils/command-gate.ts` 一份编排（Agent 与 `/run` 共用，
+> 后者原先**缺 forbidden 级** —— 安全洞）；② **post-tool 链**上线（`runPostTool`：脱敏 → 内容感知压缩，
+> 不短路、单条异常跳过）：此前原生 tool_calls 走 `foldToolResult`、而文本路径与子代理走
+> `truncateToolResult`（只硬截断：不压缩、中段丢失）—— 现在三条路一份实现，由源文本契约钉住。
 
 我们现在的 sendMessage 主循环里混着大量**本应可插拔的判定**：模式护栏、`isVagueBody` 空洞判定、
 `hasToolCallIntent` 修正、工具白名单/禁用、路径白名单、审批（manual/smart/yolo）、会话放行、

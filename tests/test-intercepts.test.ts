@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   ORDER,
+  POST_ORDER,
+  contentReduceRule,
+  runPostTool,
+  secretRedactRule,
   disabledToolRule,
   modelVisibleContent,
   pathWhitelistRule,
@@ -170,5 +174,53 @@ describe("modelVisibleContent：发给模型的历史里不许有 UI 卡片", ()
 
   it("空内容且无工具 → 空串（由调用方决定跳过该条）", () => {
     expect(modelVisibleContent({ role: "assistant", content: "" }, (c) => c)).toBe("");
+  });
+});
+
+describe("runPostTool：结果后处理链（脱敏 → 压缩，不短路）", () => {
+  const redact = (t: string) => ({
+    text: t.replace(/sk-[A-Za-z0-9]+/g, "sk-***"),
+    kinds: /sk-/.test(t) ? ["api_key"] : [],
+  });
+  const reduce = (tool: string, t: string) => ({
+    text: t
+      .split("\n")
+      .filter((l, i, a) => a.indexOf(l) === i)
+      .join("\n"), // 去重复行
+    notes: tool === "run_command" ? ["折叠 3 行重复输出"] : [],
+  });
+  const rules = [secretRedactRule(redact), contentReduceRule(reduce)];
+
+  it("脱敏先于压缩（密钥不会因为压缩被写进 note/落盘）", () => {
+    const out = runPostTool(rules, { tool: "fetch_page" }, "key=sk-abc123\na\na\nb");
+    expect(out.text).not.toContain("sk-abc123");
+    expect(out.text).toBe("key=sk-***\na\nb");
+    expect(out.notes).toContain("已脱敏 1 类敏感信息");
+    expect(out.applied).toEqual(["secret-redact", "content-reduce"]);
+    expect(POST_ORDER.redact).toBeLessThan(POST_ORDER.reduce);
+  });
+
+  it("压缩说明会带出来（模型要知道自己看的是压缩视图）", () => {
+    const out = runPostTool(rules, { tool: "run_command" }, "x\nx");
+    expect(out.notes).toContain("折叠 3 行重复输出");
+  });
+
+  it("某条规则抛异常 → 跳过它、继续后面的（不能把结果整个吞掉）", () => {
+    const boom = {
+      id: "boom",
+      order: 5,
+      run: (): { text: string; notes: string[] } => {
+        throw new Error("bug");
+      },
+    };
+    const out = runPostTool([boom, secretRedactRule(redact)], { tool: "x" }, "sk-abc");
+    expect(out.applied).toEqual(["boom(skipped)", "secret-redact"]);
+    expect(out.text).toBe("sk-***");
+  });
+
+  it("空链原样返回（没有规则 ≠ 破坏结果）", () => {
+    const out = runPostTool([], { tool: "x" }, "原文");
+    expect(out.text).toBe("原文");
+    expect(out.notes).toEqual([]);
   });
 });

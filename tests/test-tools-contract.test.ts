@@ -52,6 +52,14 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect(chatSrc).toContain("composeAssistantContent(finalText");
   });
 
+  it("工具结果后处理只有一份实现（原生 / 文本 / 子代理三条路都走 foldToolResult）", () => {
+    // 此前文本路径与子代理用的是 truncateToolResult（只脱敏 + 硬截断）：没压缩、中段直接丢
+    expect(chatSrc).not.toContain("truncateToolResult");
+    const calls = chatSrc.match(/foldToolResult\(/g) ?? [];
+    // 定义 1 处 + 6 个调用点（原生 2、文本 2、子代理 2）
+    expect(calls.length).toBeGreaterThanOrEqual(7);
+  });
+
   it("中断错误写进正文（而不是塞进 toolChain 等拼接）", () => {
     expect(chatSrc).toContain("回复生成中断");
     expect(chatSrc).not.toContain("让 finally 只拼 toolChain");
