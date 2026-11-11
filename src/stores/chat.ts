@@ -134,6 +134,7 @@ import { redactSecrets } from "@/utils/secret-redact";
 import { reduceToolResult } from "@/utils/tool-result-reduce";
 // 危险命令分级判定（吸收自 DSH 生态 safety-net / risk-gate：分级 + 原因 + 误报抑制）
 import { assessCommandRisk, describeRisk, type RiskVerdict } from "@/utils/danger-rules";
+import { runCommandGate, type ApprovalMode, type CommandGateDeps } from "@/utils/command-gate";
 // 工具调用参数自愈（吸收自 DSH 生态 dsh-tool-normalizer：别名/类型/包裹层）
 import { normalizeToolArgs } from "@/utils/tool-arg-normalize";
 import { BUILTIN_PARAMETERS } from "@/data/builtin-params";
@@ -5493,11 +5494,6 @@ export const useChatStore = defineStore("chat", () => {
     return assessCommandRisk(cmdStr);
   }
 
-  function isDangerous(cmdStr: string): boolean {
-    const level = riskOf(cmdStr).level;
-    return level === "danger" || level === "forbidden";
-  }
-
   /// Smart 智能审批：用当前模型判断危险命令是否可安全自动执行。
   /// 判断失败或无法调用时保守返回 false（走手动确认）。
   async function judgeCommandSafety(cmdStr: string): Promise<boolean> {
@@ -5543,49 +5539,28 @@ export const useChatStore = defineStore("chat", () => {
     const { command } = parseCommandLine(cmdStr); // 整条命令执行，args 不需拆
     if (!command) return;
 
-    // S1 命令执行策略引擎：先查规则文件（deny 拦截 / allow 放行 / prompt 或未命中走现有三档审批）
-    let policy: { decision: string; matched: string | null } | null = null;
-    try {
-      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", {
-        command: cmdStr,
-      });
-    } catch {
-      /* 策略查询失败 → 按未命中处理（原有行为兜底） */
-    }
-    const policyDecision = policy?.decision ?? "none";
-    if (policyDecision === "deny") {
-      notify(
-        `⛔ 命令被「命令执行策略」拦截：\n\n$ ${cmdStr}\n\n命中规则：\`${policy?.matched ?? "?"}\`\n\n可在 设置→权限→命令执行策略 中调整规则。`,
-      );
+    // 命令门禁：与 Agent 的 run_command **共用同一份编排**（utils/command-gate.ts）。
+    // 此前这里是内联复制的一份：同样的策略与风险判定，但
+    //   ① 没有 forbidden 级（`rm -rf /` 之类点一次确认就能跑 —— 安全洞）；
+    //   ② 不认会话授权，会重复弹窗；
+    //   ③ 话术与 Agent 侧各写一份，改一处必漏另一处。
+    const gate = await runCommandGate(cmdStr, "user", {
+      checkPolicy: async (command) =>
+        invoke<{ decision: string; matched: string | null }>("check_command_policy", { command }),
+      riskOf,
+      describeRisk,
+      hasPermit: hasSessionPermit,
+      approvalMode: (): ApprovalMode => {
+        const st = getSettings();
+        return st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      },
+      askConfirm,
+      judgeSafety: judgeCommandSafety,
+    });
+    if (gate.decision === "deny") {
+      // 空话术 = 用户自己取消，不必再弹通知
+      if (gate.message) notify(gate.message);
       return;
-    }
-    // 危险命令审批：策略命中 allow 直接放行；prompt 或未命中但命中内置危险模式 → 走
-    // manual 手动确认（默认）/ smart 辅助模型智能判断 / yolo 全部自动批准
-    // 例外：用户已通过 request_permissions 在本会话授权「命令执行」→ 不再重复弹确认
-    //（execpolicy 的 deny / prompt 规则仍优先，不会被会话授权绕过）
-    const needsConfirm =
-      policyDecision === "prompt" ||
-      (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
-    if (needsConfirm) {
-      const st = getSettings();
-      const mode: "manual" | "smart" | "yolo" | "on-failure" =
-        st.approvalMode || (st.yoloMode ? "yolo" : "manual");
-      // on-failure（吸收自 Codex 的 ApprovalMode::OnFailure）：先执行，失败后才升级询问
-      // ——此处直接放行，失败分支在 agentRunCommand / agentExecCommand 里处理。
-      if (mode === "manual") {
-        const ok = await askConfirm(`⚠️ 检测到危险命令：\n\n$ ${cmdStr}\n\n确定要执行吗？`);
-        if (!ok) return;
-      } else if (mode === "smart") {
-        const safe = await judgeCommandSafety(cmdStr);
-        if (!safe) {
-          const ok = await askConfirm(
-            `⚠️ 智能审批判定该命令存在风险：\n\n$ ${cmdStr}\n\n确定仍要执行吗？`,
-          );
-          if (!ok) return;
-        }
-        // 判定安全 → 自动放行
-      }
-      // yolo → 自动放行
     }
 
     let convId = activeConversationId.value;
@@ -5657,56 +5632,24 @@ export const useChatStore = defineStore("chat", () => {
   /// Agent 命令安全门禁（`run_command` / `exec_command` 共用同一管线）：
   /// execpolicy deny 直接拦截；prompt 或内置危险模式按审批模式（manual/smart/yolo）处理。
   /// 返回 `null` = 放行；返回字符串 = 拒绝原因（直接作为工具结果返回给模型）。
+  /// 命令门禁：策略 → 语义风险 → 审批模式（三段编排抽到 `utils/command-gate.ts`，可单测）。
+  /// 返回 null 表示放行；返回字符串表示拒绝，且这句话是写给**模型**的（告诉它怎么改）。
   async function gateAgentCommand(cmdStr: string): Promise<string | null> {
-    // execpolicy：deny 直接拦截返回（不让模型重试绕行）；allow / prompt / 未命中继续
-    let policy: { decision: string; matched: string | null } | null = null;
-    try {
-      policy = await invoke<{ decision: string; matched: string | null }>("check_command_policy", {
-        command: cmdStr,
-      });
-    } catch {
-      /* 策略查询失败按未命中处理（原有兜底） */
-    }
-    const policyDecision = policy?.decision ?? "none";
-    if (policyDecision === "deny") {
-      return `⛔ 命令被「命令执行策略」拦截（命中：\`${policy?.matched ?? "?"}\`）：$ ${cmdStr}\n此类破坏性命令不允许 Agent 执行；若确需，请让用户手动输入 /run 或调整 设置→权限→命令执行策略。`;
-    }
-    // 语义门禁（二次防护）：forbidden 级命令直接拒绝，并说明原因与替代方案（让模型学会改法）
-    const risk = riskOf(cmdStr);
-    if (risk.level === "forbidden") {
-      return `${describeRisk(risk, cmdStr)}\n\n（该命令不会被执行。请改用安全替代方案，或由用户手动执行。）`;
-    }
-    // 危险命令按审批模式放行；未获批准则返回说明，让模型改用安全命令或请用户手动执行。
-    // 例外：用户已通过 request_permissions 在本会话授权「命令执行」→ 不再重复弹确认
-    //（execpolicy 的 deny / prompt 规则仍优先，不会被会话授权绕过）。
-    const needsConfirm =
-      policyDecision === "prompt" ||
-      (isDangerous(cmdStr) && policyDecision !== "allow" && !hasSessionPermit("run_command"));
-    if (!needsConfirm) return null;
-    const riskLine =
-      risk.level === "danger"
-        ? `\n\n风险项：${risk.title}\n原因：${risk.reason}${risk.suggestion ? `\n建议：${risk.suggestion}` : ""}`
-        : "";
-    const st = getSettings();
-    const mode: "manual" | "smart" | "yolo" | "on-failure" =
-      st.approvalMode || (st.yoloMode ? "yolo" : "manual");
-    if (mode === "manual") {
-      const ok = await askConfirm(
-        `⚠️ Agent 想执行一条危险命令，请确认：\n\n$ ${cmdStr}${riskLine}\n\n（拒绝后 Agent 会改用更安全的方式）`,
-      );
-      if (!ok)
-        return `（未获授权：危险命令 $ ${cmdStr} 被用户拒绝${risk.level === "danger" ? `（风险项：${risk.title}）` : ""}，请改用更安全的命令，或请用户手动执行）`;
-    } else if (mode === "smart") {
-      const safe = await judgeCommandSafety(cmdStr);
-      if (!safe) {
-        const ok = await askConfirm(
-          `⚠️ 智能审批判定该命令有风险，Agent 请求执行：\n\n$ ${cmdStr}${riskLine}\n\n是否仍允许？`,
-        );
-        if (!ok) return `（未获授权：危险命令 $ ${cmdStr} 被拒绝）`;
-      }
-    }
-    // yolo → 自动放行
-    return null;
+    const deps: CommandGateDeps = {
+      checkPolicy: async (command) =>
+        invoke<{ decision: string; matched: string | null }>("check_command_policy", { command }),
+      riskOf,
+      describeRisk,
+      hasPermit: hasSessionPermit,
+      approvalMode: (): ApprovalMode => {
+        const st = getSettings();
+        return st.approvalMode || (st.yoloMode ? "yolo" : "manual");
+      },
+      askConfirm,
+      judgeSafety: judgeCommandSafety,
+    };
+    const out = await runCommandGate(cmdStr, "agent", deps);
+    return out.decision === "deny" ? out.message : null;
   }
 
   /// on-failure 模式专用（吸收自 Codex 的 ApprovalMode::OnFailure）：命令先跑，
