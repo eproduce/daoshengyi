@@ -110,6 +110,7 @@ import {
 } from "@/utils/workflow-engine";
 import {
   buildMiningPrompt,
+  repairModelGraph,
   minedWorkflowName,
   parseMinedGraph,
   shouldMineWorkflow,
@@ -2545,7 +2546,9 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
       const raw = (data?.content || "").trim();
       let improved: WorkflowGraph;
       try {
-        improved = JSON.parse(extractJsonBlock(raw)) as WorkflowGraph;
+        // 与工作流沉淀同一条修复路径：模型常丢掉节点 id 或用 from/to 写连线，
+        // 直接校验只会得到「源节点 undefined 不存在」并整张丢弃。
+        improved = repairModelGraph(JSON.parse(extractJsonBlock(raw)) as WorkflowGraph);
       } catch {
         throw new Error("模型未返回合法 JSON，未做改动：\n" + raw.slice(0, 300));
       }

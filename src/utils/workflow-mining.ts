@@ -11,7 +11,7 @@
  * - **命名**确定性：同名即覆盖（workflow_save 是 upsert），所以同一目标重复出现时是「细化」
  *   而不是堆积重复工作流。
  */
-import type { WorkflowGraph, WorkflowNode } from "./workflow-engine";
+import type { WorkflowEdge, WorkflowGraph, WorkflowNode } from "./workflow-engine";
 
 /** 工具轨迹的一步（取自 ChatTool 的可见字段） */
 export interface MinedToolStep {
@@ -73,23 +73,112 @@ export function buildMiningPrompt(goal: string, steps: MinedToolStep[]): string 
     "1. 节点类型 text/llm/tool/condition/code/end；节点 id 用小写字母数字（n1、n2…）；每个节点必须有 label。\n" +
     '2. 上游输出用 {{节点id}} 引用；tool 节点 config={"tool":"工具名","toolArgs":{...}}；' +
     'llm 节点 config={"prompt":"提示词"}；condition 节点 config={"expression":"布尔表达式"} 且其出边带 label true/false。\n' +
-    "3. 把**一次性的具体输入**（本次的文件名/关键词/日期等）抽象成占位符 {{user}}，不要写死本次的具体值。\n" +
-    "4. 节点数量 3~8 个，只保留有复用价值的环节；**不要**包含规划/记忆类动作（plan_task、memory_*）。\n" +
-    '5. **只输出工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）：{"nodes":[...],"edges":[...]}'
+    '3. 连线格式固定为 {"id":"e1","source":"上游节点 id","target":"下游节点 id"}，' +
+    "source/target 必须用**节点 id**（不是 label、不是序号）；每个非起始节点都要有入边。\n" +
+    "4. 把**一次性的具体输入**（本次的文件名/关键词/日期等）抽象成占位符 {{user}}，不要写死本次的具体值。\n" +
+    "5. 节点数量 3~8 个，只保留有复用价值的环节；**不要**包含规划/记忆类动作（plan_task、memory_*）。\n" +
+    '6. **只输出工作流 JSON**（不要 markdown 代码块、不要解释、不要注释）：{"nodes":[...],"edges":[...]}'
   );
 }
 
-/** 补齐图编辑器需要的字段（模型通常只给 id/type/label/config） */
-function normalizeGraph(graph: WorkflowGraph): WorkflowGraph {
-  const nodes: WorkflowNode[] = graph.nodes.map((n, i) => ({
-    ...n,
-    id: n.id || `n${i + 1}`,
-    label: n.label || n.id || `节点${i + 1}`,
-    config: n.config && typeof n.config === "object" ? n.config : {},
-    x: typeof n.x === "number" ? n.x : 60 + (i % 3) * 220,
-    y: typeof n.y === "number" ? n.y : 60 + Math.floor(i / 3) * 140,
-  }));
-  const edges = graph.edges.map((e, i) => ({ ...e, id: e.id || `e${i + 1}` }));
+/** 模型写连线时的常见别名（不同提示词/模型会混用 React Flow 与自定义字段名） */
+type LooseEdge = {
+  id?: string;
+  source?: unknown;
+  target?: unknown;
+  from?: unknown;
+  to?: unknown;
+  src?: unknown;
+  dst?: unknown;
+  sourceId?: unknown;
+  targetId?: unknown;
+  label?: unknown;
+};
+
+/** 端点可能是 id、label，或节点的 0/1 基下标 —— 都要能落到最终节点 id 上 */
+function edgeEndpoints(e: LooseEdge): { source: unknown; target: unknown } {
+  return {
+    source: e.source ?? e.from ?? e.src ?? e.sourceId,
+    target: e.target ?? e.to ?? e.dst ?? e.targetId,
+  };
+}
+
+/**
+ * 补齐图编辑器需要的字段并**修复连线端点**（模型产出的图都过一遍再校验）。
+ *
+ * 为什么不只是补 id：节点缺 id 时会退化成 `n1…nN`，而连线仍按模型原来写的东西去指
+ * ——两者一旦对不上，`validateWorkflowGraph` 就报「连线 e1 源节点 undefined 不存在」，
+ * 整张图被丢弃（2026-11-12 实测日志）。而这类图往往**只有连线书写格式不对**，节点与语义
+ * 都是好的。所以这里把「节点原 id / label / 下标」都登记成别名，连线端点统一过一遍映射：
+ * 能修复的修复（含 `from`/`to` 等别名、按 label 引用、按下标引用），修不了的悬空边丢掉，
+ * 不让一条坏边毁掉整次沉淀。
+ */
+export function repairModelGraph(graph: WorkflowGraph): WorkflowGraph {
+  const used = new Set<string>();
+  const nodes: WorkflowNode[] = graph.nodes.map((n, i) => {
+    let id = (n.id || "").trim() || `n${i + 1}`;
+    while (used.has(id)) id = `${id}_${used.size + 1}`; // 兜底去重，避免规范化自己造出重复 id
+    used.add(id);
+    return {
+      ...n,
+      id,
+      label: n.label || n.id || `节点${i + 1}`,
+      config: n.config && typeof n.config === "object" ? n.config : {},
+      x: typeof n.x === "number" ? n.x : 60 + (i % 3) * 220,
+      y: typeof n.y === "number" ? n.y : 60 + Math.floor(i / 3) * 140,
+    };
+  });
+
+  // 别名表：原 id、label、0 基与 1 基下标 → 最终 id（先登记的直接 id 优先）
+  const alias = new Map<string, string>();
+  nodes.forEach((node, i) => {
+    const orig = graph.nodes[i];
+    for (const key of [orig.id, node.label, orig.label]) {
+      const k = typeof key === "string" ? key.trim() : "";
+      if (k && !alias.has(k)) alias.set(k, node.id);
+    }
+  });
+  // 下标基数是**整张图统一**的，不能逐条猜：只要出现过一个 0，就说明这张图是 0 基
+  // （1 基不会出现 0）；否则按 1 基理解（"第 1 个节点"是最常见写法）。
+  // 逐条猜会让 `from:0,to:1` 变成自环（0→第1个、1→第1个），等于把边全丢掉。
+  const numericOf = (e: unknown): number | null => {
+    if (typeof e === "number") return Number.isFinite(e) ? e : null;
+    if (typeof e === "string" && /^\d+$/.test(e.trim())) return Number(e.trim());
+    return null;
+  };
+  const zeroBased = (graph.edges as LooseEdge[]).some((raw) => {
+    const { source, target } = edgeEndpoints(raw ?? {});
+    return numericOf(source) === 0 || numericOf(target) === 0;
+  });
+  const byIndex = (n: number): string | null => nodes[zeroBased ? n : n - 1]?.id ?? null;
+  const resolve = (endpoint: unknown): string | null => {
+    if (typeof endpoint === "number") return byIndex(endpoint);
+    if (typeof endpoint !== "string") return null;
+    const k = endpoint.trim();
+    if (!k) return null;
+    const hit = alias.get(k);
+    if (hit) return hit;
+    return /^\d+$/.test(k) ? byIndex(Number(k)) : null;
+  };
+
+  const edges: WorkflowEdge[] = [];
+  const seen = new Set<string>();
+  for (const raw of graph.edges as LooseEdge[]) {
+    const { source: s, target: t } = edgeEndpoints(raw ?? {});
+    const source = resolve(s);
+    const target = resolve(t);
+    if (!source || !target || source === target) continue; // 悬空/自环：丢弃这一条，保留整张图
+    const label = typeof raw.label === "string" ? raw.label.trim() : "";
+    const key = `${source}->${target}|${label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    edges.push({
+      id: (typeof raw.id === "string" && raw.id.trim()) || `e${edges.length + 1}`,
+      source,
+      target,
+      ...(label ? { label } : {}),
+    });
+  }
   return { nodes, edges };
 }
 
@@ -127,7 +216,7 @@ export function parseMinedGraph(raw: string): WorkflowGraph | null {
     const obj = JSON.parse(text.slice(start, end + 1)) as WorkflowGraph;
     if (!obj || !Array.isArray(obj.nodes) || !Array.isArray(obj.edges)) return null;
     if (obj.nodes.length === 0) return null;
-    return normalizeGraph(obj);
+    return repairModelGraph(obj);
   } catch {
     return null;
   }

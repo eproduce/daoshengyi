@@ -4,9 +4,11 @@ import {
   buildMiningPrompt,
   parseMinedGraph,
   minedWorkflowName,
+  repairModelGraph,
   MIN_WORK_TOOLS,
   type MinedToolStep,
 } from "../src/utils/workflow-mining.ts";
+import { validateWorkflowGraph } from "../src/utils/workflow-engine.ts";
 
 const step = (name: string, status = "done"): MinedToolStep => ({ name, status });
 
@@ -130,6 +132,79 @@ describe("模型输出解析 parseMinedGraph", () => {
     expect(parseMinedGraph('{"nodes":[{"id":"a"}')).toBeNull();
   });
 
+  it("连线端点能按节点 label 引用（模型常这么写）", () => {
+    // 这正是 2026-11-12 日志里的失败形态：节点/语义都对，只是连线没写成节点 id
+    const g = parseMinedGraph(
+      JSON.stringify({
+        nodes: [
+          { id: "n1", type: "text", label: "取输入" },
+          { id: "n2", type: "llm", label: "总结", config: { prompt: "总结 {{n1}}" } },
+        ],
+        edges: [{ source: "取输入", target: "总结" }],
+      }),
+    );
+    expect(validateWorkflowGraph(g)).toBeNull();
+    expect(g!.edges[0]).toMatchObject({ source: "n1", target: "n2" });
+  });
+
+  it("连线用 from/to 或下标也能修复（不再报「源节点 undefined 不存在」）", () => {
+    const g = parseMinedGraph(
+      JSON.stringify({
+        nodes: [
+          { type: "text", label: "取输入" },
+          { type: "llm", label: "总结", config: { prompt: "总结 {{n1}}" } },
+          { type: "end", label: "结束" },
+        ],
+        edges: [
+          { from: 0, to: 1 },
+          { source: "总结", target: "结束" },
+        ],
+      }),
+    );
+    expect(validateWorkflowGraph(g)).toBeNull();
+    expect(g!.nodes.map((n) => n.id)).toEqual(["n1", "n2", "n3"]);
+    // 出现 0 → 整张图按 0 基解读：0→1 修成 n1→n2；按 label 引用的那条修成 n2→n3
+    expect(g!.edges.map((e) => [e.source, e.target])).toEqual([
+      ["n1", "n2"],
+      ["n2", "n3"],
+    ]);
+  });
+
+  it("悬空边只丢这一条，不牵连整张图（节点仍然可用）", () => {
+    const g = parseMinedGraph(
+      JSON.stringify({
+        nodes: [
+          { id: "a", type: "text", label: "取输入" },
+          { id: "b", type: "end", label: "结束" },
+        ],
+        edges: [
+          { source: "a", target: "ghost" },
+          { source: "a", target: "a" }, // 自环
+          { source: "a", target: "b" },
+          { source: "a", target: "b" }, // 重复
+        ],
+      }),
+    );
+    expect(validateWorkflowGraph(g)).toBeNull();
+    expect(g!.edges).toHaveLength(1);
+    expect(g!.edges[0]).toMatchObject({ source: "a", target: "b" });
+  });
+
+  it("规范化不制造重复 id（显式 id 与兜底 id 相撞时）", () => {
+    const g = parseMinedGraph(
+      JSON.stringify({
+        nodes: [
+          { type: "text", label: "一" },
+          { id: "n1", type: "end", label: "二" },
+        ],
+        edges: [],
+      }),
+    );
+    expect(validateWorkflowGraph(g)).toBeNull();
+    const ids = g!.nodes.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("缺失 id/label 时自动补，保证图编辑器可用", () => {
     const g = parseMinedGraph('{"nodes":[{"type":"end"}],"edges":[]}');
     expect(g!.nodes[0].id).toBe("n1");
@@ -143,5 +218,31 @@ describe("模型输出解析 parseMinedGraph", () => {
     const g = parseMinedGraph('{"nodes":[{"id":"fetch","type":"tool"}],"edges":[]}');
     expect(g!.nodes[0].id).toBe("fetch");
     expect(g!.nodes[0].label).toBe("fetch");
+  });
+});
+
+describe("repairModelGraph：模型产出的图统一修复后再校验", () => {
+  it("workflow_improve 与沉淀共用同一修复（缺 id + 连线按 label）", () => {
+    const g = repairModelGraph({
+      nodes: [
+        { type: "text", label: "取输入" },
+        { type: "llm", label: "总结", config: { prompt: "总结 {{n1}}" } },
+      ],
+      edges: [{ id: "e1", source: "取输入", target: "总结" }],
+    } as never);
+    expect(validateWorkflowGraph(g)).toBeNull();
+    expect(g.edges[0]).toMatchObject({ id: "e1", source: "n1", target: "n2" });
+  });
+
+  it("显式 id 原样保留（不因修复而改名，避免历史运行记录的引用失效）", () => {
+    const g = repairModelGraph({
+      nodes: [
+        { id: "fetch", type: "text", label: "取输入" },
+        { id: "sum", type: "end", label: "结束" },
+      ],
+      edges: [{ id: "e1", source: "fetch", target: "sum" }],
+    } as never);
+    expect(g.nodes.map((n) => n.id)).toEqual(["fetch", "sum"]);
+    expect(g.edges[0]).toMatchObject({ source: "fetch", target: "sum" });
   });
 });
