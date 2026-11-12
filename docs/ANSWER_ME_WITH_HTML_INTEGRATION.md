@@ -415,3 +415,69 @@ default-src 'none'; script-src 'sha256-TPSD…' 'sha256-lPqF…'; style-src 'uns
 `render_chart_gallery_with_mixed_types`（ignored）在**一页**里放 line / donut / combo / heatmap / gauge
 五张图，产物 1.18 MB（ECharts 内联），逐屏截图确认：折线双系列、环形图带百分比标注、
 热力图带视觉映射条、仪表盘带指针与数值、CSP 无告警 —— 混排成立。
+
+---
+
+## 13. 2026-11-12：为什么我们的产物「死板老旧」——外部同类调研 + 设计元件层
+
+用户反馈：我们生成的页面死板、老旧、不够生动，想问市面上同类插件里最好的是哪些、差在哪。
+
+### 13.1 调研结论（含出处）
+
+| 参考 | 是什么 | 真正让它好看的机制 |
+|---|---|---|
+| `QingYunA/answer-me-with-html`（6.2k★，我们内嵌的就是它） | 模型只写扩展 Markdown，CLI 负责全部视觉决策 | **justified 行布局（DP 求最优）+ 同页图形缩放比 ≤1.25×**；一套 11 档字阶；13 个语义 token 的三套主题（light/dark 各自设全）；图表选型有硬规则 |
+| `anthropics/skills` → `frontend-design`（9.2 KB） | 设计主管人设的 skill | 先出「紧凑 token 系统」（4–6 个具名 hex + 字体角色 + ASCII 线框）再写代码；**把大胆花在一个地方**；页面上只留**一个**记忆点 |
+| 同上 → `web-artifacts-builder` | React + Tailwind + shadcn 打包成单文件 | 唯一设计指令就是反 slop：「避免过度居中、紫色渐变、统一圆角、Inter 字体」 |
+| 同上 → `canvas-design` | 海报/视觉方法论 | 先写「设计哲学」再视觉化；文字是稀有手势，不是段落 |
+| 同上 → `theme-factory` | 10 套命名主题 | 把配色变成**有名字的选择题**，而不是让模型自由发挥 |
+| Anthropic Artifacts 新版 craft 指南（泄漏，可信度中） | 交付物分级 | 每类交付物有固定「叙事原型」；打印/PDF 有具体数字（A4 794×1123、页边距 72px、measure 60–75 字符） |
+| `heygen-com/hyperframes`（83k★） | HTML → 确定性视频 | 把「活」隔离到可 seek 的动画时间线，而不是给静态页乱加特效 |
+
+**反直觉但一致的总结论**：这几份顶级实现**没有一份**在教「怎么加更多动效/渐变让它显得现代」。
+`frontend-design`、Artifacts craft、am 的 `base.css`（44.5 KB 里只有 **1 个** `@keyframes`）三者独立收敛到同一句：
+
+> 让生成页面显老的从来不是「动效不够」，而是**该做的选择被默认值替代了**。
+> am 的「活」来自 ①可切换主题/明暗 ②数据高亮 ③可排序表格 ④把决策做进页面 —— 静态页面本身刻意安静。
+
+### 13.2 我们真正的缺口
+
+提示词层面我们其实已经很细（组件选型表、图表选型表、报告写法都在）。缺的是**元件**：
+模型想表达「三个关键数字」「左右对照」「逐项对比的矩阵」时没有现成 class，只能自己在
+` ```html ` 块里手写行内 style —— 于是每页都是「同圆角 + 同阴影 + 同一套间距」的卡片堆，
+也就是业界点名的 **“SaaS 卡片套装”** 味。
+
+### 13.3 已做
+
+1. **`inject_design_kit`（Rust，约 3 KB 纯 CSS，无脚本 → 不触碰 CSP）**
+   注入 `<style id="dsy-kit">`，元件全部走渲染器自己的语义 token（`--ink/--ink-2/--line/--fill/--accent/--ok/--err/--paper/--radius`），
+   因此**自动跟随主题与明暗**：
+
+   | 类 | 用途 |
+   |---|---|
+   | `.dsy-hero`（`<em>` 标重点）/ `.dsy-lede` / `.dsy-rule` | 结论页开场：一句判断 + 导语 + 发丝分隔 |
+   | `.dsy-kpis > .dsy-kpi`（`<b>数字</b><small>说明</small>`，`.dsy-up/.dsy-down`） | KPI 条：1px 间隙 + 底衬线做分隔，**不用阴影和卡角** |
+   | `.dsy-split` / `.dsy-grid2` / `.dsy-grid3` | 左右对照、2/3 栏自适应（≤720px 自动单栏） |
+   | `.dsy-matrix`（`is-accent` 标推荐列） | 对比矩阵：发丝行线 + 顶部 2px 强调 |
+   | `.dsy-tag` / `.dsy-note` / `.dsy-quote` | 标签 / 强结论 / 引述判断 |
+   | `.dsy-meter`（`style="--v:72"`）/ `.dsy-spark` | 完成度条 / 迷你趋势线（内嵌 svg path） |
+
+   全部尊重 `prefers-reduced-motion`，`@media print` 下禁用过渡并 `break-inside:avoid`；
+   幂等注入，无 `</head>` 时前置。
+
+2. **工具描述升级**：新增
+   - **版式原型三选一**（结论页 / 对照决策页 / 讲解长文），并写明「同一种原型一页只用一次」；
+   - **元件速查表**（上面那张，告诉模型「不要自己写 style」）；
+   - **反 slop 自查清单**（卡片套装、紫/彩虹渐变、全大写 eyebrow、`A · B · C` 中点、无意义 `01/02/03`、
+     emoji 当图标、圆角容器 + 左边框假 callout、Inter/Roboto/Arial、每板块 fade-up、每图补 `<details>` 数据表）。
+
+3. **顺手修掉一条被漏掉的门禁失败**：`tests/test-agent-request.test.ts` 里给历史消息传了
+   `tools`，而 `HistoryMessage` 没声明该字段 → `tsc -p tests` 一直红（我只跑过 `vue-tsc`，漏了门禁 ⑤）。
+   现已在类型上声明 `tools?: readonly unknown[]` 并写清「卡片绝不能进模型上下文」的约束。
+
+### 13.4 验证
+
+- `npm run ci:local` **8/8 全过**（vitest 62 文件 / 847 项、eslint、prettier、vue-tsc+build、tests tsc、rustfmt、clippy -D warnings、cargo test 380 项）
+- 新增 Rust 测试：元件层幂等 / 落在 `</head>` 前 / 无脚本无外链 / 11 个元件齐全 / 含 reduced-motion 与 print 分支 / 无 head 时前置
+- 真机样板（`render_design_kit_demo_page`，默认 ignore）：渲染一页 KPI + 折线 + 对照矩阵 + 完成度条 + 迷你趋势 + donut，
+  Chromium 截图确认——标题立得住、KPI 是发丝分隔而不是卡片、矩阵有推荐列高亮、图与文字同一节奏。

@@ -34,6 +34,7 @@ const SOURCES = import.meta.glob("../src/**/*.{ts,vue}", {
 }) as Record<string, string>;
 
 const chatSrc = SOURCES["../src/stores/chat.ts"] ?? "";
+const toolsSrc = SOURCES["../src/data/builtin-tools.ts"] ?? "";
 
 /**
  * 不变量：「模型可见即已记录」的**前半句** —— 正文里不许有 UI 卡片。
@@ -61,6 +62,25 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     }
     // 子代理的两个工具调用点都要传自己的 stats
     expect((chatSrc.match(/callToolStoppable\([^)]*subStats\)/g) ?? []).length).toBe(2);
+  });
+
+  it("answer_html 把版式原型与反 slop 自查写进工具描述（否则模型只会铺同款卡片）", () => {
+    const desc = toolsSrc.match(/name: "answer_html",[\s\S]*?\n {2}\},/)?.[0] ?? "";
+    expect(desc).not.toBe("");
+    for (const need of [
+      "版式原型",
+      ".dsy-hero",
+      ".dsy-kpis",
+      ".dsy-matrix",
+      ".dsy-split",
+      "卡片套装",
+      "紫色/彩虹渐变",
+      "把大胆花在一处",
+    ]) {
+      expect(desc).toContain(need);
+    }
+    // 元件表与反 slop 清单不能重复堆第二份（说两遍＝模型两头都不遵守）
+    expect((desc.match(/版式原型/g) ?? []).length).toBe(1);
   });
 
   it("任务模式的「先建计划」话术只有一份（不再 native/text 各抄一遍）", () => {

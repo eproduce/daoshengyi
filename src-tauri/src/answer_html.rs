@@ -1569,6 +1569,63 @@ window.addEventListener('beforeprint',function(){ps.forEach(function(p){p.classL
     out
 }
 
+/// 设计元件层（约 3 KB，纯 CSS，**不含脚本** → 不触碰页面 CSP）。
+///
+/// 为什么需要它：渲染器（am 0.5.x）只给「内容组件」（flow/chart/callout…）排版，
+/// 而模型想表达「三个关键数字」「左右对照」「逐项打勾的对比矩阵」时**没有现成元件**，
+/// 只能自己写 ```html + 行内 style —— 于是每一页都长成「同圆角、同阴影、同一套间距」的
+/// 卡片堆，也就是业界点名的 “SaaS 卡片套装” 味（2026-11 设计评审的外部调研结论：
+/// 让生成页显老的从来不是动效不足，而是「该做的选择被默认值替代」）。
+///
+/// 这里给出一套**有观点**的元件，全部走渲染器自己的语义 token（`--ink/--line/--accent/…`），
+/// 因此自动跟随主题与明暗；分隔用**发丝线**而不是阴影+圆角，大字用**字阶**而不是渐变。
+/// 类名统一 `dsy-` 前缀，与上游 `am-` 不冲突。
+pub fn inject_design_kit(html: &str) -> String {
+    let css = r#"<style id="dsy-kit">
+:root{--dsy-ink:var(--ink,#1c1c1c);--dsy-ink2:var(--ink-2,#555);--dsy-line:var(--line,#e5e5e5);--dsy-fill:var(--fill,#f4f4f4);--dsy-accent:var(--accent,#c0704a);--dsy-ok:var(--ok,#2f7d4f);--dsy-err:var(--err,#b4382c);--dsy-surface:var(--paper,#fff);--dsy-r1:calc(var(--radius,6px)*.5);--dsy-r2:var(--radius,6px)}
+.dsy-hero{margin:0 0 10px;max-width:32ch;font-size:clamp(26px,3.2vw,40px);line-height:1.14;font-weight:500;letter-spacing:-.012em;color:var(--dsy-ink);text-wrap:balance}
+.dsy-hero em{font-style:normal;color:var(--dsy-accent)}
+.dsy-lede{margin:0 0 8px;max-width:62ch;font-size:var(--am-fs-lead,15.5px);line-height:1.7;color:var(--dsy-ink2);text-wrap:pretty}
+.dsy-rule{height:0;border:0;border-top:1px solid var(--dsy-line);margin:26px 0}
+.dsy-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;margin:18px 0;background:var(--dsy-line);border:1px solid var(--dsy-line);border-radius:var(--dsy-r2);overflow:hidden}
+.dsy-kpi{display:flex;flex-direction:column;gap:3px;padding:13px 15px;background:var(--dsy-surface);transition:background .15s ease}
+.dsy-kpi b{font-size:clamp(19px,2.1vw,26px);font-weight:500;line-height:1.15;letter-spacing:-.01em;font-variant-numeric:tabular-nums;color:var(--dsy-ink)}
+.dsy-kpi small{font-size:var(--am-fs-small,12px);line-height:1.4;color:var(--dsy-ink2)}
+.dsy-kpi .dsy-up{color:var(--dsy-ok)}.dsy-kpi .dsy-down{color:var(--dsy-err)}
+.dsy-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:30px;align-items:start}
+.dsy-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px}
+.dsy-grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px}
+.dsy-matrix{width:100%;border-collapse:collapse;margin:16px 0;font-size:var(--am-fs-text,13px)}
+.dsy-matrix th,.dsy-matrix td{padding:8px 10px;text-align:left;vertical-align:top;border-bottom:1px solid var(--dsy-line)}
+.dsy-matrix thead th{font-weight:500;color:var(--dsy-ink2);border-bottom-color:var(--dsy-ink2)}
+.dsy-matrix td{color:var(--dsy-ink2);font-variant-numeric:tabular-nums}
+.dsy-matrix tbody th,.dsy-matrix td:first-child{color:var(--dsy-ink);font-weight:400}
+.dsy-matrix .is-accent{background:rgba(128,128,128,.1);color:var(--dsy-ink);box-shadow:inset 0 2px 0 var(--dsy-accent)}
+.dsy-tag{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border:1px solid var(--dsy-line);border-radius:var(--dsy-r1);background:var(--dsy-fill);font-size:var(--am-fs-label,11px);line-height:1.5;color:var(--dsy-ink2);white-space:nowrap}
+.dsy-note{margin:20px 0;padding:12px 0 0;border-top:2px solid var(--dsy-ink);font-size:var(--am-fs-text,13px);line-height:1.65;color:var(--dsy-ink2)}
+.dsy-quote{margin:24px 0;font-size:clamp(17px,1.9vw,22px);line-height:1.45;font-weight:400;color:var(--dsy-ink);text-wrap:pretty}
+.dsy-quote cite{display:block;margin-top:8px;font-size:var(--am-fs-small,12px);font-style:normal;color:var(--dsy-ink2)}
+.dsy-meter{position:relative;height:6px;margin:8px 0;border-radius:999px;background:var(--dsy-fill);overflow:hidden}
+.dsy-meter>i{position:absolute;inset:0 auto 0 0;width:calc(var(--v,50)*1%);border-radius:inherit;background:var(--dsy-accent);transition:width .55s cubic-bezier(.22,.61,.36,1)}
+.dsy-spark{display:block;width:100%;height:38px;overflow:visible}
+.dsy-spark path{fill:none;stroke:var(--dsy-accent);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+@media(max-width:720px){.dsy-split{grid-template-columns:minmax(0,1fr);gap:22px}}
+@media (prefers-reduced-motion:reduce){.dsy-meter>i,.dsy-kpi{transition:none}}
+@media print{.dsy-kpi,.dsy-matrix tr{break-inside:avoid}.dsy-hero{font-size:22pt}.dsy-meter>i{transition:none}}
+</style>"#;
+    if html.contains("id=\"dsy-kit\"") {
+        return html.to_string();
+    }
+    match html.rfind("</head>") {
+        Some(i) => {
+            let mut out = html.to_string();
+            out.insert_str(i, &format!("{css}\n"));
+            out
+        }
+        None => format!("{css}\n{html}"),
+    }
+}
+
 /// 给页面的 CSP 补上我们注入的内联脚本的哈希。
 ///
 /// 0.5.10 起渲染器会写一条严格的 `<meta http-equiv="Content-Security-Policy">`：
@@ -1946,7 +2003,8 @@ pub async fn answer_html(
     {
         let html = std::fs::read_to_string(&out).unwrap_or_default();
         if !html.is_empty() {
-            let patched = patch_csp_for_inline_scripts(&inject_motion(&html));
+            // 设计元件层（纯 CSS）先注入，动效层再叠；CSP 只需为脚本补哈希。
+            let patched = patch_csp_for_inline_scripts(&inject_motion(&inject_design_kit(&html)));
             if let Err(e) = std::fs::write(&out, patched) {
                 eprintln!("[answer_html] 注入动效层失败（不影响页面本身）：{e}");
             }
@@ -2236,6 +2294,129 @@ mod tests {
             "页面应无外部资源依赖"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **设计元件层样板（真机，默认忽略）**：用 `.dsy-*` 元件排一页，肉眼确认它比
+    /// 「同圆角同阴影的卡片堆」是否真的更立得住。产物路径会打印到 stderr 供截图。
+    #[tokio::test]
+    #[ignore]
+    async fn render_design_kit_demo_page() {
+        let cli = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(CLI_FILE);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let Some((node, _)) = locate_node(&home).await else {
+            eprintln!("跳过：本机没有 Node ≥ {MIN_NODE_MAJOR}");
+            return;
+        };
+        let md = "\
+```html
+<div class=\"dsy-hero\">一季度出货<em>逆势上行</em>，出口成为主要变量</div>
+<p class=\"dsy-lede\">国内需求走平，出口连续三个月抬升；毛利率的下行压力来自锂价与汇率，而不是销量。</p>
+<div class=\"dsy-kpis\">
+  <div class=\"dsy-kpi\"><b>51.2 万台</b><small>国内出货 · 环比 <span class=\"dsy-up\">+6.3%</span></small></div>
+  <div class=\"dsy-kpi\"><b>27.4 万台</b><small>出口 · 环比 <span class=\"dsy-up\">+18.0%</span></small></div>
+  <div class=\"dsy-kpi\"><b>14.8%</b><small>毛利率 · 同比 <span class=\"dsy-down\">-2.1pt</span></small></div>
+</div>
+```
+
+## 趋势：出口是唯一在加速的量
+```chart
+type: line
+title: 月度出货
+unit: 万台
+labels: 7月, 8月, 9月, 10月
+series: 国内 = 42, 45, 48, 51
+series: 出口 = 18, 21, 23, 27
+```
+
+## 对照：三条路线怎么取舍
+```html
+<div class=\"dsy-split\">
+  <div>
+    <p class=\"dsy-quote\">继续压价换量的路线已经走到尽头：单台毛利只剩 210 元，<cite>— 供应链复盘，2026-11</cite></p>
+    <p class=\"dsy-note\">判断：真正的杠杆在出口渠道，而不是再降一次价。</p>
+  </div>
+  <div>
+    <table class=\"dsy-matrix\">
+      <thead><tr><th>路线</th><th>增量</th><th>毛利</th><th>风险</th></tr></thead>
+      <tbody>
+        <tr><td>继续压价</td><td>+2%</td><td>210 元</td><td>品牌折损</td></tr>
+        <tr class=\"is-accent\"><td>出口渠道</td><td>+18%</td><td>480 元</td><td>汇率</td></tr>
+        <tr><td>高端线</td><td>+5%</td><td>760 元</td><td>验证周期</td></tr>
+      </tbody>
+    </table>
+    <span class=\"dsy-tag\">推荐：出口渠道</span>
+  </div>
+</div>
+```
+
+## 进度与构成
+```html
+<div class=\"dsy-grid2\">
+  <div><small>年度出口目标完成度</small><div class=\"dsy-meter\" style=\"--v:72\"><i></i></div></div>
+  <div><small>近 12 周出口周均值</small><svg class=\"dsy-spark\" viewBox=\"0 0 120 38\" preserveAspectRatio=\"none\"><path d=\"M0,30 L12,28 L24,29 L36,24 L48,25 L60,20 L72,18 L84,19 L96,13 L108,11 L120,8\"/></svg></div>
+</div>
+```
+```chart
+type: donut
+title: 收入构成
+unit: %
+labels: 云, 广告, 硬件
+series: 占比 = 46, 32, 22
+```
+
+## 数据来源与口径
+| 项目 | 口径 | 状态 |
+| --- | --- | --- |
+| 出货量 | 厂商出货，非零售 | ok |
+| 毛利率 | 合并口径 | warn |
+";
+        let (expanded, specs) = expand_chart_blocks(md, true).unwrap();
+        assert_eq!(specs.len(), 2);
+        let dir = std::env::temp_dir().join(format!("dsy-kit-demo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let draft = dir.join("k.md");
+        let out = dir.join("kit.html");
+        std::fs::write(
+            &draft,
+            build_draft(&expanded, Some("设计元件层样板"), Some("zh")),
+        )
+        .unwrap();
+        let args = render_args_with(&cli, &draft, &out, Some("doc"), None);
+        let envs = vec![(
+            "AM_HOME".to_string(),
+            dir.join("am-home").to_string_lossy().to_string(),
+        )];
+        let (stdout, stderr, code) = run_render(
+            &node,
+            &args,
+            None,
+            &cfg("off", None),
+            RENDER_TIMEOUT_SECS,
+            &envs,
+        )
+        .await
+        .expect("渲染进程应能启动");
+        assert_eq!(code, 0, "渲染应成功：{stdout}\n{stderr}");
+        let html = std::fs::read_to_string(&out).unwrap();
+        let echarts = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join(ECHARTS_FILE),
+        )
+        .unwrap();
+        let final_html = patch_csp_for_inline_scripts(&inject_motion(&inject_design_kit(
+            &inject_echarts(&html, &specs, &echarts).unwrap(),
+        )));
+        let demo = std::env::temp_dir().join("dsy-kit-demo.html");
+        std::fs::write(&demo, &final_html).unwrap();
+        assert!(final_html.contains("id=\"dsy-kit\""));
+        eprintln!(
+            "[kit-demo] 产物：{}（{} 字节）",
+            demo.display(),
+            final_html.len()
+        );
     }
 
     /// **图表画廊（真机，默认忽略）**：一页里放齐多种图表类型，用来看「混排」是否真的成立。
@@ -2566,6 +2747,45 @@ mod tests {
         // 没有 CSP 的页面原样返回（老版本渲染器的产物）
         let plain = "<html><body><script>x</script></body></html>";
         assert_eq!(patch_csp_for_inline_scripts(plain), plain);
+    }
+
+    #[test]
+    fn inject_design_kit_is_offline_css_only_and_idempotent() {
+        let html = "<html><head><title>t</title></head><body>x</body></html>";
+        let out = inject_design_kit(html);
+        assert!(out.contains("id=\"dsy-kit\""));
+        // 元件层必须落在 </head> 之前，否则浏览器会当作 body 内容
+        assert!(out.find("dsy-kit").unwrap() < out.find("</head>").unwrap());
+        // 纯 CSS：不得引入脚本（脚本要过 CSP 哈希）与任何外部资源
+        assert!(!out.contains("<script"), "元件层不得含脚本");
+        assert!(offline_warnings(&out).is_empty(), "不得引入外部资源");
+        // 关键元件与无障碍/打印分支都在
+        for cls in [
+            "dsy-hero",
+            "dsy-kpis",
+            "dsy-kpi",
+            "dsy-split",
+            "dsy-grid2",
+            "dsy-matrix",
+            "dsy-tag",
+            "dsy-note",
+            "dsy-quote",
+            "dsy-meter",
+            "dsy-spark",
+        ] {
+            assert!(out.contains(cls), "缺少元件 .{cls}");
+        }
+        assert!(out.contains("prefers-reduced-motion"));
+        assert!(out.contains("@media print"));
+        // 全走渲染器的语义 token，才能自动跟随主题/明暗
+        assert!(out.contains("var(--ink") && out.contains("var(--accent"));
+        assert_eq!(inject_design_kit(&out), out, "重复注入必须幂等");
+    }
+
+    #[test]
+    fn inject_design_kit_works_without_head() {
+        let out = inject_design_kit("<p>裸片段</p>");
+        assert!(out.contains("dsy-kit") && out.contains("裸片段"));
     }
 
     #[test]

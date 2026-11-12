@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-11-12（answer_html 设计元件层：从「卡片堆」到有观点的版式）
+
+用户反馈产物「死板、老旧、不够生动」，问同类里最好的是哪些。调研了 `answer-me-with-html`
+（上游本身）、`anthropics/skills` 的 `frontend-design`/`web-artifacts-builder`/`canvas-design`/`theme-factory`、
+Anthropic Artifacts 新版 craft 指南、`hyperframes`，结论见 `ANSWER_ME_WITH_HTML_INTEGRATION.md §13`。
+
+**反直觉的核心结论**：这批顶级实现没有一份在教「加更多动效/渐变」。上游 44.5 KB 的 `base.css` 里
+只有 **1 个** `@keyframes`，`frontend-design` 明确把「逐节 fade-up + 每卡 hover」列为 AI 默认味。
+让页面显老的是**该做的选择被默认值替代**：每页同一个圆角、同一个阴影、同一套间距 ——
+模型没有「KPI 条 / 左右对照 / 对比矩阵」这类元件可用，只能自己写行内 style 的卡片堆。
+
+**已做**：
+
+1. `answer_html.rs::inject_design_kit`（约 3 KB 纯 CSS，**无脚本 → 不触碰页面 CSP**）：
+   `.dsy-hero/.dsy-lede/.dsy-rule`、`.dsy-kpis>.dsy-kpi`（发丝分隔，不用卡片阴影）、`.dsy-split`、
+   `.dsy-grid2/3`、`.dsy-matrix`（`is-accent` 标推荐列）、`.dsy-tag/.dsy-note/.dsy-quote`、
+   `.dsy-meter`（`--v`）、`.dsy-spark`。全部走渲染器语义 token（`--ink/--line/--accent/--paper/…`），
+   自动跟随主题与明暗；尊重 `prefers-reduced-motion`，打印禁用过渡；幂等。
+2. 工具描述加**版式原型三选一** + **元件速查表** + **反 slop 自查清单**（9 条），并写死
+   「同一种原型一页只用一次」「整页只允许一个元素强烈」。
+3. 顺手补掉一条**一直红着却被漏掉的门禁**：`HistoryMessage` 缺 `tools` 字段导致 `tsc -p tests` 失败
+   （此前只跑了 `vue-tsc`，漏了门禁 ⑤）——现在声明为可选字段并写明「卡片绝不进上下文」。
+
+**验证**：`npm run ci:local` **8/8 通过**（vitest **62 文件 / 847 项**、eslint、prettier、vue-tsc+vite build、
+tests tsc、rustfmt、clippy -D warnings、cargo test 380 项）；新增 Rust 测试 2 条 + 真机样板测试
+（`render_design_kit_demo_page`，Chromium 截图肉眼确认）。
+
+---
+
 ## 2026-11-12（工作流沉淀修好「连线源节点 undefined」：一条坏边不再毁掉整次沉淀）
 
 真机日志抓到：

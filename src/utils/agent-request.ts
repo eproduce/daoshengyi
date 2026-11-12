@@ -25,6 +25,12 @@ export interface HistoryMessage {
   content: string;
   images?: readonly { base64: string }[];
   streaming?: boolean;
+  /**
+   * UI 卡片（`ChatMessage.tools`）会跟着真实消息一起传进来，但**绝不能进模型上下文**。
+   * 声明成可选字段而不是剔除：装配函数要能直接吃 UI 消息（少一层映射），
+   * 而「卡片不进正文」由 `modelVisibleContent` 从 `content` 里剥离（老数据兜底）。
+   */
+  tools?: readonly unknown[];
 }
 
 export interface AssembleOptions {
