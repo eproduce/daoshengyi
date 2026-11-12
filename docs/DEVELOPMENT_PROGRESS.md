@@ -2,7 +2,35 @@
 
 > 按时间记录已完成功能、修复与验证结果，便于回溯与跨会话续接。配套《开发计划》`DEVELOPMENT_PLAN.md`。
 >
-> **最后更新：2026-10-28**
+> **最后更新：2026-11-12**
+
+---
+
+## 2026-11-12（回合统计作用域化：修掉并行子代理与主回合的计数串扰）
+
+`callToolStoppable` 里的回合统计原本是**模块级**五个变量：`turnToolOk` / `turnToolFail` /
+`turnFailedTools` / `turnFailStreak` / `turnStuck`。主回合与子代理共用同一份，于是双向污染：
+
+- 子代理的失败记进主回合 → 主回合的「本回合工具全军覆没」判定被误触发；
+- 更严重的是**子代理自己能打断主回合**：`turnStuck` 一旦置位，主循环就按「卡住了」中止，
+  而它可能只是子代理在同一个错误上试了三次；
+- 反过来并行子代理彼此也会互相计数（`runSubagentLoop` 可并发）。
+
+抽成 `src/utils/turn-stats.ts`：
+
+- `createTurnStats({ onStuck })` 返回作用域实例（`ok` / `fail` / `failedTools` / `stuck` +
+  `noteOk()` / `noteFail(tool, err)` / `reset()`），`chat.ts` 建 `mainTurn` 一份、
+  `runSubagentLoop` 每次建 `subStats` 一份，`callToolStoppable(..., stats = mainTurn)` 接收作用域；
+- `looksLikeToolError(text)` 收进来（原先是内联的 `⛔`/`❌` 前缀判断）；
+- **停滞保持粘性**（置位后不因后续成功清除，语义是「本回合已被判定卡住」），
+  `onStuck` 只回调一次 —— 与原先 `bumpStuckStreak` 的行为逐字对齐。
+
+**行为对齐**：主循环的读取点（`mainTurn.stuck` / `ok` / `fail` / `failedTools`）与提示话术
+完全不变，唯一变化是子代理现在有**自己的**计数与自己的中止边界。
+
+**验证**：`npx vue-tsc --noEmit` ✓、`npx eslint` ✓、`npm test` 61 文件 / **817 项** 全绿
+（新增 `tests/test-turn-stats.test.ts` 8 项，含「两个实例互不影响」这条正是串扰回归点；
+`test-tools-contract` 加源文本契约：旧四件套全局名不得再现、子代理两处调用必须传 `subStats`）。
 
 ---
 

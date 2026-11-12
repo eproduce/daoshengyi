@@ -146,6 +146,7 @@ import {
   type EditPreviewResult,
 } from "@/utils/edit-confirm";
 import { resolveWorkflow } from "@/utils/workflow-ops";
+import { createTurnStats, looksLikeToolError, type TurnStats } from "@/utils/turn-stats";
 import {
   appendVolatileContext,
   assembleRequest,
@@ -208,7 +209,7 @@ import { countDecisions, decisionPath, mergeDecision, oneLine } from "@/utils/de
 // P1-8 输出风格（结论先行/详细/教学/审阅）
 import { applyOutputStyle } from "@/utils/output-styles";
 // P1-9b 失败台账：同一工具同一错误重复失败 → 提醒模型别再原样重试
-import { bumpFailureStreak, failureHint, stuckNotice } from "@/utils/failure-ledger";
+import { failureHint, stuckNotice } from "@/utils/failure-ledger";
 // 断点续跑：用户只说「继续」时注入确定性指令，避免模型从头重来
 import { isBareContinue, resumePrompt } from "@/utils/resume-hint";
 // read_file 分段读取（offset/length 曾被静默忽略，只能靠 awk 绕过）
@@ -698,6 +699,7 @@ async function callToolStoppable(
   server: string,
   tool: string,
   args: Record<string, unknown>,
+  stats: TurnStats = mainTurn,
 ): Promise<string> {
   const hookCtx = {
     tool,
@@ -711,9 +713,9 @@ async function callToolStoppable(
       waitStopSignal().then(() => ({ kind: "stop" as const, data: null })),
     ]);
   } catch (e) {
-    // P1-6：本轮工具成败计数（供收尾规则表判断「是不是全军覆没」）
-    turnToolFail++;
-    turnFailedTools.push(tool);
+    // P1-6：本轮工具成败计数（供收尾规则表判断「是不是全军覆没」）——
+    // 记在**调用方给的作用域**里（子代理各自一份，不串到主回合）
+    stats.noteFail(tool, e instanceof Error ? e.message : String(e));
     // P1-3：tool_after 钩子（失败分支）
     void fireHooks({
       ...hookCtx,
@@ -724,7 +726,6 @@ async function callToolStoppable(
     // P1-9b：同一工具同一错误重复失败时，把提醒附在错误里（模型看得到错误文本）
     if (!(e instanceof AgentStoppedError)) {
       const emsg = e instanceof Error ? e.message : String(e);
-      bumpStuckStreak(tool, emsg); // P1-9c：同因失败计数（达阈值 → 主循环主动中止）
       const hint = failureHint(tool, emsg);
       if (hint) {
         const err = new Error(`${emsg}\n\n${hint}`);
@@ -737,17 +738,15 @@ async function callToolStoppable(
   if (raced.kind === "stop" || stopRequested) throw new AgentStoppedError();
   const data = raced.data ?? "";
   // P1-6：工具以字符串形式报错（内置工具普遍返回 ⛔/❌ 开头）也要计入失败
-  if (/^(?:\s*)(?:⛔|❌)/.test(data)) {
-    turnToolFail++;
-    turnFailedTools.push(tool);
+  if (looksLikeToolError(data)) {
+    stats.noteFail(tool, data);
     // P1-3：tool_after 钩子（字符串报错也算失败，与其他路径一致）
     void fireHooks({ ...hookCtx, event: "tool_after", status: "error", error: data });
     // P1-9b：重复失败提醒（附在结果末尾，下一轮模型能读到）
-    bumpStuckStreak(tool, data); // P1-9c：同因失败计数（达阈值 → 主循环主动中止）
     const hint = failureHint(tool, data);
     return hint ? `${data}\n\n${hint}` : data;
   }
-  turnToolOk++;
+  stats.noteOk();
   // P1-3：tool_after 钩子（成功）——这是 agent 四条工具路径的共同出口
   void fireHooks({ ...hookCtx, event: "tool_after", status: "success", result: data });
   return data;
@@ -759,39 +758,21 @@ class AgentStoppedError extends Error {
   }
 }
 
-// --- P1-6 自动续跑：本轮工具成败统计（每轮开始时重置） ---
-let turnToolOk = 0;
-let turnToolFail = 0;
-let turnFailedTools: string[] = [];
-// --- P1-9c 停滞中止：同一「工具+同一错误」在本轮内反复失败 —— 提醒压不住就主动停 ---
-// 2026-10-02 实战：run_command 围绕同一个网络下载任务同因失败 45 次仍在重写脚本，
-// 提醒文案被无视、轮次预算烧光、任务没做完却看上去像做完了。
-let turnFailStreak = new Map<string, number>();
-let turnStuck: { tool: string; signature: string; count: number } | null = null;
-/** 记一笔失败并在达到停滞阈值时打标记（主循环随即收尾，不再空转） */
-function bumpStuckStreak(tool: string, errorText: unknown): void {
-  try {
-    const hit = bumpFailureStreak(turnFailStreak, tool, errorText);
-    if (hit.stuck && !turnStuck) {
-      turnStuck = { tool, signature: hit.signature, count: hit.count };
-      void dbg(
-        `[loop] 停滞：\`${tool}\` 同因失败 ${hit.count} 次（${hit.signature.slice(0, 120)}）→ 本轮将主动中止`,
-      );
-    }
-  } catch {
-    // 停滞统计只是护栏：自己出错绝不能让主流程挂掉
-  }
-}
-/** 本轮是否已陷入停滞（非空 → 收尾时必须如实告知“被卡住了”） */
-function stuckStopInfo(): { tool: string; signature: string; count: number } | null {
-  return turnStuck;
-}
+// --- P1-6 / P1-9c 本轮工具成败与停滞统计（每轮重置） ---
+//
+// 为什么是**实例**而不是模块级变量：并行子代理的工具调用也走 `callToolStoppable`，
+// 共享全局会让「子代理失败」污染主回合的收尾判定、甚至让子代理的同因失败**打断主回合**
+// （2026-10-02 实战：run_command 同因失败 45 次仍在重写脚本）。
+// 现在主回合一份、每个子代理各一份，串扰从结构上不存在。
+const mainTurn = createTurnStats({
+  onStuck: (info) => {
+    void dbg(
+      `[loop] 停滞：\`${info.tool}\` 同因失败 ${info.count} 次（${info.signature.slice(0, 120)}）→ 本轮将主动中止`,
+    );
+  },
+});
 function resetTurnToolStats(): void {
-  turnToolOk = 0;
-  turnToolFail = 0;
-  turnFailedTools = [];
-  turnFailStreak = new Map<string, number>();
-  turnStuck = null;
+  mainTurn.reset();
 }
 
 // --- P-A4 应用内 diff 确认：文件编辑类工具先预览 diff/路径，用户确认后才写盘 ---
@@ -4430,8 +4411,16 @@ async function runSubagentLoop(
     { role: "system", content: effectiveSys },
     { role: "user", content: `子任务：${goal}` },
   ];
+  // 子代理**自己的**回合统计：不写进主回合的计数（否则子代理的失败会让主回合的
+  // 「全军覆没」判定失真），停滞判定也只停子代理自己。
+  const subStats = createTurnStats();
   for (let round = 0; round < maxRounds; round++) {
     if (stopRequested) throw new AgentStoppedError();
+    if (subStats.stuck) {
+      throw new Error(
+        `子代理因反复以同一方式失败而中止（${subStats.stuck.tool} 同因失败 ${subStats.stuck.count} 次）：${subStats.stuck.signature.slice(0, 160)}`,
+      );
+    }
     // 每轮 chatOnce（原生模式带 tools）与停止信号 race：点停止后立即抛 AgentStoppedError，
     // 不等 60s 超时。用 kind 标记而非 .then(throw)，避免 race 已结算后停止信号才触发
     // 导致 unhandled rejection。
@@ -4489,7 +4478,7 @@ async function runSubagentLoop(
         const args = parseNativeArguments(call.function?.arguments);
         let result: string;
         try {
-          result = await callToolStoppable(ref.server, ref.tool, args);
+          result = await callToolStoppable(ref.server, ref.tool, args, subStats);
         } catch (e) {
           if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
           result = `错误: ${e instanceof Error ? e.message : String(e)}`;
@@ -4525,7 +4514,7 @@ async function runSubagentLoop(
       if (stopRequested) throw new AgentStoppedError(); // 执行工具前
       let result: string;
       try {
-        result = await callToolStoppable(server, tc.tool, tc.arguments);
+        result = await callToolStoppable(server, tc.tool, tc.arguments, subStats);
       } catch (e) {
         if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
         result = `错误: ${e instanceof Error ? e.message : String(e)}`;
@@ -6849,7 +6838,7 @@ export const useChatStore = defineStore("chat", () => {
         if (stopRequested) break; // 用户停止 → 立即退出工具循环
         // P1-9c 停滞中止：上一轮工具又出现「同因失败」（已达阈值）→ 不再浪费轮次，
         // 立刻走收尾流程，并在正文如实告知“被卡住了”而不是“做完了”。
-        const stuckNow = stuckStopInfo();
+        const stuckNow = mainTurn.stuck;
         if (stuckNow) {
           stuckStop = stuckNow;
           dbg(
@@ -7059,8 +7048,8 @@ export const useChatStore = defineStore("chat", () => {
                 verificationIssue: evaluateVerificationClaims(roundResult.content),
                 plan: planNow ? { steps: planNow.steps.map((s) => ({ status: s.status })) } : null,
                 goal: getGoal(activeConversationId.value || ""),
-                toolSuccesses: turnToolOk,
-                toolFailures: turnToolFail,
+                toolSuccesses: mainTurn.ok,
+                toolFailures: mainTurn.fail,
               };
               const verdict = planAutoContinue(signals, {
                 attempts: continueAttempts,
@@ -7068,14 +7057,14 @@ export const useChatStore = defineStore("chat", () => {
                 stopped: stopRequested,
                 budgetBlocked: budgetVerdict.value.level === "blocked",
                 remainingRounds: maxToolRounds - round - 1,
-                failedTools: turnFailedTools,
+                failedTools: [...mainTurn.failedTools],
               });
               if (verdict.action === "continue") {
                 // 计划未完时，只有「有进展」才继续；连续 2 次无进展就停止（避免空转烧 token）。
                 if (verdict.ruleId === "plan-incomplete") {
                   const p = useChatStore().taskPlan;
                   const doneNow = p?.steps.filter((s) => s.status === "done").length ?? 0;
-                  const mark = `${turnToolOk}:${doneNow}`;
+                  const mark = `${mainTurn.ok}:${doneNow}`;
                   if (mark === lastPlanProgressMark) planNoProgressStreak++;
                   else {
                     lastPlanProgressMark = mark;

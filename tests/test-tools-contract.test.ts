@@ -52,6 +52,17 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect(chatSrc).toContain("composeAssistantContent(finalText");
   });
 
+  it("回合统计是作用域实例，不是模块级全局（并行子代理不串扰）", () => {
+    // 主回合只有一份实例；子代理自己创建（≥2 处 createTurnStats：主回合 + runSubagentLoop）
+    expect((chatSrc.match(/createTurnStats\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // 旧的四件套全局必须消失
+    for (const name of ["turnToolOk", "turnToolFail", "turnFailedTools", "turnFailStreak"]) {
+      expect(chatSrc).not.toContain(name);
+    }
+    // 子代理的两个工具调用点都要传自己的 stats
+    expect((chatSrc.match(/callToolStoppable\([^)]*subStats\)/g) ?? []).length).toBe(2);
+  });
+
   it("工作流查找只有一份实现（不再两处手抄 id/名称解析）", () => {
     expect(chatSrc).not.toContain('"workflow_get", {\n          id: Number(nameOrId)');
     expect((chatSrc.match(/resolveWorkflow\(nameOrId/g) ?? []).length).toBe(2);
