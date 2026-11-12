@@ -1,6 +1,6 @@
 [package]
 name = "daoshengyi"
-version = "1.0.0-alpha.33"
+version = "1.0.0-alpha.34"
 description = "道生一 AI Agent 桌面客户端"
 authors = ["you"]
 edition = "2021"
@@ -65,4 +65,8 @@ flate2 = "1"
 # 这个 crate 本来就在依赖树里（tauri 的传递依赖），这里只是提为直接依赖 —— 因此**无需联网**
 # 也能解析（新增陌生依赖仍需能访问 crates.io / 稀疏镜像）。仅 macOS 编译。
 [target.'cfg(target_os = "macos")'.dependencies]
+# computer-use：鼠标/键盘注入（CGEvent）。core-graphics 本来就在依赖树里
+# （tauri/wry 的传递依赖，0.25），这里提为直接依赖 → 不引入新的下载。
+core-graphics = { version = "0.25", features = ["highsierra"] }
+core-foundation = "0.10"
 objc2 = "0.6"

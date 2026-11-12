@@ -65,6 +65,7 @@ import {
   Palette,
   Mic,
   Download,
+  MousePointerClick,
 } from "lucide-vue-next";
 
 type SettingsTabId =
@@ -181,6 +182,42 @@ function verdictText(v: string) {
       : "❌ 不推荐本地部署";
 }
 
+// ── computer-use：能移动鼠标的能力，默认关 + 需系统辅助功能授权 ──
+const computerUseEnabled = ref(getSettings().computerUseEnabled === true);
+const computerStatus = ref<{
+  enabled: boolean;
+  trusted: boolean;
+  screen_width: number;
+  screen_height: number;
+  detail: string;
+} | null>(null);
+
+async function refreshComputerStatus() {
+  try {
+    computerStatus.value = await invoke("computer_use_status");
+  } catch {
+    computerStatus.value = null;
+  }
+}
+
+async function saveComputerUse() {
+  updateSettings({ computerUseEnabled: computerUseEnabled.value });
+  // 打开后立刻刷到 Rust 再查授权状态：否则会看到「已开启但未授权」的旧视图
+  await flushSettings();
+  await refreshComputerStatus();
+}
+
+async function openAccessibilitySettings() {
+  // 直达「隐私与安全性 → 辅助功能」，省得用户自己翻三层
+  try {
+    await invoke("open_file", {
+      path: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    });
+  } catch {
+    void notify("请在「系统设置 → 隐私与安全性 → 辅助功能」里勾选道生一", "info");
+  }
+}
+
 // ── 产物渲染运行时（HTML 讲解页需要 Node；没有就下载自带的）──
 //
 // 为什么不藏在「首次出页面」那一刻偷偷下载：48 MB 的等待必须有解释。放在设置里，
@@ -219,6 +256,7 @@ onMounted(() => {
   // 打开时刷新一次状态
   localRuntime.refreshRuntime();
   void refreshHtmlRuntime();
+  void refreshComputerStatus();
   refreshKb();
   loadExecRules();
   // 音色列表由系统提供（`say -v ?`），一次 IO，很便宜；拿不到也不影响其它设置
@@ -1825,6 +1863,40 @@ async function handleDelete() {
 
           <!-- 人机交互：系统通知 / 桌面浮层 / 语音播报 / 语音输入 -->
           <div v-show="activeTab === 'surface'">
+            <h3><MousePointerClick :size="17" /> 操作这台电脑（computer-use）</h3>
+            <p class="local-desc">
+              开启后，agent 能**截图看屏幕**、移动鼠标、点击、输入文字、按快捷键——用来操作没有 API
+              的原生 App（访达/备忘录/系统设置等）。默认关闭：能移动你鼠标的能力必须由你显式打开。
+              网页操作仍优先用浏览器自动化（更快更稳）。
+            </p>
+            <div class="form-group">
+              <label
+                class="memory-config__toggle"
+                style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer"
+              >
+                <input v-model="computerUseEnabled" type="checkbox" @change="saveComputerUse" />
+                <span>允许 agent 操作本机（截图 / 鼠标 / 键盘）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>系统授权</label>
+              <div class="local-desc">
+                {{ computerStatus?.detail || "正在检测…" }}
+              </div>
+              <div
+                v-if="computerUseEnabled && computerStatus && !computerStatus.trusted"
+                style="display: flex; gap: 8px; margin-top: 8px"
+              >
+                <button class="settings-reset-btn" @click="openAccessibilitySettings">
+                  打开「辅助功能」设置
+                </button>
+                <button class="settings-reset-btn" @click="refreshComputerStatus">重新检测</button>
+              </div>
+              <span class="form-hint">
+                截图为空白/只有壁纸时，还需要在「隐私与安全性 → 屏幕录制」里勾选道生一。
+                每次动作都会记进审计日志（输入内容只记长度，不记原文）。
+              </span>
+            </div>
             <h3><Bell :size="17" /> 系统通知</h3>
             <p class="local-desc">
               任务完成或给出最终产物时发系统通知。仅当主窗口不在前台时才提醒（正在看着屏幕时

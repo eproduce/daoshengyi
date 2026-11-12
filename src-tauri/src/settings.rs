@@ -212,6 +212,10 @@ pub struct AppSettings {
     /// 环境层：勿扰时段止（支持跨零点，如 22:30–08:00）
     #[serde(default)]
     pub surface_quiet_end: String,
+    /// computer-use（看屏幕 + 动鼠标键盘）总开关（默认**关**）。
+    /// 能移动用户鼠标的 agent 必须是用户显式打开的，且还需系统「辅助功能」授权。
+    #[serde(default)]
+    pub computer_use_enabled: bool,
     /// 语音输入（耳朵）总开关（默认**关**）——常驻录音是隐私红线，必须显式开启
     #[serde(default)]
     pub voice_enabled: bool,
@@ -382,6 +386,7 @@ impl Default for AppSettings {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            computer_use_enabled: false,
             voice_enabled: false,
             voice_auto_send: false,
             voice_silence_ms: default_voice_silence_ms(),
@@ -666,6 +671,7 @@ mod tests {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            computer_use_enabled: false,
             voice_enabled: false,
             voice_auto_send: false,
             voice_silence_ms: default_voice_silence_ms(),
@@ -749,6 +755,7 @@ mod tests {
             surface_tts_reference: String::new(),
             surface_quiet_start: String::new(),
             surface_quiet_end: String::new(),
+            computer_use_enabled: false,
             voice_enabled: false,
             voice_auto_send: false,
             voice_silence_ms: default_voice_silence_ms(),

@@ -995,6 +995,35 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["title", "decision", "rationale"],
     additionalProperties: true,
   },
+  // --- computer-use：看屏幕 + 动鼠标键盘（macOS；默认关闭，需用户授权） ---
+  computer_use: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["screenshot", "windows", "move", "click", "type", "key", "scroll"],
+        description: "要做的动作",
+      },
+      x: { type: "number", description: "全局屏幕坐标 x（左上角原点，逻辑点）" },
+      y: { type: "number", description: "全局屏幕坐标 y" },
+      button: {
+        type: "string",
+        enum: ["left", "right", "middle"],
+        description: "鼠标键（默认 left）",
+      },
+      count: { type: "integer", description: "点击次数 1~3（2=双击，默认 1）" },
+      text: { type: "string", description: "type 要输入的文本（需目标输入框已获得焦点）" },
+      keys: { type: "string", description: "key 的按键，如 `enter`、`cmd+s`、`cmd+shift+4`" },
+      dx: { type: "number", description: "scroll 水平像素（正=向右）" },
+      dy: { type: "number", description: "scroll 垂直像素（正=向上）" },
+      path: {
+        type: "string",
+        description: "screenshot 的保存路径（缺省存 app 数据目录 screenshots/）",
+      },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  },
   // --- 方案 B：Answer me with HTML（内置渲染器，每次显式要求才出页） ---
   answer_html: {
     type: "object",

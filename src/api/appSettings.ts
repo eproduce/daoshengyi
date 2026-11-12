@@ -158,6 +158,8 @@ export interface AppSettingsPayload {
   /// 环境层：勿扰时段（`"22:30"`；两个都填才生效，支持跨零点）
   surfaceQuietStart: string;
   surfaceQuietEnd: string;
+  /// computer-use（看屏幕 + 动鼠标键盘）总开关（默认**关**）：能移动用户鼠标，必须显式授权
+  computerUseEnabled: boolean;
   /// 语音输入（耳朵）总开关（默认**关**）：常驻录音是隐私红线，必须显式开启
   voiceEnabled: boolean;
   /// 连续语音对话：转写后**自动提交**（默认关）——全项目唯一会自动发消息的路径
@@ -214,6 +216,7 @@ let cache: AppSettingsPayload = {
   surfaceTtsReference: "",
   surfaceQuietStart: "",
   surfaceQuietEnd: "",
+  computerUseEnabled: false,
   voiceEnabled: false,
   voiceAutoSend: false,
   voiceSilenceMs: 800,

@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "daoshengyi"
-version = "1.0.0-alpha.33"
+version = "1.0.0-alpha.34"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -1017,6 +1017,8 @@ dependencies = [
  "calamine",
  "cbc",
  "chrono",
+ "core-foundation",
+ "core-graphics",
  "cpal",
  "encoding_rs",
  "flate2",

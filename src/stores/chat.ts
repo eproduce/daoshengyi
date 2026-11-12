@@ -3911,6 +3911,33 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `- 顶层结构:\n${a.top_level.map((x) => `  ${x}`).join("\n")}`
       );
     }
+    case "computer_use": {
+      // computer-use：整台电脑的 GUI（截图/窗口/点击/输入/快捷键/滚动）。
+      // 三道闸在 Rust 侧（设置开关 → 辅助功能授权 → 参数校验）；这里只补一句**给模型看**的
+      // 前置提醒，避免它把「没开启」当成临时故障反复重试。
+      if (!getSettings().computerUseEnabled) {
+        return "⛔ computer-use 未开启：请让用户在「设置 → 人机交互」里打开（能移动鼠标的能力必须由用户显式授权）。若这件事能用浏览器自动化或命令完成，改用那些工具。";
+      }
+      const action = String(args.action || "").trim();
+      if (!action)
+        throw new Error(
+          "computer_use 需要 action 参数（screenshot/windows/move/click/type/key/scroll）",
+        );
+      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+      const res = await invoke<{ message: string; screenshot: string | null }>("computer_use", {
+        action,
+        x: num(args.x),
+        y: num(args.y),
+        button: typeof args.button === "string" ? args.button : undefined,
+        count: num(args.count),
+        text: typeof args.text === "string" ? args.text : undefined,
+        keys: typeof args.keys === "string" ? args.keys : undefined,
+        dx: num(args.dx),
+        dy: num(args.dy),
+        path: typeof args.path === "string" ? args.path : undefined,
+      });
+      return res.message;
+    }
     case "answer_html": {
       // 方案 B：HTML 讲解页（内置渲染器 = 随包 am.mjs，不依赖用户装 npm 包）。
       // 触发策略：**每次显式要求**——用户明说要网页/HTML/一页图形式时才调，不做 always-on。

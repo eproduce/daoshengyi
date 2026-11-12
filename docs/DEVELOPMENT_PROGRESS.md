@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-11-13（computer-use 上线：看屏幕 + 动鼠标键盘）
+
+补齐 DSH 复盘里 P2 的第一项。此前我们只有**浏览器自动化**（CDP，只管网页），
+落在原生 App / 系统弹窗上的任务无从下手。
+
+**一个工具、七个 action**（`computer_use {action}`）而不是七个 `computer_*` 工具：
+工具表是模型每轮都要读的上下文，七个条目会挤掉真正需要记住的规则。
+
+| action | 实现 | 说明 |
+|---|---|---|
+| `screenshot` | `/usr/sbin/screencapture -x -t png` | 不引 ScreenCaptureKit；返回路径供 `view_image` 读像素 |
+| `windows` | AppleScript + System Events | 返回「App \| 标题 \| x,y 宽x高」，用于定位坐标 |
+| `move` / `click` | CGEvent（`core-graphics`，已在依赖树 → 无新下载） | 点击前先移动（否则命中测试用旧位置）；`count` 写 `MOUSE_EVENT_CLICK_STATE` 支持双击 |
+| `type` | CGEvent + `set_string`（Unicode 直写） | 不依赖输入法与键盘布局，中文可直接输入 |
+| `key` | CGEvent + flags | `cmd+shift+4` / `⌘⇧4` 都认，修饰键顺序随意 |
+| `scroll` | `CGEventCreateScrollWheelEvent2`（像素单位） | |
+
+**三道闸**：① 设置里 `computerUseEnabled`（默认**关**，能移动用户鼠标必须显式授权）
+② 系统「辅助功能」授权（`AXISProcessTrusted`；未授权时 CGEvent 会被系统**静默丢弃**，
+所以必须前置检查，否则表现为「点了没反应」）③ 参数校验（action 白名单 / 坐标范围与 NaN
+/ 键名 / 按钮名 / 点击次数 1~3）。每次动作写审计日志，`type` 只记字符数、**不记原文**。
+
+设置 → 人机交互 新增开关 + 实时状态（可用需授权时给「打开辅助功能设置」直达按钮）。
+
+**验证**：纯函数单测 6 条（白名单、坐标、组合键、键码表、按钮/次数）；
+真机 `live_screenshot_writes_a_real_png`：截图 1.5 MB PNG、屏幕 1920×1080、`trusted=true`、
+窗口枚举返回前台 App；`npm run ci:local` **8/8**（vitest 849 项 / cargo test 394 项）。
+
+**已知边界（已写进工具描述，别让模型猜）**：未授权「屏幕录制」时截图只有壁纸；
+坐标是全局逻辑点（Retina 下不是像素）；`type` 前必须先点中输入框。
+
+---
+
 ## 2026-11-12（answer_html 自带 Node 运行时：没装 Node 也能出页面）
 
 `answer_html` 一直有个隐含前提「本机有 Node ≥ 20」。猜路径（Homebrew/nvm/volta/PATH）猜不到

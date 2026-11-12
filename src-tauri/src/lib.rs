@@ -14,6 +14,8 @@
 mod answer_html;
 mod api;
 mod browser;
+#[cfg(target_os = "macos")]
+mod computer;
 mod db;
 mod execpolicy;
 mod github;
@@ -6502,6 +6504,200 @@ async fn browser_evaluate(
     browser::evaluate(browser_app_dir(&app)?, &script, timeout_ms).await
 }
 
+/// computer-use 的状态（UI 用）：能否用、缺什么权限、屏幕尺寸。
+#[derive(serde::Serialize)]
+struct ComputerStatus {
+    /// 设置里是否已打开（默认关）
+    enabled: bool,
+    /// 是否已获「辅助功能」授权（未授权时注入的事件会被系统**静默丢弃**）
+    trusted: bool,
+    /// 主屏逻辑宽高（给模型/UI 说明坐标系）
+    screen_width: f64,
+    screen_height: f64,
+    /// 一句话说明（UI 直接显示）
+    detail: String,
+}
+
+#[tauri::command]
+fn computer_use_status(db: State<Database>) -> ComputerStatus {
+    let enabled = settings_plain(&db).computer_use_enabled;
+    #[cfg(target_os = "macos")]
+    let (trusted, (w, h)) = (computer::mac::trusted(), computer::mac::screen_bounds());
+    #[cfg(not(target_os = "macos"))]
+    let (trusted, (w, h)) = (false, (0.0, 0.0));
+    let detail = if !enabled {
+        "未开启（在设置 → 人机交互里打开）".to_string()
+    } else if !trusted {
+        "已开启，但缺少「辅助功能」授权：系统设置 → 隐私与安全性 → 辅助功能 → 勾选道生一"
+            .to_string()
+    } else {
+        format!("可用（屏幕 {w:.0}×{h:.0}）")
+    };
+    ComputerStatus {
+        enabled,
+        trusted,
+        screen_width: w,
+        screen_height: h,
+        detail,
+    }
+}
+
+/// computer-use：看屏幕 + 动鼠标键盘（macOS）。
+///
+/// 三道闸：① 设置里显式开启 ② 系统辅助功能已授权 ③ 参数先校验（action 白名单 / 坐标范围 /
+/// 键名）。每次动作都写审计日志（`type` 只记长度，不记原文——那可能是密码）。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn computer_use(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    action: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    button: Option<String>,
+    count: Option<u32>,
+    text: Option<String>,
+    keys: Option<String>,
+    dx: Option<f64>,
+    dy: Option<f64>,
+    path: Option<String>,
+) -> Result<computer::ActionResult, String> {
+    let act = action.trim().to_ascii_lowercase();
+    computer::check_action(&act)?;
+    if !settings_plain(&db).computer_use_enabled {
+        return Err("computer-use 未开启：请让用户在「设置 → 人机交互」里打开（能移动鼠标的能力必须由用户显式授权）".to_string());
+    }
+    let a = computer::Action {
+        x,
+        y,
+        button,
+        count,
+        text,
+        keys,
+        dx,
+        dy,
+        path,
+    };
+    let started = std::time::Instant::now();
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &a);
+        return Err("computer-use 目前只支持 macOS".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use computer::mac;
+        if act != "windows" && !mac::trusted() {
+            return Err(
+                "缺少「辅助功能」授权：系统设置 → 隐私与安全性 → 辅助功能 → 勾选道生一，然后重试"
+                    .to_string(),
+            );
+        }
+        let (max_w, max_h) = mac::screen_bounds();
+        let max = max_w.max(max_h);
+        let audit = mac::audit_line(&a, &act);
+        let result = (|| -> Result<computer::ActionResult, String> {
+            match act.as_str() {
+                "screenshot" => {
+                    let dest = match a.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                        Some(p) => std::path::PathBuf::from(p),
+                        None => {
+                            let dir = app
+                                .path()
+                                .app_data_dir()
+                                .unwrap_or_else(|_| std::env::temp_dir())
+                                .join("screenshots");
+                            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                            dir.join(format!("screen-{stamp}.png"))
+                        }
+                    };
+                    let bytes = mac::screenshot(&dest)?;
+                    Ok(computer::ActionResult {
+                        message: format!(
+                            "已截图（{bytes} 字节）：{}\n屏幕逻辑尺寸 {max_w:.0}×{max_h:.0}（坐标原点在左上角）。若图是空白/只有壁纸，说明还没有「屏幕录制」授权。",
+                            dest.display()
+                        ),
+                        screenshot: Some(dest.to_string_lossy().to_string()),
+                    })
+                }
+                "windows" => {
+                    let list = mac::windows()?;
+                    Ok(computer::ActionResult {
+                        message: format!("可见窗口（格式：App | 标题 | x,y 宽x高）：\n{list}"),
+                        screenshot: None,
+                    })
+                }
+                "move" => {
+                    let (x, y) =
+                        computer::check_point(a.x.unwrap_or(-1.0), a.y.unwrap_or(-1.0), max)?;
+                    mac::move_to(x, y)?;
+                    Ok(computer::ActionResult {
+                        message: format!("鼠标已移到 ({x:.0}, {y:.0})"),
+                        screenshot: None,
+                    })
+                }
+                "click" => {
+                    let (x, y) =
+                        computer::check_point(a.x.unwrap_or(-1.0), a.y.unwrap_or(-1.0), max)?;
+                    let btn = computer::parse_button(a.button.as_deref())?;
+                    let n = computer::parse_count(a.count)?;
+                    mac::click(x, y, btn, n)?;
+                    Ok(computer::ActionResult {
+                        message: format!("已在 ({x:.0}, {y:.0}) {btn} 键点击 {n} 次"),
+                        screenshot: None,
+                    })
+                }
+                "type" => {
+                    let t = a.text.clone().unwrap_or_default();
+                    if t.is_empty() {
+                        return Err("type 需要 text 参数".to_string());
+                    }
+                    mac::type_text(&t)?;
+                    Ok(computer::ActionResult {
+                        message: format!(
+                            "已输入 {} 个字符（输入前请确保目标输入框已获得焦点）",
+                            t.chars().count()
+                        ),
+                        screenshot: None,
+                    })
+                }
+                "key" => {
+                    let combo = computer::parse_combo(a.keys.as_deref().unwrap_or(""))?;
+                    mac::key_combo(&combo)?;
+                    Ok(computer::ActionResult {
+                        message: format!("已发送按键 {}", a.keys.as_deref().unwrap_or("")),
+                        screenshot: None,
+                    })
+                }
+                "scroll" => {
+                    mac::scroll(a.dx.unwrap_or(0.0), a.dy.unwrap_or(0.0))?;
+                    Ok(computer::ActionResult {
+                        message: format!(
+                            "已滚动 dx={} dy={}（像素）",
+                            a.dx.unwrap_or(0.0),
+                            a.dy.unwrap_or(0.0)
+                        ),
+                        screenshot: None,
+                    })
+                }
+                other => Err(format!("未实现的 action `{other}`")),
+            }
+        })();
+        let ms = started.elapsed().as_millis() as i64;
+        match &result {
+            Ok(r) => {
+                let _ = db.log_tool_call("computer_use", &audit, &r.message, false, ms);
+            }
+            Err(e) => {
+                let _ = db.log_tool_call("computer_use", &audit, e, true, ms);
+            }
+        }
+        result
+    }
+}
+
 #[tauri::command]
 async fn browser_screenshot(app: tauri::AppHandle, path: Option<String>) -> Result<String, String> {
     browser::screenshot(browser_app_dir(&app)?, path).await
@@ -6896,6 +7092,8 @@ pub fn run() {
             analyze_project,
             answer_html::answer_html,
             answer_html::ensure_html_runtime,
+            computer_use,
+            computer_use_status,
             kb_index,
             kb_create,
             kb_add,
