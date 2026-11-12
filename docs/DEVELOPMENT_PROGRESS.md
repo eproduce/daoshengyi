@@ -6,6 +6,49 @@
 
 ---
 
+## 2026-11-12（抽出主循环的纠偏/降级判定：一次误判永久丢工具）
+
+继续往 `sendMessage` 主循环里挖「有判定、无测试」的地方。这一轮挖到两块，都在
+1,700 行的 async 函数深处，谁都测不到：
+
+**① 原生 tools 降级判定（真 bug）**
+
+原实现：
+
+```ts
+const toolsRelated = /tool|function|tool_calls/i.test(em) || /argument/i.test(em);
+if (nativeToolsOn && !nativeDegraded && round === 0 && toolsRelated) { /* 降级文本模式 */ }
+```
+
+`nativeDegraded` 一旦置位**不回滚** —— 也就是「误判一次，本会话剩余全部丢工具」。
+而宽匹配必然误伤：
+
+- 上下文超长：OpenAI 原文 `... reduce the length of the messages or tools` → 含 `tools`；
+- 服务繁忙 / 超时 / 429 的报错里带 `tool_calls 未返回` 之类 → 也会命中；
+- 401/额度不足的文案若提到 `tools` 同样命中。
+
+这些全都与「端点不支持 tools」无关，正确做法是原样抛出（上层重试或如实报错），
+而不是把工具能力永久关掉。新增 `src/utils/loop-recovery.ts::classifyRoundError`，
+按**优先级**排除：上下文超长 → 抖动 → 鉴权 → 最后才认「明确不支持 tools」的措辞
+（`does not support tools` / `tool calling is not supported` / `unsupported parameter: 'tools'`
+/ `unknown field 'tools'` / `不支持工具调用`），保留 `400 + tools` 作为网关报法的兜底。
+
+> 写测试时先抓到自己的一个 bug：`new RegExp(..., "i")` 忘了 `i`，
+> `Tool calling is not supported` 首字母大写就不命中 —— 正是这条用例把它挡住的。
+
+**② 任务模式「先建计划」话术三份拷贝**
+
+`plan_coercion` 的正文原先手写在三处（原生路径、文本路径、无工具调用空想），
+措辞分叉（`用原生工具调用` / `调用` / `不要继续空想` / `**不要**` vs `不要`）。
+改一处忘两处 → 模型收到自相矛盾的指令。收敛为 `planCoercionMessage(reason)`，
+保留三种场景各自的原因说明与**原生路径必须强调「用原生工具调用」**（否则模型退回卡片语法）。
+
+**验证**：`vue-tsc` ✓、`eslint` ✓、`npm test` **62 文件 / 840 项**全绿
+（新增 `test-loop-recovery` 21 项，其中 10 项是「不该降级」的回归用例；
+`test-tools-contract` 加两条源文本契约：话术只剩一份、宽匹配不得再现）。
+
+---
+
 ## 2026-11-12（回合统计作用域化：修掉并行子代理与主回合的计数串扰）
 
 `callToolStoppable` 里的回合统计原本是**模块级**五个变量：`turnToolOk` / `turnToolFail` /

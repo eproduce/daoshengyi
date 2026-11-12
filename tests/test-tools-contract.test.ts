@@ -63,6 +63,17 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect((chatSrc.match(/callToolStoppable\([^)]*subStats\)/g) ?? []).length).toBe(2);
   });
 
+  it("任务模式的「先建计划」话术只有一份（不再 native/text 各抄一遍）", () => {
+    // 三处调用点共用 planCoercionMessage，正文里不得再出现手写话术
+    expect((chatSrc.match(/planCoercionMessage\(/g) ?? []).length).toBe(3);
+    expect(chatSrc).not.toContain("【任务模式】，但还没有创建任务计划");
+  });
+
+  it("原生 tools 降级判定走分类器，不用裸 /tool|function/ 宽匹配", () => {
+    expect(chatSrc).toContain("classifyRoundError(");
+    expect(chatSrc).not.toMatch(/tool\|function\|tool_calls/);
+  });
+
   it("工作流查找只有一份实现（不再两处手抄 id/名称解析）", () => {
     expect(chatSrc).not.toContain('"workflow_get", {\n          id: Number(nameOrId)');
     expect((chatSrc.match(/resolveWorkflow\(nameOrId/g) ?? []).length).toBe(2);

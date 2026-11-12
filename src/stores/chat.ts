@@ -40,6 +40,8 @@ import { parseCodexPatch, hunksToEdits, summarizePatch } from "@/utils/codex-pat
 import { permitLabel, permitsSatisfy, toolGroup } from "@/utils/session-permits";
 // code-mode：run_code 在可终止的沙箱 Worker 里跑模型写的 JS，能力只经 tools.* 工具桥
 import { formatCodeRunResult, runCodeInWorker } from "@/utils/code-runner";
+// 主循环的纠偏/降级判定（纯函数，可单测）
+import { classifyRoundError, planCoercionMessage } from "@/utils/loop-recovery";
 
 /// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
 interface RoundUsage {
@@ -6857,12 +6859,16 @@ export const useChatStore = defineStore("chat", () => {
           // 端点不支持原生 tools（或首轮异常与 tools 相关）→ 降级文本模式重试本
           // 轮（错误发生在内容产出前，rustMsgs 未变）；仅对“本会话已启用原生”的首轮生效。
           const em = e instanceof Error ? e.message : String(e);
-          const toolsRelated = /tool|function|tool_calls/i.test(em) || /argument/i.test(em);
-          if (nativeToolsOn && !nativeDegraded && round === 0 && toolsRelated) {
+          // 只有「端点/模型明确不支持 tools」才降级。原先是 /tool|function|argument/i 宽匹配，
+          // 上下文超长（原文含 "messages or tools"）、429、超时都会误判 → 一次误判就永久丢工具。
+          const verdict = classifyRoundError(em);
+          if (nativeToolsOn && !nativeDegraded && round === 0 && verdict.degradeNativeTools) {
             nativeDegraded = true;
             nativeToolsOn = null;
             nativeRegistry = null;
-            dbg(`[loop] 原生 tools 首轮报错（${em.slice(0, 120)}）→ 降级文本模式重试`);
+            dbg(
+              `[loop] 原生 tools 首轮报错（${verdict.kind}：${em.slice(0, 120)}）→ 降级文本模式重试`,
+            );
             continue; // 不动 round，重发同一轮（不带 tools）
           }
           throw e;
@@ -6909,10 +6915,7 @@ export const useChatStore = defineStore("chat", () => {
             dbg(`[loop] 任务模式（原生）未建计划，第 ${round} 轮强制要求 plan_task`);
             rustMsgs.push({
               role: "user",
-              content:
-                "⚠️ 你处于【任务模式】，但还没有创建任务计划。你上一条直接要调用实际工作工具而跳过了规划。\n" +
-                '请**立即**用原生工具调用 `plan_task` 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），' +
-                "再用 `plan_update` 逐步标记进度并执行；在计划建立前**不要**调用其它实际工作工具。",
+              content: planCoercionMessage("native-calls"),
             });
             continue;
           }
@@ -6939,11 +6942,7 @@ export const useChatStore = defineStore("chat", () => {
             round++;
             dbg(`[loop] 任务模式尚未建计划，第 ${round} 轮强制要求 plan_task`);
             rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({
-              role: "user",
-              content:
-                '⚠️ 你处于【任务模式】，但还没有创建任务计划。请**立即**调用 plan_task 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），再用 plan_update 逐步标记进度并执行。不要继续空想。',
-            });
+            rustMsgs.push({ role: "user", content: planCoercionMessage("no-call") });
             continue;
           }
           // 模型**尝试**了工具调用（正文出现闭合标记）但解析失败：
@@ -7113,13 +7112,7 @@ export const useChatStore = defineStore("chat", () => {
           round++;
           dbg(`[loop] 任务模式（文本）未建计划，第 ${round} 轮强制要求 plan_task`);
           rustMsgs.push({ role: "assistant", content: roundResult.content });
-          rustMsgs.push({
-            role: "user",
-            content:
-              "⚠️ 你处于【任务模式】，但还没有创建任务计划。你正准备执行实际工作而跳过了规划。\n" +
-              '请**立即**调用 plan_task 为当前目标创建任务计划（参数 {"title":"目标标题","steps":["子步骤1","子步骤2",...]}），' +
-              "再用 plan_update 逐步标记进度并执行；在计划建立前不要调用其它实际工作工具。",
-          });
+          rustMsgs.push({ role: "user", content: planCoercionMessage("text-call") });
           continue;
         }
 
