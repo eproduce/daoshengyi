@@ -23,6 +23,12 @@ import { themePrefHint, themePrefLabel, resolveTheme, type ThemePref } from "@/u
 import type { HookRuleShape, SandboxNetwork } from "@/api/appSettings";
 import { askConfirm, notify } from "@/utils/dialog";
 import { permissionHint } from "@/utils/voice";
+import {
+  describeRuntime,
+  ensureHtmlRuntime,
+  htmlRuntimeStatus,
+  type HtmlRuntimeStatus,
+} from "@/api/runtime";
 import { listenWithRetry } from "@/utils/event-listen";
 import McpSettings from "./McpSettings.vue";
 import UsageStats from "./UsageStats.vue";
@@ -175,9 +181,44 @@ function verdictText(v: string) {
       : "❌ 不推荐本地部署";
 }
 
+// ── 产物渲染运行时（HTML 讲解页需要 Node；没有就下载自带的）──
+//
+// 为什么不藏在「首次出页面」那一刻偷偷下载：48 MB 的等待必须有解释。放在设置里，
+// 用户能看见「为什么需要它」与「装在哪」，也能提前下好。
+const htmlRuntime = ref<HtmlRuntimeStatus | null>(null);
+const htmlRuntimeBusy = ref(false);
+const htmlRuntimeText = computed(() => describeRuntime(htmlRuntime.value));
+
+async function refreshHtmlRuntime() {
+  try {
+    htmlRuntime.value = await htmlRuntimeStatus();
+  } catch {
+    htmlRuntime.value = null;
+  }
+}
+
+async function installHtmlRuntime() {
+  if (htmlRuntimeBusy.value) return;
+  htmlRuntimeBusy.value = true;
+  try {
+    htmlRuntime.value = await ensureHtmlRuntime();
+    void notify(
+      htmlRuntime.value.ready
+        ? `产物渲染运行时已就绪（Node ${htmlRuntime.value.version}）`
+        : "下载完成但运行时仍不可用",
+      htmlRuntime.value.ready ? "info" : "warning",
+    );
+  } catch (e) {
+    void notify(`下载产物渲染运行时失败：${String(e)}`, "warning");
+  } finally {
+    htmlRuntimeBusy.value = false;
+  }
+}
+
 onMounted(() => {
   // 打开时刷新一次状态
   localRuntime.refreshRuntime();
+  void refreshHtmlRuntime();
   refreshKb();
   loadExecRules();
   // 音色列表由系统提供（`say -v ?`），一次 IO，很便宜；拿不到也不影响其它设置
@@ -1264,6 +1305,32 @@ async function handleDelete() {
 
           <!-- 本地视觉模型管理（llama.cpp） -->
           <div v-show="activeTab === 'local'" class="local-panel">
+            <div class="runtime-card" style="margin-bottom: 18px">
+              <div class="runtime-card__title">📄 产物渲染运行时（HTML 讲解页）</div>
+              <div class="runtime-card__row">
+                <span class="local-desc">{{ htmlRuntimeText }}</span>
+                <button
+                  v-if="htmlRuntime && !htmlRuntime.ready && htmlRuntime.platform"
+                  class="btn btn-primary"
+                  :disabled="htmlRuntimeBusy"
+                  @click="installHtmlRuntime"
+                >
+                  {{ htmlRuntimeBusy ? "下载中…" : "下载自带运行时" }}
+                </button>
+                <button
+                  v-else-if="htmlRuntime?.ready"
+                  class="btn"
+                  :disabled="htmlRuntimeBusy"
+                  @click="refreshHtmlRuntime"
+                >
+                  重新检测
+                </button>
+              </div>
+              <div v-if="htmlRuntime?.managedPath" class="local-desc" style="margin-top: 6px">
+                自带运行时目录：<code>{{ htmlRuntime.managedPath }}</code>
+              </div>
+            </div>
+
             <h3><Cpu :size="17" /> 本地视觉模型</h3>
             <p class="local-desc">
               用于本地识别图片内容，模型完全在你电脑上运行，免费且隐私安全，无需联网。

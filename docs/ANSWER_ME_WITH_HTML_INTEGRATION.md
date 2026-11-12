@@ -481,3 +481,51 @@ default-src 'none'; script-src 'sha256-TPSD…' 'sha256-lPqF…'; style-src 'uns
 - 新增 Rust 测试：元件层幂等 / 落在 `</head>` 前 / 无脚本无外链 / 11 个元件齐全 / 含 reduced-motion 与 print 分支 / 无 head 时前置
 - 真机样板（`render_design_kit_demo_page`，默认 ignore）：渲染一页 KPI + 折线 + 对照矩阵 + 完成度条 + 迷你趋势 + donut，
   Chromium 截图确认——标题立得住、KPI 是发丝分隔而不是卡片、矩阵有推荐列高亮、图与文字同一节奏。
+
+---
+
+## 14. 2026-11-12：「补齐 Node 运行时与命令入口」——没装 Node 也能出页面
+
+此前 `answer_html` 的前提是「本机有 Node ≥ 20」：只能靠 `node_candidates()` 去猜
+Homebrew / nvm / volta / PATH 的位置，猜到就正常，猜不到整条能力不可用。而 Finder 启动的
+app 只有 `/usr/bin:/bin:/usr/sbin:/sbin` ——「用户明明装了 Node 却没生效」是这类功能最常见的投诉。
+
+### 14.1 做法：两条腿 + 一次校验
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| ① | **本机已有 Node** | Homebrew / nvm / volta / `~/.local` / `n` / PATH，取版本最高且 ≥ 20 的 |
+| ② | **自带受管运行时** | 首次需要时从 `nodejs.org/dist` 下载官方 tarball → **校验 SHASUMS256** → 只解出 `bin/node` |
+| ③ | 两者都不可用 | 明确报错（含原因），让模型改用普通 Markdown，而不是瞎试 |
+
+落盘位置：`<app_data>/runtime/node-v22.14.0/bin/node`（跟 app 走，卸载即清）。
+
+**为什么按需下载而不是打进安装包**：官方 darwin-arm64 tarball ≈ 48 MB，dmg 会因此翻倍，
+而绝大多数用户机器上本来就有 Node。按需下载是**一次性**成本，之后完全离线。
+
+**安全**：只从 `nodejs.org` 取；`SHASUMS256.txt` 拿不到就**拒绝安装**（无法证明是官方二进制
+就不执行）；校验失败删除临时包并中止；文件名**精确匹配**（清单里几十个平台包，取第一行等于没校验）。
+不做镜像自动切换 —— 镜像的正确性无法自证。
+
+**只解一个成员**：tarball 里有 ~5000 个文件（含 npm 与全部 `.d.ts`），我们只要 `bin/node`
+（`am.mjs` 是单文件 CLI，不需要 npm），所以按成员过滤解包。
+
+### 14.2 命令入口
+
+| 命令 | 用途 |
+|---|---|
+| `ensure_html_runtime({ install?: bool })` | `install=false` → 查状态；`install=true` → 没有就下载安装 |
+| 事件 `html-runtime-progress` | `{phase, received, total, message}`，phase ∈ start/downloading/verifying/extracting/ready |
+| 工具 `answer_html` | 本机无 Node 时**自动走同一条自举路径**，成功后照常渲染 |
+
+设置 → 本地 → **「产物渲染运行时（HTML 讲解页）」**：显示「已就绪：道生一自带 Node 22.14」
+或「未安装——可在这里下载（约 48 MB）」+ 自带运行时目录，让 48 MB 的等待有解释。
+
+### 14.3 验证
+
+- 纯函数单测（`node_runtime`）：平台标记映射、官方 URL、SHASUMS 精确匹配（含「相似名字不能被前缀骗到」）、
+  sha256 校验（真值 `sha256("hello")`）、受管路径按版本隔离
+- **真机自举测试**（`live_download_verifies_and_runs_node`，默认 ignore）：
+  真下载 48 MB → 校验 → 解出 → `node --version` 输出 `v22.14.0` → 二次调用命中缓存不重复下载。
+  实测 **161 秒**完成（2026-11-12 首次跑）
+- `npm run ci:local` 8/8 全过（vitest 62 文件 / 849 项、cargo test 385 项）

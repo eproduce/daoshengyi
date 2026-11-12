@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "daoshengyi"
-version = "1.0.0-alpha.32"
+version = "1.0.0-alpha.33"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -1019,6 +1019,7 @@ dependencies = [
  "chrono",
  "cpal",
  "encoding_rs",
+ "flate2",
  "futures",
  "futures-util",
  "hmac 0.12.1",

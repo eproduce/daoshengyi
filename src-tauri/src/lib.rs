@@ -25,6 +25,7 @@ mod lsp;
 mod mcp;
 mod mcp_server;
 mod middleware;
+mod node_runtime;
 mod proxy;
 mod pty;
 mod sandbox;
@@ -6894,6 +6895,7 @@ pub fn run() {
             run_tests,
             analyze_project,
             answer_html::answer_html,
+            answer_html::ensure_html_runtime,
             kb_index,
             kb_create,
             kb_add,

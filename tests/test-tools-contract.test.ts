@@ -250,3 +250,21 @@ describe("answer_html：触发策略与渲染链路", () => {
     expect(body).not.toMatch(/node\s+.*am\.mjs/); // 不在前端拼命令行
   });
 });
+
+describe("产物渲染运行时：没装 Node 也能出页面", () => {
+  it("前端只经 ensure_html_runtime 这一个命令，不自己拼下载逻辑", () => {
+    const api = SOURCES["../src/api/runtime.ts"] ?? "";
+    expect(api).toContain('invoke<HtmlRuntimeStatus>("ensure_html_runtime"');
+    // 两种调用都必须带 install 参数（缺了后端无法区分「查状态」与「安装」）
+    expect((api.match(/ensure_html_runtime/g) ?? []).length).toBe(2);
+    expect(api).toContain("install: false");
+    expect(api).toContain("install: true");
+  });
+
+  it("设置页能说明「为什么需要 / 装在哪」，而不是静默等 48MB", () => {
+    const ui = SOURCES["../src/components/SettingsDialog.vue"] ?? "";
+    expect(ui).toContain("产物渲染运行时");
+    expect(ui).toContain("installHtmlRuntime");
+    expect(ui).toContain("managedPath");
+  });
+});

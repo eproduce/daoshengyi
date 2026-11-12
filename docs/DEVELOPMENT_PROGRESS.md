@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-11-12（answer_html 自带 Node 运行时：没装 Node 也能出页面）
+
+`answer_html` 一直有个隐含前提「本机有 Node ≥ 20」。猜路径（Homebrew/nvm/volta/PATH）猜不到
+就整条能力不可用，而 Finder 启动的 app 只有 `/usr/bin:/bin:/usr/sbin:/sbin`。
+
+新增 `src-tauri/src/node_runtime.rs`：三级回退 ①本机 Node ②自带受管运行时（首次按需下载
+官方 tarball → **校验 SHASUMS256** → 只解出 `bin/node`，落 `<app_data>/runtime/node-v22.14.0/`）
+③明确报错。安全取舍：拿不到校验和就拒绝安装；文件名精确匹配（清单里几十个平台包）；
+校验失败删包中止；不做镜像自动切换。
+
+命令入口 `ensure_html_runtime({install})` + 进度事件 `html-runtime-progress`；设置 → 本地
+新增「产物渲染运行时」卡片（说明为什么需要、装在哪、一键下载）。工具调用自动走同一路径。
+
+**验证**：真机自举测试真下载 48 MB → 校验 → 解出 → `node --version` = v22.14.0（161 秒），
+二次调用命中缓存；`npm run ci:local` **8/8**（vitest 62 文件 / 849 项、cargo test 385 项）。
+
+---
+
 ## 2026-11-12（answer_html 设计元件层：从「卡片堆」到有观点的版式）
 
 用户反馈产物「死板、老旧、不够生动」，问同类里最好的是哪些。调研了 `answer-me-with-html`
