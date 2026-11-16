@@ -662,6 +662,8 @@ export interface SubagentRecord {
   durationSec?: number;
   resultPreview?: string;
   error?: string;
+  /** 落库的轨迹 id（点「复盘」时按它取回完整轨迹；跑完才有） */
+  traceId?: string;
 }
 
 // --- 停止请求信号：停止按钮 → 立即中断主代理工具循环 / 子代理循环 ---
@@ -3173,6 +3175,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
           allowTools,
           ...(allowedTools ? { allowedTools } : {}),
           meta: { conversationId: store.activeConversationId ?? undefined, roleId },
+          onTraceId: (id) => store.setSubagentTraceId(rec.id, id),
         });
         store.completeSubagent(rec.id, finalText);
       } catch (e) {
@@ -3321,6 +3324,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
             maxRounds: 6,
             allowedTools: roleAllowedToolNames("reviewer"),
             meta: { conversationId: store.activeConversationId ?? undefined, roleId: "reviewer" },
+            onTraceId: (id) => store.setSubagentTraceId(synthRec.id, id),
           });
           store.completeSubagent(synthRec.id, synthText);
           const visible =
@@ -4458,12 +4462,13 @@ async function runSubagentLoop(
 ): Promise<string> {
   const trace = createSubagentTrace();
   const startedAt = Date.now();
+  const runId = uuidv4();
   const finish = async (status: string, text: string): Promise<string> => {
     const snap = trace.snapshot();
     try {
       await invoke("subagent_run_add", {
         run: {
-          id: uuidv4(),
+          id: runId,
           conversation_id: opts.meta?.conversationId ?? null,
           goal,
           role_id: opts.meta?.roleId ?? null,
@@ -4480,7 +4485,9 @@ async function runSubagentLoop(
     } catch (e) {
       // 轨迹落库失败不该影响子代理结果本身（只记日志）
       void dbg(`[subagent] 轨迹落库失败：${e instanceof Error ? e.message : String(e)}`);
+      return text;
     }
+    opts.onTraceId?.(runId);
     return text;
   };
   try {
@@ -4501,6 +4508,8 @@ interface SubagentOpts {
   trace?: SubagentTraceRecorder;
   /** 归属信息（会话/角色），用于事后按会话复查 */
   meta?: { conversationId?: string; roleId?: string };
+  /** 轨迹落库后回调 id（调用方挂到子代理记录上，UI 才能点「复盘」） */
+  onTraceId?: (id: string) => void;
 }
 
 async function runSubagentLoopInner(
@@ -5156,6 +5165,11 @@ export const useChatStore = defineStore("chat", () => {
     const rec: SubagentRecord = { id: uuidv4(), goal, status: "running", startedAt: Date.now() };
     subagents.value.push(rec);
     return rec;
+  }
+  /** 把落库的轨迹 id 挂到子代理记录上（记录可能已被清空，找不到就忽略） */
+  function setSubagentTraceId(id: string, traceId: string) {
+    const r = subagents.value.find((x) => x.id === id);
+    if (r) r.traceId = traceId;
   }
   function completeSubagent(id: string, resultText: string) {
     const r = subagents.value.find((x) => x.id === id);
@@ -7871,6 +7885,7 @@ export const useChatStore = defineStore("chat", () => {
     readModeHist,
     subagents,
     spawnSubagent,
+    setSubagentTraceId,
     completeSubagent,
     failSubagent,
     clearFinishedSubagents,

@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { useChatStore, type SubagentRecord } from "@/stores/chat";
-import { Network, RefreshCw, CheckCircle2, XCircle, Hourglass } from "lucide-vue-next";
+import { Network, RefreshCw, CheckCircle2, XCircle, Hourglass, History } from "lucide-vue-next";
+import { ref } from "vue";
+import SubagentTraceDialog from "./SubagentTraceDialog.vue";
 
 const store = useChatStore();
+// 复盘弹窗：只在用户点开时读库（轨迹可达 40 条，没必要预加载）
+const traceId = ref<string | null>(null);
 
 function statusMeta(r: SubagentRecord) {
   switch (r.status) {
@@ -60,11 +64,20 @@ function timeStr(ms: number) {
           </div>
         </div>
         <div class="subagent-meta">
+          <button
+            v-if="r.traceId && r.status !== 'running' && r.status !== 'queued'"
+            class="subagent-trace"
+            title="看它读了什么、调了哪些工具、为什么停"
+            @click="traceId = r.traceId ?? null"
+          >
+            <History :size="12" /> 复盘
+          </button>
           <span class="subagent-time">{{ timeStr(r.startedAt) }}</span>
           <span v-if="r.durationSec !== undefined" class="subagent-dur">{{ r.durationSec }}s</span>
         </div>
       </div>
     </div>
+    <SubagentTraceDialog :trace-id="traceId" @close="traceId = null" />
   </div>
 </template>
 
@@ -100,6 +113,22 @@ function timeStr(ms: number) {
   border-radius: 6px;
   padding: 2px 8px;
   cursor: pointer;
+}
+.subagent-trace {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 11px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.subagent-trace:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 .subagent-clear:hover {
   color: var(--text-primary);
