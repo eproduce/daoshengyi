@@ -995,6 +995,23 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["title", "decision", "rationale"],
     additionalProperties: true,
   },
+  // --- Agent 花名册：一个工具五个 action（与 computer_use 同一取舍：省工具表名额） ---
+  agent: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["spawn", "ask", "list", "status", "close"],
+        description: "spawn=建成员 / ask=派活 / list=列成员 / status=看状态 / close=归档",
+      },
+      name: { type: "string", description: "成员名（会话内唯一，≤24 字；spawn 时必填）" },
+      role: { type: "string", description: "spawn 专用：角色 id（决定提示词与可用工具）" },
+      brief: { type: "string", description: "spawn 专用：职责一句话（长期目标，不是单次任务）" },
+      task: { type: "string", description: "spawn 可选的第一个任务；ask 必填" },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  },
   // --- 子代理轨迹复盘 ---
   subagent_trace: {
     type: "object",

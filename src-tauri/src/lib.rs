@@ -2257,6 +2257,39 @@ fn workflow_delete(db: State<Database>, id: i64) -> Result<(), String> {
     db.wf_delete(id)
 }
 
+/// 花名册：写入/更新成员（状态迁移合法性由前端纯函数 agent-roster 判定后传入）
+#[tauri::command]
+fn agent_upsert(db: State<Database>, agent: db::AgentRow) -> Result<(), String> {
+    db.agent_upsert(&agent)
+}
+
+/// 花名册：按会话列成员
+#[tauri::command]
+fn agent_list(db: State<Database>, conversation_id: String) -> Result<Vec<db::AgentRow>, String> {
+    db.agent_list(&conversation_id)
+}
+
+/// 花名册：按名字取成员（同一会话内名字唯一）
+#[tauri::command]
+fn agent_by_name(
+    db: State<Database>,
+    conversation_id: String,
+    name: String,
+) -> Result<Option<db::AgentRow>, String> {
+    db.agent_by_name(&conversation_id, &name)
+}
+
+/// 启动时调用：把上次「在跑/等待」的成员标成 interrupted（**不自动重跑**）。
+/// 返回被标记的条数（前端可据此提示「有 N 个成员被中断」）。
+#[tauri::command]
+fn agents_mark_interrupted(db: State<Database>) -> Result<usize, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    db.agents_mark_interrupted(now)
+}
+
 /// 记录一次子代理运行轨迹（前端算好 JSON 后整体落库；`INSERT OR REPLACE` 幂等）
 #[tauri::command]
 fn subagent_run_add(db: State<Database>, run: db::SubagentRunRow) -> Result<(), String> {
@@ -7121,6 +7154,10 @@ pub fn run() {
             answer_html::ensure_html_runtime,
             computer_use,
             computer_use_status,
+            agent_upsert,
+            agent_list,
+            agent_by_name,
+            agents_mark_interrupted,
             subagent_run_add,
             subagent_runs_list,
             subagent_run_get,

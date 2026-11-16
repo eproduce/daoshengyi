@@ -163,6 +163,26 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_wf_runs_started ON workflow_runs(started_at);
 
+-- Agent 花名册：成员 = 一个子会话 + 角色/状态/预算元数据。
+-- 成员 id 故意**等于**子会话 id：否则「历史里能点开的会话」与「代理眼里的成员」会分叉
+-- （用户点进去聊两句，成员却不知道）。
+CREATE TABLE IF NOT EXISTS agents (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    role_id         TEXT,
+    brief           TEXT DEFAULT '',
+    status          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    last_turn_at    INTEGER,
+    turns           INTEGER NOT NULL DEFAULT 0,
+    tokens          INTEGER NOT NULL DEFAULT 0,
+    cost            REAL NOT NULL DEFAULT 0,
+    UNIQUE(conversation_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_agents_conv ON agents(conversation_id);
+
 -- 子代理运行轨迹：子代理是**一次性函数调用**，跑完只剩一句结论，出问题无法复盘
 -- 「它为什么这么干」。这张表把每轮的判断与工具调用留下来（跨会话可查）。
 CREATE TABLE IF NOT EXISTS subagent_runs (
@@ -1826,6 +1846,90 @@ impl Database {
         Ok(())
     }
 
+    /// 写入/更新成员。**状态迁移的合法性由调用方（纯函数 agent-roster）判定**，
+    /// 这里只落库：DB 层再做一套状态机只会让两处规则慢慢分叉。
+    pub fn agent_upsert(&self, a: &AgentRow) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO agents(id, conversation_id, name, role_id, brief, status, created_at, updated_at, last_turn_at, turns, tokens, cost)              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)              ON CONFLICT(id) DO UPDATE SET name=excluded.name, role_id=excluded.role_id, brief=excluded.brief,              status=excluded.status, updated_at=excluded.updated_at, last_turn_at=excluded.last_turn_at,              turns=excluded.turns, tokens=excluded.tokens, cost=excluded.cost",
+            params![
+                a.id,
+                a.conversation_id,
+                a.name,
+                a.role_id,
+                a.brief,
+                a.status,
+                a.created_at,
+                a.updated_at,
+                a.last_turn_at,
+                a.turns,
+                a.tokens,
+                a.cost
+            ],
+        )
+        .map_err(|e| {
+            // 唯一约束冲突要给可读原因（模型会据此换名字重试）
+            if e.to_string().contains("UNIQUE") {
+                format!("同一会话里已有名为「{}」的成员，换一个名字", a.name)
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(())
+    }
+
+    /// 按会话列成员（按创建时间正序，UI/模型看到的顺序稳定）
+    pub fn agent_list(&self, conversation_id: &str) -> Result<Vec<AgentRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, conversation_id, name, role_id, brief, status, created_at, updated_at, last_turn_at, turns, tokens, cost FROM agents WHERE conversation_id = ?1 ORDER BY created_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![conversation_id], |r| {
+                Ok(AgentRow {
+                    id: r.get(0)?,
+                    conversation_id: r.get(1)?,
+                    name: r.get(2)?,
+                    role_id: r.get(3)?,
+                    brief: r.get(4)?,
+                    status: r.get(5)?,
+                    created_at: r.get(6)?,
+                    updated_at: r.get(7)?,
+                    last_turn_at: r.get(8)?,
+                    turns: r.get(9)?,
+                    tokens: r.get(10)?,
+                    cost: r.get(11)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 按名字取成员（同一会话内名字唯一）
+    pub fn agent_by_name(
+        &self,
+        conversation_id: &str,
+        name: &str,
+    ) -> Result<Option<AgentRow>, String> {
+        Ok(self
+            .agent_list(conversation_id)?
+            .into_iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name)))
+    }
+
+    /// 重启恢复：把「当时在跑/等待」的成员统一标成 interrupted（**不自动重跑**）
+    pub fn agents_mark_interrupted(&self, now: i64) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE agents SET status = 'interrupted', updated_at = ?1 WHERE status IN ('running','waiting')",
+                params![now],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n)
+    }
+
     /// 最近的子代理运行（可按会话过滤）。`with_trace=false` 时不取 trace 列。
     pub fn subagent_runs_list(
         &self,
@@ -2301,6 +2405,23 @@ pub struct WorkflowRow {
     pub name: String,
     pub graph: String,
     pub updated_at: i64,
+}
+
+/// 花名册成员（= 子会话 + 角色/状态/预算）
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct AgentRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub name: String,
+    pub role_id: Option<String>,
+    pub brief: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_turn_at: Option<i64>,
+    pub turns: i64,
+    pub tokens: i64,
+    pub cost: f64,
 }
 
 /// 一次子代理运行的轨迹（复查用：它读了什么、调了什么工具、为什么停）。
@@ -3259,6 +3380,65 @@ mod tests {
         // 删除工作流不影响历史（wf_name 快照）
         db.wf_delete(id).unwrap();
         assert_eq!(db.wf_runs(10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    // 花名册：写入/重名/按名字取/重启标记 interrupted
+    #[test]
+    fn agent_roster_roundtrip_enforces_unique_name_and_restart_semantics() {
+        let (dir, db) = tmp_db();
+        let mk = |id: &str, name: &str, status: &str, created: i64| AgentRow {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            name: name.into(),
+            role_id: Some("analyst".into()),
+            brief: "持续调研".into(),
+            status: status.into(),
+            created_at: created,
+            updated_at: created,
+            last_turn_at: None,
+            turns: 0,
+            tokens: 0,
+            cost: 0.0,
+        };
+        db.agent_upsert(&mk("a1", "调研员", "idle", 100)).unwrap();
+        db.agent_upsert(&mk("a2", "写手", "running", 200)).unwrap();
+        db.agent_upsert(&mk("a3", "审稿", "waiting", 300)).unwrap();
+
+        // 列表按创建时间正序（UI/模型看到的顺序要稳定）
+        let list = db.agent_list("c1").unwrap();
+        assert_eq!(
+            list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["调研员", "写手", "审稿"]
+        );
+
+        // 同一会话重名要被拒绝，且给出可读原因（模型据此换名字重试）
+        let dup = db
+            .agent_upsert(&mk("a9", "调研员", "idle", 400))
+            .unwrap_err();
+        assert!(dup.contains("调研员"), "重名错误要带上名字：{dup}");
+
+        // 按名字取（大小写不敏感不适用于中文，但接口要一致）
+        assert_eq!(db.agent_by_name("c1", "写手").unwrap().unwrap().id, "a2");
+        assert!(db.agent_by_name("c1", "不存在").unwrap().is_none());
+
+        // 重启：running/waiting → interrupted，已结束的不动
+        let n = db.agents_mark_interrupted(999).unwrap();
+        assert_eq!(n, 2);
+        let after = db.agent_list("c1").unwrap();
+        assert_eq!(after[0].status, "idle");
+        assert_eq!(after[1].status, "interrupted");
+        assert_eq!(after[2].status, "interrupted");
+
+        // 更新（同 id）不新增记录
+        let mut updated = mk("a1", "调研员", "running", 100);
+        updated.turns = 3;
+        updated.tokens = 1200;
+        db.agent_upsert(&updated).unwrap();
+        let again = db.agent_list("c1").unwrap();
+        assert_eq!(again.len(), 3);
+        assert_eq!(again[0].turns, 3);
+        assert_eq!(again[0].tokens, 1200);
         cleanup(&dir);
     }
 

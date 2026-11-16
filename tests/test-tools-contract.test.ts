@@ -264,6 +264,28 @@ describe("answer_html：触发策略与渲染链路", () => {
   });
 });
 
+describe("agent 花名册：一个工具五个 action（不吃掉 MCP 的声明名额）", () => {
+  it("必须合并成单个工具，且 action 白名单与分发一致", () => {
+    const desc = toolsSrc.match(/name: "agent",[\s\S]*?\n {2}\},/)?.[0] ?? "";
+    expect(desc).not.toBe("");
+    for (const act of ["spawn", "ask", "list", "status", "close"]) {
+      expect(desc).toContain(act);
+    }
+    // 分工必须写清，否则模型会在 subagent / agent 之间随机选
+    expect(desc).toContain("subagent");
+    expect(desc).toContain("长期成员");
+    // 分发侧：五个分支都在同一个 case 里
+    expect(chatSrc).toContain('case "agent":');
+    for (const act of ["spawn", "ask", "list", "status", "close"]) {
+      expect(chatSrc).toContain(`act === "${act}"`);
+    }
+    // 不能又拆回 5 个工具（工具表名额要给 MCP 留余量）
+    for (const legacy of ['name: "agent_spawn"', 'name: "agent_ask"', 'name: "agent_list"']) {
+      expect(toolsSrc).not.toContain(legacy);
+    }
+  });
+});
+
 describe("产物渲染运行时：没装 Node 也能出页面", () => {
   it("前端只经 ensure_html_runtime 这一个命令，不自己拼下载逻辑", () => {
     const api = SOURCES["../src/api/runtime.ts"] ?? "";

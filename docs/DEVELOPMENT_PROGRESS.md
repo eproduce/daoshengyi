@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-11-16（S1：agent 花名册上线——成员能被再次寻址）
+
+按 `AGENT_TEAM_DESIGN.md` 做 S1。**成员 id = 子会话 id**（不建第二套会话，否则「历史里能点开的
+会话」与「代理眼里的成员」会分叉）。状态迁移与名字校验抽成纯函数，DB 只落库不判规则
+（两处各写一套状态机必然慢慢分叉）。
+
+- `src/utils/agent-roster.ts`：`canTransition` / `statusAfterRestart` / `normalizeAgentName` /
+  `isNameTaken` / `budgetExceeded` / `describeAgent`（13 项单测，含「自迁移一律不允许」
+  「cancelled 只能重新激活不能变成 done」「重启只把 running/waiting 变 interrupted」）。
+- `db.rs`：`agents` 表（`UNIQUE(conversation_id, name)`）+ `agent_upsert`（冲突时给
+  「已有名为 X 的成员，换一个名字」这种可读错误）+ `agent_list` + `agent_by_name` +
+  `agents_mark_interrupted`；Rust 往返测试覆盖重名/正序/重启语义/同 id 更新不新增。
+- 工具面**合并成一个** `agent {action: spawn|ask|list|status|close}`：内置工具已达 **96 = MAX_NATIVE_TOOLS**，
+  再加 5 个独立工具会把 MCP 的声明名额吃到 0（`test-tool-schema` 直接红了）。
+  这是继 `computer_use` 之后第二次因为「工具表是模型每轮都要读的上下文」而选择合并。
+- `agent`（长期成员）与 `subagent`（一次性临时工）的**边界写进工具描述**，否则模型会在两者间随机选。
+  成员不得再生成员（防代理生代理爆炸）；单成员 40 万 tokens 预算（估算累计，`runSubagentLoop`
+  拿不到 usage，记 0 等于闸形同虚设）。
+
+**验证**：`npm run ci:local` **8/8**（vitest 64 文件 873 项 / cargo test 396 项）；
+外加契约测试钉住「不能又拆回 5 个工具」。
+
+**未做**：S2 mailbox、S3 重启恢复接线（`agents_mark_interrupted` 命令已备好，尚无人调用）、
+成员面板（现在只能通过工具查）。
+
+---
+
 ## 2026-11-16（后台子会话终于带工具：`session_spawn` 不再是个只能聊天的通道）
 
 设计里那条真问题，先修了最小的一刀：

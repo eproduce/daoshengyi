@@ -48,6 +48,16 @@ import {
   formatTrace,
   type SubagentTraceRecorder,
 } from "@/utils/subagent-trace";
+// 花名册（成员 = 子会话 + 角色/状态/预算）：状态迁移与名字校验都是纯函数
+import {
+  // 与 goal 的 budgetExceeded 同名不同义（那是「目标预算」，这是「成员预算」）→ 起别名
+  budgetExceeded as agentBudgetExceeded,
+  canTransition,
+  describeAgent,
+  isNameTaken,
+  normalizeAgentName,
+  type AgentStatus,
+} from "@/utils/agent-roster";
 
 /// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
 interface RoundUsage {
@@ -1995,6 +2005,99 @@ async function appendToChildSession(
     await chat.refreshConversation(id);
   } catch (e) {
     void dbg(`[session_spawn] 写回子会话失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+interface AgentRowWire {
+  id: string;
+  conversation_id: string;
+  name: string;
+  role_id: string | null;
+  brief: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  last_turn_at: number | null;
+  turns: number;
+  tokens: number;
+  cost: number;
+}
+
+/** 单成员 token 预算（等 token 真正记账后再按实际用量调整；现在按估算累计） */
+const AGENT_TOKEN_LIMIT = 400_000;
+
+/// 给成员派活：状态 running → 跑带工具的循环 → 写回子会话 → 状态 idle/failed。
+///
+/// token 记账用**估算**（`estimateMessageTokens`）：`runSubagentLoop` 只回文本，
+/// 拿不到 usage。不记成 0，否则预算闸形同虚设；估算偏保守，够用来挡住失控的成员。
+async function dispatchAgentTask(
+  agentId: string,
+  name: string,
+  task: string,
+  roleId: string | null,
+): Promise<string> {
+  const chat = useChatStore();
+  const cfg = chat.currentConfig as ApiConfig | undefined;
+  if (!cfg?.baseUrl || !cfg.apiKey) return `❌ 没有可用模型配置，无法给「${name}」派活`;
+  const conv = chat.conversations.find((c) => c.id === agentId);
+  const row = await invoke<AgentRowWire | null>("agent_by_name", {
+    conversationId: chat.activeConversationId ?? "",
+    name,
+  });
+  const now = Date.now();
+  const base = row ?? {
+    id: agentId,
+    conversation_id: chat.activeConversationId ?? "",
+    name,
+    role_id: roleId,
+    brief: "",
+    status: "idle",
+    created_at: now,
+    updated_at: now,
+    last_turn_at: null,
+    turns: 0,
+    tokens: 0,
+    cost: 0,
+  };
+  await invoke("agent_upsert", {
+    agent: { ...base, status: "running", updated_at: now, last_turn_at: now },
+  });
+  const rec = chat.spawnSubagent(`[${name}] ${task.slice(0, 60)}`);
+  try {
+    const sys = buildSubagentSysPrompt(
+      conv?.messages?.length ? "（沿用该成员的既有上下文）" : "",
+      true,
+      roleId ?? undefined,
+    );
+    const text = await runSubagentLoop(cfg, withMathRule(withCurrentDate(sys)), task, {
+      allowTools: true,
+      maxRounds: 24,
+      meta: { conversationId: agentId, roleId: roleId ?? undefined },
+      onTraceId: (tid) => chat.setSubagentTraceId(rec.id, tid),
+    });
+    chat.completeSubagent(rec.id, text);
+    await appendToChildSession(agentId, conv?.title ?? `🧑‍💻 ${name}`, conv?.model ?? "", task, text);
+    const used = estimateMessageTokens(task) + estimateMessageTokens(text);
+    await invoke("agent_upsert", {
+      agent: {
+        ...base,
+        status: "idle",
+        updated_at: Date.now(),
+        last_turn_at: Date.now(),
+        turns: base.turns + 1,
+        tokens: base.tokens + used,
+      },
+    });
+    return `✅ 已派给「${name}」并完成（第 ${base.turns + 1} 回合）。结论已写入它的会话，用 agent_status 取摘要。`;
+  } catch (e) {
+    const msg =
+      e instanceof AgentStoppedError ? "已由用户停止" : e instanceof Error ? e.message : String(e);
+    chat.failSubagent(rec.id, msg);
+    const status: AgentStatus = e instanceof AgentStoppedError ? "cancelled" : "failed";
+    await invoke("agent_upsert", {
+      agent: { ...base, status, updated_at: Date.now(), last_turn_at: Date.now() },
+    });
+    return `⚠️ 成员「${name}」本次任务${status === "cancelled" ? "被停止" : "失败"}：${msg}`;
   }
 }
 
@@ -4013,6 +4116,176 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `- 源码文件: ${a.source_files} 个（${a.by_ext.join(", ")}）\n` +
         `- 顶层结构:\n${a.top_level.map((x) => `  ${x}`).join("\n")}`
       );
+    }
+    case "agent": {
+      // 花名册：一个工具、五个 action（与 computer_use 同一取舍——工具表是模型每轮都要读的
+      // 上下文，五个独立条目会挤掉 MCP 工具的声明名额，且容易记混）。
+      const act = String(args.action || "")
+        .trim()
+        .toLowerCase();
+      if (act === "spawn") {
+        // 建「成员」：复用 session_spawn 的子会话（真实会话行，可点开/续聊），再落一条花名册记录。
+        // 与 subagent 的分工：subagent = 问一句就走的临时工；agent_* = 需要多次追加任务的长期成员。
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "❌ 还没有活动会话，无法建成员";
+        const raw = String(args.name ?? "").trim() || String(args.role ?? "").trim();
+        const nm = normalizeAgentName(raw);
+        if (!nm.ok) return `❌ ${nm.error}`;
+        const existing = await invoke<{ name: string }[]>("agent_list", { conversationId: convId });
+        if (
+          isNameTaken(
+            existing.map((a) => a.name),
+            nm.name,
+          )
+        ) {
+          return `❌ 本会话已有成员「${nm.name}」——用 agent_status 看它的状态，或换一个名字（如「${nm.name}2」）`;
+        }
+        const roleId = typeof args.role === "string" && args.role.trim() ? args.role.trim() : null;
+        const brief = String(args.brief ?? "")
+          .trim()
+          .slice(0, 200);
+        const task = String(args.task ?? "").trim();
+        const now = Date.now();
+        const id = uuidv4();
+        const chat = useChatStore();
+        const title = `🧑‍💻 ${nm.name}`;
+        chat.conversations.unshift({
+          id,
+          title,
+          messages: [],
+          createdAt: now,
+          updatedAt: now,
+          model: (chat.currentConfig as { model?: string })?.model ?? "",
+        } as (typeof chat.conversations)[number]);
+        try {
+          await invoke("ensure_conversation_cmd", { id, title, model: "" });
+        } catch {
+          /* 已存在/失败忽略 */
+        }
+        await invoke("agent_upsert", {
+          agent: {
+            id,
+            conversation_id: convId,
+            name: nm.name,
+            role_id: roleId,
+            brief,
+            status: "idle",
+            created_at: now,
+            updated_at: now,
+            last_turn_at: null,
+            turns: 0,
+            tokens: 0,
+            cost: 0,
+          },
+        });
+        const head =
+          `✅ 已建立成员「${nm.name}」${roleId ? `（角色 ${roleId}）` : ""}\n` +
+          `- agent_id: ${id}（= 它的会话 id，左侧历史可直接点开）\n`;
+        if (!task) {
+          return head + "- 尚未派活：用 agent_ask 派任务，或 agent_status 查看";
+        }
+        // 派首个任务：走带工具的循环（与 session_spawn 同一条路径），完成后写回子会话
+        const dispatched = await dispatchAgentTask(id, nm.name, task, roleId);
+        return head + dispatched;
+      } else if (act === "list") {
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const rows = await invoke<AgentRowWire[]>("agent_list", { conversationId: convId });
+        if (!rows.length) return "（本会话还没有成员；用 agent_spawn 建一个）";
+        return (
+          "本会话的成员：\n" +
+          rows
+            .map((a) =>
+              describeAgent({
+                name: a.name,
+                roleId: a.role_id,
+                status: a.status as AgentStatus,
+                turns: a.turns,
+                tokens: a.tokens,
+                brief: a.brief,
+              }),
+            )
+            .join("\n")
+        );
+      } else if (act === "status") {
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const nm = normalizeAgentName(String(args.name ?? ""));
+        if (!nm.ok) return `❌ ${nm.error}`;
+        const a = await invoke<AgentRowWire | null>("agent_by_name", {
+          conversationId: convId,
+          name: nm.name,
+        });
+        if (!a) return `❌ 本会话没有名为「${nm.name}」的成员（agent_list 可看全部）`;
+        const chat = useChatStore();
+        let tail = "";
+        try {
+          await chat.refreshConversation(a.id);
+          const conv = chat.conversations.find((c) => c.id === a.id);
+          const last = conv?.messages?.[conv.messages.length - 1];
+          if (last && last.role === "assistant" && typeof last.content === "string") {
+            tail = `\n\n最近结论（前 600 字）：\n${last.content.slice(0, 600)}`;
+          }
+        } catch {
+          /* 读子会话失败不影响状态展示 */
+        }
+        const budget = agentBudgetExceeded(
+          { tokens: a.tokens, cost: a.cost },
+          { maxTokens: AGENT_TOKEN_LIMIT },
+        );
+        return (
+          describeAgent({
+            name: a.name,
+            roleId: a.role_id,
+            status: a.status as AgentStatus,
+            turns: a.turns,
+            tokens: a.tokens,
+            brief: a.brief,
+          }) +
+          `\n- agent_id: ${a.id}` +
+          (budget ? `\n- ⚠️ ${budget}` : "") +
+          tail
+        );
+      } else if (act === "ask") {
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const nm = normalizeAgentName(String(args.name ?? ""));
+        if (!nm.ok) return `❌ ${nm.error}`;
+        const task = String(args.task ?? args.prompt ?? "").trim();
+        if (!task) return "❌ agent_ask 需要 task 参数（要它做什么）";
+        const a = await invoke<AgentRowWire | null>("agent_by_name", {
+          conversationId: convId,
+          name: nm.name,
+        });
+        if (!a) return `❌ 本会话没有名为「${nm.name}」的成员（先 agent_spawn）`;
+        if (a.status === "running") {
+          return `⏳ 成员「${a.name}」还在跑上一个任务（用 agent_status 看进度）。要插队请先 stop 再派。`;
+        }
+        const over = agentBudgetExceeded(
+          { tokens: a.tokens, cost: a.cost },
+          { maxTokens: AGENT_TOKEN_LIMIT },
+        );
+        if (over) return `⛔ ${over}`;
+        return await dispatchAgentTask(a.id, a.name, task, a.role_id);
+      } else if (act === "close") {
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const nm = normalizeAgentName(String(args.name ?? ""));
+        if (!nm.ok) return `❌ ${nm.error}`;
+        const a = await invoke<AgentRowWire | null>("agent_by_name", {
+          conversationId: convId,
+          name: nm.name,
+        });
+        if (!a) return `❌ 本会话没有名为「${nm.name}」的成员`;
+        if (!canTransition(a.status as AgentStatus, "cancelled")) {
+          return `❌ 成员「${a.name}」当前状态 ${a.status} 不能归档（先让它停下）`;
+        }
+        await invoke("agent_upsert", {
+          agent: { ...a, status: "cancelled", updated_at: Date.now() },
+        });
+        return `✅ 已归档成员「${a.name}」（会话历史保留，左侧仍可点开；重新派活会自动激活）`;
+      }
+      return `❌ 未知 action \`${act || "(空)"}\`（可用 spawn / ask / list / status / close）`;
     }
     case "subagent_trace": {
       // 子代理复盘：它读过什么、调过什么工具、为什么停。
