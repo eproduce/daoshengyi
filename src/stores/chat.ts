@@ -42,6 +42,12 @@ import { permitLabel, permitsSatisfy, toolGroup } from "@/utils/session-permits"
 import { formatCodeRunResult, runCodeInWorker } from "@/utils/code-runner";
 // 主循环的纠偏/降级判定（纯函数，可单测）
 import { classifyRoundError, planCoercionMessage } from "@/utils/loop-recovery";
+// 子代理轨迹（纯记录器；落库由 Rust 侧 subagent_run_add 完成）
+import {
+  createSubagentTrace,
+  formatTrace,
+  type SubagentTraceRecorder,
+} from "@/utils/subagent-trace";
 
 /// 单轮（一次 API 请求）的 token 用量。usage 通常只在最后一个 chunk 到达一次。
 interface RoundUsage {
@@ -3166,6 +3172,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         finalText = await runSubagentLoop(config, withMathRule(withCurrentDate(sys)), goal, {
           allowTools,
           ...(allowedTools ? { allowedTools } : {}),
+          meta: { conversationId: store.activeConversationId ?? undefined, roleId },
         });
         store.completeSubagent(rec.id, finalText);
       } catch (e) {
@@ -3251,6 +3258,10 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
               {
                 allowTools: task.allowTools,
                 ...(task.allowedTools ? { allowedTools: task.allowedTools } : {}),
+                meta: {
+                  conversationId: store.activeConversationId ?? undefined,
+                  roleId: task.role,
+                },
               },
             );
             store.completeSubagent(rec.id, text);
@@ -3309,6 +3320,7 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
             allowTools: true,
             maxRounds: 6,
             allowedTools: roleAllowedToolNames("reviewer"),
+            meta: { conversationId: store.activeConversationId ?? undefined, roleId: "reviewer" },
           });
           store.completeSubagent(synthRec.id, synthText);
           const visible =
@@ -3911,6 +3923,47 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         `- 顶层结构:\n${a.top_level.map((x) => `  ${x}`).join("\n")}`
       );
     }
+    case "subagent_trace": {
+      // 子代理复盘：它读过什么、调过什么工具、为什么停。
+      // 触发场景是**出问题时**（结论不对/跑很久/被你打断），平时不需要它。
+      const id = String(args.id || "").trim();
+      if (id) {
+        const run = await invoke<{
+          id: string;
+          goal: string;
+          status: string;
+          rounds: number;
+          result: string;
+          trace: string;
+        } | null>("subagent_run_get", { id });
+        if (!run)
+          return `⛔ 没找到子代理运行记录 \`${id}\`（可用 subagent_trace 不带 id 列出最近几条）`;
+        return formatTrace(run);
+      }
+      const convId = String(args.conversation_id || "").trim() || undefined;
+      const limit = Math.min(Math.max(Number(args.limit || 8), 1), 20);
+      const runs = await invoke<
+        {
+          id: string;
+          goal: string;
+          status: string;
+          rounds: number;
+          started_at: number;
+          entries: number;
+          dropped: number;
+        }[]
+      >("subagent_runs_list", { conversationId: convId, limit, withTrace: false });
+      if (!runs.length) return "（还没有子代理运行记录）";
+      return (
+        "最近的子代理运行（用 subagent_trace {id} 看某一条的完整轨迹）：\n" +
+        runs
+          .map(
+            (r) =>
+              `- ${r.id} ｜ ${r.status} ｜ ${r.rounds} 轮 ｜ ${r.entries} 条记录${r.dropped ? `（另 ${r.dropped} 条未存）` : ""} ｜ ${r.goal.slice(0, 80)}`,
+          )
+          .join("\n")
+      );
+    }
     case "computer_use": {
       // computer-use：整台电脑的 GUI（截图/窗口/点击/输入/快捷键/滚动）。
       // 三道闸在 Rust 侧（设置开关 → 辅助功能授权 → 参数校验）；这里只补一句**给模型看**的
@@ -4401,7 +4454,60 @@ async function runSubagentLoop(
   config: ApiConfig,
   sysPrompt: string,
   goal: string,
-  opts: { allowTools?: boolean; maxRounds?: number; allowedTools?: string[] } = {},
+  opts: SubagentOpts = {},
+): Promise<string> {
+  const trace = createSubagentTrace();
+  const startedAt = Date.now();
+  const finish = async (status: string, text: string): Promise<string> => {
+    const snap = trace.snapshot();
+    try {
+      await invoke("subagent_run_add", {
+        run: {
+          id: uuidv4(),
+          conversation_id: opts.meta?.conversationId ?? null,
+          goal,
+          role_id: opts.meta?.roleId ?? null,
+          status,
+          rounds: snap.rounds,
+          started_at: startedAt,
+          finished_at: Date.now(),
+          entries: snap.entries.length,
+          dropped: snap.dropped,
+          result: text.slice(0, 4000),
+          trace: JSON.stringify(snap),
+        },
+      });
+    } catch (e) {
+      // 轨迹落库失败不该影响子代理结果本身（只记日志）
+      void dbg(`[subagent] 轨迹落库失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+    return text;
+  };
+  try {
+    const text = await runSubagentLoopInner(config, sysPrompt, goal, { ...opts, trace });
+    return await finish("done", text);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await finish(e instanceof AgentStoppedError ? "stopped" : "failed", msg);
+    throw e;
+  }
+}
+
+interface SubagentOpts {
+  allowTools?: boolean;
+  maxRounds?: number;
+  allowedTools?: string[];
+  /** 轨迹记录器（由 wrapper 注入） */
+  trace?: SubagentTraceRecorder;
+  /** 归属信息（会话/角色），用于事后按会话复查 */
+  meta?: { conversationId?: string; roleId?: string };
+}
+
+async function runSubagentLoopInner(
+  config: ApiConfig,
+  sysPrompt: string,
+  goal: string,
+  opts: SubagentOpts = {},
 ): Promise<string> {
   const allowTools = opts.allowTools !== false;
   // 探索型调研（读目录/源码）需要较多轮次；显式传 maxRounds 的调用方（如 synth=6）覆盖
@@ -4448,6 +4554,7 @@ async function runSubagentLoop(
   const subStats = createTurnStats();
   for (let round = 0; round < maxRounds; round++) {
     if (stopRequested) throw new AgentStoppedError();
+    opts.trace?.round(round + 1);
     if (subStats.stuck) {
       throw new Error(
         `子代理因反复以同一方式失败而中止（${subStats.stuck.tool} 同因失败 ${subStats.stuck.count} 次）：${subStats.stuck.signature.slice(0, 160)}`,
@@ -4511,6 +4618,7 @@ async function runSubagentLoop(
         let result: string;
         try {
           result = await callToolStoppable(ref.server, ref.tool, args, subStats);
+          opts.trace?.tool(ref.tool, args, result, !/^\s*(⛔|❌)/.test(result), round + 1);
         } catch (e) {
           if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
           result = `错误: ${e instanceof Error ? e.message : String(e)}`;
@@ -4547,6 +4655,7 @@ async function runSubagentLoop(
       let result: string;
       try {
         result = await callToolStoppable(server, tc.tool, tc.arguments, subStats);
+        opts.trace?.tool(tc.tool, tc.arguments, result, !/^\s*(⛔|❌)/.test(result), round + 1);
       } catch (e) {
         if (e instanceof AgentStoppedError) throw e; // 用户停止 → 立即中断子代理
         result = `错误: ${e instanceof Error ? e.message : String(e)}`;
@@ -4559,7 +4668,9 @@ async function runSubagentLoop(
       });
       continue;
     }
-    return stripToolJson(content).trim() || "（子代理未返回内容）";
+    const answer = stripToolJson(content).trim() || "（子代理未返回内容）";
+    opts.trace?.assistant(answer, round + 1);
+    return answer;
   }
   // 达到轮次上限仍无最终文本（多为探索型任务 content 一直很小）：追加一轮“收尾总结”
   // ——强制模型基于已获取的工具结果直接输出完整结论（该轮不带 tools、禁止再调工具），

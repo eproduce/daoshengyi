@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-13（子代理轨迹落库：跑完只剩一句结论，出问题无从复盘）
+
+DSH 复盘里 P2 的第二项。子代理是**一次性函数调用**：跑完主对话只留一句结论，
+它读过什么、调过哪些工具、为什么停——全都丢了。「它为什么得出这个结论」是最难回答、
+也最该能回答的问题。
+
+**做法**：纯记录器 + 一张表 + 一个复盘工具。
+
+- `src/utils/subagent-trace.ts`（纯函数，10 项单测）：`createSubagentTrace()` 记
+  轮次/工具（参数与结果各留预览）/说明；**条数上限 40、预览 240 字符**——
+  探索型子代理能跑 20 轮 × 每轮多工具，不封顶会把库撑爆；超出部分**继续计数 `dropped`**
+  （静默截断会让人误以为「它只做了这些」）；`formatTrace()` 输出带轮次与失败标记的紧凑复盘。
+- `runSubagentLoop` 拆成 wrapper + inner：wrapper 负责计时与**落库**（`done` / `stopped` /
+  `failed`），inner 只管跑；落库失败不影响子代理结果本身。三个调用点（单个 / 并行 / 汇总仲裁）
+  都带上 `meta: {conversationId, roleId}`，事后能按会话复查。
+- `db.rs`：`subagent_runs` 表（id/会话/目标/角色/状态/轮次/起止时间/条数/丢弃数/结论/轨迹 JSON），
+  `subagent_run_add`（`INSERT OR REPLACE`，前端重试不产生重复）、`subagent_runs_list`
+  （`with_trace=false` 时列表不带 trace，省几十 KB）、`subagent_run_get`。
+- 新工具 `subagent_trace {id?, conversation_id?, limit?}`：不给 id 列最近几条，
+  给 id 返回完整轨迹 + 结论。让 agent **自己**能做归因（「是没读到关键文件」还是「读到了却推理错」），
+  而不是让人去翻数据库。
+
+**验证**：`db` 往返测试（三条记录/按会话过滤/倒序/单条带 trace/同 id 覆盖）；
+TS 10 项；`npm run ci:local` **8/8**（vitest 63 文件 859 项 / cargo test 395 项）。
+
+**下一步（要改状态模型，先确认再动）**：持久 roster（子代理从「函数调用」变成可再次寻址的成员）
+与 mailbox（主/子代理异步传话）。
+
+---
+
 ## 2026-11-13（computer-use 上线：看屏幕 + 动鼠标键盘）
 
 补齐 DSH 复盘里 P2 的第一项。此前我们只有**浏览器自动化**（CDP，只管网页），

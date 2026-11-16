@@ -995,6 +995,20 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     required: ["title", "decision", "rationale"],
     additionalProperties: true,
   },
+  // --- 子代理轨迹复盘 ---
+  subagent_trace: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "子代理运行 id；给了就返回它的完整轨迹" },
+      conversation_id: {
+        type: "string",
+        description: "只看某个会话的子代理（缺省=全部会话最近若干条）",
+      },
+      limit: { type: "integer", description: "列表条数 1~20（默认 8）" },
+    },
+    required: [],
+    additionalProperties: false,
+  },
   // --- computer-use：看屏幕 + 动鼠标键盘（macOS；默认关闭，需用户授权） ---
   computer_use: {
     type: "object",

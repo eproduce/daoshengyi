@@ -163,6 +163,25 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_wf_runs_started ON workflow_runs(started_at);
 
+-- 子代理运行轨迹：子代理是**一次性函数调用**，跑完只剩一句结论，出问题无法复盘
+-- 「它为什么这么干」。这张表把每轮的判断与工具调用留下来（跨会话可查）。
+CREATE TABLE IF NOT EXISTS subagent_runs (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    goal TEXT NOT NULL,
+    role_id TEXT,
+    status TEXT NOT NULL,
+    rounds INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    entries INTEGER NOT NULL DEFAULT 0,
+    dropped INTEGER NOT NULL DEFAULT 0,
+    result TEXT DEFAULT '',
+    trace TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_started ON subagent_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_conv ON subagent_runs(conversation_id);
+
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1783,6 +1802,100 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// 记录一次子代理运行（轨迹是 JSON 字符串；由前端 `subagent-trace` 生成）
+    pub fn subagent_run_add(&self, run: &SubagentRunRow) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR REPLACE INTO subagent_runs(id, conversation_id, goal, role_id, status, rounds, started_at, finished_at, entries, dropped, result, trace) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![
+                run.id,
+                run.conversation_id,
+                run.goal,
+                run.role_id,
+                run.status,
+                run.rounds,
+                run.started_at,
+                run.finished_at,
+                run.entries,
+                run.dropped,
+                run.result,
+                run.trace
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 最近的子代理运行（可按会话过滤）。`with_trace=false` 时不取 trace 列。
+    pub fn subagent_runs_list(
+        &self,
+        conversation_id: Option<&str>,
+        limit: i64,
+        with_trace: bool,
+    ) -> Result<Vec<SubagentRunRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let cols = if with_trace {
+            "id, conversation_id, goal, role_id, status, rounds, started_at, finished_at, entries, dropped, result, trace"
+        } else {
+            "id, conversation_id, goal, role_id, status, rounds, started_at, finished_at, entries, dropped, result, ''"
+        };
+        let sql = format!(
+            "SELECT {cols} FROM subagent_runs WHERE (?1 IS NULL OR conversation_id = ?1) ORDER BY started_at DESC LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![conversation_id, limit], |r| {
+                Ok(SubagentRunRow {
+                    id: r.get(0)?,
+                    conversation_id: r.get(1)?,
+                    goal: r.get(2)?,
+                    role_id: r.get(3)?,
+                    status: r.get(4)?,
+                    rounds: r.get(5)?,
+                    started_at: r.get(6)?,
+                    finished_at: r.get(7)?,
+                    entries: r.get(8)?,
+                    dropped: r.get(9)?,
+                    result: r.get(10)?,
+                    trace: r.get(11)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 单条子代理轨迹（含 trace）
+    pub fn subagent_run_get(&self, id: &str) -> Result<Option<SubagentRunRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, conversation_id, goal, role_id, status, rounds, started_at, finished_at, entries, dropped, result, trace FROM subagent_runs WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![id], |r| {
+                Ok(SubagentRunRow {
+                    id: r.get(0)?,
+                    conversation_id: r.get(1)?,
+                    goal: r.get(2)?,
+                    role_id: r.get(3)?,
+                    status: r.get(4)?,
+                    rounds: r.get(5)?,
+                    started_at: r.get(6)?,
+                    finished_at: r.get(7)?,
+                    entries: r.get(8)?,
+                    dropped: r.get(9)?,
+                    result: r.get(10)?,
+                    trace: r.get(11)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
     /// 运行历史（按开始时间倒序，limit 条）
     pub fn wf_runs(&self, limit: i64) -> Result<Vec<WorkflowRunRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -2188,6 +2301,26 @@ pub struct WorkflowRow {
     pub name: String,
     pub graph: String,
     pub updated_at: i64,
+}
+
+/// 一次子代理运行的轨迹（复查用：它读了什么、调了什么工具、为什么停）。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SubagentRunRow {
+    pub id: String,
+    pub conversation_id: Option<String>,
+    pub goal: String,
+    pub role_id: Option<String>,
+    /// done / failed / stopped / round_limit
+    pub status: String,
+    pub rounds: i64,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    /// 实际记录条数 / 被丢弃条数（轨迹有上限，超出部分只计数不存）
+    pub entries: i64,
+    pub dropped: i64,
+    pub result: String,
+    /// JSON：`{rounds, entries:[{round,kind,tool,args,result,status}], dropped}`
+    pub trace: String,
 }
 
 /// 工作流运行历史行
@@ -3126,6 +3259,55 @@ mod tests {
         // 删除工作流不影响历史（wf_name 快照）
         db.wf_delete(id).unwrap();
         assert_eq!(db.wf_runs(10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    // 子代理轨迹：写入 → 按会话列出 → 单条取回（含 trace）
+    #[test]
+    fn subagent_run_roundtrip_filters_by_conversation() {
+        let (dir, db) = tmp_db();
+        let mk = |id: &str, conv: Option<&str>, started: i64| {
+            SubagentRunRow {
+            id: id.into(),
+            conversation_id: conv.map(str::to_string),
+            goal: "分析构建链路".into(),
+            role_id: Some("analyst".into()),
+            status: "done".into(),
+            rounds: 3,
+            started_at: started,
+            finished_at: Some(started + 1000),
+            entries: 2,
+            dropped: 1,
+            result: "结论：Vite + Tauri".into(),
+            trace: r#"{"rounds":3,"entries":[{"round":1,"kind":"tool","tool":"code_stats","status":"ok"}],"dropped":1}"#.into(),
+        }
+        };
+        db.subagent_run_add(&mk("a", Some("c1"), 100)).unwrap();
+        db.subagent_run_add(&mk("b", Some("c2"), 200)).unwrap();
+        db.subagent_run_add(&mk("c", Some("c1"), 300)).unwrap();
+
+        // 不带 trace 时列表更轻，但其余字段齐全
+        let all = db.subagent_runs_list(None, 10, false).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].id, "c", "应按开始时间倒序");
+        assert!(all[0].trace.is_empty(), "with_trace=false 不该带 trace");
+
+        let c1 = db.subagent_runs_list(Some("c1"), 10, false).unwrap();
+        assert_eq!(c1.len(), 2);
+        assert!(c1
+            .iter()
+            .all(|r| r.conversation_id.as_deref() == Some("c1")));
+
+        let one = db.subagent_run_get("b").unwrap().expect("应取到 b");
+        assert_eq!(one.dropped, 1);
+        assert!(one.trace.contains("code_stats"), "单条查询要带 trace");
+        assert!(db.subagent_run_get("nope").unwrap().is_none());
+
+        // 同 id 再写一次是覆盖（前端重试不产生重复记录）
+        let mut again = mk("b", Some("c2"), 200);
+        again.status = "failed".into();
+        db.subagent_run_add(&again).unwrap();
+        assert_eq!(db.subagent_run_get("b").unwrap().unwrap().status, "failed");
         cleanup(&dir);
     }
 

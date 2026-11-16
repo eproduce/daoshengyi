@@ -2257,6 +2257,33 @@ fn workflow_delete(db: State<Database>, id: i64) -> Result<(), String> {
     db.wf_delete(id)
 }
 
+/// 记录一次子代理运行轨迹（前端算好 JSON 后整体落库；`INSERT OR REPLACE` 幂等）
+#[tauri::command]
+fn subagent_run_add(db: State<Database>, run: db::SubagentRunRow) -> Result<(), String> {
+    db.subagent_run_add(&run)
+}
+
+/// 最近的子代理运行（可按会话过滤；默认不带 trace，列表更轻）
+#[tauri::command]
+fn subagent_runs_list(
+    db: State<Database>,
+    conversation_id: Option<String>,
+    limit: Option<i64>,
+    with_trace: Option<bool>,
+) -> Result<Vec<db::SubagentRunRow>, String> {
+    db.subagent_runs_list(
+        conversation_id.as_deref(),
+        limit.unwrap_or(20).clamp(1, 100),
+        with_trace.unwrap_or(false),
+    )
+}
+
+/// 单条子代理轨迹（含 trace，用于复盘「它为什么这么干」）
+#[tauri::command]
+fn subagent_run_get(db: State<Database>, id: String) -> Result<Option<db::SubagentRunRow>, String> {
+    db.subagent_run_get(&id)
+}
+
 /// 记录一次工作流运行
 #[allow(clippy::too_many_arguments)] // Tauri 命令参数与 workflow_runs 字段对应
 #[tauri::command]
@@ -7094,6 +7121,9 @@ pub fn run() {
             answer_html::ensure_html_runtime,
             computer_use,
             computer_use_status,
+            subagent_run_add,
+            subagent_runs_list,
+            subagent_run_get,
             kb_index,
             kb_create,
             kb_add,
