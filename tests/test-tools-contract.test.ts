@@ -64,6 +64,19 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect((chatSrc.match(/callToolStoppable\([^)]*subStats\)/g) ?? []).length).toBe(2);
   });
 
+  it("session_spawn 的后台回合必须带工具（否则子会话只会说「我无法访问文件」）", () => {
+    // 原实现只调 queue_turn，而 Rust 侧是 chat_once(config, msgs, None) —— tools 传 None
+    expect(chatSrc).toContain("allowTools: true,\n        maxRounds: 24");
+    expect(chatSrc).toContain("appendToChildSession(");
+    // 纯对话通道只作为「没有模型配置」时的降级，不能是主路径
+    const spawn = chatSrc.slice(chatSrc.indexOf("async function toolSessionSpawn"));
+    const body = spawn.slice(0, spawn.indexOf("async function appendToChildSession"));
+    // 主路径是带工具的 runSubagentLoop；queue_turn 只剩「没有模型配置」时的一次降级调用
+    expect(body).toContain("runSubagentLoop");
+    expect((body.match(/invoke\("queue_turn"/g) ?? []).length).toBe(1);
+    expect(body).toContain("if (!cfg?.baseUrl");
+  });
+
   it("answer_html 把版式原型与反 slop 自查写进工具描述（否则模型只会铺同款卡片）", () => {
     const desc = toolsSrc.match(/name: "answer_html",[\s\S]*?\n {2}\},/)?.[0] ?? "";
     expect(desc).not.toBe("");

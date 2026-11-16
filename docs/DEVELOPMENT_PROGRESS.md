@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-11-16（后台子会话终于带工具：`session_spawn` 不再是个只能聊天的通道）
+
+设计里那条真问题，先修了最小的一刀：
+
+> `lib.rs::queue_turn` → `api::chat_once(config, api_msgs, None)`，tools 传 `None`。
+
+修法不是重写 Rust 的循环，而是**让后台回合复用已有的 `runSubagentLoop`**（它本来就带全套内置工具、
+独立回合统计、轨迹落库）：
+
+- `session_spawn` 主路径：`runSubagentLoop(..., {allowTools: true, maxRounds: 24})` →
+  `appendToChildSession`（`get_messages` + `save_conversation` 按 id upsert）→ `refreshConversation`；
+- `queue_turn` 降级为「没有可用模型配置」时的通道（行为与以前完全一致，不会让任务彻底失败）；
+- 工具描述补一句「带工具运行：能读文件/跑命令/搜索，不是只会聊天的通道」。
+
+**契约测试**钉住：spawn 体内 `invoke("queue_turn")` **只允许出现一次**（降级用），主路径必须是带工具的循环
+——这条能防住「以后有人为了省事又改回 queue_turn」。
+
+**验证**：`npm run ci:local` **8/8**（vitest 63 文件 860 项 / cargo test 395 项）。
+
+---
+
 ## 2026-11-16（agent-team 设计定稿待确认：先修地基，再做编制）
 
 写方案时查代码发现一条**真问题**，直接改变了顺序：

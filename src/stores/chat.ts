@@ -1896,19 +1896,106 @@ async function toolSessionSpawn(args: Record<string, unknown>): Promise<string> 
   }
   sessionBusy.add(id);
   agentSessions.set(id, { title: conv.title, startedAt: now, interrupted: false });
-  try {
-    await invoke("queue_turn", { conversationId: id, text: prompt });
-  } catch (e) {
-    sessionBusy.delete(id);
-    return `❌ session_spawn 投递失败：${e}。子会话仍保留在左侧列表（${conv.title}），可点击手动继续。`;
+  // 后台回合**必须带工具**：原实现走 `queue_turn`（Rust 侧 `chat_once(config, msgs, None)`），
+  // 第三个参数是 tools —— 传 None 意味着后台任务只能聊、不能读文件/跑命令，
+  // 于是「读这个文件并总结」会答「我无法访问文件」。这里改由前端跑**同一个**子代理循环
+  // （有工具、有回合统计、有轨迹），结果写回子会话消息。
+  const cfg = chat.currentConfig as ApiConfig | undefined;
+  if (!cfg?.baseUrl || !cfg.apiKey) {
+    // 没有可用模型配置时才退回纯对话通道（至少不让任务彻底失败）
+    try {
+      await invoke("queue_turn", { conversationId: id, text: prompt });
+    } catch (e) {
+      sessionBusy.delete(id);
+      return `❌ session_spawn 投递失败：${e}。子会话仍保留在左侧列表（${conv.title}），可点击手动继续。`;
+    }
+    return (
+      `✅ 已创建后台子会话「${conv.title}」并投递任务（未检测到可用模型配置，走纯对话通道）。\n` +
+      `- session_id: ${id}\n` +
+      `- 查询进度：session_status，参数 {"session_id": "${id}"}`
+    );
   }
+  void (async () => {
+    try {
+      const sys = buildSubagentSysPrompt("", true);
+      const text = await runSubagentLoop(cfg, withMathRule(withCurrentDate(sys)), prompt, {
+        allowTools: true,
+        maxRounds: 24,
+        meta: { conversationId: id },
+      });
+      await appendToChildSession(id, conv.title, conv.model, prompt, text);
+    } catch (e) {
+      const msg =
+        e instanceof AgentStoppedError
+          ? "已由用户停止"
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      await appendToChildSession(id, conv.title, conv.model, prompt, `（后台任务失败：${msg}）`);
+    } finally {
+      sessionBusy.delete(id);
+    }
+  })();
   return (
-    `✅ 已创建后台子会话「${conv.title}」并投递任务。\n` +
+    `✅ 已创建后台子会话「${conv.title}」并投递任务（**带工具**，可读写文件/跑命令）。\n` +
     `- session_id: ${id}\n` +
     "- 它独立执行、不阻塞当前对话；完成后结果自动写入该会话（左侧历史可见，可点击查看/续聊）。\n" +
     `- 查询进度：session_status，参数 {"session_id": "${id}"}\n` +
     `- 把结果取回本对话继续分析：session_resume，参数 {"session_id": "${id}"}（会等待完成）`
   );
+}
+
+/// 把后台回合的「任务 + 结论」写进子会话（子会话是真实会话行，靠 `save_conversation` 追加）。
+///
+/// 为什么不用 `queue_turn` 的写库路径：那条路径属于 Rust 侧的纯对话实现（无工具），
+/// 前端跑完的结果只能自己写回；`get_messages` + `save_conversation` 都是既有命令，按 id upsert。
+async function appendToChildSession(
+  id: string,
+  title: string,
+  model: string,
+  task: string,
+  answer: string,
+): Promise<void> {
+  const chat = useChatStore();
+  const now = Date.now();
+  let rows: unknown[] = [];
+  try {
+    rows = await invoke<unknown[]>("get_messages", { conversationId: id });
+  } catch {
+    rows = [];
+  }
+  const local = chat.conversations.find((c) => c.id === id);
+  const conv = {
+    id,
+    title,
+    model,
+    created_at: local?.createdAt ?? now,
+    updated_at: now,
+    workspace: local?.workspace ?? null,
+  };
+  const base = {
+    conversation_id: id,
+    reasoning_content: null,
+    images: null,
+    attachments: null,
+    tokens: null,
+    duration: null,
+    cost: null,
+    tools: null,
+  };
+  try {
+    await invoke("save_conversation", {
+      conv,
+      messages: [
+        ...rows,
+        { ...base, id: `q${now}-u`, role: "user", content: task, timestamp: now },
+        { ...base, id: `q${now}-a`, role: "assistant", content: answer, timestamp: now + 1 },
+      ],
+    });
+    await chat.refreshConversation(id);
+  } catch (e) {
+    void dbg(`[session_spawn] 写回子会话失败：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** session_status：查询子会话执行进度/最近结果 */

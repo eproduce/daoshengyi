@@ -232,7 +232,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
   {
     name: "session_spawn",
-    desc: '**创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {"prompt": "后台任务的完整指令", "name": "可选子会话名（默认 子任务）"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。查进度用 session_status；取结果用 session_resume。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。',
+    desc: '**创建后台子会话并异步投递任务，不阻塞当前对话**。参数 {"prompt": "后台任务的完整指令", "name": "可选子会话名（默认 子任务）"}。返回 session_id。适合耗时/独立的后续工作（长研究、批量抓取、多步改造），spawn 后当前对话可继续做别的；子会话以 🧵 前缀出现在左侧历史、可点击查看/续聊。查进度用 session_status；取结果用 session_resume。**带工具运行**：子会话跑的是同一个带工具的 agent 循环（能读文件/跑命令/搜索），不是一个只会聊天的通道。**注意**：子会话后台运行且消耗 LLM 额度，完成后不会自动回填当前对话，需主动 resume。',
   },
   {
     name: "session_status",

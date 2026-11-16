@@ -1,6 +1,7 @@
 # Agent Team 设计（roster + mailbox）· 2026-11-16
 
-> 状态：**方案待确认，未开始实现**。本文只做设计与取舍，不含代码改动。
+> 状态：**S0 的「后台回合带工具」已实现**（2026-11-16，见 §2.4）；S1/S2/S3 待做。
+> 三个待确认项的默认取值为：**先做 S0 / 按会话隔离 / 推荐预算（40 万 tokens、主会话 30%、并发 4）**。
 > 触发：DSH 复盘 P2 的第三项。前两项（回合统计作用域化、子代理轨迹落库+复盘界面）已完成。
 
 ---
@@ -58,6 +59,20 @@ Rust 侧的 `queue_turn` 只有一句 `chat_once(..., None)`。于是同一件�
 
 **B. 在 Rust 里实现第二套带工具的循环** —— 拒绝。两套实现必然分叉，
 且 Rust 侧拿不到前端的内置工具（`callBuiltinTool` 在 TS 里）。
+
+### 2.4 已落地的折中（2026-11-16）
+
+完整抽 `agent-loop.ts` 会动 1,700 行主循环，风险高；而「后台不能干活」这件事有更小的解法：
+**让后台回合直接复用已有的 `runSubagentLoop`**（它本来就带全套内置工具、独立回合统计、轨迹落库），
+跑完把「任务 + 结论」写回子会话消息。
+
+- `session_spawn`：主路径改为 `runSubagentLoop(cfg, sys, prompt, {allowTools: true, maxRounds: 24})`
+  → `appendToChildSession`（`get_messages` + `save_conversation`，按 id upsert）→ `refreshConversation`；
+  `queue_turn` 只保留为「没有可用模型配置」时的降级通道（行为与以前一致）。
+- 契约测试钉住：主路径必须是带工具的循环，`invoke("queue_turn")` 在 spawn 体内**只允许出现一次**（降级用）。
+
+**仍然没解决**：`sendMessage` 本身还是不可测；真正的抽离（前台与后台共用**同一个**循环对象）
+仍要做，只是不再阻塞 roster 的推进。
 
 ### 2.3 验收标准（S0）
 
