@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-11-18（按 DeepSeek 官方文档对齐模型调用：修掉「关不掉思考」等 5 处）
+
+对着 `api-docs.deepseek.com/zh-cn/guides/*` 与 `create-chat-completion` 逐条核了一遍，
+记在 `docs/DEEPSEEK_API_CONFORMANCE.md`。**三条是真的 bug，不是优化**：
+
+1. **关不掉思考模式**。官方：省略 `thinking` 且不传 `reasoning_effort` 时**默认开启思考**。
+   我们 `thinkingEnabled=false` 时两个字段都不发 → 用户点了「关闭」，模型照样先思考；
+   收尾轮 `noThinking`（想省输出预算）的设计**从未生效**。修法：DeepSeek 端点一律显式发
+   `thinking: {type: enabled|disabled}`。真机验证：关掉 `reasoning_len=0`，打开 `reasoning_len=114`。
+2. **思考模式还发 `temperature`**。官方明确「不报错但不生效」→ 用户以为调过温度。
+   修法：思考模式不发；非思考照发。
+3. **思考模式 `max_tokens` 太小**（我们常发 8192，官方思考模式默认 64K）→ 思维链先吃光预算，
+   正文剩半句、`finish_reason=length` 反复续写。修法：思考模式下限 16384。
+4. **本地兜底被塞 DeepSeek 专有字段**：`thinking`/`reasoning_effort` 发给 llama.cpp/LM Studio
+   可能 400。修法：`is_deepseek_endpoint` 判定，非官方端点只发标准 OpenAI 字段。
+5. **带 `tools` 时未回传 `reasoning_content`**（官方要求回传并拼进上下文）→ 多轮工具循环里模型
+   「忘了自己刚才怎么想的」。修法：`ChatMessage` 增加该字段，`streamRound` 返回本轮思维链，
+   `handleNativeRound` 随 assistant(tool_calls) 一起回填（同时能命中 KV 缓存）。
+
+**同时把三份请求体拷贝收敛成 `build_chat_body` 一处**（`stream_chat` / `chat_once` / `probe_native_tools`
+各写一遍 thinking+temperature，修一处忘两处——probe 至今发着无效 temperature）。
+
+**顺带**（同一轮，见 `loop-steps.ts`）：主循环那五个**顺序敏感**的纠偏分支抽成纯函数
+`decideNoToolStep` / `decideNativeStep`，`isVagueBody` 与 `BIG_WRITE_SPLIT_HINT` 收敛到同一模块。
+顺序是有语义的（「意图未闭合」若排到「正文空洞」之后，半截标记会被当空洞反复重试），
+以前埋在 1,700 行 async 里一条都测不了，现在 18 项单测逐条钉住。
+
+**验证**：`npm run ci:local` **8/8**（vitest 65 文件 **901 项** / cargo test **405 项**），
+含 7 条参数语义单测 + 1 条真机 `live_thinking_toggle_respects_disabled`。
+
+---
+
 ## 2026-11-18（S2 mailbox + S3 重启恢复 + 成员面板）
 
 S1 之后补完设计里的后两段。

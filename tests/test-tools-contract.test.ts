@@ -34,6 +34,13 @@ const SOURCES = import.meta.glob("../src/**/*.{ts,vue}", {
 }) as Record<string, string>;
 
 const chatSrc = SOURCES["../src/stores/chat.ts"] ?? "";
+/// Rust 侧源文本（请求构造在 api.rs；契约要能断言「只有一处拼参数」）
+const RUST_SOURCES = import.meta.glob("../src-tauri/src/*.rs", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+const apiSrc = RUST_SOURCES["../src-tauri/src/api.rs"] ?? "";
 const toolsSrc = SOURCES["../src/data/builtin-tools.ts"] ?? "";
 
 /**
@@ -96,10 +103,16 @@ describe("正文装配契约：工具卡片不得进入 model-visible 的 conten
     expect((desc.match(/版式原型/g) ?? []).length).toBe(1);
   });
 
-  it("任务模式的「先建计划」话术只有一份（不再 native/text 各抄一遍）", () => {
-    // 三处调用点共用 planCoercionMessage，正文里不得再出现手写话术
-    expect((chatSrc.match(/planCoercionMessage\(/g) ?? []).length).toBe(3);
+  it("任务模式的「先建计划」话术只有一份（已收进 loop-recovery，决策收进 loop-steps）", () => {
+    // 话术的唯一来源是 loop-recovery 的 planCoercionMessage；chat.ts 与 loop-steps 都不得手写
     expect(chatSrc).not.toContain("【任务模式】，但还没有创建任务计划");
+    const steps = SOURCES["../src/utils/loop-steps.ts"] ?? "";
+    expect(steps).not.toContain("【任务模式】，但还没有创建任务计划");
+    expect(steps).toContain("planCoercionMessage(");
+    // 步进决策只有一处：主循环不再逐条手写 if（顺序敏感的那五个分支）
+    expect(chatSrc).toContain("decideNoToolStep(");
+    expect(chatSrc).toContain("decideNativeStep(");
+    expect(chatSrc).not.toContain("hasCompleteToolCall(roundResult.content) &&");
   });
 
   it("原生 tools 降级判定走分类器，不用裸 /tool|function/ 宽匹配", () => {
@@ -261,6 +274,19 @@ describe("answer_html：触发策略与渲染链路", () => {
     expect(body).toContain('"answer_html"');
     expect(body).toContain("args.out_path");
     expect(body).not.toMatch(/node\s+.*am\.mjs/); // 不在前端拼命令行
+  });
+});
+
+describe("模型调用参数：按 DeepSeek 文档的硬约束（Rust 侧集中构造）", () => {
+  it("请求体只有一处构造（build_chat_body），三处调用点不得各自拼参数", () => {
+    expect(apiSrc).toContain("pub fn build_chat_body(");
+    // 曾经 stream_chat / chat_once / probe 三处各写一遍 thinking/temperature，
+    // 结果修一处忘两处（probe 至今发着无效 temperature）。
+    expect((apiSrc.match(/fn build_chat_body\(/g) ?? []).length).toBe(1);
+    expect((apiSrc.match(/build_chat_body\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    // 关掉思考必须显式 disabled：省略时官方默认开启
+    expect(apiSrc).toContain('"disabled"');
+    expect(apiSrc).toContain("is_deepseek_endpoint");
   });
 });
 

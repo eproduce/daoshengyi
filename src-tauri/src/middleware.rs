@@ -22,6 +22,7 @@ pub fn preprocess_messages(messages: &mut Vec<ChatMessage>) {
             content: serde_json::Value::String(APP_IDENTITY.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         };
         messages.insert(0, identity_msg);
     }

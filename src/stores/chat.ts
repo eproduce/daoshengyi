@@ -42,6 +42,12 @@ import { permitLabel, permitsSatisfy, toolGroup } from "@/utils/session-permits"
 import { formatCodeRunResult, runCodeInWorker } from "@/utils/code-runner";
 // 主循环的纠偏/降级判定（纯函数，可单测）
 import { classifyRoundError, planCoercionMessage } from "@/utils/loop-recovery";
+// 主循环的步进决策（顺序敏感：计划纠偏→格式→意图→空洞→假完成），纯函数可测
+import {
+  decideNativeStep,
+  decideNoToolStep,
+  isVagueBody as isVagueBodyText,
+} from "@/utils/loop-steps";
 // 子代理轨迹（纯记录器；落库由 Rust 侧 subagent_run_add 完成）
 import {
   createSubagentTrace,
@@ -268,6 +274,10 @@ export interface AgentMsg {
   content: unknown;
   tool_calls?: NativeToolCallMsg[];
   tool_call_id?: string;
+  /// 上一轮 assistant 的思维链。官方要求：**请求带 tools 时历史 reasoning_content 要回传**
+  /// （会拼进上下文），否则多轮工具循环里模型"忘了自己刚怎么想的"，容易原地打转。
+  /// 回传的这部分还是前缀的一部分，能命中 KV 缓存。
+  reasoning_content?: string;
 }
 
 /// 前端诊断日志（写 daoshengyi.log + 终端），排查工具循环等前端链路问题
@@ -1505,26 +1515,8 @@ function puppeteerViewport(): { width: number; height: number } {
   return { width: 1440, height: 900 };
 }
 
-/// 判定一段正文是否为「空洞的过程声明」——模型口头承诺要做某事但未执行、也未给出实质内容，
-/// 如「搜索与问题无关，我直接访问官网获取办事指南」。用于工具循环/收尾轮判定：
-/// 正文空洞时强制模型真正调用工具或给出完整答案，避免「只有工具卡片 + 一句意图声明」的断头回复。
-function isVagueBody(s: string): boolean {
-  const sc = s.trim();
-  if (sc.length === 0) return true; // 空正文
-  if (/^###\s*(🔧|🌐)/.test(sc)) return true; // 仍被工具卡片/占位占用
-  if (sc.length > 120) return false; // 长正文视为已有实质内容
-  // 有列表/编号/冒号/表格/代码块等结构 → 视为有内容。
-  // 注意：仅换行不算（agent 常只写个标题如「**检查页面元素**」就结束，仍是空洞）
-  if (/^\s*[-•*]\s|\d+[.、]\s|[：]|:\s|\|.+\||```/.test(sc)) return false;
-  // 短正文 + 第一人称/过渡词/延续词引导的「过程声明」（我/将/直接/继续/尝试/再…
-  // 访问/获取/查…）或「结果无关」→ 空洞。纯建议（如「可访问官网查看最新政策」无
-  // 引导词）不算空洞。
-  return (
-    /(我|将|准备|接下来|让我|直接|先|去|继续|尝试|再|重新).{0,12}(访问|获取|查看|打开|查询|搜索|查|输出|写|写入|整理|生成|拼|创建|保存|补全|重新输出)/.test(
-      sc,
-    ) || /无关|与问题不相关/.test(sc)
-  );
-}
+/// 正文空洞判定（实现已收敛到 utils/loop-steps，这里保留名字以免大范围改名）
+const isVagueBody = isVagueBodyText;
 
 /// 挑一个「可能支持图片输入」的配置用于识图回退：非 DeepSeek（它不支持视觉）且填了地址。
 /// 本地 OpenAI 兼容服务（Strata / LM Studio / vLLM）通常不校验 Key，所以 **不要求 apiKey**；
@@ -7047,16 +7039,6 @@ export const useChatStore = defineStore("chat", () => {
       // 是否还有进展（见下方 planAutoContinue）。这里只防真正的死循环。
       const maxToolRounds = MAX_TOOL_ROUNDS;
 
-      // 「大内容被截断」时的统一指令：文本路径（isBigWriteFile）与原生路径
-      //（tool_call.arguments 被截断）共用一份，避免两处说法不一致。
-      const BIG_WRITE_SPLIT_HINT =
-        "⚠️ 你上一次的工具调用/文件内容**因输出长度上限被截断**，内容只发了一半，**文件没有写入**；再一次性输出仍会被截断。\n" +
-        "**改用分段写入（禁止一次塞整份文件）**：\n" +
-        "① 先 `write_file` 写文件**开头部分**，末尾放唯一占位标记 `<!--MORE-->`（HTML 根标签 `<html>`/`</html>` 在本段内闭合，保证文件合法）；\n" +
-        '② 用 `insert_string` 逐段追加：`{"path": 同一路径, "anchor": "<!--MORE-->", "position": "before", "new_text": "<下一段>\\n<!--MORE-->"}`；\n' +
-        "③ 重复 ② 直到写完，最后一次 `new_text` 不要留 `<!--MORE-->`，让文件完整收尾。\n" +
-        "每次工具调用的内容 ≤ 2500 字符。不要重试一次性大输出；生成大文件也可以改用 `run_command` 的 heredoc 落盘。";
-
       // 一轮流式：实时逐字输出思考/内容；检测到完整工具调用标记则立即结束本轮并返回工具调用。
       // - 传入 tools（原生 function calling）时：模型以结构化 tool_calls 返回工具调用，
       //   经 sse-tool-calls 事件捕获；文本 <tool_call> 检测仅作兜底（延迟到轮末解析）。
@@ -7077,6 +7059,8 @@ export const useChatStore = defineStore("chat", () => {
         finishReason?: string | null;
         /** 本轮 token 用量（usage 每轮只到一次；由主循环在轮末累加） */
         usage?: RoundUsage;
+        /** 本轮思维链（带 tools 的后续轮次需要回传，见 AgentMsg.reasoning_content） */
+        reasoning: string;
       }> {
         const nativeToolsActive = !!tools && tools.length > 0;
         streamingContent.value = ""; // 只清正文；思考过程跨轮累积（多轮思考链完整展示）
@@ -7304,6 +7288,7 @@ export const useChatStore = defineStore("chat", () => {
           nativeCalls,
           finishReason: roundFinish,
           usage: roundUsage,
+          reasoning: reasoningBuffer,
         };
       }
 
@@ -7313,6 +7298,7 @@ export const useChatStore = defineStore("chat", () => {
       async function handleNativeRound(
         calls: NativeToolCallMsg[],
         roundContent: string,
+        roundReasoning = "",
       ): Promise<void> {
         const normCalls: NativeToolCallMsg[] = calls.map((c) => ({
           id: c.id || `call_${uuidv4()}`,
@@ -7327,6 +7313,8 @@ export const useChatStore = defineStore("chat", () => {
           role: "assistant",
           content: visibleText(roundContent),
           tool_calls: normCalls,
+          // 带 tools 的历史必须回传思维链（官方要求）；空串时不传，避免无谓体积
+          ...(roundReasoning ? { reasoning_content: roundReasoning } : {}),
         });
         dbg(`[tool-native] 本轮 ${normCalls.length} 个原生工具调用`);
         for (const call of normCalls) {
@@ -7439,6 +7427,7 @@ export const useChatStore = defineStore("chat", () => {
         nativeCalls?: NativeToolCallMsg[] | null;
         finishReason?: string | null;
         usage?: RoundUsage;
+        reasoning?: string;
       } | null = null;
       let nativeDegraded = false; // 首次轮因原生 tools 报错 → 已降级为文本模式
       while (round < maxToolRounds) {
@@ -7496,38 +7485,42 @@ export const useChatStore = defineStore("chat", () => {
             // 无参工具（required 声明为空）传空参数是正常写法，不算被截断
             return Array.isArray(req) ? req.length > 0 : true;
           });
-          if (roundResult.finishReason === "length" && truncatedCalls.length > 0) {
+          const hasPlanCall = nativeCalls.some((c) => {
+            const nm = c.function?.name;
+            const ref = nm ? nativeRegistry?.byName.get(nm) : null;
+            return ref?.kind === "builtin" && ref.tool === "plan_task";
+          });
+          // 步进决策（顺序敏感）：截断优先 → 计划纠偏 → 派发
+          const nStep = decideNativeStep({
+            content: roundResult.content,
+            finishReason: roundResult.finishReason,
+            truncatedCount: truncatedCalls.length,
+            hasPlanCall,
+            taskMode: isTaskModeActive(),
+            hasPlan: !!useChatStore().taskPlan,
+            planNudged,
+          });
+          if (nStep.kind === "truncated") {
             round++;
             dbg(
               `[loop] 原生工具调用参数被 max_tokens 截断（${truncatedCalls
                 .map((c) => c.function?.name)
                 .join(", ")}）→ 不派发空参数调用，第 ${round} 轮注入分段写入指令`,
             );
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({ role: "user", content: BIG_WRITE_SPLIT_HINT });
+            rustMsgs.push({ role: "assistant", content: nStep.assistantText });
+            rustMsgs.push({ role: "user", content: nStep.userText });
             if (round >= maxToolRounds) break;
             continue;
           }
-          // 任务模式护栏（原生路径）：目标须先建计划再干活。模型若直接原生调用了实际工具
-          // （如 analyze_project）而计划还没建 → 丢弃本轮调用，强制先 plan_task，
-          // 让下一轮以原生 plan_task 开头重建计划（保证任务进度卡片出现）。
-          const hasPlanCall = nativeCalls.some((c) => {
-            const nm = c.function?.name;
-            const ref = nm ? nativeRegistry?.byName.get(nm) : null;
-            return ref?.kind === "builtin" && ref.tool === "plan_task";
-          });
-          if (isTaskModeActive() && !useChatStore().taskPlan && !planNudged && !hasPlanCall) {
+          if (nStep.kind === "plan-nudge") {
             planNudged = true;
             round++;
             dbg(`[loop] 任务模式（原生）未建计划，第 ${round} 轮强制要求 plan_task`);
-            rustMsgs.push({
-              role: "user",
-              content: planCoercionMessage("native-calls"),
-            });
+            rustMsgs.push({ role: "user", content: nStep.userText });
             continue;
           }
           dbg(`[loop] 第 ${round} 轮返回原生 tool_calls ${nativeCalls.length} 个`);
-          await handleNativeRound(nativeCalls, roundResult.content);
+          await handleNativeRound(nativeCalls, roundResult.content, roundResult.reasoning ?? "");
           round++;
           if (round >= maxToolRounds) {
             roundBudgetExhausted = true; // 记账：收尾时要说清楚这是「被打断」而不是「做完了」
@@ -7542,101 +7535,39 @@ export const useChatStore = defineStore("chat", () => {
           `[loop] 第 ${round} 轮结束，toolCall=${tc ? `${tc.server}/${tc.tool}` : "null"}，本轮content长度=${roundResult.content.length}`,
         );
         if (!tc) {
-          // 任务模式但尚未创建任务计划：模型可能在思考中反复"要建计划"却没真正调用
-          // → 强制它立即 plan_task，避免空想太久。
-          if (isTaskModeActive() && !useChatStore().taskPlan && !planNudged) {
-            planNudged = true;
+          // 步进决策（顺序敏感：计划纠偏 → 格式无效 → 意图未闭合 → 正文空洞 → 假完成）。
+          // 规则全在 utils/loop-steps.ts（纯函数，逐条有测试）；这里只执行它给的动作。
+          const step = decideNoToolStep({
+            content: roundResult.content,
+            round,
+            maxRounds: maxToolRounds,
+            taskMode: isTaskModeActive(),
+            hasPlan: !!useChatStore().taskPlan,
+            planNudged,
+            didRealWork,
+            fakeCompletionWarned,
+            hasCompleteCall: hasCompleteToolCall(roundResult.content),
+            hasIntent: hasToolCallIntent(roundResult.content),
+          });
+          if (step.kind !== "finish") {
             round++;
-            dbg(`[loop] 任务模式尚未建计划，第 ${round} 轮强制要求 plan_task`);
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({ role: "user", content: planCoercionMessage("no-call") });
-            continue;
-          }
-          // 模型**尝试**了工具调用（正文出现闭合标记）但解析失败：
-          // 空 <tool_call></tool_call>、JSON 不合法、或写成「### 🔧 调用工具」卡片文本。
-          // 这些都不会真正执行工具 → 回复中断（用户看到"断了"）。
-          // 这里主动注入修正指令重试一轮，而不是直接放弃。
-          if (hasCompleteToolCall(roundResult.content) && round + 1 < maxToolRounds) {
-            round++;
-            dbg(`[loop] 工具调用格式无效（有闭合标记但解析失败），第 ${round} 轮注入修正指令重试`);
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({
-              role: "user",
-              content:
-                "⚠️ 你上一条回复里的工具调用格式无效：要么是空的 <tool_call></tool_call>，要么 JSON 不合法，要么写成了「### 🔧 调用工具」卡片文本——这些都**不会真正执行工具**。\n" +
-                "请重新用**唯一合法格式**输出：\n" +
-                '<tool_call>\n{"server":"文件系统","tool":"工具名","arguments":{...}}\n</tool_call>\n' +
-                "JSON 必须是合法对象且含 server、tool、arguments 三个字段；不要写卡片文本，不要输出空标记。",
-            });
+            if (step.kind === "plan-nudge") planNudged = true;
+            if (step.kind === "fake-completion") fakeCompletionWarned = true;
+            const labels: Record<string, string> = {
+              "plan-nudge": "任务模式未建计划，注入 plan_task 指令",
+              "invalid-format": "工具调用格式无效（有闭合标记但解析失败），注入修正指令",
+              "call-intent": "有工具调用意图但未闭合，注入修正指令",
+              "vague-body": "正文空洞（仅过程声明），要求实际执行或完整作答",
+              "fake-completion": "任务模式未执行任何实际工具，强制要求真正执行",
+            };
+            dbg(`[loop] 第 ${round} 轮：${labels[step.kind]}`);
+            if (step.assistantText) {
+              rustMsgs.push({ role: "assistant", content: step.assistantText });
+            }
+            rustMsgs.push({ role: "user", content: step.userText });
             continue; // 重新发起一轮流式
           }
-          // 有工具调用**意图**但未形成完整可解析调用（开标记未闭合 / DSML 半截 / 流式截断）：
-          // 模型想调工具却因标记不完整没执行 → 正文只剩残句（用户看到「回复中断」）。
-          // 注入修正指令重试一轮，要求补全成完整合法的 <tool_call>。
-          if (hasToolCallIntent(roundResult.content) && round + 1 < maxToolRounds) {
-            round++;
-            // write_file 大 content 截断：模型把整份 HTML 塞进一个 write_file 的 content，
-            // 超过单次输出上限被截断（有 write_file 开标记且已输出不少 content 但仍无 </tool_call>）。
-            // 这种场景重试一次性大输出只会再截断 → 必须引导改为分段写入。
-            const isBigWriteFile =
-              /write_file/.test(roundResult.content) &&
-              /"content"\s*:/.test(roundResult.content) &&
-              roundResult.content.length > 2000;
-            dbg(
-              `[loop] 检测到工具调用意图但未闭合/解析失败（大 write_file 截断=${isBigWriteFile}），第 ${round} 轮注入修正指令重试`,
-            );
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({
-              role: "user",
-              content: isBigWriteFile
-                ? BIG_WRITE_SPLIT_HINT
-                : "⚠️ 你上一条回复想调用工具，但工具调用标记不完整/格式异常（未闭合、半截或乱码），工具**没有真正执行**，回复因此中断。\n" +
-                  "请重新输出**完整合法**的工具调用：\n" +
-                  '<tool_call>\n{"server":"app","tool":"工具名","arguments":{...}}\n</tool_call>\n' +
-                  "必须是完整的开/闭合标记、JSON 合法且含 server、tool、arguments 字段。若确实不需要工具，直接在正文给出完整答案。",
-            });
-            continue;
-          }
-          // 正文空洞（模型口头承诺要做某事、却未调用工具也未给实质内容，如
-          // 「搜索与问题无关，我直接访问官网获取办事指南」）→ 注入指令要求真正执行
-          // 或直接完整作答后重试一轮，避免「工具卡片 + 一句意图声明」就断头。
-          if (isVagueBody(roundResult.content) && round + 1 < maxToolRounds) {
-            round++;
-            dbg(`[loop] 正文空洞（仅过程声明），第 ${round} 轮注入指令要求实际执行或完整作答`);
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({
-              role: "user",
-              content:
-                "⚠️ 你上一条回复只声明了『要做某事』（例如“访问官网获取信息”“接下来去查询”“搜索与问题无关，我直接…”），既没有实际调用工具，也没有给出实质内容——这样的回复不算完成任务。\n" +
-                "请二选一：\n" +
-                "1) 若确实还需要信息：立即输出 <tool_call> 调用对应工具（如 fetch_page 抓取网页 / web_search 重新搜索）真正获取数据，再继续；\n" +
-                "2) 若已有足够信息：直接在正文给出**完整、详细、结构化的最终回答**（结论 / 步骤 / 要点）。\n" +
-                "不要只写过程声明，不要输出空 <tool_call>。",
-            });
-            continue; // 重新发起一轮流式
-          }
-          // 防“假完成”：任务模式下若建了计划、却全程没执行任何实际工作工具，
-          // 不能作为最终答案退出（避免只播报计划就宣称“全部完成”）。
-          if (
-            isTaskModeActive() &&
-            useChatStore().taskPlan &&
-            !didRealWork &&
-            !fakeCompletionWarned
-          ) {
-            fakeCompletionWarned = true;
-            round++;
-            dbg(`[loop] 任务模式但未执行任何实际工具，第 ${round} 轮强制要求真正执行`);
-            rustMsgs.push({ role: "assistant", content: roundResult.content });
-            rustMsgs.push({
-              role: "user",
-              content:
-                "⚠️ 你创建了任务计划，但到目前为止**还没有执行任何实际操作**（未调用任何文件/命令/测试/检索等工具），不能算完成，更不要声称“全部完成”。\n" +
-                "请二选一：\n" +
-                "1) 真正去执行目标：调用相应工具（如 list_dir / read_file / write_file / run_command / run_tests / web_search 等）完成工作并验证结果；\n" +
-                "2) 若确实无需任何工具即可回答，直接在正文给出完整答案并说明“无需工具即可完成”。",
-            });
-            continue;
-          }
+
           // P0-5 验证凭据 + P1-6 自动续跑规则表：
           // 收尾时按问题类型（工具全失败 / 验证凭据缺失 / 计划未完 / 目标未达成 / 正文为空）
           // 决定是否再给一轮，并注入针对性的纠偏文本。

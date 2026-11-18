@@ -32,6 +32,90 @@ pub struct ChatMessage {
     /// 用于把结果关联回上一条 assistant 消息里的某个调用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// 上一轮 assistant 的思维链。**官方明确要求：请求携带 `tools` 时，历史轮次的
+    /// `reasoning_content` 应回传并被拼进上下文**（不带 tools 时传了也会被忽略）。
+    /// 不回传的代价：多轮工具循环里模型「忘了自己刚才怎么想的」，容易原地打转；
+    /// 回传后这些 token 还能命中 KV 缓存（它们是前缀的一部分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+}
+
+/// 是否 DeepSeek 官方端点。
+///
+/// 为什么要区分：`thinking` / `reasoning_effort` 是 **DeepSeek 扩展字段**。本地兜底
+/// （llama.cpp / LM Studio / vLLM）与多数第三方 OpenAI 兼容网关并不认识它们，
+/// 轻则忽略、重则 400（`unknown field`）。所以对非官方端点**只发标准 OpenAI 字段**。
+pub fn is_deepseek_endpoint(base_url: &str) -> bool {
+    let u = base_url.trim().to_ascii_lowercase();
+    u.contains("deepseek.com") || u.contains("api.deepseek")
+}
+
+/// 思考强度规范化到官方值域 `none | low | high | max`。
+///
+/// 官方文档：出于兼容考虑 `minimal → low`、`medium/xhigh → high`（我们列表里可能还留着旧值）。
+/// 未知值一律降到 `high`（官方默认），**绝不能**把未知字符串原样发出去当实验品。
+pub fn normalize_reasoning_effort(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" | "disabled" => "none",
+        "minimal" | "low" => "low",
+        "high" | "medium" | "xhigh" | "" => "high",
+        "max" | "ultra" => "max",
+        _ => "high",
+    }
+}
+
+/// 思考模式下 `max_tokens` 的下限。
+///
+/// 官方：未设置时非思考模式默认 8K、思考模式默认 64K。而我们按用户设置发 `max_tokens`
+/// （常见 8192）——**思考模式下思维链会先把这 8K 吃光**，正文只剩半句，
+/// 表现为 `finish_reason=length` 反复续写。所以思考模式给一个下限，低于它按它发。
+pub const THINKING_MIN_OUTPUT_TOKENS: u32 = 16_384;
+
+/// 构造一次 chat/completions 请求体（纯函数，便于逐条验证参数语义）。
+///
+/// 这里集中处理三件在文档里写得很明确、但很容易写错的事：
+/// 1. **关闭思考必须显式发 `thinking: {type:"disabled"}`** —— 省略 `thinking` 与
+///    `reasoning_effort` 时官方**默认开启思考**，所以「不传」根本关不掉；
+/// 2. **思考模式下 `temperature` 不生效**（官方原文），照发只会让人以为调过温度，
+///    所以思考模式干脆不发；
+/// 3. 非 DeepSeek 端点不发 DeepSeek 扩展字段（本地兜底要能跑）。
+pub fn build_chat_body(
+    config: &ApiConfig,
+    messages: serde_json::Value,
+    tools: Option<serde_json::Value>,
+    stream: bool,
+) -> serde_json::Value {
+    // 「思考模式」只在 DeepSeek 官方端点成立：本地兜底与第三方网关没有这个语义，
+    // 把它们当思考模式处理（去掉 temperature、抬 max_tokens）只会让行为变得不可解释。
+    let thinking = config.thinking_enabled && is_deepseek_endpoint(&config.base_url);
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "stream": stream,
+    });
+    // 非思考模式保留用户温度；思考模式下官方明确不生效 → 不发（避免"假生效"）
+    if !thinking {
+        body["temperature"] = serde_json::json!(config.temperature);
+    }
+    body["max_tokens"] = serde_json::json!(if thinking {
+        config.max_tokens.max(THINKING_MIN_OUTPUT_TOKENS)
+    } else {
+        config.max_tokens
+    });
+    if let Some(tools) = tools {
+        body["tools"] = tools;
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+    if is_deepseek_endpoint(&config.base_url) {
+        body["thinking"] = serde_json::json!({
+            "type": if thinking { "enabled" } else { "disabled" }
+        });
+        if thinking {
+            body["reasoning_effort"] =
+                serde_json::json!(normalize_reasoning_effort(&config.reasoning_effort));
+        }
+    }
+    body
 }
 
 /// 发送 POST 请求到 OpenAI 兼容端点，连接阶段失败自动重试。
@@ -93,23 +177,12 @@ pub async fn stream_chat(
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
-    let mut body = serde_json::json!({
-        "model": config.model,
-        "messages": messages,
-        "stream": true,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
-    });
-
-    if let Some(tools) = tools {
-        body["tools"] = tools;
-        body["tool_choice"] = serde_json::json!("auto");
-    }
-
-    if config.thinking_enabled {
-        body["thinking"] = serde_json::json!({"type": "enabled"});
-        body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
-    }
+    let body = build_chat_body(
+        &config,
+        serde_json::to_value(&messages).unwrap_or(serde_json::Value::Null),
+        tools,
+        true,
+    );
 
     // 连接阶段失败（DNS/代理/TLS 等瞬时抖动）由 post_chat_with_retry 自动重试；
     // 流式一旦建立，整体不做总超时（长思考/长输出可持续推流，空闲由前端兜底）。
@@ -373,21 +446,12 @@ pub async fn chat_once(
     let base_url = config.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
-    let mut body = serde_json::json!({
-        "model": config.model,
-        "messages": messages,
-        "stream": false,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
-    });
-    if let Some(tools) = tools {
-        body["tools"] = tools;
-        body["tool_choice"] = serde_json::json!("auto");
-    }
-    if config.thinking_enabled {
-        body["thinking"] = serde_json::json!({"type": "enabled"});
-        body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
-    }
+    let body = build_chat_body(
+        &config,
+        serde_json::to_value(&messages).unwrap_or(serde_json::Value::Null),
+        tools,
+        false,
+    );
 
     // 非流式单次请求超时（chat_once 供子代理 / 工作流 LLM 节点 / IM 回复使用）：
     // 固定 120s 整体 deadline 会间歇性误杀长输入/长输出（生成常超 120s，表现≈随机失败、
@@ -478,19 +542,11 @@ pub async fn probe_native_tools(config: ApiConfig) -> Result<String, String> {
     }
 
     for (label, use_thinking) in variants {
-        let mut body = serde_json::json!({
-            "model": config.model,
-            "messages": messages,
-            "stream": false,
-            "max_tokens": 512,
-            "temperature": 0.0,
-            "tools": tools,
-            "tool_choice": "auto",
-        });
-        if use_thinking {
-            body["thinking"] = serde_json::json!({"type": "enabled"});
-            body["reasoning_effort"] = serde_json::json!(config.reasoning_effort);
-        }
+        let mut probe_cfg = config.clone();
+        probe_cfg.thinking_enabled = use_thinking;
+        probe_cfg.max_tokens = 512;
+        probe_cfg.temperature = 0.0;
+        let body = build_chat_body(&probe_cfg, messages.clone(), Some(tools.clone()), false);
 
         report.push_str(&format!("== {} ==\n", label));
         // 探针也用带连接重试的发送（网络瞬时抖动不至于误判“不支持 tools”）
@@ -724,6 +780,7 @@ mod tests {
             content: serde_json::Value::String("".into()),
             tool_calls: Some(tool_calls.clone()),
             tool_call_id: None,
+            reasoning_content: None,
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "assistant");
@@ -739,10 +796,35 @@ mod tests {
             content: serde_json::Value::String("文件已写入".into()),
             tool_calls: None,
             tool_call_id: Some("call_9".into()),
+            reasoning_content: None,
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["tool_call_id"], "call_9");
         assert!(json.get("tool_calls").is_none(), "None 字段应省略");
+    }
+
+    #[test]
+    fn chat_message_carries_reasoning_content_when_present() {
+        // 官方要求：带 tools 的历史轮次必须回传 reasoning_content（会拼进上下文）。
+        // 序列化时只有 Some 才出现（None 时省略，避免给不带思考的请求塞空字段）。
+        let with = ChatMessage {
+            role: "assistant".into(),
+            content: serde_json::Value::String(String::new()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: Some("先看构建脚本，再决定改哪里".into()),
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["reasoning_content"], "先看构建脚本，再决定改哪里");
+
+        let without = ChatMessage {
+            reasoning_content: None,
+            ..with
+        };
+        assert!(serde_json::to_value(&without)
+            .unwrap()
+            .get("reasoning_content")
+            .is_none());
     }
 
     #[test]
@@ -826,5 +908,222 @@ mod tests {
         };
         let v2 = serde_json::to_value(&r2).unwrap();
         assert!(v2["tool_calls"].is_null() || v2.get("tool_calls").is_none());
+    }
+
+    fn cfg(base_url: &str, thinking: bool, effort: &str, max_tokens: u32) -> ApiConfig {
+        ApiConfig {
+            base_url: base_url.into(),
+            api_key: "k".into(),
+            model: "deepseek-flash".into(),
+            max_tokens,
+            temperature: 0.35,
+            thinking_enabled: thinking,
+            reasoning_effort: effort.into(),
+            system_prompt: String::new(),
+            enable_web_search: false,
+        }
+    }
+
+    #[test]
+    fn deepseek_endpoint_detection_keeps_local_fallback_clean() {
+        assert!(is_deepseek_endpoint("https://api.deepseek.com"));
+        assert!(is_deepseek_endpoint("https://API.DeepSeek.com/beta"));
+        // 本地兜底与第三方网关：不得被当成官方端点
+        assert!(!is_deepseek_endpoint("http://127.0.0.1:1234/v1"));
+        assert!(!is_deepseek_endpoint("https://openrouter.ai/api/v1"));
+        assert!(!is_deepseek_endpoint("https://api.openai.com"));
+    }
+
+    #[test]
+    fn effort_normalizes_to_official_values_only() {
+        // 官方值域 none/low/high/max；兼容映射按文档
+        assert_eq!(normalize_reasoning_effort("none"), "none");
+        assert_eq!(normalize_reasoning_effort("minimal"), "low");
+        assert_eq!(normalize_reasoning_effort("low"), "low");
+        assert_eq!(normalize_reasoning_effort("medium"), "high");
+        assert_eq!(normalize_reasoning_effort("xhigh"), "high");
+        assert_eq!(normalize_reasoning_effort("max"), "max");
+        assert_eq!(normalize_reasoning_effort("ultra"), "max");
+        // 空 / 未知：落到官方默认 high，绝不把未知字符串原样发出去
+        assert_eq!(normalize_reasoning_effort(""), "high");
+        assert_eq!(normalize_reasoning_effort("超高"), "high");
+    }
+
+    #[test]
+    fn turning_thinking_off_must_be_explicit() {
+        // 关键：省略 thinking 时官方**默认开启思考**，所以「关掉」必须显式发 disabled
+        let body = build_chat_body(
+            &cfg("https://api.deepseek.com", false, "high", 8192),
+            serde_json::json!([]),
+            None,
+            true,
+        );
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "关掉思考时不该发 effort"
+        );
+    }
+
+    #[test]
+    fn thinking_mode_omits_ineffective_temperature_and_lifts_max_tokens() {
+        let body = build_chat_body(
+            &cfg("https://api.deepseek.com", true, "max", 8192),
+            serde_json::json!([]),
+            None,
+            true,
+        );
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "max");
+        // 思考模式下 temperature 官方不生效 → 不发，避免「以为调过温度」
+        assert!(body.get("temperature").is_none());
+        // 8K 会被思维链吃光 → 抬到下限
+        assert_eq!(
+            body["max_tokens"].as_u64().unwrap() as u32,
+            THINKING_MIN_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn non_thinking_keeps_temperature_and_respects_max_tokens() {
+        let body = build_chat_body(
+            &cfg("https://api.deepseek.com", false, "low", 4096),
+            serde_json::json!([]),
+            None,
+            false,
+        );
+        // f32→f64 有精度尾巴（0.3499999940395355），比较时放宽容差
+        assert!((body["temperature"].as_f64().unwrap() - 0.35).abs() < 1e-5);
+        assert_eq!(body["max_tokens"], 4096);
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn local_endpoints_get_plain_openai_body() {
+        // 本地兜底（LM Studio / llama.cpp / vLLM）不认识 thinking / reasoning_effort
+        let body = build_chat_body(
+            &cfg("http://127.0.0.1:1234/v1", true, "max", 8192),
+            serde_json::json!([]),
+            None,
+            true,
+        );
+        assert!(body.get("thinking").is_none(), "本地端点不该收到 thinking");
+        assert!(body.get("reasoning_effort").is_none());
+        // f32→f64 有精度尾巴（0.3499999940395355），比较时放宽容差
+        assert!((body["temperature"].as_f64().unwrap() - 0.35).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tools_are_forwarded_with_auto_choice() {
+        let tools = serde_json::json!([{"type":"function","function":{"name":"f"}}]);
+        let body = build_chat_body(
+            &cfg("https://api.deepseek.com", true, "high", 8192),
+            serde_json::json!([]),
+            Some(tools),
+            true,
+        );
+        assert_eq!(body["tools"][0]["function"]["name"], "f");
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    /// **真机验证（默认忽略）**：关掉思考模式后，响应里**不该有** reasoning_content。
+    ///
+    /// 这是「显式 disabled」这条修复的唯一硬证据：省略 `thinking` 时官方默认开启思考，
+    /// 之前的表现是「用户点了关闭，模型照样在思考」。
+    /// 跑法：`cargo test --lib api::tests::live_thinking_toggle -- --ignored --nocapture`
+    /// （读本机已配置的 profile，需要已保存 Key 与网络）
+    #[tokio::test]
+    #[ignore]
+    async fn live_thinking_toggle_respects_disabled() {
+        let app_dir = dirs_app_data();
+        let Some(app_dir) = app_dir else {
+            eprintln!("跳过：找不到应用数据目录");
+            return;
+        };
+        let db = crate::db::Database::new(app_dir.clone()).expect("打开数据库");
+        let Some(raw) = db.get_setting("app_settings").ok().flatten() else {
+            eprintln!("跳过：本机没有已保存的设置");
+            return;
+        };
+        let mut settings: crate::settings::AppSettings =
+            serde_json::from_str(&raw).expect("解析设置");
+        let cipher = crate::settings::SecretCipher::new(&app_dir).expect("加载密钥");
+        cipher.decrypt_settings(&mut settings).expect("解密设置");
+        let Some(p) = settings.profiles.iter().find(|p| !p.api_key.is_empty()) else {
+            eprintln!("跳过：没有可用 profile");
+            return;
+        };
+        let base = ApiConfig {
+            base_url: p.base_url.clone(),
+            api_key: p.api_key.clone(),
+            model: p.model.clone(),
+            max_tokens: 1024,
+            temperature: 0.2,
+            thinking_enabled: false,
+            reasoning_effort: "high".into(),
+            system_prompt: String::new(),
+            enable_web_search: false,
+        };
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: serde_json::Value::String(
+                "9.11 和 9.8 哪个大？先在心里比较，然后只输出较大的那个数字".into(),
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }];
+
+        // 关掉思考：不应有思维链
+        let off = chat_once(base.clone(), msgs.clone(), None)
+            .await
+            .expect("关闭思考的请求应成功");
+        eprintln!(
+            "[live] thinking=off content={:?} reasoning_len={} cache_hit={} cache_miss={}",
+            off.content.chars().take(30).collect::<String>(),
+            off.reasoning_content.chars().count(),
+            off.cache_hit,
+            off.cache_miss
+        );
+        assert!(!off.content.trim().is_empty(), "关闭思考时正文必须有内容");
+        assert!(
+            off.reasoning_content.trim().is_empty(),
+            "thinking=disabled 时不该返回 reasoning_content（说明关闭没生效）：{}",
+            off.reasoning_content.chars().take(80).collect::<String>()
+        );
+
+        // 打开思考：应有思维链（同时验证 effort 值域被接受）
+        let mut on = base;
+        on.thinking_enabled = true;
+        on.reasoning_effort = "low".into();
+        let on_res = chat_once(on, msgs, None)
+            .await
+            .expect("开启思考的请求应成功");
+        eprintln!(
+            "[live] thinking=on content_len={} reasoning_len={}",
+            on_res.content.chars().count(),
+            on_res.reasoning_content.chars().count()
+        );
+        assert!(
+            !on_res.content.trim().is_empty(),
+            "开启思考时正文也必须完整"
+        );
+        assert!(
+            !on_res.reasoning_content.trim().is_empty(),
+            "thinking=enabled 时应有 reasoning_content（否则说明开关没被识别）"
+        );
+    }
+
+    fn dirs_app_data() -> Option<std::path::PathBuf> {
+        let home = std::env::var("HOME").ok()?;
+        let p = std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("com.daoshengyi.app");
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
     }
 }
