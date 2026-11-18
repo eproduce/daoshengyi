@@ -50,6 +50,12 @@ import {
 } from "@/utils/subagent-trace";
 // 花名册（成员 = 子会话 + 角色/状态/预算）：状态迁移与名字校验都是纯函数
 import {
+  composeMailBatch,
+  formatMail,
+  normalizeMailKind,
+  type MailMessage,
+} from "@/utils/agent-mail";
+import {
   // 与 goal 的 budgetExceeded 同名不同义（那是「目标预算」，这是「成员预算」）→ 起别名
   budgetExceeded as agentBudgetExceeded,
   canTransition,
@@ -541,6 +547,33 @@ function flushHookInjections(msgs: AgentMsg[]): void {
     content: `【钩子注入】以下是外部钩子在本轮写入的上下文（供参考，不代表用户发言）：\n${text}`,
   });
   dbg(`[hook] 注入 ${text.length} 字符`);
+}
+
+/// 主代理自己的信箱名（成员发给「主代理」时写这个名字）
+const MAIN_AGENT = "main";
+
+/// 把主代理信箱里的未读消息注入到**本回合末尾**（与 hook 注入同一条路径）。
+///
+/// 为什么必须在回合开头、且只追加到最后一条 user：请求前缀稳定是提示词缓存的前提，
+/// 往历史中段插消息会让整段前缀失效（成本翻倍）。
+async function flushAgentMailbox(convId: string | undefined, msgs: AgentMsg[]): Promise<void> {
+  if (!convId) return;
+  try {
+    const unread = await invoke<MailMessage[]>("agent_msg_list", {
+      conversationId: convId,
+      to: MAIN_AGENT,
+      unreadOnly: true,
+      limit: 20,
+    });
+    const batch = composeMailBatch(unread, "主代理");
+    if (!batch.text) return;
+    msgs.push({ role: "user", content: batch.text });
+    // 只标记本批（读完到写库之间新来的消息留到下一回合）
+    await invoke("agent_msg_mark_read", { ids: batch.ids });
+    void dbg(`[mail] 注入 ${batch.ids.length} 条成员留言`);
+  } catch (e) {
+    void dbg(`[mail] 读取信箱失败（忽略）：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /// 执行一条已渲染的动作（block 不在这里处理，它需要即时拦截）
@@ -4267,6 +4300,50 @@ async function callBuiltinTool(tool: string, args: Record<string, unknown>): Pro
         );
         if (over) return `⛔ ${over}`;
         return await dispatchAgentTask(a.id, a.name, task, a.role_id);
+      } else if (act === "send") {
+        // 异步留言：不等待、不打断对方当前回合（对方下次回合开头才会看到）
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const to = String(args.name ?? args.to ?? "").trim();
+        if (!to) return "❌ send 需要 name 参数（收件人：成员名，或 main 表示主代理）";
+        const content = String(args.content ?? args.task ?? "").trim();
+        if (!content) return "❌ send 需要 content 参数（要留的话）";
+        const kind = normalizeMailKind(args.kind);
+        if (to !== MAIN_AGENT) {
+          // 只有已存在的成员才收信（防止悄悄给一个不存在的名字投递，永远没人读）
+          const a = await invoke<AgentRowWire | null>("agent_by_name", {
+            conversationId: convId,
+            name: to,
+          });
+          if (!a) return `❌ 本会话没有名为「${to}」的成员（agent list 可看全部）`;
+        }
+        const id = await invoke<number>("agent_msg_send", {
+          message: {
+            id: 0,
+            conversation_id: convId,
+            from_agent: MAIN_AGENT,
+            to_agent: to,
+            kind,
+            content,
+            created_at: Date.now(),
+            read_at: null,
+          },
+        });
+        return `✅ 已投递到「${to}」的信箱（#${id}，${kind}）。对方**下次回合开头**才会看到，不会打断它当前的工作。`;
+      } else if (act === "inbox") {
+        const convId = useChatStore().activeConversationId;
+        if (!convId) return "（还没有活动会话）";
+        const who = String(args.name ?? "").trim() || MAIN_AGENT;
+        const rows = await invoke<MailMessage[]>("agent_msg_list", {
+          conversationId: convId,
+          to: who,
+          unreadOnly: args.unread_only === true,
+          limit: Math.min(Math.max(Number(args.limit ?? 20), 1), 50),
+        });
+        if (!rows.length) {
+          return `（「${who}」的信箱是空的${args.unread_only === true ? "（仅看未读）" : ""}）`;
+        }
+        return `「${who}」的信箱（${rows.length} 条）：\n` + rows.map(formatMail).join("\n");
       } else if (act === "close") {
         const convId = useChatStore().activeConversationId;
         if (!convId) return "（还没有活动会话）";
@@ -5159,6 +5236,17 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       console.warn("[道生一] 数据库加载失败，使用空数据:", e);
     }
+    // S3 重启恢复：上次「在跑/等待」的成员统一标成 interrupted（**不自动重跑**——
+    // 自动续跑一个写了一半的任务，比不跑危险得多）。用户可 agent_ask 让它接着做。
+    try {
+      const n = await invoke<number>("agents_mark_interrupted");
+      if (n > 0) {
+        interruptedAgents.value = n;
+        void dbg(`[agent] 重启后有 ${n} 个成员被标记为 interrupted（不自动续跑）`);
+      }
+    } catch {
+      /* 旧库没有 agents 表时忽略 */
+    }
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5531,6 +5619,8 @@ export const useChatStore = defineStore("chat", () => {
     const r = subagents.value.find((x) => x.id === id);
     if (r) r.traceId = traceId;
   }
+  /** 重启后被标记为 interrupted 的成员数（UI 用来提示「有成员被中断」） */
+  const interruptedAgents = ref(0);
   function completeSubagent(id: string, resultText: string) {
     const r = subagents.value.find((x) => x.id === id);
     if (r) {
@@ -7368,6 +7458,8 @@ export const useChatStore = defineStore("chat", () => {
         );
         try {
           flushHookInjections(rustMsgs); // P1-3：钩子注入在下一轮开头回填
+          // 成员信箱：只在回合开头消费（与钩子同一位置，保证请求前缀稳定）
+          await flushAgentMailbox(useChatStore().activeConversationId ?? undefined, rustMsgs);
           flushPendingViewImages(rustMsgs); // view_image 图片在下一轮注入
           roundResult = await streamRound(rustMsgs, nativeToolsOn);
         } catch (e) {
@@ -8244,6 +8336,7 @@ export const useChatStore = defineStore("chat", () => {
     setMode,
     readModeHist,
     subagents,
+    interruptedAgents,
     spawnSubagent,
     setSubagentTraceId,
     completeSubagent,

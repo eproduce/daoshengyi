@@ -268,7 +268,7 @@ describe("agent 花名册：一个工具五个 action（不吃掉 MCP 的声明�
   it("必须合并成单个工具，且 action 白名单与分发一致", () => {
     const desc = toolsSrc.match(/name: "agent",[\s\S]*?\n {2}\},/)?.[0] ?? "";
     expect(desc).not.toBe("");
-    for (const act of ["spawn", "ask", "list", "status", "close"]) {
+    for (const act of ["spawn", "ask", "send", "inbox", "list", "status", "close"]) {
       expect(desc).toContain(act);
     }
     // 分工必须写清，否则模型会在 subagent / agent 之间随机选
@@ -276,9 +276,14 @@ describe("agent 花名册：一个工具五个 action（不吃掉 MCP 的声明�
     expect(desc).toContain("长期成员");
     // 分发侧：五个分支都在同一个 case 里
     expect(chatSrc).toContain('case "agent":');
-    for (const act of ["spawn", "ask", "list", "status", "close"]) {
+    for (const act of ["spawn", "ask", "send", "inbox", "list", "status", "close"]) {
       expect(chatSrc).toContain(`act === "${act}"`);
     }
+    // 信箱必须只在回合开头消费（与 hook 注入同一位置），否则请求前缀会失效
+    expect(chatSrc).toContain("flushAgentMailbox(");
+    expect((chatSrc.match(/flushAgentMailbox\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // 重启恢复：启动时必须把在跑的成员标成 interrupted（不自动续跑）
+    expect(chatSrc).toContain('invoke<number>("agents_mark_interrupted")');
     // 不能又拆回 5 个工具（工具表名额要给 MCP 留余量）
     for (const legacy of ['name: "agent_spawn"', 'name: "agent_ask"', 'name: "agent_list"']) {
       expect(toolsSrc).not.toContain(legacy);

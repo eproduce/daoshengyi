@@ -183,6 +183,22 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_conv ON agents(conversation_id);
 
+-- 成员信箱：主代理与成员之间**异步**传话（成员跑长任务时主代理不必空等返回值）。
+-- 关键语义：消息只在**回合开头**被消费（与 hook 注入同一条路径），因为
+--  ① 请求前缀必须稳定（易变内容只追加到最后一条 user），否则提示词缓存失效、成本翻倍；
+--  ② 正在 running 的成员不被抢占（想插队是用户的显式动作：停止 + 重新派活）。
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    from_agent      TEXT NOT NULL,
+    to_agent        TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    read_at         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_agent_msgs_inbox ON agent_messages(conversation_id, to_agent, read_at);
+
 -- 子代理运行轨迹：子代理是**一次性函数调用**，跑完只剩一句结论，出问题无法复盘
 -- 「它为什么这么干」。这张表把每轮的判断与工具调用留下来（跨会话可查）。
 CREATE TABLE IF NOT EXISTS subagent_runs (
@@ -1846,6 +1862,71 @@ impl Database {
         Ok(())
     }
 
+    /// 投递一条信箱消息，返回自增 id
+    pub fn agent_msg_send(&self, m: &AgentMessageRow) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO agent_messages(conversation_id, from_agent, to_agent, kind, content, created_at, read_at) VALUES (?1,?2,?3,?4,?5,?6,NULL)",
+            params![m.conversation_id, m.from_agent, m.to_agent, m.kind, m.content, m.created_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 看信箱（`to_agent` 为准；`unread_only` 时只要未读）。按时间正序（对话顺序）。
+    pub fn agent_msg_list(
+        &self,
+        conversation_id: &str,
+        to_agent: &str,
+        unread_only: bool,
+        limit: i64,
+    ) -> Result<Vec<AgentMessageRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let sql = if unread_only {
+            "SELECT id, conversation_id, from_agent, to_agent, kind, content, created_at, read_at FROM agent_messages WHERE conversation_id = ?1 AND to_agent = ?2 AND read_at IS NULL ORDER BY created_at ASC, id ASC LIMIT ?3"
+        } else {
+            "SELECT id, conversation_id, from_agent, to_agent, kind, content, created_at, read_at FROM agent_messages WHERE conversation_id = ?1 AND to_agent = ?2 ORDER BY created_at ASC, id ASC LIMIT ?3"
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![conversation_id, to_agent, limit], |r| {
+                Ok(AgentMessageRow {
+                    id: r.get(0)?,
+                    conversation_id: r.get(1)?,
+                    from_agent: r.get(2)?,
+                    to_agent: r.get(3)?,
+                    kind: r.get(4)?,
+                    content: r.get(5)?,
+                    created_at: r.get(6)?,
+                    read_at: r.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 标记已消费（只给这些 id 打 read_at；返回实际影响条数）。
+    ///
+    /// 为什么传 id 列表而不是「全部未读」：读完到写库之间可能又来了新消息，
+    /// 那种必须留到下一回合，不能被这一次的标记顺带吞掉。
+    pub fn agent_msg_mark_read(&self, ids: &[i64], now: i64) -> Result<usize, String> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut n = 0;
+        for id in ids {
+            n += conn
+                .execute(
+                    "UPDATE agent_messages SET read_at = ?1 WHERE id = ?2 AND read_at IS NULL",
+                    params![now, id],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(n)
+    }
+
     /// 写入/更新成员。**状态迁移的合法性由调用方（纯函数 agent-roster）判定**，
     /// 这里只落库：DB 层再做一套状态机只会让两处规则慢慢分叉。
     pub fn agent_upsert(&self, a: &AgentRow) -> Result<(), String> {
@@ -2424,7 +2505,21 @@ pub struct AgentRow {
     pub cost: f64,
 }
 
-/// 一次子代理运行的轨迹（复查用：它读了什么、调了什么工具、为什么停）。
+/// 一条成员信箱消息
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct AgentMessageRow {
+    pub id: i64,
+    pub conversation_id: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    /// task / question / answer / note / result
+    pub kind: String,
+    pub content: String,
+    pub created_at: i64,
+    pub read_at: Option<i64>,
+}
+
+/// 一次子代理运行的轨迹（复查后：它读了什么、调了什么工具、为什么停）。
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SubagentRunRow {
     pub id: String,
@@ -3380,6 +3475,61 @@ mod tests {
         // 删除工作流不影响历史（wf_name 快照）
         db.wf_delete(id).unwrap();
         assert_eq!(db.wf_runs(10).unwrap().len(), 3);
+        cleanup(&dir);
+    }
+
+    // 信箱：投递 → 未读 → 只标记本批 → 剩下的留到下次
+    #[test]
+    fn agent_mailbox_only_marks_the_batch_it_consumed() {
+        let (dir, db) = tmp_db();
+        let mk = |from: &str, to: &str, content: &str, at: i64| AgentMessageRow {
+            id: 0,
+            conversation_id: "c1".into(),
+            from_agent: from.into(),
+            to_agent: to.into(),
+            kind: "note".into(),
+            content: content.into(),
+            created_at: at,
+            read_at: None,
+        };
+        let id1 = db
+            .agent_msg_send(&mk("main", "调研员", "先看构建脚本", 100))
+            .unwrap();
+        let id2 = db
+            .agent_msg_send(&mk("main", "调研员", "再看测试", 200))
+            .unwrap();
+        // 别的收件人 / 别的会话都不该出现在这个信箱里
+        db.agent_msg_send(&mk("main", "写手", "不相干", 300))
+            .unwrap();
+
+        let unread = db.agent_msg_list("c1", "调研员", true, 20).unwrap();
+        assert_eq!(unread.len(), 2);
+        assert_eq!(
+            unread
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["先看构建脚本", "再看测试"],
+            "应按时间正序"
+        );
+        assert!(unread.iter().all(|m| m.read_at.is_none()));
+
+        // 只消费第一条，第二条必须留到下一回合
+        assert_eq!(db.agent_msg_mark_read(&[id1], 400).unwrap(), 1);
+        let still = db.agent_msg_list("c1", "调研员", true, 20).unwrap();
+        assert_eq!(still.len(), 1);
+        assert_eq!(still[0].id, id2);
+
+        // 重复标记同一条不重复计数（幂等），也不会把已读变未读
+        assert_eq!(db.agent_msg_mark_read(&[id1], 500).unwrap(), 0);
+
+        // 全量列表仍能看到已读的（用于复盘）
+        let all = db.agent_msg_list("c1", "调研员", false, 20).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].read_at.is_some());
+
+        // 空 id 列表是空操作
+        assert_eq!(db.agent_msg_mark_read(&[], 600).unwrap(), 0);
         cleanup(&dir);
     }
 

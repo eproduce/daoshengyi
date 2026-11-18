@@ -1001,13 +1001,25 @@ export const BUILTIN_PARAMETERS: Record<string, Record<string, unknown>> = {
     properties: {
       action: {
         type: "string",
-        enum: ["spawn", "ask", "list", "status", "close"],
-        description: "spawn=建成员 / ask=派活 / list=列成员 / status=看状态 / close=归档",
+        enum: ["spawn", "ask", "send", "inbox", "list", "status", "close"],
+        description:
+          "spawn=建成员 / ask=派活并等结果 / send=异步留言 / inbox=看信箱 / list=列成员 / status=看状态 / close=归档",
       },
-      name: { type: "string", description: "成员名（会话内唯一，≤24 字；spawn 时必填）" },
+      name: {
+        type: "string",
+        description: "成员名（会话内唯一，≤24 字；spawn 时必填；send/inbox 时可为 main）",
+      },
       role: { type: "string", description: "spawn 专用：角色 id（决定提示词与可用工具）" },
       brief: { type: "string", description: "spawn 专用：职责一句话（长期目标，不是单次任务）" },
       task: { type: "string", description: "spawn 可选的第一个任务；ask 必填" },
+      content: { type: "string", description: "send 专用：要留的话" },
+      kind: {
+        type: "string",
+        enum: ["task", "question", "answer", "note", "result"],
+        description: "send 专用：消息类型（默认 note）",
+      },
+      unread_only: { type: "boolean", description: "inbox 专用：只看未读" },
+      limit: { type: "integer", description: "inbox 专用：条数 1~50（默认 20）" },
     },
     required: ["action"],
     additionalProperties: false,

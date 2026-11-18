@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-11-18（S2 mailbox + S3 重启恢复 + 成员面板）
+
+S1 之后补完设计里的后两段。
+
+**S2 信箱（异步传话）**
+
+- `db.rs`：`agent_messages` 表 + `agent_msg_send` / `agent_msg_list`（按收件人、可按未读）
+  / `agent_msg_mark_read`。标记接口**按 id 列表**而不是「全部未读」——读完到写库之间可能
+  又来了新消息，按「全部」标记会把它静默吞掉（测试专门钉住这条）。
+- `src/utils/agent-mail.ts`（8 项单测）：`composeMailBatch` 只取本回合那一批（上限 6 条，
+  其余留到下一回合），返回 `ids` 供调用方精确标记；单条截断 1200 字符；折叠换行保持注入块紧凑；
+  `normalizeMailKind` 把未知 kind 退化成 `note`（存进没人认识的 kind 等于丢消息）。
+- 消费点：`flushAgentMailbox` 挂在**回合开头、与 `flushHookInjections` 同一位置**。
+  这不是随手一放——请求前缀必须稳定（易变内容只追加到最后一条 user），往历史中段插消息会
+  让提示词缓存整段失效、成本翻倍。
+- 工具面继续留在单个 `agent` 里（`send` / `inbox` 两个新 action），工具描述写清
+  「send 不触发执行，要它现在做就用 ask」。
+
+**S3 重启恢复**
+
+- `initFromDb` 启动时调 `agents_mark_interrupted`：上次 `running`/`waiting` 的成员统一变
+  `interrupted`，**不自动重跑**（自动续跑一个写了一半的任务比不跑更危险）；数量进
+  `interruptedAgents` 供 UI 提示。
+
+**成员面板**
+
+- 子代理面板下方新增可折叠「成员」区（[SubagentPanel.vue](../src/components/SubagentPanel.vue)）：
+  名字/角色/状态/累计回合 + 「打开」直接切到它的会话。与子代理列表分开显示——
+  子代理是一次性调用，成员是长期存在，混在一起会让人以为「成员跑完就消失了」。
+
+**验证**：`npm run ci:local` **8/8**（vitest 65 文件 **882 项** / cargo test **397 项**）；
+新增 mailbox 往返测试（只消费本批/幂等/空列表）/ TS 信箱 8 项；
+契约测试补「信箱只能在回合开头消费」「启动必须标记 interrupted」。
+
+---
+
 ## 2026-11-16（S1：agent 花名册上线——成员能被再次寻址）
 
 按 `AGENT_TEAM_DESIGN.md` 做 S1。**成员 id = 子会话 id**（不建第二套会话，否则「历史里能点开的

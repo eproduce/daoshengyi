@@ -2257,6 +2257,39 @@ fn workflow_delete(db: State<Database>, id: i64) -> Result<(), String> {
     db.wf_delete(id)
 }
 
+/// 信箱：投递一条消息（异步，不等待对方）
+#[tauri::command]
+fn agent_msg_send(db: State<Database>, message: db::AgentMessageRow) -> Result<i64, String> {
+    db.agent_msg_send(&message)
+}
+
+/// 信箱：查看某人的消息（`to` 为收件人名；`main` = 主代理）
+#[tauri::command]
+fn agent_msg_list(
+    db: State<Database>,
+    conversation_id: String,
+    to: String,
+    unread_only: Option<bool>,
+    limit: Option<i64>,
+) -> Result<Vec<db::AgentMessageRow>, String> {
+    db.agent_msg_list(
+        &conversation_id,
+        &to,
+        unread_only.unwrap_or(false),
+        limit.unwrap_or(20).clamp(1, 100),
+    )
+}
+
+/// 信箱：把指定 id 标记为已读（**只标这一批**，避免吞掉读完到写库之间新来的消息）
+#[tauri::command]
+fn agent_msg_mark_read(db: State<Database>, ids: Vec<i64>) -> Result<usize, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    db.agent_msg_mark_read(&ids, now)
+}
+
 /// 花名册：写入/更新成员（状态迁移合法性由前端纯函数 agent-roster 判定后传入）
 #[tauri::command]
 fn agent_upsert(db: State<Database>, agent: db::AgentRow) -> Result<(), String> {
@@ -7155,6 +7188,9 @@ pub fn run() {
             computer_use,
             computer_use_status,
             agent_upsert,
+            agent_msg_send,
+            agent_msg_list,
+            agent_msg_mark_read,
             agent_list,
             agent_by_name,
             agents_mark_interrupted,
